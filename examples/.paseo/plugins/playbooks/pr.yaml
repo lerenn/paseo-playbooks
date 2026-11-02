@@ -86,6 +86,6 @@ steps:
     gate: The PR is ready. Approve to finish, or request changes to send it back to the implementer.
     choices:
       approved: { label: Approve }
-      rejected: { label: Request changes, comment: required }
+      rejected: { label: Request changes, comment: required, color: danger }
     on:
       rejected: { goto: implement }

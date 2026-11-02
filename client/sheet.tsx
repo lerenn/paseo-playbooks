@@ -62,6 +62,22 @@ function Line(props: { theme: Theme; children: ReactNode; muted?: boolean }) {
   );
 }
 
+/** Button colours of a gate choice, from the Paseo theme. */
+function choiceColors(theme: Theme, color: NonNullable<GateChoice["color"]>): { background: string; foreground: string } {
+  switch (color) {
+    case "primary":
+      return { background: theme.colors.accent, foreground: theme.colors.accentForeground };
+    case "danger":
+      return { background: theme.colors.statusDanger, foreground: theme.colors.accentForeground };
+    case "success":
+      return { background: theme.colors.statusSuccess, foreground: theme.colors.accentForeground };
+    case "warning":
+      return { background: theme.colors.statusWarning, foreground: theme.colors.accentForeground };
+    default:
+      return { background: theme.colors.surface2, foreground: theme.colors.foreground };
+  }
+}
+
 /** Where a choice leads, for its button: "→ End", "→ Write", "→ Fail run". */
 function destinationLabel(run: Run, gate: Gate, choiceId: string): string {
   if (gate.kind === "loop_limit") return choiceId === "approved" ? `→ ${stepLabel(gate.gotoTarget ?? "")}` : "→ Fail run";
@@ -110,9 +126,7 @@ export function GateActions(props: { theme: Theme; run: Run; gate: Gate; hostLab
       {choices.map((choice, index) => {
         const destination = destinationLabel(run, gate, choice.id);
         const expanded = open === choice.id;
-        const primary = index === 0;
-        const background = primary ? theme.colors.accent : theme.colors.surface2;
-        const foreground = primary ? theme.colors.accentForeground : theme.colors.foreground;
+        const { background, foreground } = choiceColors(theme, choice.color ?? (index === 0 ? "primary" : "neutral"));
         return (
           <View key={choice.id} style={{ gap: 6 }}>
             <Pressable

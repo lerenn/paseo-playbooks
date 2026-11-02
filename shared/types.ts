@@ -59,6 +59,8 @@ export const GateChoiceSchema = z.object({
   label: z.string(),
   /** Whether pressing it asks for a comment first (sent to the manager and, on a goto, to the target step). */
   comment: z.enum(["none", "optional", "required"]),
+  /** Theme colour of the button; unset = primary for the first choice, neutral for the others. */
+  color: z.enum(["primary", "neutral", "success", "warning", "danger"]).optional(),
 });
 export type GateChoice = z.infer<typeof GateChoiceSchema>;
 

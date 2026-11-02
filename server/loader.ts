@@ -66,7 +66,11 @@ const RawStepSchema = z
       .record(
         z.string(),
         z
-          .object({ label: z.string().optional(), comment: z.enum(["none", "optional", "required"]).default("none") })
+          .object({
+            label: z.string().optional(),
+            comment: z.enum(["none", "optional", "required"]).default("none"),
+            color: z.enum(["primary", "neutral", "success", "warning", "danger"]).optional(),
+          })
           .strict()
           .nullable(),
       )
@@ -346,7 +350,9 @@ async function loadPlaybook(
     if (!isGate && rawStep.choices !== undefined) err(`${where}: \`choices\` only applies to a gate`);
     const choices: GateChoice[] = Object.entries(isGate ? rawStep.choices ?? {} : {}).map(([id, raw]) => {
       if (!ID.test(id)) err(`${where}: choices.${id}: invalid name (lowercase letters, digits, - and _)`);
-      return { id, label: raw?.label ?? stepLabel(id.replace(/[_-]+/g, " ")), comment: raw?.comment ?? "none" };
+      const choice: GateChoice = { id, label: raw?.label ?? stepLabel(id.replace(/[_-]+/g, " ")), comment: raw?.comment ?? "none" };
+      if (raw?.color) choice.color = raw.color;
+      return choice;
     });
     if (isGate && rawStep.choices !== undefined && choices.length === 0) err(`${where}: choices: declare at least one choice`);
     const outcomes = isGate ? (choices.length > 0 ? choices.map((choice) => choice.id) : GATE_OUTCOMES) : rawStep.outcomes ?? AGENT_OUTCOMES;

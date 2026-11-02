@@ -3,13 +3,13 @@ import type { GateChoice, Playbook, Step } from "./types";
 /** Choices of a gate step that declares none in its YAML. */
 export const DEFAULT_GATE_CHOICES: GateChoice[] = [
   { id: "approved", label: "Approve", comment: "none" },
-  { id: "rejected", label: "Reject", comment: "optional" },
+  { id: "rejected", label: "Reject", comment: "optional", color: "danger" },
 ];
 
 /** Choices of a loop-limit gate (the playbook's loop ran out of `max_loops`). */
 export const LOOP_LIMIT_CHOICES: GateChoice[] = [
   { id: "approved", label: "Allow one more loop", comment: "none" },
-  { id: "rejected", label: "Stop and fail the run", comment: "optional" },
+  { id: "rejected", label: "Stop and fail the run", comment: "optional", color: "danger" },
 ];
 
 export function gateChoices(step: Step): GateChoice[] {

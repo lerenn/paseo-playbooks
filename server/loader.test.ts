@@ -141,7 +141,7 @@ steps:
     expect(gate.outcomes).toEqual(["approved", "rejected"]);
     expect(gate.choices).toEqual([
       { id: "approved", label: "Approve", comment: "none" },
-      { id: "rejected", label: "Request changes", comment: "required" },
+      { id: "rejected", label: "Request changes", comment: "required", color: "danger" },
     ]);
   });
 

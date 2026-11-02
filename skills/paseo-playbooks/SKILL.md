@@ -130,7 +130,7 @@ steps:
     gate: The PR is ready. Approve to finish, or request changes to send it back to the implementer.
     choices:
       approved: { label: Approve }
-      rejected: { label: Request changes, comment: required }
+      rejected: { label: Request changes, comment: required, color: danger }
     on:
       rejected: { goto: implement }
 ```
@@ -150,7 +150,7 @@ steps:
 | `retries` | Extra attempts after `failure`. |
 | `timeout` | `30m`, `2h`… Expiry counts as a failure. |
 | `agent` | Step-level agent settings. |
-| `choices` | Gates only: the buttons, in order. Each key is an outcome, with `label` and `comment: none \| optional \| required`. |
+| `choices` | Gates only: the buttons, in order. Each key is an outcome, with `label`, `comment: none \| optional \| required` and `color: primary \| neutral \| success \| warning \| danger` (theme colours; default primary for the first, neutral for the others). |
 
 A gate's outcomes are the keys of its `choices` (default: `approved` with label Approve, and
 `rejected` with label Reject and an optional comment). The first choice completes the gate

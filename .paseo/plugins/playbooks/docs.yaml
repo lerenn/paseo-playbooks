@@ -82,6 +82,6 @@ steps:
     gate: The docs are updated, uncommitted. Approve to finish, or request changes to send them back to the writer.
     choices:
       approved: { label: Approve }
-      rejected: { label: Request changes, comment: required }
+      rejected: { label: Request changes, comment: required, color: danger }
     on:
       rejected: { goto: write }
