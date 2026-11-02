@@ -108,6 +108,11 @@ export function Graph(props: GraphProps) {
   const byId = useMemo(() => new Map(playbook.steps.map((step) => [step.id, step])), [playbook]);
   /** Steps with a pending decision: their node widens to the graph's width, alone in its row, to hold the choices. */
   const deciding = new Set(run ? run.gates.filter((gate) => gate.status === "pending").map((gate) => gate.stepId) : []);
+  /** Actual width of each node, so loop lines meet its edge. */
+  const widthOf = (id: string): number => {
+    const row = layout.layers.find((candidate) => candidate.includes(id));
+    return deciding.has(id) && row?.length === 1 ? Math.max(nodeWidth, width - GAP) : nodeWidth;
+  };
   const running = new Set(run ? playbook.steps.filter((step) => run.steps[step.id]?.status === "running").map((step) => step.id) : []);
 
   return (
@@ -122,7 +127,7 @@ export function Graph(props: GraphProps) {
           heights={heights}
           centers={centers}
           offset={gutter}
-          nodeWidth={nodeWidth}
+          widthOf={widthOf}
           laneStart={gutter + width + 6}
           highlighted={props.highlighted}
         />
@@ -160,7 +165,7 @@ export function Graph(props: GraphProps) {
                   <Node
                     step={byId.get(id)!}
                     longNeeds={byId.get(id)!.needs.filter((need) => (layers.get(need) ?? 0) < index - 1)}
-                    nodeWidth={deciding.has(id) && row.length === 1 ? Math.max(nodeWidth, width - GAP) : nodeWidth}
+                    nodeWidth={widthOf(id)}
                     loops={loops.filter((loop) => loop.from === id)}
                     onBoxHeight={(height) => setHeights((current) => (current[id] === height ? current : { ...current, [id]: height }))}
                     {...props}
@@ -293,7 +298,7 @@ function LoopLines(props: {
   heights: Record<string, number>;
   centers: Map<string, number>;
   offset: number;
-  nodeWidth: number;
+  widthOf(id: string): number;
   laneStart: number;
   highlighted: string | null;
 }) {
@@ -312,8 +317,8 @@ function LoopLines(props: {
     const top = (layer: number, layerTop: number) => layerTop + (layer > 0 ? BAND_H : 0);
     const y1 = Math.round(top(fromLayer, fromTop) + fromH * 0.6);
     const y2 = Math.round(top(toLayer, toTop) + toH * 0.4);
-    const x1 = props.offset + (props.centers.get(loop.from) ?? 0) + props.nodeWidth / 2;
-    const x2 = props.offset + (props.centers.get(loop.to) ?? 0) + props.nodeWidth / 2;
+    const x1 = props.offset + (props.centers.get(loop.from) ?? 0) + props.widthOf(loop.from) / 2;
+    const x2 = props.offset + (props.centers.get(loop.to) ?? 0) + props.widthOf(loop.to) / 2;
     const lane = props.laneStart + index * LANE_GAP;
     const exhausted = loop.max !== undefined && loop.count >= loop.max;
     const color = props.highlighted === loop.to ? theme.colors.accent : exhausted ? theme.colors.border : theme.colors.foregroundMuted;
@@ -418,7 +423,9 @@ function Node(props: GraphProps & { step: Step; longNeeds: string[]; nodeWidth: 
   const isHighlighted = highlighted === step.id;
 
   return (
-    <View style={{ width: props.nodeWidth, opacity: dimmed ? 0.55 : 1 }}>
+    <View style={{ width: props.nodeWidth }}>
+      {/* Opaque layer under the (tinted, dimmed or pulsing) box, so loop lines behind never show through. */}
+      <View style={{ borderRadius: isGate ? 4 : 12, backgroundColor: theme.colors.surface1 }}>
       <Animated.View
         onLayout={(event) => props.onBoxHeight(Math.round(event.nativeEvent.layout.height))}
         style={{
@@ -426,7 +433,7 @@ function Node(props: GraphProps & { step: Step; longNeeds: string[]; nodeWidth: 
           borderWidth: nodeState === "running" || isHighlighted ? 2 : 1,
           borderColor: isHighlighted ? theme.colors.accent : color,
           backgroundColor: isGate ? gateBackground(theme) : agentBackground(theme),
-          opacity: nodeState === "running" ? pulse.interpolate({ inputRange: [0.35, 1], outputRange: [0.7, 1] }) : 1,
+          opacity: dimmed ? 0.55 : nodeState === "running" ? pulse.interpolate({ inputRange: [0.35, 1], outputRange: [0.7, 1] }) : 1,
         }}
       >
         <Pressable
@@ -479,6 +486,7 @@ function Node(props: GraphProps & { step: Step; longNeeds: string[]; nodeWidth: 
           </View>
         ) : null}
       </Animated.View>
+      </View>
       {props.longNeeds.length > 0 ? (
         <Text style={{ color: theme.colors.foregroundMuted, fontSize: 10, textAlign: "center", marginTop: 2 }}>
           also needs {props.longNeeds.join(", ")}
