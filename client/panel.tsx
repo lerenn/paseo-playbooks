@@ -8,7 +8,7 @@ import { isTerminal, type Playbook, type PlaybookEntry, type Run } from "../shar
 import { Graph } from "./graph";
 import { Button, GateActions, StepSheet } from "./sheet";
 import { StartForm } from "./start-form";
-import { runStatusColor, runStatusLabel, type Theme } from "./theme";
+import { runStatusColor, runStatusLabel, stepLabel, type Theme } from "./theme";
 
 interface Card {
   id: string;
@@ -251,7 +251,7 @@ function RunBar(props: { theme: Theme; run: Run; hostLabel: string }) {
       {pending.map((gate) => (
         <View key={gate.id} style={{ borderRadius: 8, borderWidth: 1, borderColor: theme.colors.statusWarning, padding: 8, gap: 4 }}>
           <Text style={{ color: theme.colors.statusWarning, fontSize: 12, fontWeight: "600" }}>
-            ◆ {gate.kind === "loop_limit" ? "Loop limit" : gate.stepId} needs a decision
+            ◆ {gate.kind === "loop_limit" ? "Loop limit" : stepLabel(gate.stepId)} needs a decision
           </Text>
           <GateActions theme={theme} run={run} gate={gate} hostLabel={props.hostLabel} />
         </View>
