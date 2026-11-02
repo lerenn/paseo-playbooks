@@ -161,6 +161,7 @@ function PlaybookCard(props: {
               selected={candidate.id === runId}
               onSelect={() => setSelected(candidate.id)}
               onCanceled={() => void queryClient.invalidateQueries({ queryKey: ["playbooks"] })}
+              onOpenManager={() => props.onOpenAgent(candidate.managerAgentId)}
             />
           ))}
           {card.entry?.playbook ? (
@@ -186,11 +187,6 @@ function PlaybookCard(props: {
           onOpenAgent={props.onOpenAgent}
           onOpenSheet={setSheet}
         />
-      ) : null}
-      {expanded && run ? (
-        <Pressable accessibilityRole="button" onPress={() => props.onOpenAgent(run.managerAgentId)}>
-          <Text style={{ color: theme.colors.accent, fontSize: 12 }}>Open the Playbook Manager ↗</Text>
-        </Pressable>
       ) : null}
       {sheet && playbook ? (
         <StepSheet
@@ -231,14 +227,6 @@ function RunBar(props: { theme: Theme; run: Run; hostLabel: string }) {
   const pending = run.gates.filter((gate) => gate.status === "pending");
   return (
     <View style={{ gap: 6 }}>
-      {run.branch ? <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>Branch {run.branch}</Text> : null}
-      {Object.keys(run.inputs).length > 0 ? (
-        <Text numberOfLines={2} style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>
-          {Object.entries(run.inputs)
-            .map(([name, value]) => `${name}: ${value}`)
-            .join(" · ")}
-        </Text>
-      ) : null}
       {run.failure ? <Text style={{ color: theme.colors.statusDanger, fontSize: 12 }}>{run.failure}</Text> : null}
       {run.outputs && Object.keys(run.outputs).length > 0 ? (
         <View style={{ gap: 2 }}>
@@ -344,8 +332,8 @@ function StartButton(props: { theme: Theme; title: string; onStart(target: "curr
   );
 }
 
-/** A run tab; active runs get a chevron menu with Cancel (confirmed in place), like the Start split button. */
-function RunChip(props: { theme: Theme; run: Run; selected: boolean; onSelect(): void; onCanceled(): void }) {
+/** A run tab with a chevron menu: the run's details (branch, start, inputs, manager), then Cancel for active runs. */
+function RunChip(props: { theme: Theme; run: Run; selected: boolean; onSelect(): void; onCanceled(): void; onOpenManager(): void }) {
   const { theme, run, selected } = props;
   const cancel = useRpc(cancelRunRpc);
   const toast = useToast();
@@ -357,17 +345,17 @@ function RunChip(props: { theme: Theme; run: Run; selected: boolean; onSelect():
   return (
     <View style={{ zIndex: menu === "closed" ? 0 : 30 }}>
       <View style={{ flexDirection: "row", borderRadius: 10, borderWidth: 1, borderColor: border, overflow: "hidden" }}>
-        <Pressable accessibilityRole="tab" accessibilityState={{ selected }} onPress={props.onSelect} style={{ paddingLeft: 8, paddingRight: active ? 6 : 8, paddingVertical: 2 }}>
+        <Pressable accessibilityRole="tab" accessibilityState={{ selected }} onPress={props.onSelect} style={{ paddingLeft: 8, paddingRight: 6, paddingVertical: 2 }}>
           <Text style={{ color: text, fontSize: 11 }}>
             {run.id.replace(/^run_/, "")} · {runStatusLabel(run.status)}
           </Text>
         </Pressable>
-        {active ? (
+        {(
           <>
             <View style={{ width: 1, backgroundColor: border }} />
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel={`Actions for run ${run.id}`}
+              accessibilityLabel={`Details and actions for run ${run.id}`}
               accessibilityState={{ expanded: menu !== "closed" }}
               onPress={() => setMenu((value) => (value === "closed" ? "open" : "closed"))}
               style={{ paddingHorizontal: 5, justifyContent: "center" }}
@@ -375,7 +363,7 @@ function RunChip(props: { theme: Theme; run: Run; selected: boolean; onSelect():
               <Icon name="ChevronDown" size={12} color={text} />
             </Pressable>
           </>
-        ) : null}
+        )}
       </View>
       {menu !== "closed" ? (
         <View
@@ -384,7 +372,8 @@ function RunChip(props: { theme: Theme; run: Run; selected: boolean; onSelect():
             position: "absolute",
             top: 26,
             left: 0,
-            minWidth: 180,
+            minWidth: 240,
+            maxWidth: 360,
             padding: 4,
             gap: 4,
             borderRadius: 10,
@@ -395,6 +384,48 @@ function RunChip(props: { theme: Theme; run: Run; selected: boolean; onSelect():
           }}
         >
           {menu === "open" ? (
+            <>
+            <View style={{ paddingHorizontal: 10, paddingTop: 6, gap: 4 }}>
+              {[
+                ["Branch", run.branch ?? "(unknown)"],
+                ["Started", new Date(run.createdAt).toLocaleString()],
+              ].map(([label, value]) => (
+                <View key={label} style={{ flexDirection: "row", gap: 10 }}>
+                  <Text style={{ width: 56, color: theme.colors.foregroundMuted, fontSize: 12 }}>{label}</Text>
+                  <Text selectable style={{ flex: 1, color: theme.colors.foreground, fontSize: 12 }}>{value}</Text>
+                </View>
+              ))}
+              {Object.keys(run.inputs).length > 0 ? (
+                <>
+                  <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>Inputs</Text>
+                  <View style={{ borderRadius: 6, borderWidth: 1, borderColor: theme.colors.border }}>
+                    {Object.entries(run.inputs).map(([name, value], index) => (
+                      <View
+                        key={name}
+                        style={{ flexDirection: "row", gap: 10, paddingHorizontal: 8, paddingVertical: 4, borderTopWidth: index === 0 ? 0 : 1, borderTopColor: theme.colors.border }}
+                      >
+                        <Text style={{ width: 80, color: theme.colors.foreground, fontSize: 12, fontWeight: "600" }}>{name}</Text>
+                        <Text selectable style={{ flex: 1, color: theme.colors.foreground, fontSize: 12 }}>{String(value)}</Text>
+                      </View>
+                    ))}
+                  </View>
+                </>
+              ) : null}
+            </View>
+            <Pressable
+              accessibilityRole="menuitem"
+              onPress={() => {
+                setMenu("closed");
+                props.onOpenManager();
+              }}
+              style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 10, paddingVertical: 8, borderRadius: 6 }}
+            >
+              <Icon name="ExternalLink" size={15} color={theme.colors.accent} />
+              <Text style={{ color: theme.colors.accent, fontSize: 13 }}>Open the Playbook Manager</Text>
+            </Pressable>
+            {active ? (
+            <>
+            <View style={{ height: 1, backgroundColor: theme.colors.border }} />
             <Pressable
               accessibilityRole="menuitem"
               onPress={() => setMenu("confirm")}
@@ -403,6 +434,9 @@ function RunChip(props: { theme: Theme; run: Run; selected: boolean; onSelect():
               <Icon name="CircleStop" size={15} color={theme.colors.statusDanger} />
               <Text style={{ color: theme.colors.statusDanger, fontSize: 13 }}>Cancel run…</Text>
             </Pressable>
+            </>
+            ) : null}
+            </>
           ) : (
             <View style={{ padding: 6, gap: 8 }}>
               <Text style={{ color: theme.colors.foreground, fontSize: 12 }}>Cancel run {run.id}? Running steps are stopped.</Text>
