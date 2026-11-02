@@ -7,6 +7,7 @@ import {
   archiveRunRpc,
   cancelRunRpc,
   decideGateRpc,
+  headerStateRpc,
   listPlaybooks,
   listRuns,
   listWorkspaceAgents,
@@ -87,6 +88,19 @@ export default function contribute(server: PluginServerContext) {
   handle(listRuns, async ({ workspaceId }) => ({ runs: store.list().filter((run) => run.workspaceId === workspaceId && !run.archivedAt) }));
   handle(archiveRunRpc, async ({ runId }) => ({ archivedAt: await runtime.archiveRun(runId) }));
   handle(startRun, (input) => runtime.startFromPanel(input));
+  handle(headerStateRpc, async ({ workspaceIds }, context) => {
+    const withPlaybooks: string[] = [];
+    for (const workspaceId of workspaceIds) {
+      const workspace = await context.paseo.workspaces.ref(workspaceId).refresh().catch(() => null);
+      const dir = workspace?.workspaceDirectory ?? workspace?.projectRootPath;
+      if (dir && (await hasPlaybooks(dir))) withPlaybooks.push(workspaceId);
+    }
+    const waiting = store
+      .list()
+      .filter((run) => !run.archivedAt && run.status === "waiting_gate" && workspaceIds.includes(run.workspaceId))
+      .map((run) => run.workspaceId);
+    return { withPlaybooks, waiting: [...new Set(waiting)] };
+  });
   handle(listWorkspaceAgents, async ({ workspaceId }) => ({ agents: await runtime.workspaceAgents(workspaceId) }));
   handle(decideGateRpc, async ({ runId, gateId, decision, comment, hostLabel }) => {
     const result = await runtime.decideGate(runId, gateId, {

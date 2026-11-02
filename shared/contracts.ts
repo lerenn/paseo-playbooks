@@ -55,6 +55,13 @@ export const listWorkspaceAgents = defineRpc({
   }),
 });
 
+/** For the header buttons: which of these workspaces have playbooks, and which have a gate waiting. */
+export const headerStateRpc = defineRpc({
+  name: "header.state",
+  input: z.object({ workspaceIds: z.array(z.string()) }),
+  output: z.object({ withPlaybooks: z.array(z.string()), waiting: z.array(z.string()) }),
+});
+
 export const decideGateRpc = defineRpc({
   name: "gates.decide",
   input: z.object({
