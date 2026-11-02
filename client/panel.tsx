@@ -30,7 +30,10 @@ export function PlaybooksPanel(props: PluginWorkspacePanelProps) {
   const runs = useQuery({
     queryKey: ["playbooks", "runs", workspaceId],
     queryFn: () => runsRpc({ workspaceId }),
-    refetchInterval: (query) => (query.state.data?.runs.some((run) => !isTerminal(run.status)) ? 3_000 : 30_000),
+    // Runs change from outside the panel (managers, other tabs): poll often, faster while one is active.
+    refetchInterval: (query) => (query.state.data?.runs.some((run) => !isTerminal(run.status)) ? 2_000 : 5_000),
+    refetchIntervalInBackground: true,
+    refetchOnWindowFocus: "always",
   });
   const queryClient = useQueryClient();
   /** Completed runs whose tab was opened: they turn from green to grey, like read conversations in Paseo. */
