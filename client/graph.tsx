@@ -14,6 +14,40 @@ const BAND_H = 32;
 /** Edge thickness and arrowhead size, in px. */
 const EDGE_STROKE = 2;
 const ARROW = 14;
+/** Loop-back lanes on the right of the graph: spacing between lanes, dash and gap lengths. */
+const LANE_GAP = 14;
+const DASH = 5;
+const DASH_GAP = 4;
+const LABEL_H = 13;
+
+interface LoopEdge {
+  from: string;
+  to: string;
+  outcome: string;
+  count: number;
+  max: number | undefined;
+}
+
+/** For steps that can also loop back: the outcomes that continue forward, shown on the forward edge. */
+function forwardLabels(playbook: Playbook): Map<string, string> {
+  const labels = new Map<string, string>();
+  for (const step of playbook.steps) {
+    if (!Object.values(step.on).some((transition) => transition.kind === "goto")) continue;
+    const forward = step.outcomes.filter((outcome) => (step.on[outcome]?.kind ?? "complete") === "complete");
+    if (forward.length > 0) labels.set(step.id, forward.join(" / "));
+  }
+  return labels;
+}
+
+function loopEdges(playbook: Playbook, run: Run | null): LoopEdge[] {
+  return playbook.steps.flatMap((step) =>
+    Object.entries(step.on).flatMap(([outcome, transition]) =>
+      transition.kind === "goto"
+        ? [{ from: step.id, to: transition.target, outcome, count: run?.loops[`${step.id}->${transition.target}`] ?? 0, max: transition.maxLoops }]
+        : [],
+    ),
+  );
+}
 
 export interface GraphProps {
   playbook: Playbook;
@@ -47,10 +81,17 @@ export function Graph(props: GraphProps) {
   const layout = useMemo(() => layoutGraph(playbook.steps), [playbook]);
   const layers = useMemo(() => layerOf(playbook.steps), [playbook]);
   const [available, setAvailable] = useState(0);
+  const loops = useMemo(() => loopEdges(playbook, run), [playbook, run]);
+  const forward = useMemo(() => forwardLabels(playbook), [playbook]);
+  /** Room on each side for the loop lanes (both sides, so the graph stays centred). */
+  const gutter = loops.length > 0 ? 6 + loops.length * LANE_GAP : 0;
   const columns = Math.max(1, ...layout.layers.map((row) => row.length));
-  const nodeWidth = Math.max(NODE_MIN, Math.min(NODE_MAX, Math.floor(available / columns) - GAP));
+  const nodeWidth = Math.max(NODE_MIN, Math.min(NODE_MAX, Math.floor((available - 2 * gutter) / columns) - GAP));
   const SLOT = nodeWidth + GAP;
   const width = columns * SLOT;
+  /** Measured top of each layer (relative to the graph) and height of each node box. */
+  const [layerTops, setLayerTops] = useState<Record<number, number>>({});
+  const [heights, setHeights] = useState<Record<string, number>>({});
   const centers = useMemo(() => {
     const result = new Map<string, number>();
     for (const row of layout.layers) {
@@ -65,9 +106,27 @@ export function Graph(props: GraphProps) {
   return (
     <View onLayout={(event) => setAvailable(event.nativeEvent.layout.width)}>
     <ScrollView horizontal style={{ flexGrow: 0 }} contentContainerStyle={{ minWidth: "100%", justifyContent: "center" }}>
-      <View style={{ width, paddingTop: 4, paddingBottom: 16 }}>
+      <View style={{ width: width + 2 * gutter, paddingHorizontal: gutter, paddingTop: 4, paddingBottom: 16 }}>
+        <LoopLines
+          theme={theme}
+          loops={loops}
+          layers={layers}
+          layerTops={layerTops}
+          heights={heights}
+          centers={centers}
+          offset={gutter}
+          nodeWidth={nodeWidth}
+          laneStart={gutter + width + 6}
+          highlighted={props.highlighted}
+        />
         {layout.layers.map((row, index) => (
-          <View key={row.join(",")}>
+          <View
+            key={row.join(",")}
+            onLayout={(event) => {
+              const y = event.nativeEvent.layout.y;
+              setLayerTops((current) => (current[index] === y ? current : { ...current, [index]: y }));
+            }}
+          >
             {index > 0 ? (
               <Band
                 theme={theme}
@@ -75,6 +134,7 @@ export function Graph(props: GraphProps) {
                 edges={layout.edges.filter((edge) => layers.get(edge.from) === index - 1 && layers.get(edge.to) === index)}
                 centers={centers}
                 running={running}
+                labels={forward}
               />
             ) : null}
             <View style={{ flexDirection: "row", justifyContent: "center" }}>
@@ -84,6 +144,8 @@ export function Graph(props: GraphProps) {
                     step={byId.get(id)!}
                     longNeeds={byId.get(id)!.needs.filter((need) => (layers.get(need) ?? 0) < index - 1)}
                     nodeWidth={nodeWidth}
+                    loops={loops.filter((loop) => loop.from === id)}
+                    onBoxHeight={(height) => setHeights((current) => (current[id] === height ? current : { ...current, [id]: height }))}
                     {...props}
                   />
                 </View>
@@ -103,6 +165,7 @@ function Band(props: {
   edges: Array<{ from: string; to: string }>;
   centers: Map<string, number>;
   running: Set<string>;
+  labels: Map<string, string>;
 }) {
   const { theme, edges, centers, running } = props;
   const sources = [...new Set(edges.map((edge) => edge.from))];
@@ -132,6 +195,17 @@ function Band(props: {
           style={{ position: "absolute", left: segment.left, top: segment.top, width: segment.width, height: segment.height, backgroundColor: segment.color }}
         />
       ))}
+      {sources
+        .filter((id) => props.labels.has(id))
+        .map((id) => (
+          <Text
+            key={`l-${id}`}
+            numberOfLines={1}
+            style={{ position: "absolute", left: (centers.get(id) ?? 0) + 6, top: 1, color: theme.colors.foregroundMuted, fontSize: 10 }}
+          >
+            {props.labels.get(id)}
+          </Text>
+        ))}
       {targets.map((id) => (
         <View key={`a-${id}`} style={{ position: "absolute", left: (centers.get(id) ?? 0) - ARROW / 2, top: BAND_H - ARROW, width: ARROW, height: ARROW }}>
           <Icon name="ChevronDown" size={ARROW} color={running.has(id) ? hot : line} />
@@ -141,7 +215,105 @@ function Band(props: {
   );
 }
 
-function Node(props: GraphProps & { step: Step; longNeeds: string[]; nodeWidth: number }) {
+/** Dashed loop-back edges, drawn behind the nodes: out of the source's right side, up a lane, into the target's right side. */
+function LoopLines(props: {
+  theme: Theme;
+  loops: LoopEdge[];
+  layers: Map<string, number>;
+  layerTops: Record<number, number>;
+  heights: Record<string, number>;
+  centers: Map<string, number>;
+  offset: number;
+  nodeWidth: number;
+  laneStart: number;
+  highlighted: string | null;
+}) {
+  const { theme } = props;
+  const segments: Array<{ key: string; x: number; y: number; length: number; vertical: boolean; color: string }> = [];
+  const arrows: Array<{ key: string; x: number; y: number; color: string }> = [];
+  const labels: Array<{ key: string; x: number; y: number; span: number; text: string; color: string }> = [];
+  props.loops.forEach((loop, index) => {
+    const fromLayer = props.layers.get(loop.from) ?? 0;
+    const toLayer = props.layers.get(loop.to) ?? 0;
+    const fromTop = props.layerTops[fromLayer];
+    const toTop = props.layerTops[toLayer];
+    const fromH = props.heights[loop.from];
+    const toH = props.heights[loop.to];
+    if (fromTop === undefined || toTop === undefined || !fromH || !toH) return;
+    const top = (layer: number, layerTop: number) => layerTop + (layer > 0 ? BAND_H : 0);
+    const y1 = Math.round(top(fromLayer, fromTop) + fromH * 0.6);
+    const y2 = Math.round(top(toLayer, toTop) + toH * 0.4);
+    const x1 = props.offset + (props.centers.get(loop.from) ?? 0) + props.nodeWidth / 2;
+    const x2 = props.offset + (props.centers.get(loop.to) ?? 0) + props.nodeWidth / 2;
+    const lane = props.laneStart + index * LANE_GAP;
+    const exhausted = loop.max !== undefined && loop.count >= loop.max;
+    const color = props.highlighted === loop.to ? theme.colors.accent : exhausted ? theme.colors.border : theme.colors.foregroundMuted;
+    const key = `${loop.from}-${loop.outcome}`;
+    segments.push({ key: `${key}-out`, x: x1, y: y1, length: lane - x1, vertical: false, color });
+    segments.push({ key: `${key}-up`, x: lane, y: Math.min(y1, y2), length: Math.abs(y1 - y2) + EDGE_STROKE, vertical: true, color });
+    segments.push({ key: `${key}-in`, x: x2 + ARROW / 2, y: y2, length: lane - x2 - ARROW / 2, vertical: false, color });
+    arrows.push({ key, x: x2, y: y2, color });
+    labels.push({
+      key,
+      x: lane,
+      y: (y1 + y2) / 2,
+      span: Math.max(40, Math.abs(y1 - y2) - 16),
+      text: `${loop.outcome}${loop.max !== undefined ? ` · ${loop.count}/${loop.max}` : ""}`,
+      color: color === theme.colors.border ? theme.colors.foregroundMuted : color,
+    });
+  });
+  return (
+    <View pointerEvents="none" style={{ position: "absolute", left: 0, top: 0, right: 0, bottom: 0 }} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+      {segments.map((segment) =>
+        Array.from({ length: Math.max(1, Math.ceil(segment.length / (DASH + DASH_GAP))) }, (_, dash) => {
+          const start = dash * (DASH + DASH_GAP);
+          const size = Math.min(DASH, segment.length - start);
+          if (size <= 0) return null;
+          return (
+            <View
+              key={`${segment.key}-${dash}`}
+              style={{
+                position: "absolute",
+                left: segment.vertical ? segment.x - EDGE_STROKE / 2 : segment.x + start,
+                top: segment.vertical ? segment.y + start : segment.y - EDGE_STROKE / 2,
+                width: segment.vertical ? EDGE_STROKE : size,
+                height: segment.vertical ? size : EDGE_STROKE,
+                backgroundColor: segment.color,
+              }}
+            />
+          );
+        }),
+      )}
+      {labels.map((label) => (
+        // Written along the lane, bottom to top; the background breaks the dashes behind the text.
+        <View
+          key={`l-${label.key}`}
+          style={{
+            position: "absolute",
+            left: label.x - label.span / 2,
+            top: label.y - LABEL_H / 2,
+            width: label.span,
+            height: LABEL_H,
+            alignItems: "center",
+            justifyContent: "center",
+            transform: [{ rotate: "-90deg" }],
+          }}
+        >
+          <Text numberOfLines={1} style={{ color: label.color, fontSize: 10, lineHeight: LABEL_H, paddingHorizontal: 3, backgroundColor: theme.colors.surface1 }}>
+            {label.text}
+          </Text>
+        </View>
+      ))}
+      {arrows.map((arrow) => (
+        <View key={`a-${arrow.key}`} style={{ position: "absolute", left: arrow.x - 2, top: arrow.y - ARROW / 2, width: ARROW, height: ARROW }}>
+          <Icon name="ChevronLeft" size={ARROW} color={arrow.color} />
+        </View>
+      ))}
+    </View>
+  );
+}
+
+function Node(props: GraphProps & { step: Step; longNeeds: string[]; nodeWidth: number; loops: LoopEdge[]; onBoxHeight(height: number): void }) {
   const { step, run, theme, playbook, highlighted } = props;
   const state = run?.steps[step.id];
   const attempts = state?.attempts ?? [];
@@ -170,11 +342,6 @@ function Node(props: GraphProps & { step: Step; longNeeds: string[]; nodeWidth: 
     return () => loop.stop();
   }, [nodeState, reduceMotion, pulse]);
 
-  const loops = Object.entries(step.on).flatMap(([outcome, transition]) =>
-    transition.kind === "goto"
-      ? [{ outcome, target: transition.target, count: run?.loops[`${step.id}->${transition.target}`] ?? 0, max: transition.maxLoops }]
-      : [],
-  );
   const subtitle = isGate ? "Gate" : `${role?.title ?? step.role}${role?.readonly ? " · ro" : ""}`;
   const stateLabel = nodeStateLabel(nodeState);
   const onPress = () => (latest ? props.onOpenAgent(latest.agentId) : props.onOpenSheet(step.id));
@@ -183,6 +350,7 @@ function Node(props: GraphProps & { step: Step; longNeeds: string[]; nodeWidth: 
   return (
     <View style={{ width: props.nodeWidth, opacity: dimmed ? 0.55 : 1 }}>
       <Animated.View
+        onLayout={(event) => props.onBoxHeight(Math.round(event.nativeEvent.layout.height))}
         style={{
           borderRadius: isGate ? 4 : 12,
           borderWidth: nodeState === "running" || isHighlighted ? 2 : 1,
@@ -193,7 +361,7 @@ function Node(props: GraphProps & { step: Step; longNeeds: string[]; nodeWidth: 
       >
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel={`${stepLabel(step.id)}, ${subtitle}${stateLabel ? `, ${stateLabel}` : ""}${latest ? `, attempt ${latest.n}, opens conversation` : ", opens details"}`}
+          accessibilityLabel={`${stepLabel(step.id)}, ${subtitle}${stateLabel ? `, ${stateLabel}` : ""}${props.loops.map((loop) => `, on ${loop.outcome} loops back to ${loop.to}${loop.max !== undefined ? ` (${loop.count} of ${loop.max})` : ""}`).join("")}${latest ? `, attempt ${latest.n}, opens conversation` : ", opens details"}`}
           onPress={onPress}
           style={{ paddingHorizontal: 8, paddingVertical: 6, gap: 2 }}
         >
@@ -236,21 +404,6 @@ function Node(props: GraphProps & { step: Step; longNeeds: string[]; nodeWidth: 
           </View>
         ) : null}
       </Animated.View>
-      {loops.map((loop) => (
-        <Pressable
-          key={loop.outcome}
-          accessibilityRole="button"
-          accessibilityLabel={`On ${loop.outcome}, loops back to ${loop.target}. Highlight it.`}
-          onPressIn={() => props.onHighlight(loop.target)}
-          onPressOut={() => props.onHighlight(null)}
-          style={{ marginTop: 3, alignSelf: "center" }}
-        >
-          <Text style={{ color: theme.colors.foregroundMuted, fontSize: 10, textAlign: "center" }}>
-            ↺ {loop.outcome} → {loop.target}
-            {loop.max !== undefined ? ` · ${loop.count}/${loop.max}` : loop.count > 0 ? ` · ${loop.count}` : ""}
-          </Text>
-        </Pressable>
-      ))}
       {props.longNeeds.length > 0 ? (
         <Text style={{ color: theme.colors.foregroundMuted, fontSize: 10, textAlign: "center", marginTop: 2 }}>
           also needs {props.longNeeds.join(", ")}
