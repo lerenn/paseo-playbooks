@@ -2,11 +2,11 @@ import { openExternalUrl, useRpc, useTabState, type PluginWorkspacePanelProps } 
 import { z } from "zod";
 import { Icon, ScrollView, useToast } from "@getpaseo/plugin/client/ui";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
-import { Pressable, Text, View } from "react-native";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Animated, Pressable, Text, View } from "react-native";
 import { archiveRunRpc, cancelRunRpc, listPlaybooks, listRuns } from "../shared/contracts";
 import { isTerminal, type Playbook, type PlaybookEntry, type Run } from "../shared/types";
-import { Graph } from "./graph";
+import { Graph, useReduceMotion } from "./graph";
 import { Button, StepSheet } from "./sheet";
 import { StartForm, type StartTarget } from "./start-form";
 import { splitError } from "../shared/errors";
@@ -163,6 +163,18 @@ function PlaybookCard(props: {
             </Text>
           </View>
         </Pressable>
+        {card.runs.length > 0 ? (
+          <RunDots
+            theme={theme}
+            runs={card.runs}
+            readRuns={props.readRuns}
+            onOpen={(run) => {
+              setExpanded(true);
+              setSelected(run.id);
+              if (run.status === "completed") props.onRead(run.id);
+            }}
+          />
+        ) : null}
         {card.entry?.playbook ? <StartButton theme={theme} title={title} onStart={setStarting} /> : null}
       </View>
       {errors.length > 0 ? <ErrorCallout theme={theme} file={card.entry?.file ?? ""} errors={errors} /> : null}
@@ -541,5 +553,67 @@ function ErrorCallout(props: { theme: Theme; file: string; errors: string[] }) {
         );
       })}
     </View>
+  );
+}
+
+/** Most runs shown as dots in a card header; older ones stay reachable through the run tabs. */
+const MAX_DOTS = 8;
+
+/**
+ * One dot per run, left of Start, like Paseo's conversation dots: blue and pulsing while running,
+ * yellow and pulsing while a gate waits, green when done and not yet opened, grey once opened,
+ * red when failed or canceled. Pressing a dot opens the card on that run.
+ */
+function RunDots(props: { theme: Theme; runs: Run[]; readRuns: string[]; onOpen(run: Run): void }) {
+  const runs = [...props.runs].sort((a, b) => a.createdAt.localeCompare(b.createdAt)).slice(-MAX_DOTS);
+  return (
+    <View style={{ flexDirection: "row", alignItems: "center", gap: 4, marginRight: 4 }}>
+      {runs.map((run) => (
+        <RunDot key={run.id} theme={props.theme} run={run} read={props.readRuns.includes(run.id)} onPress={() => props.onOpen(run)} />
+      ))}
+    </View>
+  );
+}
+
+function RunDot(props: { theme: Theme; run: Run; read: boolean; onPress(): void }) {
+  const { theme, run } = props;
+  const reduceMotion = useReduceMotion();
+  const pulsing = (run.status === "running" || run.status === "waiting_gate") && !reduceMotion;
+  const color = run.status === "completed" && props.read ? theme.colors.foregroundMuted : runStatusColor(theme, run.status);
+  const pulse = useRef(new Animated.Value(1)).current;
+  useEffect(() => {
+    if (!pulsing) {
+      pulse.setValue(1);
+      return;
+    }
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, { toValue: 0.3, duration: 800, useNativeDriver: false }),
+        Animated.timing(pulse, { toValue: 1, duration: 800, useNativeDriver: false }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [pulsing, pulse]);
+  const label = `Run ${run.id.replace(/^run_/, "")}, ${run.status === "completed" && !props.read ? "completed, not opened yet" : runStatusLabel(run.status)}. Opens it.`;
+  return (
+    <Pressable accessibilityRole="button" accessibilityLabel={label} hitSlop={6} onPress={props.onPress} style={{ padding: 3 }}>
+      <View style={{ width: 10, height: 10, alignItems: "center", justifyContent: "center" }}>
+        {pulsing ? (
+          <Animated.View
+            style={{
+              position: "absolute",
+              width: 10,
+              height: 10,
+              borderRadius: 5,
+              backgroundColor: color,
+              opacity: pulse.interpolate({ inputRange: [0.3, 1], outputRange: [0.15, 0.45] }),
+              transform: [{ scale: pulse.interpolate({ inputRange: [0.3, 1], outputRange: [1.6, 1] }) }],
+            }}
+          />
+        ) : null}
+        <Animated.View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: color, opacity: pulsing ? pulse.interpolate({ inputRange: [0.3, 1], outputRange: [0.6, 1] }) : 1 }} />
+      </View>
+    </Pressable>
   );
 }
