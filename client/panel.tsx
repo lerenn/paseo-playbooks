@@ -153,6 +153,16 @@ function PlaybookCard(props: {
       ))}
       {expanded && card.runs.length > 0 ? (
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, zIndex: 15 }}>
+          {card.entry?.playbook ? (
+            <Pressable
+              accessibilityRole="tab"
+              accessibilityState={{ selected: runId === "definition" }}
+              onPress={() => setSelected("definition")}
+              style={{ borderRadius: 10, borderWidth: 1, borderColor: runId === "definition" ? theme.colors.foregroundMuted : theme.colors.border, paddingHorizontal: 8, paddingVertical: 2 }}
+            >
+              <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>Definition</Text>
+            </Pressable>
+          ) : null}
           {card.runs.map((candidate) => (
             <RunChip
               key={candidate.id}
@@ -164,16 +174,6 @@ function PlaybookCard(props: {
               onOpenManager={() => props.onOpenAgent(candidate.managerAgentId)}
             />
           ))}
-          {card.entry?.playbook ? (
-            <Pressable
-              accessibilityRole="tab"
-              accessibilityState={{ selected: runId === "definition" }}
-              onPress={() => setSelected("definition")}
-              style={{ borderRadius: 10, borderWidth: 1, borderColor: runId === "definition" ? theme.colors.foregroundMuted : theme.colors.border, paddingHorizontal: 8, paddingVertical: 2 }}
-            >
-              <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>definition</Text>
-            </Pressable>
-          ) : null}
         </View>
       ) : null}
       {expanded && run ? <RunBar theme={theme} run={run} hostLabel={props.hostLabel} /> : null}
