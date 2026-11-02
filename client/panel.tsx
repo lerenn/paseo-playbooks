@@ -127,7 +127,7 @@ function PlaybookCard(props: {
   const { card, theme } = props;
   const queryClient = useQueryClient();
   const active = card.runs.find((run) => !isTerminal(run.status));
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(false);
   const [selected, setSelected] = useState<string | "definition" | null>(null);
   const [sheet, setSheet] = useState<string | null>(null);
   const [highlighted, setHighlighted] = useState<string | null>(null);
