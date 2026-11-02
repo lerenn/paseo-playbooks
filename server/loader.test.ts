@@ -5,7 +5,6 @@ import { afterEach, describe, expect, it } from "vitest";
 import { hasPlaybooks, loadPlaybooks } from "./loader";
 
 const EXAMPLES = path.resolve(__dirname, "..", "examples");
-const OPEN_CAP = { allowedModes: { claude: ["default", "acceptEdits", "bypassPermissions"] } };
 const temps: string[] = [];
 
 async function workspace(files: Record<string, string>, withExampleRoles = true, folder = ".paseo/plugins/playbooks", dir?: string): Promise<string> {
@@ -29,7 +28,7 @@ afterEach(async () => {
 
 describe("loadPlaybooks", () => {
   it("loads the example PR playbook with wiring resolved", async () => {
-    const result = await loadPlaybooks(EXAMPLES, OPEN_CAP);
+    const result = await loadPlaybooks(EXAMPLES);
     expect(result.exists).toBe(true);
     const pr = result.entries.find((entry) => entry.id === "pr")!;
     expect(pr.errors).toEqual([]);
@@ -48,25 +47,18 @@ describe("loadPlaybooks", () => {
     expect(playbook.roles.reviewer!.readonly).toBe(true);
   });
 
-  it("reports a disallowed mode once, listing every step that uses it", async () => {
-    const result = await loadPlaybooks(EXAMPLES, { allowedModes: { claude: ["default", "acceptEdits"] } });
-    const errors = result.entries.find((entry) => entry.id === "pr")!.errors;
-    expect(errors).toHaveLength(1);
-    expect(errors[0]).toMatch(/steps "investigate", "implement", "review", "local_qa", "babysit": mode "bypassPermissions"/);
-  });
-
-  it("refuses modes outside the daemon cap", async () => {
-    const result = await loadPlaybooks(EXAMPLES, { allowedModes: { claude: ["default"] } });
+  it("accepts every agent mode, bypassPermissions included", async () => {
+    const result = await loadPlaybooks(EXAMPLES);
     const pr = result.entries.find((entry) => entry.id === "pr")!;
-    expect(pr.playbook).toBeNull();
-    expect(pr.errors.join("\n")).toMatch(/bypassPermissions.*not allowed/);
+    expect(pr.errors).toEqual([]);
+    expect(pr.playbook!.steps.find((step) => step.id === "implement")!.agent.mode).toBe("bypassPermissions");
   });
 
   it("reports when no folder exists", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "playbooks-"));
     temps.push(dir);
     expect(await hasPlaybooks(dir)).toBe(false);
-    expect((await loadPlaybooks(dir, OPEN_CAP)).exists).toBe(false);
+    expect((await loadPlaybooks(dir)).exists).toBe(false);
   });
 
   it("flags cycles, unknown needs and missing roles", async () => {
@@ -78,7 +70,7 @@ steps:
   - { id: c, role: ghost, needs: [zzz] }
 `,
     });
-    const [entry] = (await loadPlaybooks(dir, OPEN_CAP)).entries;
+    const [entry] = (await loadPlaybooks(dir)).entries;
     const errors = entry!.errors.join("\n");
     expect(entry!.playbook).toBeNull();
     expect(errors).toMatch(/role "ghost"/);
@@ -94,7 +86,7 @@ steps:
   - { id: b, role: implementer }
 `,
     });
-    const [entry] = (await loadPlaybooks(dir, OPEN_CAP)).entries;
+    const [entry] = (await loadPlaybooks(dir)).entries;
     expect(entry!.errors.join("\n")).toMatch(/"a" and "b" can run at the same time/);
   });
 
@@ -107,7 +99,7 @@ steps:
   - { id: c, role: implementer, needs: [a, b], inputs: [findings] }
 `,
     });
-    const [entry] = (await loadPlaybooks(dir, OPEN_CAP)).entries;
+    const [entry] = (await loadPlaybooks(dir)).entries;
     expect(entry!.errors.join("\n")).toMatch(/input "findings" matches outputs of several steps \(a, b\)/);
   });
 
@@ -122,7 +114,7 @@ steps:
     prompt: "{{ inputs.request }} {{ steps.x.outputs.y }} {{ inputs.nope }}"
 `,
     });
-    const errors = (await loadPlaybooks(dir, OPEN_CAP)).entries[0]!.errors.join("\n");
+    const errors = (await loadPlaybooks(dir)).entries[0]!.errors.join("\n");
     expect(errors).toMatch(/steps\.x\.outputs\.y/);
     expect(errors).toMatch(/inputs\.nope.*no such input/);
   });
@@ -138,12 +130,12 @@ steps:
   - { id: b, role: reviewer, needs: [a] }
 `,
     });
-    const errors = (await loadPlaybooks(dir, OPEN_CAP)).entries[0]!.errors.join("\n");
+    const errors = (await loadPlaybooks(dir)).entries[0]!.errors.join("\n");
     expect(errors).toMatch(/goto "b" must point to an earlier step/);
   });
 
   it("reads gate choices in order, with labels and comment rules", async () => {
-    const result = await loadPlaybooks(EXAMPLES, OPEN_CAP);
+    const result = await loadPlaybooks(EXAMPLES);
     const gate = result.entries.find((entry) => entry.id === "pr")!.playbook!.steps.find((step) => step.id === "pr_approval")!;
     expect(gate.outcomes).toEqual(["approved", "rejected"]);
     expect(gate.choices).toEqual([
@@ -156,7 +148,7 @@ steps:
     const dir = await workspace({
       "bad.yaml": "steps:\n  - id: investigate\n    role: investigator\n    choices:\n      ok: {}\n",
     });
-    const entry = (await loadPlaybooks(dir, OPEN_CAP)).entries.find((candidate) => candidate.id === "bad")!;
+    const entry = (await loadPlaybooks(dir)).entries.find((candidate) => candidate.id === "bad")!;
     expect(entry.errors.join("\n")).toMatch(/`choices` only applies to a gate/);
   });
 
@@ -179,7 +171,7 @@ steps:
         "      approved: { label: Approve, emoji: yes }",
       ].join("\n"),
     });
-    const entry = (await loadPlaybooks(dir, OPEN_CAP)).entries.find((candidate) => candidate.id === "odd")!;
+    const entry = (await loadPlaybooks(dir)).entries.find((candidate) => candidate.id === "odd")!;
     expect(entry.errors).toEqual([]);
     expect(entry.playbook!.title).toBe("Odd");
   });
@@ -200,7 +192,7 @@ steps:
   - { id: b, role: reviewer, inputs: [pr_url] }
 `,
     });
-    const entries = (await loadPlaybooks(dir, OPEN_CAP)).entries;
+    const entries = (await loadPlaybooks(dir)).entries;
     const first = entries.find((entry) => entry.id === "first")!;
     expect(first.errors.join("\n")).toMatch(/required input "version" has no matching output/);
   });
@@ -208,7 +200,7 @@ steps:
   it("also loads .paseo/playbooks/, with its own roles", async () => {
     const dir = await workspace({ "lite.yaml": "steps:\n  - { id: a, role: reviewer }\n" }, true, ".paseo/playbooks");
     expect(await hasPlaybooks(dir)).toBe(true);
-    const result = await loadPlaybooks(dir, OPEN_CAP);
+    const result = await loadPlaybooks(dir);
     expect(result.roots).toEqual([path.join(dir, ".paseo/playbooks")]);
     const [entry] = result.entries;
     expect(entry!.errors).toEqual([]);
@@ -218,7 +210,7 @@ steps:
   it("merges both folders and reports a playbook id defined in both", async () => {
     const dir = await workspace({ "one.yaml": "steps:\n  - { id: a, role: reviewer }\n", "same.yaml": "steps:\n  - { id: a, role: reviewer }\n" });
     await workspace({ "two.yaml": "steps:\n  - { id: b, role: local_qa }\n", "same.yaml": "steps:\n  - { id: b, role: local_qa }\n" }, true, ".paseo/playbooks", dir);
-    const result = await loadPlaybooks(dir, OPEN_CAP);
+    const result = await loadPlaybooks(dir);
     expect(result.roots).toHaveLength(2);
     const byFile = Object.fromEntries(result.entries.map((entry) => [entry.file, entry]));
     expect(byFile[".paseo/plugins/playbooks/one.yaml"]!.playbook).not.toBeNull();
@@ -232,7 +224,7 @@ steps:
   it("does not share roles across folders", async () => {
     const dir = await workspace({}, true);
     await workspace({ "solo.yaml": "steps:\n  - { id: a, role: reviewer }\n" }, false, ".paseo/playbooks", dir);
-    const [entry] = (await loadPlaybooks(dir, OPEN_CAP)).entries;
+    const [entry] = (await loadPlaybooks(dir)).entries;
     expect(entry!.errors.join("\n")).toMatch(/\.paseo\/playbooks\/roles\/reviewer\/role\.yaml: file not found/);
   });
 });

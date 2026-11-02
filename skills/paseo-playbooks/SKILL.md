@@ -10,7 +10,7 @@ step runs as a subagent, the plugin enforces the graph, and humans approve gates
 Playbooks panel. You write the playbooks; the plugin validates them.
 
 **Always finish by calling the `validate_playbooks` tool and fixing every error it reports.**
-It uses the same checks as the Playbooks panel, including the daemon's mode cap.
+It uses the same checks as the Playbooks panel.
 
 ## Layout
 
@@ -50,8 +50,7 @@ timeout: 1h            # default step timeout (optional)
 
 Agent settings (`provider`, `model`, `mode`, `thinking`) merge field by field. Precedence:
 step > role > playbook > `defaults/main.yaml` > the manager's own provider and model.
-The resolved `mode` must be allowed by the daemon's cap (Settings → Plugins →
-paseo-playbooks); an unset mode is always allowed.
+Any mode is allowed; an unset mode uses the provider's default.
 
 ## roles/<id>/role.yaml and instructions.md
 
@@ -180,7 +179,6 @@ to the target as "Feedback to address". Reaching `max_loops` opens a "loop limit
 - two steps that can run at the same time (neither needs the other) must not both be able
   to edit files: make one role `readonly: true` or order them with `needs`
 - prompts use only `inputs`, `run.id` and `attempt`; inputs only reference ancestors
-- modes within the daemon cap
 - `next` targets exist and their required inputs are covered
 
 ## YAML pitfall

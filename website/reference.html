@@ -29,7 +29,6 @@
 <li><a href="#templates">Prompt templates</a></li>
 <li><a href="#chaining">Chaining</a></li>
 <li><a href="#agents">Agent settings</a></li>
-<li><a href="#cap">Daemon mode cap</a></li>
 <li><a href="#readonly">Readonly roles and concurrency</a></li>
 <li><a href="#validation">Validation</a></li>
 <li><a href="#pitfalls">YAML pitfall</a></li>
@@ -129,8 +128,8 @@ timeout: 1h         # default step timeout</code></pre><table><thead><tr><th>Key
 <h2 id="agents">Agent settings</h2>
 <p><code>provider</code>, <code>model</code>, <code>mode</code> and <code>thinking</code> merge field by field. Precedence: step &gt; role &gt; playbook &gt; <code>defaults/main.yaml</code> &gt; the manager's own provider and model. With no model at all, Claude steps use Claude Opus.</p>
 
-<h2 id="cap">Daemon mode cap</h2>
-<p>Settings → Plugins → paseo-playbooks lists the allowed modes per provider. The default is <code>default</code> and <code>acceptEdits</code> for Claude. A playbook whose manager or steps resolve to another mode fails validation, and <code>start_step</code> checks again. An unset mode is always allowed. A repository cannot raise the cap.</p>
+<h2 id="modes">Agent modes</h2>
+<p>A playbook may use any agent mode, <code>bypassPermissions</code> included: steps that run shell commands then work without asking. Playbooks come from the repository, so any branch can ship one; only start playbooks from repositories you trust. An unset mode uses the provider's default.</p>
 
 <h2 id="readonly">Readonly roles and concurrency</h2>
 <ul>
@@ -150,7 +149,6 @@ timeout: 1h         # default step timeout</code></pre><table><thead><tr><th>Key
 <li>prompts using anything other than <code>inputs</code>, <code>run.id</code> and <code>attempt</code></li>
 <li>unresolved, ambiguous or type-incompatible inputs and outputs</li>
 <li><code>enum</code> without <code>values</code>, invalid durations</li>
-<li>modes outside the daemon cap</li>
 <li><code>next</code> entries naming an unknown playbook or leaving a required input uncovered</li>
 <li>the same playbook id in both folders</li>
 </ul>

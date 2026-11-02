@@ -1,6 +1,5 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { PlaybooksPanel } from "./client/panel";
-import { CapSettings } from "./client/settings";
 
 export default function contribute(client: PluginClientContext) {
   client.addWorkspacePanel({
@@ -20,6 +19,5 @@ export default function contribute(client: PluginClientContext) {
       openPanel("playbooks", { location: "explorer" });
     },
   });
-  client.addSettingsScreen({ id: "cap", title: "Allowed agent modes", icon: "ShieldCheck", Component: CapSettings });
   return () => {};
 }

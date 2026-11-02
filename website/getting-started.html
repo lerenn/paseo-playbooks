@@ -34,15 +34,7 @@ paseo plugin install "$PWD"
 paseo plugin reload paseo-playbooks</code></pre>
 <p>Check that <code>paseo plugin ls</code> shows <code>paseo-playbooks</code> as <code>running</code>.</p>
 
-<h2>2. Allow the agent modes your playbooks use</h2>
-<p>Playbooks come from the repository, so any branch can ship one. The daemon owner decides which agent modes they may ask for, in Settings → Plugins → paseo-playbooks → Allowed agent modes.</p>
-<ul>
-<li>By default Claude allows <code>default</code> and <code>acceptEdits</code>.</li>
-<li><code>bypassPermissions</code> is opt-in. Add it if you want steps that run shell commands to work unattended.</li>
-<li>A playbook that leaves <code>mode</code> unset (the provider's default) is always allowed.</li>
-</ul>
-
-<h2>3. Write a first playbook</h2>
+<h2>2. Write a first playbook</h2>
 <p>Create <code>.paseo/plugins/playbooks/</code> (or the shorter <code>.paseo/playbooks/</code>) in your repository:</p>
 <pre><code>.paseo/plugins/playbooks/
 ├── defaults/
@@ -88,12 +80,12 @@ steps:
       rejected: { goto: write }</code></pre>
 <p>The <a href="reference.html">reference</a> lists every field, and the <a href="examples.html">examples</a> page has a full pull-request playbook.</p>
 
-<h2>4. Validate and commit</h2>
-<p>Any agent in the workspace can call the <code>validate_playbooks</code> tool. It runs the same checks as the panel, including the daemon's mode cap, and lists every error with its file and field.</p>
+<h2>3. Validate and commit</h2>
+<p>Any agent in the workspace can call the <code>validate_playbooks</code> tool. It runs the same checks as the panel and lists every error with its file and field.</p>
 <p>Press Start and fill in the inputs: the workspace's agent becomes the manager and runs the playbook in this workspace. To run in a separate worktree with a new manager, open the arrow next to Start and choose <em>Start on a new agent</em>; commit the folder first, because the worktree branches from the current commit.</p>
 <div class="note">To let agents write playbooks for you, copy <a href="https://github.com/lerenn/paseo-playbooks/tree/main/skills/paseo-playbooks"><code>skills/paseo-playbooks/SKILL.md</code></a> into your repository's <code>.agents/skills/</code> or <code>.claude/skills/</code>.</div>
 
-<h2>5. Start a run</h2>
+<h2>4. Start a run</h2>
 <ol class="steps">
 <li>Open the <strong>Playbooks</strong> panel in the workspace's right-hand sidebar, or press Ctrl+K (Cmd+K on macOS) and choose <strong>Open Playbooks</strong>. Each playbook is a card with its title, file path and step graph.</li>
 <li>Press <strong>Start</strong>. A form built from the playbook's inputs opens. Start makes the workspace's most recently used agent (the one you last sent a message to) the Playbook Manager and runs the playbook in this workspace, on its current branch. To use a separate worktree instead, open the arrow next to Start and choose <em>Start on a new agent</em>: it creates a worktree on a new branch named <code>playbooks/&lt;playbook&gt;-&lt;run id&gt;</code>, starts a Playbook Manager agent there, and opens that workspace.</li>

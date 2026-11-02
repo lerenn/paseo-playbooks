@@ -2,6 +2,6 @@
 agent:
   provider: claude
   model: claude-opus-5-5
-  mode: bypassPermissions      # steps run unattended; the daemon cap must allow it
+  mode: bypassPermissions      # steps run unattended (shell commands included)
 manager:
   mode: default                # the manager never edits files

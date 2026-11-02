@@ -5,7 +5,7 @@ import { loadPlaybooks } from "./loader";
 
 describe("destinationOf", () => {
   it("shows where each gate choice leads", async () => {
-    const result = await loadPlaybooks(path.resolve(__dirname, "..", "examples"), { allowedModes: { claude: ["default", "bypassPermissions"] } });
+    const result = await loadPlaybooks(path.resolve(__dirname, "..", "examples"));
     const playbook = result.entries.find((entry) => entry.id === "pr")!.playbook!;
     const gate = playbook.steps.find((step) => step.id === "pr_approval")!;
     expect(destinationOf(playbook, gate, "approved")).toEqual({ kind: "end", targets: [] });

@@ -5,7 +5,6 @@ import { afterAll, describe, expect, it } from "vitest";
 import { loadPlaybooks } from "./loader";
 
 const ROOT = path.resolve(__dirname, "..");
-const OPEN_CAP = { allowedModes: { claude: ["default", "acceptEdits", "bypassPermissions"] } };
 let workspace = "";
 
 afterAll(async () => {
@@ -26,7 +25,7 @@ describe("skills/paseo-playbooks/SKILL.md", () => {
     await writeFile(path.join(root, "pr.yaml"), example!);
     // The example chains to "release"; give it a minimal one.
     await writeFile(path.join(root, "release.yaml"), "steps:\n  - { id: deploy, role: implementer }\n");
-    const result = await loadPlaybooks(workspace, OPEN_CAP);
+    const result = await loadPlaybooks(workspace);
     const pr = result.entries.find((entry) => entry.id === "pr")!;
     expect(pr.errors).toEqual([]);
     expect(pr.playbook?.concurrency).toBe(1);

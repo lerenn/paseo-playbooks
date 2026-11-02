@@ -9,7 +9,7 @@ to the human gates. See [OVERVIEW.md](OVERVIEW.md) for what it does and
 | Path | Contents |
 | --- | --- |
 | `index.server.ts`, `server/` | Daemon side: YAML loader and validator, run engine, run store, agent tools, hooks, RPC handlers |
-| `index.client.tsx`, `client/` | The Playbooks panel (graph, node sheet, Start form) and the cap settings screen |
+| `index.client.tsx`, `client/` | The Playbooks panel (graph, node sheet, Start form) |
 | `shared/` | Zod types, RPC contracts, graph and template helpers |
 | `examples/.paseo/plugins/playbooks/` | Example PR playbook and its five roles (not loaded by the plugin) |
 | `skills/paseo-playbooks/SKILL.md` | Agent skill for writing playbooks; copy or symlink it into a repo's `.agents/skills/` or `.claude/skills/` |
@@ -33,8 +33,7 @@ paseo plugin logs paseo-playbooks
 
 To use playbooks in a repository, copy `examples/.paseo/plugins/playbooks/` into it (as
 `.paseo/plugins/playbooks/` or `.paseo/playbooks/`),
-adjust the roles and playbooks, commit them, and allow the modes they use in
-Settings → Plugins → paseo-playbooks. Then open the Playbooks panel in a workspace of
+adjust the roles and playbooks and commit them. Then open the Playbooks panel in a workspace of
 that repository and press Start. Start runs the playbook with the workspace's most
 recently used agent as manager (see Known limits), in that workspace (the run starts at
 once, but if that agent is busy, its kickoff waits until its current turn ends). The arrow

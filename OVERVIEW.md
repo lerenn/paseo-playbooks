@@ -19,9 +19,8 @@ and pressing a node opens that step's conversation. Gates show Approve and Rejec
 Start opens a form built from the playbook's inputs, creates a worktree on a new branch,
 and starts a manager there.
 
-Settings: Settings → Plugins → paseo-playbooks lists the agent modes playbooks may use per
-provider. By default only `default` and `acceptEdits` are allowed for Claude; allow
-`bypassPermissions` if you want steps to run unattended. Repositories cannot raise this.
+Agent modes: playbooks may use any mode, `bypassPermissions` included, so steps that run
+shell commands work unattended. Only start playbooks from repositories you trust.
 
 Agents get tools from the plugin: every agent gets `validate_playbooks`; agents in a
 workspace with playbooks get the manager tools; step agents get `report_step_result`. The

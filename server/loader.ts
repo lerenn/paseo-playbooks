@@ -19,7 +19,6 @@ import type {
 } from "../shared/types";
 import { AgentSettingsSchema, VarTypeSchema, VarValueSchema } from "../shared/types";
 import { parseDuration, singleRef, templateRefs, typeCompatible } from "../shared/vars";
-import { checkModes, type Cap } from "./cap";
 
 /** Folders searched for playbooks, relative to the workspace. Each folder is self-contained. */
 export const PLAYBOOKS_DIRS = [".paseo/plugins/playbooks", ".paseo/playbooks"] as const;
@@ -241,7 +240,7 @@ async function listFolder(root: string): Promise<string[] | null> {
  * Loads and validates every playbook in `.paseo/plugins/playbooks/` and `.paseo/playbooks/`.
  * Each folder uses its own roles/ and defaults/; the same playbook id in both is an error.
  */
-export async function loadPlaybooks(workspaceDir: string, cap: Cap): Promise<LoadResult> {
+export async function loadPlaybooks(workspaceDir: string): Promise<LoadResult> {
   const roots: string[] = [];
   const entries: PlaybookEntry[] = [];
   const rawNext = new Map<PlaybookEntry, RawNext>();
@@ -259,7 +258,7 @@ export async function loadPlaybooks(workspaceDir: string, cap: Cap): Promise<Loa
     };
     for (const name of files) {
       const id = name.replace(/\.ya?ml$/, "");
-      const { entry, next } = await loadPlaybook(root, name, `${relDir}/${name}`, id, defaults, role, cap);
+      const { entry, next } = await loadPlaybook(root, name, `${relDir}/${name}`, id, defaults, role);
       if (defaultsErrors.length > 0) {
         entry.errors.unshift(...defaultsErrors);
         entry.playbook = null;
@@ -285,7 +284,6 @@ async function loadPlaybook(
   id: string,
   defaults: RawDefaults,
   role: (id: string) => Promise<RoleLoad>,
-  cap: Cap,
 ): Promise<{ entry: PlaybookEntry; next: Array<{ playbook: string; inputs: Record<string, string> }> }> {
   const entry: PlaybookEntry = { id, file, title: id, errors: [], playbook: null };
   const fail = (errors: string[]) => {
@@ -436,11 +434,8 @@ async function loadPlaybook(
     }
   }
 
-  // Agent modes against the daemon cap.
-  const manager = mergeAgent(defaults.agent?.provider ? { provider: defaults.agent.provider, model: defaults.agent.model } : undefined, defaults.manager);
-  for (const message of checkModes(cap, manager, steps)) err(message);
-
   if (errors.length > 0) return fail(errors);
+  const manager = mergeAgent(defaults.agent?.provider ? { provider: defaults.agent.provider, model: defaults.agent.model } : undefined, defaults.manager);
   entry.playbook = {
     id,
     title: entry.title,

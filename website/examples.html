@@ -22,7 +22,7 @@
 </ul>
 
 <h2 id="pr">Pull request</h2>
-<p>From <a href="https://github.com/lerenn/paseo-playbooks/tree/main/examples/.paseo/plugins/playbooks"><code>examples/.paseo/plugins/playbooks/</code></a>. Steps run with <code>bypassPermissions</code>, so allow it in the daemon's mode cap first. The Implementer pushes and opens the PR with <code>gh</code>.</p>
+<p>From <a href="https://github.com/lerenn/paseo-playbooks/tree/main/examples/.paseo/plugins/playbooks"><code>examples/.paseo/plugins/playbooks/</code></a>. Steps run with <code>bypassPermissions</code>, so they run shell commands without asking. The Implementer pushes and opens the PR with <code>gh</code>.</p>
 <pre><code>investigate ─▶ implement ─┬─▶ review ───┬─▶ babysit ─▶ ◆ pr_approval ─▶ end
                   ▲       └─▶ local_qa ─┘      │              │
                   └───── changes_requested ────┘              │
@@ -120,7 +120,7 @@ steps:
 agent:
   provider: claude
   model: claude-opus-5-5
-  mode: bypassPermissions      # steps run unattended; the daemon cap must allow it
+  mode: bypassPermissions      # steps run unattended (shell commands included)
 manager:
   mode: default                # the manager never edits files</code></pre>
 <p class="file">roles/babysitter/role.yaml</p>
@@ -182,7 +182,7 @@ clarity. Do not edit files or push. Report concrete findings with file and line,
 by severity, as the `findings` output. Say "No findings" when the change is good.</code></pre>
 
 <h2 id="docs">Docs check</h2>
-<p>Every role only reads or edits files, so it runs within the default mode cap (<code>default</code> and <code>acceptEdits</code>). The verdict step loops back to the writer at most twice, and a rejected gate sends the work back with your comment.</p>
+<p>Every role only reads or edits files, so <code>default</code> and <code>acceptEdits</code> are enough. The verdict step loops back to the writer at most twice, and a rejected gate sends the work back with your comment.</p>
 <pre><code>investigate ─▶ write ─┬─▶ review ──────┬─▶ verdict ─▶ ◆ approve ─▶ end
                  ▲    └─▶ consistency ─┘      │           │
                  └──── changes_requested ─────┘           │

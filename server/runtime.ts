@@ -5,8 +5,7 @@ import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 type PaseoApi = PluginHandlerContext["paseo"];
 import type { Playbook, Run, Step, VarValue } from "../shared/types";
 import { isTerminal } from "../shared/types";
-import { DEFAULT_CAP, type CapValues } from "../shared/settings";
-import { DEFAULT_MODEL, DEFAULT_PROVIDER, modeViolation } from "./cap";
+import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "./defaults";
 import * as engine from "./engine";
 import { checkoutSnapshot, currentRef, snapshotDiff } from "./git";
 import { loadPlaybooks } from "./loader";
@@ -80,10 +79,7 @@ export class Runtime {
   /** Runs started from the panel for a busy agent: agent id → run id, delivered when its turn ends. */
   private readonly pendingHandoffs = new Map<string, string>();
 
-  constructor(
-    private readonly store: RunStore,
-    private readonly readCap: () => Promise<CapValues>,
-  ) {}
+  constructor(private readonly store: RunStore) {}
 
   // ---------------------------------------------------------------- lifecycle
 
@@ -102,14 +98,6 @@ export class Runtime {
   dispose(): void {
     for (const timer of this.timers.values()) clearTimeout(timer);
     this.timers.clear();
-  }
-
-  async cap(): Promise<CapValues> {
-    try {
-      return await this.readCap();
-    } catch {
-      return DEFAULT_CAP;
-    }
   }
 
   /** After a (re)start: find step agents that stopped, re-arm timeouts, flush wake-ups. */
@@ -238,7 +226,7 @@ export class Runtime {
     const reservation = this.reservations.get(workspace.id);
     let playbook: Playbook | null = preloaded ?? (reservation && reservation.playbook.id === playbookId ? reservation.playbook : null);
     if (!playbook) {
-      const loaded = await loadPlaybooks(workspaceDir, await this.cap());
+      const loaded = await loadPlaybooks(workspaceDir);
       const entry = loaded.entries.find((candidate) => candidate.id === playbookId);
       if (!entry) throw new UserError(`no playbook "${playbookId}" in this workspace (have: ${loaded.entries.map((e) => e.id).join(", ") || "none"})`);
       if (!entry.playbook) throw new UserError(`playbook "${playbookId}" is invalid:\n${entry.errors.join("\n")}`);
@@ -306,8 +294,6 @@ export class Runtime {
     const model =
       step.agent.model ?? (manager?.agent.provider === provider ? manager?.agent.model ?? undefined : undefined) ?? (provider === DEFAULT_PROVIDER ? DEFAULT_MODEL : undefined);
     if (!model) throw new UserError(`step "${step.id}": no model for provider "${provider}"; set agent.model in the playbook`);
-    const violation = modeViolation(await this.cap(), provider, step.agent.mode);
-    if (violation) throw new UserError(`step "${step.id}": ${violation}`);
     const config: AgentConfig = { provider: `${provider}/${model}` };
     if (step.agent.mode) config.modeId = step.agent.mode;
     if (step.agent.thinking) config.thinkingOptionId = step.agent.thinking;
@@ -570,7 +556,7 @@ export class Runtime {
     const workspace = await this.api().workspaces.ref(input.workspaceId).refresh();
     if (!workspace) throw new UserError("workspace not found");
     const workspaceDir = workspace.workspaceDirectory ?? workspace.projectRootPath;
-    const loaded = await loadPlaybooks(workspaceDir, await this.cap());
+    const loaded = await loadPlaybooks(workspaceDir);
     const entry = loaded.entries.find((candidate) => candidate.id === input.playbook);
     if (!entry?.playbook) throw new UserError(entry ? `playbook "${input.playbook}" is invalid:\n${entry.errors.join("\n")}` : `no playbook "${input.playbook}"`);
     const playbook = entry.playbook;

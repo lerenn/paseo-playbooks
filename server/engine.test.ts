@@ -20,7 +20,7 @@ let clock = 0;
 const now = () => new Date(Date.UTC(2026, 10, 2, 12, 0, clock++)).toISOString();
 
 beforeAll(async () => {
-  const result = await loadPlaybooks(EXAMPLES, { allowedModes: { claude: ["default", "bypassPermissions"] } });
+  const result = await loadPlaybooks(EXAMPLES);
   playbook = result.entries.find((entry) => entry.id === "pr")!.playbook!;
 });
 

@@ -14,20 +14,15 @@ import {
   retryStepRpc,
   startRun,
 } from "./shared/contracts";
-import { capSettings, DEFAULT_CAP } from "./shared/settings";
 import { hasPlaybooks, loadPlaybooks } from "./server/loader";
 import { Runtime, STEP_LABEL, UserError } from "./server/runtime";
 import { defaultRunsDir, RunStore } from "./server/store";
 import { managerTools, stepTool, validateTool } from "./server/tools";
 
 export default function contribute(server: PluginServerContext) {
-  const settings = server.registerSettings(capSettings);
   const store = new RunStore(defaultRunsDir());
   const ready = store.init();
-  const runtime = new Runtime(store, async () => {
-    const state = await settings.read();
-    return state.status === "ready" ? state.values : DEFAULT_CAP;
-  });
+  const runtime = new Runtime(store);
 
   /** Every entry point waits for the store and hands the runtime the daemon API. */
   const enter = async (paseo: PaseoApi) => {
@@ -87,7 +82,7 @@ export default function contribute(server: PluginServerContext) {
   handle(listPlaybooks, async ({ workspaceId }, { paseo }) => {
     const workspace = await paseo.workspaces.ref(workspaceId).refresh();
     if (!workspace) throw new UserError("workspace not found");
-    return loadPlaybooks(workspace.workspaceDirectory ?? workspace.projectRootPath, await runtime.cap());
+    return loadPlaybooks(workspace.workspaceDirectory ?? workspace.projectRootPath);
   });
   handle(listRuns, async ({ workspaceId }) => ({ runs: store.list().filter((run) => run.workspaceId === workspaceId && !run.archivedAt) }));
   handle(archiveRunRpc, async ({ runId }) => ({ archivedAt: await runtime.archiveRun(runId) }));
