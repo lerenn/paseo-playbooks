@@ -1,0 +1,84 @@
+title: Docs check
+description: Compare the docs with the code, fix the gaps, review and check in parallel, loop until clean, then a human gate.
+
+inputs:
+  focus:
+    type: string
+    default: README.md, OVERVIEW.md and skills/paseo-playbooks/SKILL.md
+    description: Which documents to check
+  strictness:
+    type: enum
+    values: [light, thorough]
+    default: light
+    description: light = only wrong or missing facts; thorough = also clarity
+
+outputs:
+  changes: { type: string }                # auto-matched from the write step
+
+steps:
+  - id: investigate
+    role: doc_investigator
+    inputs: [focus, strictness]
+    outputs:
+      gaps: { type: string, description: "Numbered list of doc statements that disagree with the code" }
+      gap_count: { type: number }
+    prompt: |
+      Documents to check: {{ inputs.focus }}
+      Strictness: {{ inputs.strictness }}
+
+  - id: write
+    role: doc_writer
+    needs: [investigate]
+    agent: { mode: acceptEdits }
+    inputs: [focus, gaps]
+    outputs:
+      changes: { type: string, description: "What you changed, per file" }
+    timeout: 20m
+    prompt: |
+      Fix these gaps in {{ inputs.focus }}:
+      {{ inputs.gaps }}
+
+  - id: review
+    role: doc_reviewer
+    needs: [write]
+    inputs: [changes]
+    outputs:
+      findings: { type: string }
+      blocking: { type: boolean }
+    prompt: |
+      The writer reports these changes (uncommitted in this checkout):
+      {{ inputs.changes }}
+
+  - id: consistency
+    role: consistency_checker
+    needs: [write]
+    inputs: [gaps, changes]
+    outputs:
+      remaining: { type: string, description: "Gaps still open, or none" }
+      all_fixed: { type: boolean }
+    prompt: |
+      Gaps found earlier:
+      {{ inputs.gaps }}
+
+      Changes made:
+      {{ inputs.changes }}
+
+  - id: verdict
+    role: doc_editor
+    needs: [review, consistency]
+    inputs: [findings, blocking, remaining, all_fixed]
+    outcomes: [ready, changes_requested]
+    prompt: |
+      Review findings (blocking: {{ inputs.blocking }}):
+      {{ inputs.findings }}
+
+      Remaining gaps (all fixed: {{ inputs.all_fixed }}):
+      {{ inputs.remaining }}
+    on:
+      changes_requested: { goto: write, max_loops: 2 }
+
+  - id: approve
+    needs: [verdict]
+    gate: The docs are updated (uncommitted in the run's worktree). Approve to finish, or reject with a comment to send them back to the writer.
+    on:
+      rejected: { goto: write }

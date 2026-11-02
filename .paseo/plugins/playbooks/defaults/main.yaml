@@ -1,0 +1,8 @@
+# Local test setup: cheap step agents, a stronger manager.
+agent:
+  provider: claude
+  model: claude-haiku-5-5
+  mode: default                # read-only roles only read files: no permission prompts
+manager:
+  model: claude-sonnet-5-5
+  mode: default
