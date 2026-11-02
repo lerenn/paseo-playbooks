@@ -109,8 +109,8 @@ function EmptyState(props: { theme: Theme; compact: boolean }) {
   );
 }
 
-/** Inner padding of a playbook card; with its 12px corner radius, less crowds the Start button. */
-const CARD_PAD = 14;
+/** Inner padding of a playbook card. */
+const CARD_PAD = 10;
 
 function PlaybookCard(props: {
   compact: boolean;
@@ -138,8 +138,8 @@ function PlaybookCard(props: {
   const errors = card.entry?.errors ?? [];
 
   return (
-    <View style={{ borderRadius: 12, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface1, padding: CARD_PAD, gap: 10 }}>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 6, zIndex: 20 }}>
+    <View style={{ borderRadius: 12, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface1, padding: CARD_PAD, gap: 8 }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 6, zIndex: 20, marginBottom: 6 }}>
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={`${expanded ? "Collapse" : "Expand"} ${title}`}
@@ -287,7 +287,7 @@ function StartButton(props: { theme: Theme; title: string; onStart(target: "curr
   const [hover, setHover] = useState(false);
   const segment = { flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 7, backgroundColor: theme.colors.accent } as const;
   return (
-    <View style={{ zIndex: 20, alignSelf: "flex-start" }}>
+    <View style={{ zIndex: 20 }}>
       <View style={{ flexDirection: "row", borderRadius: 8, overflow: "hidden" }}>
         <Pressable
           accessibilityRole="button"
