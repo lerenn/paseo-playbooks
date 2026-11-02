@@ -9,7 +9,8 @@ import { isTerminal, type Playbook, type PlaybookEntry, type Run } from "../shar
 import { Graph } from "./graph";
 import { Button, StepSheet } from "./sheet";
 import { StartForm } from "./start-form";
-import { runStatusColor, runStatusLabel, type Theme } from "./theme";
+import { splitError } from "../shared/errors";
+import { runStatusColor, runStatusLabel, withAlpha, type Theme } from "./theme";
 
 interface Card {
   id: string;
@@ -161,11 +162,7 @@ function PlaybookCard(props: {
         </Pressable>
         {card.entry?.playbook ? <StartButton theme={theme} title={title} onStart={setStarting} /> : null}
       </View>
-      {errors.map((error) => (
-        <Text key={error} selectable style={{ color: theme.colors.statusDanger, fontSize: 12 }}>
-          ⚠ {error}
-        </Text>
-      ))}
+      {errors.length > 0 ? <ErrorCallout theme={theme} file={card.entry?.file ?? ""} errors={errors} /> : null}
       {expanded && card.runs.length > 0 ? (
         // Full-width rule between the title row and the run tabs (the card has CARD_PAD padding).
         <View style={{ height: 1, marginTop: 4, marginHorizontal: -CARD_PAD, backgroundColor: theme.colors.border }} />
@@ -493,6 +490,44 @@ function RunChip(props: { theme: Theme; run: Run; selected: boolean; read: boole
           )}
         </View>
       ) : null}
+    </View>
+  );
+}
+
+/** A playbook's validation errors as one callout: a heading, then each problem with its location in bold. */
+function ErrorCallout(props: { theme: Theme; file: string; errors: string[] }) {
+  const { theme } = props;
+  const danger = theme.colors.statusDanger;
+  return (
+    <View
+      accessibilityRole="alert"
+      style={{
+        borderRadius: 8,
+        borderLeftWidth: 3,
+        borderLeftColor: danger,
+        backgroundColor: withAlpha(danger, 0.1) ?? theme.colors.surface2,
+        paddingHorizontal: 12,
+        paddingVertical: 10,
+        gap: 8,
+      }}
+    >
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+        <Icon name="TriangleAlert" size={15} color={danger} />
+        <Text style={{ flex: 1, color: danger, fontSize: 13, fontWeight: "600" }}>
+          This playbook can't run · {props.errors.length} {props.errors.length === 1 ? "problem" : "problems"}
+        </Text>
+      </View>
+      {props.errors.map((error) => {
+        const { where, message } = splitError(props.file, error);
+        return (
+          <View key={error} style={{ gap: 2, paddingLeft: 23 }}>
+            {where ? <Text selectable style={{ color: theme.colors.foreground, fontSize: 12, fontWeight: "600" }}>{where}</Text> : null}
+            <Text selectable style={{ color: theme.colors.foreground, fontSize: 12, lineHeight: 18 }}>
+              {message}
+            </Text>
+          </View>
+        );
+      })}
     </View>
   );
 }
