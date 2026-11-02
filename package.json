@@ -11,6 +11,7 @@
     "server/",
     "shared/",
     "skills/",
+    "assets/",
     "!**/*.test.ts"
   ],
   "scripts": {
