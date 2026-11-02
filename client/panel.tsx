@@ -67,6 +67,7 @@ export function PlaybooksPanel(props: PluginWorkspacePanelProps) {
             <PlaybookCard
               key={card.id}
               card={card}
+              compact={layout.compact}
               theme={theme}
               workspaceId={workspaceId}
               hostLabel={props.host.label}
@@ -101,6 +102,7 @@ function EmptyState(props: { theme: Theme; compact: boolean }) {
 }
 
 function PlaybookCard(props: {
+  compact: boolean;
   card: Card;
   theme: Theme;
   workspaceId: string;
@@ -205,6 +207,7 @@ function PlaybookCard(props: {
           theme={theme}
           playbook={card.entry.playbook}
           workspaceId={props.workspaceId}
+          compact={props.compact}
           onClose={() => setStarting(false)}
           onStarted={(workspaceId) => {
             setStarting(false);
