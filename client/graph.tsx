@@ -6,9 +6,10 @@ import { layerOf, layoutGraph } from "../shared/graph";
 import type { Playbook, Run, Step } from "../shared/types";
 import { nodeColor, nodeIcon, nodeStateLabel, type NodeState, type Theme } from "./theme";
 
-const NODE_W = 132;
+/** Nodes grow with the panel between these widths; below the minimum the graph scrolls sideways. */
+const NODE_MIN = 132;
+const NODE_MAX = 240;
 const GAP = 14;
-const SLOT = NODE_W + GAP;
 const BAND_H = 26;
 
 export interface GraphProps {
@@ -42,7 +43,11 @@ export function Graph(props: GraphProps) {
   const { playbook, run, theme } = props;
   const layout = useMemo(() => layoutGraph(playbook.steps), [playbook]);
   const layers = useMemo(() => layerOf(playbook.steps), [playbook]);
-  const width = Math.max(1, ...layout.layers.map((row) => row.length)) * SLOT;
+  const [available, setAvailable] = useState(0);
+  const columns = Math.max(1, ...layout.layers.map((row) => row.length));
+  const nodeWidth = Math.max(NODE_MIN, Math.min(NODE_MAX, Math.floor(available / columns) - GAP));
+  const SLOT = nodeWidth + GAP;
+  const width = columns * SLOT;
   const centers = useMemo(() => {
     const result = new Map<string, number>();
     for (const row of layout.layers) {
@@ -50,13 +55,14 @@ export function Graph(props: GraphProps) {
       row.forEach((id, index) => result.set(id, offset + index * SLOT + SLOT / 2));
     }
     return result;
-  }, [layout, width]);
+  }, [layout, width, SLOT]);
   const byId = useMemo(() => new Map(playbook.steps.map((step) => [step.id, step])), [playbook]);
   const running = new Set(run ? playbook.steps.filter((step) => run.steps[step.id]?.status === "running").map((step) => step.id) : []);
 
   return (
+    <View onLayout={(event) => setAvailable(event.nativeEvent.layout.width)}>
     <ScrollView horizontal style={{ flexGrow: 0 }} contentContainerStyle={{ minWidth: "100%", justifyContent: "center" }}>
-      <View style={{ width, paddingVertical: 4 }}>
+      <View style={{ width, paddingTop: 4, paddingBottom: 16 }}>
         {layout.layers.map((row, index) => (
           <View key={row.join(",")}>
             {index > 0 ? (
@@ -74,6 +80,7 @@ export function Graph(props: GraphProps) {
                   <Node
                     step={byId.get(id)!}
                     longNeeds={byId.get(id)!.needs.filter((need) => (layers.get(need) ?? 0) < index - 1)}
+                    nodeWidth={nodeWidth}
                     {...props}
                   />
                 </View>
@@ -83,6 +90,7 @@ export function Graph(props: GraphProps) {
         ))}
       </View>
     </ScrollView>
+    </View>
   );
 }
 
@@ -121,7 +129,7 @@ function Band(props: {
   );
 }
 
-function Node(props: GraphProps & { step: Step; longNeeds: string[] }) {
+function Node(props: GraphProps & { step: Step; longNeeds: string[]; nodeWidth: number }) {
   const { step, run, theme, playbook, highlighted } = props;
   const state = run?.steps[step.id];
   const attempts = state?.attempts ?? [];
@@ -161,7 +169,7 @@ function Node(props: GraphProps & { step: Step; longNeeds: string[] }) {
   const isHighlighted = highlighted === step.id;
 
   return (
-    <View style={{ width: NODE_W, opacity: dimmed ? 0.55 : 1 }}>
+    <View style={{ width: props.nodeWidth, opacity: dimmed ? 0.55 : 1 }}>
       <Animated.View
         style={{
           borderRadius: isGate ? 4 : 12,
@@ -225,7 +233,7 @@ function Node(props: GraphProps & { step: Step; longNeeds: string[] }) {
           onPressOut={() => props.onHighlight(null)}
           style={{ marginTop: 3, alignSelf: "center" }}
         >
-          <Text style={{ color: theme.colors.foregroundMuted, fontSize: 10 }}>
+          <Text style={{ color: theme.colors.foregroundMuted, fontSize: 10, textAlign: "center" }}>
             ↺ {loop.outcome} → {loop.target}
             {loop.max !== undefined ? ` · ${loop.count}/${loop.max}` : loop.count > 0 ? ` · ${loop.count}` : ""}
           </Text>

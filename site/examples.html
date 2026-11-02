@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Examples · Paseo Playbooks</title>
+<link rel="icon" href="favicon.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="site"><div class="inner">
+<a class="brand" href="index.html"><img src="favicon.png" alt="">Paseo Playbooks</a>
+<nav><a href="index.html">Home</a><a href="getting-started.html">Getting started</a><a href="reference.html">Reference</a><a href="examples.html" aria-current="page">Examples</a><a href="how-it-works.html">How it works</a><a href="https://github.com/lerenn/paseo-playbooks">GitHub</a></nav>
+</div></header>
+<main>
+
+<h1>Examples</h1>
+<p class="lead">Two complete playbook folders. Copy one into your repository as <code>.paseo/plugins/playbooks/</code> or <code>.paseo/playbooks/</code>, adjust it, then run <code>validate_playbooks</code>.</p>
+<ul>
+<li><a href="#pr">Pull request</a>: investigate, implement, review and local QA in parallel, babysit the PR, human gate.</li>
+<li><a href="#docs">Docs check</a>: compare the docs with the code, fix them, review and check in parallel, loop until clean, human gate. It needs no shell commands.</li>
+</ul>
+
+<h2 id="pr">Pull request</h2>
+<p>From <a href="https://github.com/lerenn/paseo-playbooks/tree/main/examples/.paseo/plugins/playbooks"><code>examples/.paseo/plugins/playbooks/</code></a>. Steps run with <code>bypassPermissions</code>, so allow it in the daemon's mode cap first. The Implementer pushes and opens the PR with <code>gh</code>.</p>
+<pre><code>investigate ─▶ implement ─┬─▶ review ───┬─▶ babysit ─▶ ◆ pr_approval ─▶ end
+                  ▲       └─▶ local_qa ─┘      │              │
+                  └───── changes_requested ────┘              │
+                  └───────────────── rejected ─────────────────┘</code></pre><p class="file">pr.yaml</p>
+<pre><code>title: Pull request
+description: Investigate a request, implement it, open a PR and babysit it to a human gate.
+
+inputs:
+  request:
+    type: string
+    required: true
+    description: What to change
+  base_branch:
+    type: string
+    default: main
+    description: Branch the PR targets
+
+outputs:
+  pr_url: { type: string }     # auto-matched from the implement step
+  pr_number:
+    type: number
+    value: "{{ steps.implement.outputs.pr_number }}"
+
+steps:
+  - id: investigate
+    role: investigator
+    inputs: [request]
+    outputs:
+      plan: { type: string, description: Implementation plan }
+    prompt: |
+      Request: {{ inputs.request }}
+
+  - id: implement
+    role: implementer
+    needs: [investigate]
+    inputs: [request, plan, base_branch]
+    outputs:
+      pr_url: { type: string }
+      pr_number: { type: number }
+      branch: { type: string }
+    retries: 1
+    timeout: 1h
+    prompt: |
+      Request: {{ inputs.request }}
+
+      Plan:
+      {{ inputs.plan }}
+
+      Open (or update) the pull request against {{ inputs.base_branch }}.
+
+  - id: review
+    role: reviewer
+    needs: [implement]
+    inputs: [pr_url]
+    outputs:
+      findings: { type: string }
+    prompt: "Review the pull request {{ inputs.pr_url }}."
+
+  - id: local_qa
+    role: local_qa
+    needs: [implement]
+    inputs: [branch]
+    outputs:
+      report: { type: string }
+      tests_passed: { type: boolean }
+    prompt: "Test the branch {{ inputs.branch }}."
+
+  - id: babysit
+    role: babysitter
+    needs: [review, local_qa]
+    inputs:
+      pr_url: ~
+      review: "{{ steps.review.outputs.findings }}"
+      qa: "{{ steps.local_qa.outputs.report }}"
+    outcomes: [ready, changes_requested]
+    timeout: 2h
+    prompt: |
+      Pull request: {{ inputs.pr_url }}
+
+      Review findings:
+      {{ inputs.review }}
+
+      Local QA report:
+      {{ inputs.qa }}
+    on:
+      changes_requested: { goto: implement, max_loops: 3 }
+
+  - id: pr_approval
+    needs: [babysit]
+    gate: The PR is ready. Approve to finish, or reject with a comment to send it back.
+    on:
+      rejected: { goto: implement }</code></pre>
+<p class="file">defaults/main.yaml</p>
+<pre><code># Repo-wide agent defaults. Precedence: step &gt; role &gt; playbook &gt; these &gt; the manager's own.
+agent:
+  provider: claude
+  model: claude-opus-5-5
+  mode: bypassPermissions      # steps run unattended; the daemon cap must allow it
+manager:
+  mode: default                # the manager never edits files</code></pre>
+<p class="file">roles/babysitter/role.yaml</p>
+<pre><code>title: PR Babysitter
+readonly: true</code></pre>
+<p class="file">roles/babysitter/instructions.md</p>
+<pre><code>You are the PR Babysitter of a pull-request playbook.
+
+Watch the pull request's CI checks (`gh pr checks --watch`) and review comments. Combine
+them with the review findings and the local QA report.
+
+Choose the outcome `ready` when CI is green and nothing blocking remains. Choose
+`changes_requested` otherwise, and put every point the Implementer must fix in your
+summary. Do not edit files or push.</code></pre>
+<p class="file">roles/implementer/role.yaml</p>
+<pre><code>title: Implementer
+readonly: false</code></pre>
+<p class="file">roles/implementer/instructions.md</p>
+<pre><code>You are the Implementer of a pull-request playbook.
+
+Implement the plan in the current checkout. You are already on the run's branch; commit
+there and push it. Keep changes focused on the request. Run the relevant tests before
+pushing.
+
+Open a pull request against the base branch with `gh pr create`, or update the existing
+one if this branch already has a PR. If you received feedback from a previous round,
+address every point of it.
+
+Return `pr_url`, `pr_number` and `branch`.</code></pre>
+<p class="file">roles/investigator/role.yaml</p>
+<pre><code>title: Investigator
+readonly: true</code></pre>
+<p class="file">roles/investigator/instructions.md</p>
+<pre><code>You are the Investigator of a pull-request playbook.
+
+Read the request and the relevant code, history and documentation. Do not edit files,
+switch branches or commit. Work out what needs to change and why, and identify risks and
+the tests that should prove the change.
+
+Return a concrete implementation plan as the `plan` output: the files to touch, the
+approach, edge cases, and how to verify it.</code></pre>
+<p class="file">roles/local_qa/role.yaml</p>
+<pre><code>title: Local QA
+readonly: true</code></pre>
+<p class="file">roles/local_qa/instructions.md</p>
+<pre><code>You are the Local QA of a pull-request playbook.
+
+Run the project's tests, linters and type checks on the current checkout. Do not edit
+tracked files; build output in ignored files is fine. Report what you ran and what failed
+as the `report` output, and set `tests_passed`.</code></pre>
+<p class="file">roles/reviewer/role.yaml</p>
+<pre><code>title: Reviewer
+readonly: true</code></pre>
+<p class="file">roles/reviewer/instructions.md</p>
+<pre><code>You are the Reviewer of a pull-request playbook.
+
+Review the pull request diff (`gh pr diff`) for correctness, security, missing tests and
+clarity. Do not edit files or push. Report concrete findings with file and line, ordered
+by severity, as the `findings` output. Say "No findings" when the change is good.</code></pre>
+
+<h2 id="docs">Docs check</h2>
+<p>Every role only reads or edits files, so it runs within the default mode cap (<code>default</code> and <code>acceptEdits</code>). The verdict step loops back to the writer at most twice, and a rejected gate sends the work back with your comment.</p>
+<pre><code>investigate ─▶ write ─┬─▶ review ──────┬─▶ verdict ─▶ ◆ approve ─▶ end
+                 ▲    └─▶ consistency ─┘      │           │
+                 └──── changes_requested ─────┘           │
+                 └───────────────── rejected ─────────────┘</code></pre><p class="file">docs.yaml</p>
+<pre><code>title: Docs check
+description: Compare the docs with the code, fix the gaps, review and check in parallel, loop until clean, then a human gate.
+
+inputs:
+  focus:
+    type: string
+    default: README.md, OVERVIEW.md and skills/paseo-playbooks/SKILL.md
+    description: Which documents to check
+  strictness:
+    type: enum
+    values: [light, thorough]
+    default: light
+    description: light = only wrong or missing facts; thorough = also clarity
+
+outputs:
+  changes: { type: string }                # auto-matched from the write step
+
+steps:
+  - id: investigate
+    role: doc_investigator
+    inputs: [focus, strictness]
+    outputs:
+      gaps: { type: string, description: "Numbered list of doc statements that disagree with the code" }
+      gap_count: { type: number }
+    prompt: |
+      Documents to check: {{ inputs.focus }}
+      Strictness: {{ inputs.strictness }}
+
+  - id: write
+    role: doc_writer
+    needs: [investigate]
+    agent: { mode: acceptEdits }
+    inputs: [focus, gaps]
+    outputs:
+      changes: { type: string, description: "What you changed, per file" }
+    timeout: 20m
+    prompt: |
+      Fix these gaps in {{ inputs.focus }}:
+      {{ inputs.gaps }}
+
+  - id: review
+    role: doc_reviewer
+    needs: [write]
+    inputs: [changes]
+    outputs:
+      findings: { type: string }
+      blocking: { type: boolean }
+    prompt: |
+      The writer reports these changes (uncommitted in this checkout):
+      {{ inputs.changes }}
+
+  - id: consistency
+    role: consistency_checker
+    needs: [write]
+    inputs: [gaps, changes]
+    outputs:
+      remaining: { type: string, description: "Gaps still open, or none" }
+      all_fixed: { type: boolean }
+    prompt: |
+      Gaps found earlier:
+      {{ inputs.gaps }}
+
+      Changes made:
+      {{ inputs.changes }}
+
+  - id: verdict
+    role: doc_editor
+    needs: [review, consistency]
+    inputs: [findings, blocking, remaining, all_fixed]
+    outcomes: [ready, changes_requested]
+    prompt: |
+      Review findings (blocking: {{ inputs.blocking }}):
+      {{ inputs.findings }}
+
+      Remaining gaps (all fixed: {{ inputs.all_fixed }}):
+      {{ inputs.remaining }}
+    on:
+      changes_requested: { goto: write, max_loops: 2 }
+
+  - id: approve
+    needs: [verdict]
+    gate: The docs are updated (uncommitted in the run's worktree). Approve to finish, or reject with a comment to send them back to the writer.
+    on:
+      rejected: { goto: write }</code></pre>
+<p class="file">defaults/main.yaml</p>
+<pre><code># Local test setup: cheap step agents, a stronger manager.
+agent:
+  provider: claude
+  model: claude-haiku-5-5
+  mode: default                # read-only roles only read files: no permission prompts
+manager:
+  model: claude-sonnet-5-5
+  mode: default</code></pre>
+<p class="file">roles/consistency_checker/role.yaml</p>
+<pre><code>title: Consistency checker
+readonly: true</code></pre>
+<p class="file">roles/consistency_checker/instructions.md</p>
+<pre><code>You check that a list of documentation gaps was actually fixed. For each gap, read the
+current documents and the code with your file reading tools only. Do not run shell
+commands and do not edit anything.
+
+Return in `remaining` the gaps that are still open (or "none"), and set `all_fixed`.</code></pre>
+<p class="file">roles/doc_editor/role.yaml</p>
+<pre><code>title: Docs editor
+readonly: true</code></pre>
+<p class="file">roles/doc_editor/instructions.md</p>
+<pre><code>You are the editor who decides whether a documentation change is ready. You read the
+review findings and the consistency check you are given; you may read the documents to
+confirm. Do not run shell commands and do not edit anything.
+
+Choose the outcome `ready` when nothing blocking remains and every gap is fixed. Choose
+`changes_requested` otherwise, and put every point the writer must address in your
+summary: it is sent back to the writer as feedback.</code></pre>
+<p class="file">roles/doc_investigator/role.yaml</p>
+<pre><code>title: Docs investigator
+readonly: true</code></pre>
+<p class="file">roles/doc_investigator/instructions.md</p>
+<pre><code>You check documentation against the code of this repository (a Paseo plugin written in
+TypeScript: server/, client/, shared/, examples/).
+
+Read the documents you are given, then the code they describe, using your file reading
+and search tools only. Do not run shell commands and do not edit anything.
+
+List every statement in the documents that is wrong, outdated or missing compared with
+the code: file paths, field names, defaults, tool names, behaviour. Quote the statement
+and say what the code actually does, with the file. With strictness "thorough", also list
+unclear passages. Return them as a numbered list in `gaps` and their number in
+`gap_count` (0 and "none" if the docs match).</code></pre>
+<p class="file">roles/doc_reviewer/role.yaml</p>
+<pre><code>title: Docs reviewer
+readonly: true</code></pre>
+<p class="file">roles/doc_reviewer/instructions.md</p>
+<pre><code>You review documentation changes. Read the changed Markdown files (they are uncommitted in
+this checkout) and the code they describe, with your file reading tools only. Do not run
+shell commands and do not edit anything.
+
+Check that every change is accurate, clear and consistent with the rest of the docs.
+Return your findings in `findings` ("No findings" when it is good) and set `blocking` to
+true only for wrong or misleading statements.</code></pre>
+<p class="file">roles/doc_writer/role.yaml</p>
+<pre><code>title: Docs writer
+readonly: false</code></pre>
+<p class="file">roles/doc_writer/instructions.md</p>
+<pre><code>You fix documentation in this repository. Edit only the Markdown files you were asked to
+check, with your file edit tool. Do not run shell commands, do not commit, and do not
+change code.
+
+Fix each gap you are given, keeping the existing tone and structure. If you received
+feedback from a previous round, address every point of it first. Return in `changes` a
+short list of what you changed, per file.</code></pre>
+
+</main>
+<footer class="site"><div class="inner">Paseo Playbooks is a plugin for <a href="https://paseo.sh">Paseo</a>. Source on <a href="https://github.com/lerenn/paseo-playbooks">GitHub</a>.</div></footer>
+</body>
+</html>

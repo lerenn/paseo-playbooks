@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Getting started · Paseo Playbooks</title>
+<link rel="icon" href="favicon.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="site"><div class="inner">
+<a class="brand" href="index.html"><img src="favicon.png" alt="">Paseo Playbooks</a>
+<nav><a href="index.html">Home</a><a href="getting-started.html" aria-current="page">Getting started</a><a href="reference.html">Reference</a><a href="examples.html">Examples</a><a href="how-it-works.html">How it works</a><a href="https://github.com/lerenn/paseo-playbooks">GitHub</a></nav>
+</div></header>
+<main>
+
+<h1>Getting started</h1>
+<p class="lead">Install the plugin, write a first playbook in your repository, and run it from the Playbooks panel.</p>
+
+<h2>Requirements</h2>
+<ul>
+<li>Paseo 0.14 (the plugin declares <code>&gt;=0.14.0 &lt;0.15.0</code>).</li>
+<li>Plugins enabled on the daemon: Settings → Plugins → Enable plugins, or <code>pluginsEnabled: true</code> in the daemon's <code>config.json</code>.</li>
+<li>A git repository opened as a Paseo project. Each run gets its own Paseo worktree.</li>
+</ul>
+<div class="note warn">Plugins are trusted, unsandboxed code. The plugin's server code runs on the daemon machine and runs <code>git</code> in workspace folders.</div>
+
+<h2>1. Install the plugin</h2>
+<pre><code>paseo plugin install github:lerenn/paseo-playbooks</code></pre>
+<p>To develop it, install from a local checkout instead (not from a Paseo worktree, which can be archived), then reload after each change:</p>
+<pre><code>git clone https://github.com/lerenn/paseo-playbooks
+cd paseo-playbooks &amp;&amp; npm install
+paseo plugin install "$PWD"
+paseo plugin reload paseo-playbooks</code></pre>
+<p>Check that <code>paseo plugin ls</code> shows <code>paseo-playbooks</code> as <code>running</code>.</p>
+
+<h2>2. Allow the agent modes your playbooks use</h2>
+<p>Playbooks come from the repository, so any branch can ship one. The daemon owner decides which agent modes they may ask for, in Settings → Plugins → paseo-playbooks → Allowed agent modes.</p>
+<ul>
+<li>By default Claude allows <code>default</code> and <code>acceptEdits</code>.</li>
+<li><code>bypassPermissions</code> is opt-in. Add it if you want steps that run shell commands to work unattended.</li>
+<li>A playbook that leaves <code>mode</code> unset (the provider's default) is always allowed.</li>
+</ul>
+
+<h2>3. Write a first playbook</h2>
+<p>Create <code>.paseo/plugins/playbooks/</code> (or the shorter <code>.paseo/playbooks/</code>) in your repository:</p>
+<pre><code>.paseo/plugins/playbooks/
+├── defaults/
+│   └── main.yaml
+├── hello.yaml
+└── roles/
+    └── writer/
+        ├── role.yaml
+        └── instructions.md</code></pre>
+<p class="file">defaults/main.yaml</p>
+<pre><code>agent:
+  provider: claude
+  model: claude-sonnet-5-5
+manager:
+  mode: default</code></pre>
+<p class="file">roles/writer/role.yaml</p>
+<pre><code>title: Writer
+readonly: false</code></pre>
+<p class="file">roles/writer/instructions.md</p>
+<pre><code>You write short documentation changes. Edit only the files you are asked to change,
+with your file edit tool. Do not run shell commands and do not commit.
+Return what you changed in the `changes` output.</code></pre>
+<p class="file">hello.yaml</p>
+<pre><code>title: Hello
+description: Write a short note, then wait for approval.
+
+inputs:
+  topic: { type: string, required: true, description: What the note is about }
+
+steps:
+  - id: write
+    role: writer
+    agent: { mode: acceptEdits }
+    inputs: [topic]
+    outputs:
+      changes: { type: string }
+    prompt: "Add a short NOTES.md section about {{ inputs.topic }}."
+
+  - id: approve
+    needs: [write]
+    gate: Approve the note, or reject it with a comment to send it back.
+    on:
+      rejected: { goto: write }</code></pre>
+<p>The <a href="reference.html">reference</a> lists every field, and the <a href="examples.html">examples</a> page has a full pull-request playbook.</p>
+
+<h2>4. Validate and commit</h2>
+<p>Any agent in the workspace can call the <code>validate_playbooks</code> tool. It runs the same checks as the panel, including the daemon's mode cap, and lists every error with its file and field.</p>
+<p>Commit the folder. Start creates the run's worktree from the current commit.</p>
+<div class="note">To let agents write playbooks for you, copy <a href="https://github.com/lerenn/paseo-playbooks/tree/main/skills/paseo-playbooks"><code>skills/paseo-playbooks/SKILL.md</code></a> into your repository's <code>.agents/skills/</code> or <code>.claude/skills/</code>.</div>
+
+<h2>5. Start a run</h2>
+<ol class="steps">
+<li>Open the <strong>Playbooks</strong> panel in the workspace's right-hand sidebar, or press Ctrl+K (Cmd+K on macOS) and choose <strong>Open Playbooks</strong>. Each playbook is a card with its title, file path and step graph.</li>
+<li>Press <strong>Start</strong>. A form built from the playbook's inputs opens. Starting creates a worktree on a new branch named <code>playbooks/&lt;playbook&gt;-&lt;run id&gt;</code>, starts a Playbook Manager agent there, and opens that workspace.</li>
+<li>Watch the graph. The running step pulses. Press a node to open its agent's conversation, or ⓘ for its details: inputs and their sources, the manager's brief, the report and every attempt.</li>
+<li>When the run reaches a gate, the gate node turns amber and Paseo notifies you. Approve, or reject with a comment. A rejected gate with <code>on.rejected: { goto: … }</code> sends the work back with your comment as feedback.</li>
+</ol>
+
+</main>
+<footer class="site"><div class="inner">Paseo Playbooks is a plugin for <a href="https://paseo.sh">Paseo</a>. Source on <a href="https://github.com/lerenn/paseo-playbooks">GitHub</a>.</div></footer>
+</body>
+</html>

@@ -46,8 +46,8 @@ export function PlaybooksPanel(props: PluginWorkspacePanelProps) {
   const pad = layout.compact ? 12 : 16;
   return (
     <View style={{ flex: 1, backgroundColor: theme.colors.surface0 }}>
-      <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: pad, paddingVertical: 10, gap: 8 }}>
-        <Text style={{ flex: 1, color: theme.colors.foreground, fontSize: 16, fontWeight: "700" }}>Playbooks</Text>
+      {/* No heading: the tab already says "Playbooks". */}
+      <View style={{ flexDirection: "row", justifyContent: "flex-end", paddingHorizontal: pad, paddingTop: 8, paddingBottom: 4 }}>
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Refresh playbooks"
@@ -57,26 +57,45 @@ export function PlaybooksPanel(props: PluginWorkspacePanelProps) {
           <Icon name="RefreshCw" size={16} color={theme.colors.foregroundMuted} />
         </Pressable>
       </View>
-      <ScrollView contentContainerStyle={{ paddingHorizontal: pad, paddingBottom: pad, gap: 12 }}>
-        {playbooks.isLoading ? <Text style={{ color: theme.colors.foregroundMuted }}>Loading…</Text> : null}
-        {playbooks.error ? <Text style={{ color: theme.colors.statusDanger }}>{(playbooks.error as Error).message}</Text> : null}
-        {playbooks.data && cards.length === 0 ? (
-          <Text style={{ color: theme.colors.foregroundMuted, fontSize: 13 }}>
-            No playbooks in this workspace. Add YAML files to .paseo/plugins/playbooks/ or .paseo/playbooks/ (see the paseo-playbooks skill), then refresh.
-          </Text>
-        ) : null}
-        {cards.map((card) => (
-          <PlaybookCard
-            key={card.id}
-            card={card}
-            theme={theme}
-            workspaceId={workspaceId}
-            hostLabel={props.host.label}
-            onOpenAgent={(agentId) => navigation?.openAgent({ agentId })}
-            onOpenWorkspace={(id) => navigation?.openWorkspace({ workspaceId: id })}
-          />
-        ))}
-      </ScrollView>
+      {playbooks.data && cards.length === 0 ? (
+        <EmptyState theme={theme} compact={layout.compact} />
+      ) : (
+        <ScrollView contentContainerStyle={{ paddingHorizontal: pad, paddingBottom: pad, gap: 12 }}>
+          {playbooks.isLoading ? <Text style={{ color: theme.colors.foregroundMuted }}>Loading…</Text> : null}
+          {playbooks.error ? <Text style={{ color: theme.colors.statusDanger }}>{(playbooks.error as Error).message}</Text> : null}
+          {cards.map((card) => (
+            <PlaybookCard
+              key={card.id}
+              card={card}
+              theme={theme}
+              workspaceId={workspaceId}
+              hostLabel={props.host.label}
+              onOpenAgent={(agentId) => navigation?.openAgent({ agentId })}
+              onOpenWorkspace={(id) => navigation?.openWorkspace({ workspaceId: id })}
+            />
+          ))}
+        </ScrollView>
+      )}
+    </View>
+  );
+}
+
+/** Where "Get started" sends people when a workspace has no playbooks. */
+export const GETTING_STARTED_URL = "https://lerenn.github.io/paseo-playbooks/getting-started.html";
+
+function EmptyState(props: { theme: Theme; compact: boolean }) {
+  const { theme } = props;
+  const toast = useToast();
+  const open = () =>
+    void openExternalUrl(GETTING_STARTED_URL).catch((error: unknown) => toast.error(error instanceof Error ? error.message : String(error)));
+  return (
+    <View style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: props.compact ? 16 : 24, gap: 12 }}>
+      <Icon name="Workflow" size={32} color={theme.colors.foregroundMuted} />
+      <Text style={{ color: theme.colors.foreground, fontSize: 15, fontWeight: "600", textAlign: "center" }}>No playbooks in this workspace</Text>
+      <Text style={{ color: theme.colors.foregroundMuted, fontSize: 13, textAlign: "center", maxWidth: 320 }}>
+        Add playbooks to .paseo/plugins/playbooks/ or .paseo/playbooks/, then refresh.
+      </Text>
+      <Button theme={theme} kind="primary" label="How to use playbooks ↗" onPress={open} accessibilityLabel="Open the getting started guide in your browser" />
     </View>
   );
 }
@@ -115,7 +134,7 @@ function PlaybookCard(props: {
           <Icon name={expanded ? "ChevronDown" : "ChevronRight"} size={14} color={theme.colors.foregroundMuted} />
           <View style={{ flex: 1 }}>
             <Text numberOfLines={1} style={{ color: theme.colors.foreground, fontSize: 14, fontWeight: "600" }}>
-              {card.id} · {title}
+              {title}
             </Text>
             <Text numberOfLines={1} style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>
               {card.entry?.file ?? "(file removed)"}

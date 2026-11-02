@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How it works · Paseo Playbooks</title>
+<link rel="icon" href="favicon.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="site"><div class="inner">
+<a class="brand" href="index.html"><img src="favicon.png" alt="">Paseo Playbooks</a>
+<nav><a href="index.html">Home</a><a href="getting-started.html">Getting started</a><a href="reference.html">Reference</a><a href="examples.html">Examples</a><a href="how-it-works.html" aria-current="page">How it works</a><a href="https://github.com/lerenn/paseo-playbooks">GitHub</a></nav>
+</div></header>
+<main>
+
+<h1>How it works</h1>
+<p class="lead">The plugin owns the deterministic part of a run. The Playbook Manager agent owns the judgment.</p>
+
+<h2>Plugin and manager</h2>
+<table><thead><tr><th>Plugin (rules)</th><th>Playbook Manager (judgment)</th></tr></thead><tbody><tr><td>Loads and validates playbooks from the workspace</td><td>Picks the playbook that fits the request</td></tr><tr><td>Saves run state on the daemon</td><td>Writes each step's brief</td></tr><tr><td>Computes which steps are ready from <code>needs</code>, resets loops, enforces limits</td><td>Reads each step's result and chooses its outcome</td></tr><tr><td>Creates step agents with their role, prompt and labels</td><td>Decides whether to retry, nudge or loop</td></tr><tr><td>Wakes the manager when a step finishes or a gate is decided</td><td>Summarises the run for the human at a gate</td></tr><tr><td>Records gate decisions from the panel</td><td>Relays decisions that arrive by chat</td></tr></tbody></table>
+<p>The manager never edits run state directly. It calls the plugin's tools, and the plugin refuses anything the playbook does not allow, for example starting a step that is not ready.</p>
+
+<h2>Lifecycle of a run</h2>
+<ol class="steps">
+<li><strong>Start.</strong> The panel's Start button creates a Paseo worktree on a new branch <code>playbooks/&lt;playbook&gt;-&lt;run id&gt;</code> and a manager agent in it. The manager calls <code>start_playbook</code> with the inputs. Runs only start in a worktree, one active run per worktree, so a run never touches your main checkout.</li>
+<li><strong>Steps.</strong> For each ready step the manager calls <code>start_step</code> with a brief. The plugin creates a subagent of the manager in the same worktree, with the role's instructions as system prompt and the rendered step prompt, inputs, loop feedback and brief as its first message.</li>
+<li><strong>Report.</strong> The step agent calls <code>report_step_result</code> with an outcome, a summary and its typed outputs, then ends its turn.</li>
+<li><strong>Wake-up.</strong> When a step agent's turn ends, the plugin checks readonly roles with git, then queues a message for the manager. Wake-ups are sent only while the manager is idle, merged into one prompt. The plugin never interrupts the manager.</li>
+<li><strong>Decide.</strong> The manager reads the report and calls <code>complete_step</code>. The plugin applies the transition and returns what is ready next, a gate to open, or the end of the run.</li>
+<li><strong>Gate.</strong> The manager opens ready gates with <code>request_gate</code> and ends its turn. Paseo marks it as needing attention. You decide in the panel; the manager is woken with your decision.</li>
+<li><strong>End.</strong> The run completes, fails or is canceled. Its outputs are shown on the card, and the manager may start a chained playbook.</li>
+</ol>
+
+<h2>Tools</h2>
+<table><thead><tr><th>Tool</th><th>Who gets it</th><th>What it does</th></tr></thead><tbody><tr><td><code>list_playbooks</code></td><td>manager</td><td>Lists this workspace's playbooks and explains the manager protocol.</td></tr><tr><td><code>start_playbook</code></td><td>manager</td><td>Creates a run with the caller as manager.</td></tr><tr><td><code>start_step</code></td><td>manager</td><td>Starts a ready step as a subagent with the manager's brief.</td></tr><tr><td><code>complete_step</code></td><td>manager</td><td>Records a step's outcome and applies the transition.</td></tr><tr><td><code>request_gate</code></td><td>manager</td><td>Opens a ready gate with a summary for the human.</td></tr><tr><td><code>resume</code></td><td>manager</td><td>Records a gate decision that arrived by chat.</td></tr><tr><td><code>nudge_step</code></td><td>manager</td><td>Sends a follow-up to a step's agent in the same conversation.</td></tr><tr><td><code>get_run</code></td><td>manager</td><td>Shows a run's steps, reports, outputs, gates and loops.</td></tr><tr><td><code>cancel_run</code></td><td>manager</td><td>Cancels a run and stops its running step agents.</td></tr><tr><td><code>validate_playbooks</code></td><td>every agent except step agents</td><td>Validates the workspace's playbooks with the panel's checks.</td></tr><tr><td><code>report_step_result</code></td><td>step agents</td><td>Reports the step's outcome, summary and outputs.</td></tr></tbody></table>
+<p>An agent gets the manager tools when its workspace contains a playbook, when it already manages a run, or when Start created it. Step agents are labelled by the plugin and get only <code>report_step_result</code>.</p>
+<p>Plugin tools reach agents through Paseo's MCP server. For Claude agents created by the plugin (step agents and managers created by Start), the plugin pre-approves its own tools, so agents in <code>default</code> mode are not stopped by a permission prompt on them. Other providers may still ask.</p>
+
+<h2>Run state</h2>
+<ul>
+<li>Each run is one JSON file in <code>$PASEO_HOME/plugin-data/paseo-playbooks/runs/</code>, written atomically. It holds the playbook snapshot, inputs, every step's attempts, reports and outputs, gates, loop counts, queued wake-ups and history.</li>
+<li>Runs survive daemon restarts and plugin reloads. On start the plugin checks running steps; agents that stopped without reporting are marked lost and the manager is told.</li>
+<li>When a run ends, its agents and worktree stay, so conversations remain reachable. Archiving the worktree cancels any active run in it and deletes its run files.</li>
+<li>If the manager is archived during a run, the run fails and its running steps are stopped.</li>
+</ul>
+
+<h2>The Playbooks panel</h2>
+<ul>
+<li>Opens in the workspace's right-hand sidebar, or with Ctrl+K (Cmd+K) → Open Playbooks. React Native only, so it works on desktop, web and mobile.</li>
+<li>Each playbook is a card showing its title and file path, validation errors, and a Start button.</li>
+<li>The graph is laid out top to bottom: each step one row below its deepest <code>needs</code>, parallel steps side by side, with connector lines between rows. Nodes widen with the panel from 132 to 240 px; the graph scrolls sideways only when they do not fit. Loops show as a "↺" label under the step that loops.</li>
+<li>During a run, nodes show their state: the running step pulses (not with reduced motion), completed steps are green, failed red, gates and permission requests amber, and unreached steps dimmed.</li>
+<li>Pressing a node opens its agent's conversation. Chips <code>#1 #2</code> open earlier attempts. ⓘ opens a detail sheet with inputs and their sources, the manager's brief, the report, attempts and role instructions.</li>
+<li>Gates show Approve and Reject with a comment field. Running steps can be nudged; the manager can be asked to retry a failed step; a run can be canceled.</li>
+<li>Start opens a form built from the playbook's typed inputs. It warns when an active run already has the same inputs, and refuses when the playbook's <code>concurrency</code> limit is reached.</li>
+</ul>
+
+<h2>Limits with Paseo 0.14</h2>
+<ul>
+<li>The plugin uses Paseo 0.14's <code>server.on</code> and <code>server.before</code> hooks. The SDK has no live subscriptions for plugins, so the panel polls: every 3 seconds while a run is active, every 30 seconds otherwise.</li>
+<li>The SDK has no call to cancel a turn; the plugin stops a step agent by reloading its session.</li>
+</ul>
+<p>The full design and its decisions are in the <a href="https://github.com/lerenn/paseo-playbooks/blob/main/docs/adrs/2026-11-02-design.md">design record</a>.</p>
+
+</main>
+<footer class="site"><div class="inner">Paseo Playbooks is a plugin for <a href="https://paseo.sh">Paseo</a>. Source on <a href="https://github.com/lerenn/paseo-playbooks">GitHub</a>.</div></footer>
+</body>
+</html>
