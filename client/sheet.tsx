@@ -126,7 +126,10 @@ export function GateActions(props: { theme: Theme; run: Run; gate: Gate; hostLab
       {choices.map((choice, index) => {
         const destination = destinationLabel(run, gate, choice.id);
         const expanded = open === choice.id;
-        const { background, foreground } = choiceColors(theme, choice.color ?? (index === 0 ? "primary" : "neutral"));
+        const tone = choice.color ?? (index === 0 ? "primary" : "neutral");
+        const { background, foreground } = choiceColors(theme, tone);
+        /** Outline, side bar and focus colour of an open choice: its own colour (neutral has no strong one). */
+        const ring = tone === "neutral" ? theme.colors.foregroundMuted : background;
         return (
           <View key={choice.id} style={{ gap: 6 }}>
             <Pressable
@@ -151,7 +154,7 @@ export function GateActions(props: { theme: Theme; run: Run; gate: Gate; hostLab
                 paddingVertical: 9,
                 backgroundColor: background,
                 borderWidth: 1,
-                borderColor: expanded ? theme.colors.accent : "transparent",
+                borderColor: expanded ? ring : "transparent",
                 opacity: busy ? 0.6 : 1,
               }}
             >
@@ -160,7 +163,7 @@ export function GateActions(props: { theme: Theme; run: Run; gate: Gate; hostLab
               {choice.comment !== "none" ? <Icon name={expanded ? "ChevronUp" : "MessageSquare"} size={13} color={foreground} /> : null}
             </Pressable>
             {expanded ? (
-              <View style={{ gap: 6, paddingLeft: 8, borderLeftWidth: 2, borderLeftColor: theme.colors.accent }}>
+              <View style={{ gap: 6, paddingLeft: 8, borderLeftWidth: 2, borderLeftColor: ring }}>
                 <TextInput
                   accessibilityLabel={`Comment for ${choice.label}`}
                   placeholder={choice.comment === "required" ? "Comment (required)" : "Comment (optional)"}
@@ -169,17 +172,25 @@ export function GateActions(props: { theme: Theme; run: Run; gate: Gate; hostLab
                   onChangeText={setComment}
                   multiline
                   autoFocus
-                  style={{ minHeight: 64, borderRadius: 8, borderWidth: 1, borderColor: theme.colors.border, padding: 8, color: theme.colors.foreground, backgroundColor: theme.colors.surface2 }}
+                  style={{ minHeight: 64, borderRadius: 8, borderWidth: 1, borderColor: ring, padding: 8, color: theme.colors.foreground, backgroundColor: theme.colors.surface2 }}
                 />
                 <View style={{ flexDirection: "row", gap: 8 }}>
-                  <Button
-                    theme={theme}
-                    kind="primary"
-                    label={busy ? "Sending…" : "Send"}
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`Send ${choice.label}`}
+                    accessibilityState={{ disabled: busy || (choice.comment === "required" && !comment.trim()) }}
                     disabled={busy || (choice.comment === "required" && !comment.trim())}
                     onPress={() => void submit(choice, comment)}
-                    accessibilityLabel={`Send ${choice.label}`}
-                  />
+                    style={{
+                      borderRadius: 8,
+                      paddingHorizontal: 12,
+                      paddingVertical: 7,
+                      backgroundColor: background,
+                      opacity: busy || (choice.comment === "required" && !comment.trim()) ? 0.5 : 1,
+                    }}
+                  >
+                    <Text style={{ color: foreground, fontSize: 13, fontWeight: "600" }}>{busy ? "Sending…" : "Send"}</Text>
+                  </Pressable>
                   <Button theme={theme} label="Cancel" onPress={() => setOpen(null)} />
                 </View>
               </View>
