@@ -240,12 +240,12 @@ export function validateTool(runtime: Runtime): AgentToolDefinition {
   return defineAgentTool({
     name: "validate_playbooks",
     description:
-      "Validate the playbooks in <workspace>/.paseo/plugins/playbooks/ (or the given folder) with the same checks as the Playbooks panel, including this daemon's mode cap. Writes nothing.",
+      "Validate the playbooks in <workspace>/.paseo/plugins/playbooks/ and <workspace>/.paseo/playbooks/ (or in the given workspace folder) with the same checks as the Playbooks panel, including this daemon's mode cap. Writes nothing.",
     input: z.object({ path: z.string().optional().describe("Workspace folder to check; defaults to yours") }),
     execute: ({ path }, { agent }) =>
       guard(async () => {
         const loaded = await loadPlaybooks(path ?? agent.cwd, await runtime.cap());
-        if (!loaded.exists) return ok(`No playbooks folder at ${loaded.root}.`, { exists: false });
+        if (!loaded.exists) return ok(`No playbooks folder: create .paseo/plugins/playbooks/ or .paseo/playbooks/ in ${path ?? agent.cwd}.`, { exists: false });
         const results = loaded.entries.map(describeEntry);
         const invalid = results.filter((result) => !result.valid).length;
         const head = loaded.entries.length === 0 ? "No playbook files found." : invalid === 0 ? `All ${results.length} playbook(s) are valid.` : `${invalid} of ${results.length} playbook(s) have errors.`;

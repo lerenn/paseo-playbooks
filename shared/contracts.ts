@@ -6,7 +6,7 @@ export const listPlaybooks = defineRpc({
   name: "playbooks.list",
   input: z.object({ workspaceId: z.string() }),
   output: z.object({
-    root: z.string(),
+    roots: z.array(z.string()),
     exists: z.boolean(),
     entries: z.array(PlaybookEntrySchema),
   }),

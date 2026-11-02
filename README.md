@@ -31,7 +31,8 @@ paseo plugin reload paseo-playbooks
 paseo plugin logs paseo-playbooks
 ```
 
-To use playbooks in a repository, copy `examples/.paseo/plugins/playbooks/` into it,
+To use playbooks in a repository, copy `examples/.paseo/plugins/playbooks/` into it (as
+`.paseo/plugins/playbooks/` or `.paseo/playbooks/`),
 adjust the roles and playbooks, commit them, and allow the modes they use in
 Settings → Plugins → paseo-playbooks. Then open the Playbooks panel in a workspace of
 that repository and press Start.

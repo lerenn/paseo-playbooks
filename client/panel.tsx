@@ -62,7 +62,7 @@ export function PlaybooksPanel(props: PluginWorkspacePanelProps) {
         {playbooks.error ? <Text style={{ color: theme.colors.statusDanger }}>{(playbooks.error as Error).message}</Text> : null}
         {playbooks.data && cards.length === 0 ? (
           <Text style={{ color: theme.colors.foregroundMuted, fontSize: 13 }}>
-            No playbooks in this workspace. Add YAML files to .paseo/plugins/playbooks/ (see the paseo-playbooks skill), then refresh.
+            No playbooks in this workspace. Add YAML files to .paseo/plugins/playbooks/ or .paseo/playbooks/ (see the paseo-playbooks skill), then refresh.
           </Text>
         ) : null}
         {cards.map((card) => (

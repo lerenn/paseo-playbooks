@@ -8,10 +8,12 @@ const EXAMPLES = path.resolve(__dirname, "..", "examples");
 const OPEN_CAP = { allowedModes: { claude: ["default", "acceptEdits", "bypassPermissions"] } };
 const temps: string[] = [];
 
-async function workspace(files: Record<string, string>, withExampleRoles = true): Promise<string> {
-  const dir = await mkdtemp(path.join(tmpdir(), "playbooks-"));
-  temps.push(dir);
-  const root = path.join(dir, ".paseo", "plugins", "playbooks");
+async function workspace(files: Record<string, string>, withExampleRoles = true, folder = ".paseo/plugins/playbooks", dir?: string): Promise<string> {
+  if (!dir) {
+    dir = await mkdtemp(path.join(tmpdir(), "playbooks-"));
+    temps.push(dir);
+  }
+  const root = path.join(dir, folder);
   await mkdir(root, { recursive: true });
   if (withExampleRoles) await cp(path.join(EXAMPLES, ".paseo", "plugins", "playbooks", "roles"), path.join(root, "roles"), { recursive: true });
   for (const [name, content] of Object.entries(files)) {
@@ -152,5 +154,36 @@ steps:
     const entries = (await loadPlaybooks(dir, OPEN_CAP)).entries;
     const first = entries.find((entry) => entry.id === "first")!;
     expect(first.errors.join("\n")).toMatch(/required input "version" has no matching output/);
+  });
+
+  it("also loads .paseo/playbooks/, with its own roles", async () => {
+    const dir = await workspace({ "lite.yaml": "steps:\n  - { id: a, role: reviewer }\n" }, true, ".paseo/playbooks");
+    expect(await hasPlaybooks(dir)).toBe(true);
+    const result = await loadPlaybooks(dir, OPEN_CAP);
+    expect(result.roots).toEqual([path.join(dir, ".paseo/playbooks")]);
+    const [entry] = result.entries;
+    expect(entry!.errors).toEqual([]);
+    expect(entry!.file).toBe(".paseo/playbooks/lite.yaml");
+  });
+
+  it("merges both folders and reports a playbook id defined in both", async () => {
+    const dir = await workspace({ "one.yaml": "steps:\n  - { id: a, role: reviewer }\n", "same.yaml": "steps:\n  - { id: a, role: reviewer }\n" });
+    await workspace({ "two.yaml": "steps:\n  - { id: b, role: local_qa }\n", "same.yaml": "steps:\n  - { id: b, role: local_qa }\n" }, true, ".paseo/playbooks", dir);
+    const result = await loadPlaybooks(dir, OPEN_CAP);
+    expect(result.roots).toHaveLength(2);
+    const byFile = Object.fromEntries(result.entries.map((entry) => [entry.file, entry]));
+    expect(byFile[".paseo/plugins/playbooks/one.yaml"]!.playbook).not.toBeNull();
+    expect(byFile[".paseo/playbooks/two.yaml"]!.playbook).not.toBeNull();
+    for (const file of [".paseo/plugins/playbooks/same.yaml", ".paseo/playbooks/same.yaml"]) {
+      expect(byFile[file]!.playbook).toBeNull();
+      expect(byFile[file]!.errors.join("\n")).toMatch(/playbook id "same" is also defined in/);
+    }
+  });
+
+  it("does not share roles across folders", async () => {
+    const dir = await workspace({}, true);
+    await workspace({ "solo.yaml": "steps:\n  - { id: a, role: reviewer }\n" }, false, ".paseo/playbooks", dir);
+    const [entry] = (await loadPlaybooks(dir, OPEN_CAP)).entries;
+    expect(entry!.errors.join("\n")).toMatch(/\.paseo\/playbooks\/roles\/reviewer\/role\.yaml: file not found/);
   });
 });

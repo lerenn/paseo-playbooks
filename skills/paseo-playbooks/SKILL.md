@@ -14,7 +14,8 @@ It uses the same checks as the Playbooks panel, including the daemon's mode cap.
 
 ## Layout
 
-Everything lives in the repository, under `.paseo/plugins/playbooks/`:
+Everything lives in the repository, under `.paseo/plugins/playbooks/` or the shorter
+`.paseo/playbooks/` (both are loaded; use one):
 
 ```text
 .paseo/plugins/playbooks/
@@ -30,6 +31,8 @@ Everything lives in the repository, under `.paseo/plugins/playbooks/`:
 
 - Every top-level `*.yaml` file is a playbook. Shared settings live in folders, so no file
   name is reserved.
+- Each of the two folders is self-contained: a playbook uses the `roles/` and
+  `defaults/main.yaml` of its own folder. The same playbook id in both folders is an error.
 - Ids (playbooks, roles, steps, inputs, outputs) use lowercase letters, digits, `-` and `_`.
 - A playbook refers to a role by its directory name. Roles are shared by playbooks.
 

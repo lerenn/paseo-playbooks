@@ -18,7 +18,8 @@ import { AgentSettingsSchema, VarTypeSchema, VarValueSchema } from "../shared/ty
 import { parseDuration, singleRef, templateRefs, typeCompatible } from "../shared/vars";
 import { checkModes, type Cap } from "./cap";
 
-export const PLAYBOOKS_DIR = path.join(".paseo", "plugins", "playbooks");
+/** Folders searched for playbooks, relative to the workspace. Each folder is self-contained. */
+export const PLAYBOOKS_DIRS = [".paseo/plugins/playbooks", ".paseo/playbooks"] as const;
 const ID = /^[a-z][a-z0-9_-]*$/;
 const RESERVED_STEP_IDS = new Set(["end", "fail"]);
 const AGENT_OUTCOMES = ["success", "failure"];
@@ -158,8 +159,8 @@ interface RoleLoad {
   errors: string[];
 }
 
-async function loadRole(root: string, id: string): Promise<RoleLoad> {
-  const rel = `roles/${id}`;
+async function loadRole(root: string, relDir: string, id: string): Promise<RoleLoad> {
+  const rel = `${relDir}/roles/${id}`;
   if (!ID.test(id)) return { role: null, errors: [`role "${id}": invalid name (lowercase letters, digits, - and _)`] };
   const raw = await readYaml(path.join(root, "roles", id, "role.yaml"), `${rel}/role.yaml`);
   const instructions = await readText(path.join(root, "roles", id, "instructions.md"));
@@ -183,16 +184,17 @@ async function loadRole(root: string, id: string): Promise<RoleLoad> {
   };
 }
 
-async function loadDefaults(root: string): Promise<{ defaults: RawDefaults; errors: string[] }> {
+async function loadDefaults(root: string, relDir: string): Promise<{ defaults: RawDefaults; errors: string[] }> {
   const file = path.join(root, "defaults", "main.yaml");
+  const rel = `${relDir}/defaults/main.yaml`;
   if ((await readText(file)) === null) return { defaults: {}, errors: [] };
-  const raw = await readYaml(file, "defaults/main.yaml");
+  const raw = await readYaml(file, rel);
   if ("error" in raw) return { defaults: {}, errors: [raw.error] };
   const parsed = RawDefaultsSchema.safeParse(raw.value);
-  if (!parsed.success) return { defaults: {}, errors: formatZodError("defaults/main.yaml", parsed.error) };
+  if (!parsed.success) return { defaults: {}, errors: formatZodError(rel, parsed.error) };
   const errors: string[] = [];
   if (parsed.data.timeout && parseDuration(parsed.data.timeout) === null) {
-    errors.push(`defaults/main.yaml: timeout: expected a duration such as 30m or 2h`);
+    errors.push(`${rel}: timeout: expected a duration such as 30m or 2h`);
   }
   return { defaults: parsed.data, errors };
 }
@@ -200,61 +202,80 @@ async function loadDefaults(root: string): Promise<{ defaults: RawDefaults; erro
 // ------------------------------------------------------------------ playbooks
 
 export interface LoadResult {
-  root: string;
+  /** Absolute paths of the playbook folders that exist. */
+  roots: string[];
   exists: boolean;
   entries: PlaybookEntry[];
 }
 
-export function playbooksRoot(workspaceDir: string): string {
-  return path.join(workspaceDir, PLAYBOOKS_DIR);
-}
+type RawNext = Array<{ playbook: string; inputs: Record<string, string> }>;
 
-/** True when the workspace has at least one playbook file. */
+/** True when the workspace has at least one playbook file in any playbook folder. */
 export async function hasPlaybooks(workspaceDir: string): Promise<boolean> {
+  for (const relDir of PLAYBOOKS_DIRS) {
+    try {
+      const names = await readdir(path.join(workspaceDir, relDir));
+      if (names.some((name) => name.endsWith(".yaml") || name.endsWith(".yml"))) return true;
+    } catch {
+      // Folder absent.
+    }
+  }
+  return false;
+}
+
+async function listFolder(root: string): Promise<string[] | null> {
   try {
-    const names = await readdir(playbooksRoot(workspaceDir));
-    return names.some((name) => name.endsWith(".yaml") || name.endsWith(".yml"));
+    if (!(await stat(root)).isDirectory()) return null;
+    return await readdir(root);
   } catch {
-    return false;
+    return null;
   }
 }
 
-/** Loads and validates every playbook in `<workspaceDir>/.paseo/plugins/playbooks/`. */
+/**
+ * Loads and validates every playbook in `.paseo/plugins/playbooks/` and `.paseo/playbooks/`.
+ * Each folder uses its own roles/ and defaults/; the same playbook id in both is an error.
+ */
 export async function loadPlaybooks(workspaceDir: string, cap: Cap): Promise<LoadResult> {
-  const root = playbooksRoot(workspaceDir);
-  let names: string[];
-  try {
-    if (!(await stat(root)).isDirectory()) return { root, exists: false, entries: [] };
-    names = await readdir(root);
-  } catch {
-    return { root, exists: false, entries: [] };
-  }
-  const files = names.filter((name) => /\.ya?ml$/.test(name)).sort();
-  const { defaults, errors: defaultsErrors } = await loadDefaults(root);
-  const roleCache = new Map<string, Promise<RoleLoad>>();
-  const role = (id: string) => {
-    if (!roleCache.has(id)) roleCache.set(id, loadRole(root, id));
-    return roleCache.get(id)!;
-  };
-
+  const roots: string[] = [];
   const entries: PlaybookEntry[] = [];
-  const rawNext = new Map<string, Array<{ playbook: string; inputs: Record<string, string> }>>();
-  for (const name of files) {
-    const id = name.replace(/\.ya?ml$/, "");
-    const { entry, next } = await loadPlaybook(root, name, id, defaults, role, cap);
-    if (defaultsErrors.length > 0) {
-      entry.errors.unshift(...defaultsErrors);
-      entry.playbook = null;
+  const rawNext = new Map<PlaybookEntry, RawNext>();
+  for (const relDir of PLAYBOOKS_DIRS) {
+    const root = path.join(workspaceDir, relDir);
+    const names = await listFolder(root);
+    if (names === null) continue;
+    roots.push(root);
+    const files = names.filter((name) => /\.ya?ml$/.test(name)).sort();
+    const { defaults, errors: defaultsErrors } = await loadDefaults(root, relDir);
+    const roleCache = new Map<string, Promise<RoleLoad>>();
+    const role = (id: string) => {
+      if (!roleCache.has(id)) roleCache.set(id, loadRole(root, relDir, id));
+      return roleCache.get(id)!;
+    };
+    for (const name of files) {
+      const id = name.replace(/\.ya?ml$/, "");
+      const { entry, next } = await loadPlaybook(root, name, `${relDir}/${name}`, id, defaults, role, cap);
+      if (defaultsErrors.length > 0) {
+        entry.errors.unshift(...defaultsErrors);
+        entry.playbook = null;
+      }
+      entries.push(entry);
+      rawNext.set(entry, next);
     }
-    entries.push(entry);
-    rawNext.set(id, next);
+  }
+  for (const entry of entries) {
+    const clashes = entries.filter((other) => other !== entry && other.id === entry.id);
+    if (clashes.length === 0) continue;
+    entry.errors.push(`${entry.file}: playbook id "${entry.id}" is also defined in ${clashes.map((other) => other.file).join(", ")}; rename one`);
+    entry.playbook = null;
   }
   linkNext(entries, rawNext);
-  return { root, exists: true, entries };
+  return { roots, exists: roots.length > 0, entries };
 }
 
 async function loadPlaybook(
   root: string,
+  name: string,
   file: string,
   id: string,
   defaults: RawDefaults,
@@ -267,7 +288,7 @@ async function loadPlaybook(
     return { entry, next: [] };
   };
   if (!ID.test(id)) return fail([`${file}: playbook file names use lowercase letters, digits, - and _`]);
-  const raw = await readYaml(path.join(root, file), file);
+  const raw = await readYaml(path.join(root, name), file);
   if ("error" in raw) return fail([raw.error]);
   const parsed = RawPlaybookSchema.safeParse(raw.value);
   if (!parsed.success) return fail(formatZodError(file, parsed.error));
@@ -545,11 +566,11 @@ function resolveOutputSource(
 }
 
 /** Validates `next` entries once every playbook in the folder is loaded. */
-function linkNext(entries: PlaybookEntry[], rawNext: Map<string, Array<{ playbook: string; inputs: Record<string, string> }>>): void {
-  const byId = new Map(entries.map((entry) => [entry.id, entry]));
+function linkNext(entries: PlaybookEntry[], rawNext: Map<PlaybookEntry, RawNext>): void {
+  const byId = new Map(entries.filter((entry) => entry.playbook).map((entry) => [entry.id, entry]));
   for (const entry of entries) {
     if (!entry.playbook) continue;
-    for (const next of rawNext.get(entry.id) ?? []) {
+    for (const next of rawNext.get(entry) ?? []) {
       const target = byId.get(next.playbook)?.playbook;
       if (!target) {
         entry.errors.push(`${entry.file}: next: playbook "${next.playbook}" not found or invalid`);

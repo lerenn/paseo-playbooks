@@ -2,9 +2,9 @@ Playbooks lets one Paseo agent, the Playbook Manager, run a multi-step playbook:
 runs as a subagent in the same worktree, and the run stops at human gates that you approve
 or reject in Paseo.
 
-Playbooks are YAML files in each repository, under `.paseo/plugins/playbooks/`, with
-shared roles in `roles/<id>/` (settings and a Markdown system prompt) and optional agent
-defaults in `defaults/main.yaml`. Steps form a graph through `needs`: steps that are ready
+Playbooks are YAML files in each repository, under `.paseo/plugins/playbooks/` or
+`.paseo/playbooks/`, with shared roles in `roles/<id>/` (settings and a Markdown system
+prompt) and optional agent defaults in `defaults/main.yaml`. Steps form a graph through `needs`: steps that are ready
 together run in parallel, loops are explicit `goto` steps back with a limit, and inputs
 and outputs are typed and matched by name.
 
