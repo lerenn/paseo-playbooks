@@ -47,7 +47,7 @@ export function PlaybooksPanel(props: PluginWorkspacePanelProps) {
   return (
     <View style={{ flex: 1, backgroundColor: theme.colors.surface0 }}>
       {/* No heading: the tab already says "Playbooks". */}
-      <View style={{ flexDirection: "row", justifyContent: "flex-end", paddingHorizontal: pad, paddingTop: 8, paddingBottom: 4 }}>
+      <View style={{ flexDirection: "row", justifyContent: "flex-end", paddingHorizontal: pad, paddingVertical: 8 }}>
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Refresh playbooks"
