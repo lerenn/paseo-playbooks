@@ -117,7 +117,7 @@ function PlaybookCard(props: {
   const [selected, setSelected] = useState<string | "definition" | null>(null);
   const [sheet, setSheet] = useState<string | null>(null);
   const [highlighted, setHighlighted] = useState<string | null>(null);
-  const [starting, setStarting] = useState(false);
+  const [starting, setStarting] = useState<"current" | "new" | null>(null);
   const runId = selected ?? active?.id ?? card.runs[0]?.id ?? "definition";
   const run = runId === "definition" ? null : card.runs.find((candidate) => candidate.id === runId) ?? null;
   const playbook: Playbook | null = run?.playbook ?? card.entry?.playbook ?? null;
@@ -126,7 +126,7 @@ function PlaybookCard(props: {
 
   return (
     <View style={{ borderRadius: 12, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface1, padding: 10, gap: 8 }}>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 6, zIndex: 20 }}>
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={`${expanded ? "Collapse" : "Expand"} ${title}`}
@@ -144,7 +144,7 @@ function PlaybookCard(props: {
             </Text>
           </View>
         </Pressable>
-        {card.entry?.playbook ? <Button theme={theme} kind="primary" label="▶ Start" onPress={() => setStarting(true)} accessibilityLabel={`Start ${title}`} /> : null}
+        {card.entry?.playbook ? <StartButton theme={theme} title={title} onStart={setStarting} /> : null}
       </View>
       {errors.map((error) => (
         <Text key={error} selectable style={{ color: theme.colors.statusDanger, fontSize: 12 }}>
@@ -207,12 +207,14 @@ function PlaybookCard(props: {
           theme={theme}
           playbook={card.entry.playbook}
           workspaceId={props.workspaceId}
+          target={starting}
           compact={props.compact}
-          onClose={() => setStarting(false)}
-          onStarted={(workspaceId) => {
-            setStarting(false);
+          onClose={() => setStarting(null)}
+          onStarted={(result) => {
+            setStarting(null);
             void queryClient.invalidateQueries({ queryKey: ["playbooks"] });
-            props.onOpenWorkspace(workspaceId);
+            if (result.reusedAgent) props.onOpenAgent(result.managerAgentId);
+            else props.onOpenWorkspace(result.workspaceId);
           }}
         />
       ) : null}
@@ -293,6 +295,78 @@ function RunBar(props: { theme: Theme; run: Run; hostLabel: string; onDone(): vo
           <GateActions theme={theme} run={run} gate={gate} hostLabel={props.hostLabel} />
         </View>
       ))}
+    </View>
+  );
+}
+
+/** Split button: Start runs with the workspace's agent; the chevron menu offers a new agent in a new worktree. */
+function StartButton(props: { theme: Theme; title: string; onStart(target: "current" | "new"): void }) {
+  const { theme } = props;
+  const [menu, setMenu] = useState(false);
+  const [hover, setHover] = useState(false);
+  const segment = { flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 7, backgroundColor: theme.colors.accent } as const;
+  return (
+    <View style={{ zIndex: 20 }}>
+      <View style={{ flexDirection: "row", borderRadius: 8, overflow: "hidden" }}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Start ${props.title} with this workspace's agent`}
+          onPress={() => props.onStart("current")}
+          style={{ ...segment, paddingLeft: 12, paddingRight: 10 }}
+        >
+          <Icon name="Play" size={13} color={theme.colors.accentForeground} />
+          <Text style={{ color: theme.colors.accentForeground, fontSize: 13, fontWeight: "600" }}>Start</Text>
+        </Pressable>
+        <View style={{ width: 1, backgroundColor: theme.colors.accentForeground, opacity: 0.25 }} />
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`More ways to start ${props.title}`}
+          accessibilityState={{ expanded: menu }}
+          onPress={() => setMenu((value) => !value)}
+          style={{ ...segment, paddingHorizontal: 8 }}
+        >
+          <Icon name="ChevronDown" size={14} color={theme.colors.accentForeground} />
+        </Pressable>
+      </View>
+      {menu ? (
+        <View
+          accessibilityRole="menu"
+          style={{
+            position: "absolute",
+            top: 38,
+            right: 0,
+            minWidth: 200,
+            padding: 4,
+            borderRadius: 10,
+            borderWidth: 1,
+            borderColor: theme.colors.border,
+            backgroundColor: theme.colors.surface2,
+            elevation: 6,
+          }}
+        >
+          <Pressable
+            accessibilityRole="menuitem"
+            onPress={() => {
+              setMenu(false);
+              props.onStart("new");
+            }}
+            onHoverIn={() => setHover(true)}
+            onHoverOut={() => setHover(false)}
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 8,
+              paddingHorizontal: 10,
+              paddingVertical: 8,
+              borderRadius: 6,
+              backgroundColor: hover ? theme.colors.surface1 : "transparent",
+            }}
+          >
+            <Icon name="GitBranchPlus" size={15} color={theme.colors.foreground} />
+            <Text style={{ color: theme.colors.foreground, fontSize: 13 }}>Start on a new agent</Text>
+          </Pressable>
+        </View>
+      ) : null}
     </View>
   );
 }

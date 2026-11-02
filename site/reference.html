@@ -57,7 +57,7 @@
   provider: claude
   model: claude-opus-5-5
   mode: bypassPermissions
-manager:            # the manager agent that Start creates
+manager:            # settings of the manager agent when Start creates a new one
   model: claude-sonnet-5-5
   mode: default
 timeout: 1h         # default step timeout</code></pre><table><thead><tr><th>Key</th><th>Meaning</th></tr></thead><tbody><tr><td><code>agent</code></td><td><code>provider</code>, <code>model</code>, <code>mode</code>, <code>thinking</code> for steps. See <a href="#agents">agent settings</a>.</td></tr><tr><td><code>manager</code></td><td>Agent settings for the manager created by Start. It inherits <code>agent.provider</code> and <code>agent.model</code> (not the mode). Without a model it uses Claude Opus.</td></tr><tr><td><code>timeout</code></td><td>Default step timeout, such as <code>30m</code> or <code>2h</code>. No timeout when absent.</td></tr></tbody></table>

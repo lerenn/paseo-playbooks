@@ -26,11 +26,24 @@ export const startRun = defineRpc({
     inputs: z.record(z.string(), VarValueSchema),
     /** Start even when an active run of this playbook has the same inputs. */
     force: z.boolean().default(false),
+    /** Manage the run with this agent of the workspace; omitted = new worktree and new manager. */
+    agentId: z.string().optional(),
   }),
   output: z.discriminatedUnion("status", [
     z.object({ status: z.literal("started"), workspaceId: z.string(), managerAgentId: z.string(), runId: z.string() }),
     z.object({ status: z.literal("duplicate"), runId: z.string(), message: z.string() }),
   ]),
+});
+
+/** Agents of a workspace that can manage a run (step agents excluded), most recent first. */
+export const listWorkspaceAgents = defineRpc({
+  name: "agents.list",
+  input: z.object({ workspaceId: z.string() }),
+  output: z.object({
+    agents: z.array(
+      z.object({ id: z.string(), title: z.string().nullable(), provider: z.string(), status: z.string(), managing: z.string().nullable() }),
+    ),
+  }),
 });
 
 export const decideGateRpc = defineRpc({

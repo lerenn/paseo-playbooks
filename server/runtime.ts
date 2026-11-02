@@ -7,7 +7,7 @@ import { DEFAULT_MODEL, DEFAULT_PROVIDER, modeViolation } from "./cap";
 import * as engine from "./engine";
 import { checkoutSnapshot, currentRef, snapshotDiff } from "./git";
 import { loadPlaybooks } from "./loader";
-import { managerKickoff, stepSystemPrompt } from "./prompts";
+import { managerKickoff, managerTakeover, stepSystemPrompt } from "./prompts";
 import type { RunStore } from "./store";
 
 export class UserError extends Error {}
@@ -222,20 +222,16 @@ export class Runtime {
     manager: { id: string; workspaceId: string | null; cwd: string },
     playbookId: string,
     inputs: Record<string, unknown>,
+    preloaded?: Playbook,
   ): Promise<Run> {
     if (!manager.workspaceId) throw new UserError("this agent has no workspace");
     const workspace = await this.api().workspaces.ref(manager.workspaceId).refresh();
     if (!workspace) throw new UserError("workspace not found");
-    if (workspace.workspaceKind !== "worktree") {
-      throw new UserError(
-        "playbooks run in their own worktree: open the Playbooks panel in Paseo and press Start, which creates the worktree and a manager for the run",
-      );
-    }
     const active = this.store.list().find((run) => run.workspaceId === workspace.id && !isTerminal(run.status));
-    if (active) throw new UserError(`this worktree already has an active run (${active.id}); one active run per worktree`);
+    if (active) throw new UserError(`this workspace already has an active run (${active.id}); one active run per workspace`);
     const workspaceDir = workspace.workspaceDirectory ?? manager.cwd;
     const reservation = this.reservations.get(workspace.id);
-    let playbook: Playbook | null = reservation && reservation.playbook.id === playbookId ? reservation.playbook : null;
+    let playbook: Playbook | null = preloaded ?? (reservation && reservation.playbook.id === playbookId ? reservation.playbook : null);
     if (!playbook) {
       const loaded = await loadPlaybooks(workspaceDir, await this.cap());
       const entry = loaded.entries.find((candidate) => candidate.id === playbookId);
@@ -491,7 +487,48 @@ export class Runtime {
 
   // ---------------------------------------------------------------- Start (panel)
 
-  async startFromPanel(input: { workspaceId: string; playbook: string; inputs: Record<string, VarValue>; force: boolean }) {
+  /** Agents of a workspace that can manage a run: not step agents, not archived; most recent first. */
+  async workspaceAgents(workspaceId: string) {
+    const workspace = await this.api().workspaces.ref(workspaceId).refresh();
+    if (!workspace) throw new UserError("workspace not found");
+    const listed = await this.api().agents.list({ filter: { projectKeys: [workspace.projectId] } });
+    const recent = (agent: { lastUserMessageAt: string | null; updatedAt: string }) => agent.lastUserMessageAt ?? agent.updatedAt;
+    return listed.entries
+      .map((entry) => entry.agent)
+      .filter((agent) => agent.workspaceId === workspaceId && !agent.archivedAt && !agent.internal && !agent.labels?.[STEP_LABEL])
+      .sort((a, b) => recent(b).localeCompare(recent(a)))
+      .map((agent) => ({
+        id: agent.id,
+        title: agent.title ?? null,
+        provider: agent.provider,
+        status: agent.status,
+        managing: this.activeRunOfManager(agent.id)?.id ?? null,
+      }));
+  }
+
+  /** Makes an existing agent of the workspace the manager: creates the run here, reloads the agent for the tools, sends the kickoff. */
+  private async startWithAgent(workspaceId: string, agentId: string, playbook: Playbook, inputs: Record<string, VarValue>) {
+    const handle = this.api().agents.ref(agentId);
+    const agent = (await handle.refresh())?.agent;
+    if (!agent || agent.archivedAt) throw new UserError("that agent no longer exists");
+    if (agent.workspaceId !== workspaceId) throw new UserError("that agent is not in this workspace");
+    if (agent.labels?.[STEP_LABEL]) throw new UserError("a step agent cannot manage a run");
+    if (agent.status === "running") throw new UserError("that agent is busy: wait for its turn to end, then press Start again");
+    const managing = this.activeRunOfManager(agentId);
+    if (managing) throw new UserError(`that agent already manages run ${managing.id}`);
+    const run = await this.startPlaybook({ id: agentId, workspaceId, cwd: agent.cwd }, playbook.id, inputs, playbook);
+    try {
+      // Reopening the session reruns session_open, which gives a manager its tools.
+      await handle.reload();
+      await handle.send(managerTakeover(run, engine.readySteps(run)));
+    } catch (error) {
+      await this.cancelRun(run.id, "could not hand the run to the agent", false).catch(() => undefined);
+      throw error;
+    }
+    return { status: "started" as const, workspaceId, managerAgentId: agentId, runId: run.id };
+  }
+
+  async startFromPanel(input: { workspaceId: string; playbook: string; inputs: Record<string, VarValue>; force: boolean; agentId?: string | undefined }) {
     const workspace = await this.api().workspaces.ref(input.workspaceId).refresh();
     if (!workspace) throw new UserError("workspace not found");
     const workspaceDir = workspace.workspaceDirectory ?? workspace.projectRootPath;
@@ -514,6 +551,7 @@ export class Runtime {
     if (same && !input.force) {
       return { status: "duplicate" as const, runId: same.id, message: `Run ${same.id} of "${playbook.id}" is already active with the same inputs.` };
     }
+    if (input.agentId) return this.startWithAgent(workspace.id, input.agentId, playbook, resolved.inputs);
     const id = shortId();
     const runId = `run_${id}`;
     const branch = `playbooks/${playbook.id}-${id}`;

@@ -5,6 +5,7 @@ import {
   decideGateRpc,
   listPlaybooks,
   listRuns,
+  listWorkspaceAgents,
   nudgeStepRpc,
   retryStepRpc,
   startRun,
@@ -86,6 +87,7 @@ export default function contribute(server: PluginServerContext) {
   });
   handle(listRuns, async ({ workspaceId }) => ({ runs: store.list().filter((run) => run.workspaceId === workspaceId) }));
   handle(startRun, (input) => runtime.startFromPanel(input));
+  handle(listWorkspaceAgents, async ({ workspaceId }) => ({ agents: await runtime.workspaceAgents(workspaceId) }));
   handle(decideGateRpc, async ({ runId, gateId, decision, comment, hostLabel }) => {
     const result = await runtime.decideGate(runId, gateId, {
       decision,

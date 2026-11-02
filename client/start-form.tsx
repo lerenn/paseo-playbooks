@@ -1,8 +1,9 @@
 import { useRpc } from "@getpaseo/plugin/client";
 import { Icon, Modal, TextInput, useToast } from "@getpaseo/plugin/client/ui";
+import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { Pressable, Switch, Text, View } from "react-native";
-import { startRun } from "../shared/contracts";
+import { listWorkspaceAgents, startRun } from "../shared/contracts";
 import type { Playbook, VarValue } from "../shared/types";
 import { Button } from "./sheet";
 import type { Theme } from "./theme";
@@ -20,8 +21,11 @@ export function StartForm(props: {
   theme: Theme;
   playbook: Playbook;
   workspaceId: string;
+  /** "current": the workspace's agent manages the run here; "new": a new worktree and manager. */
+  target: "current" | "new";
   onClose(): void;
-  onStarted(workspaceId: string): void;
+  /** reusedAgent: an existing agent of this workspace manages the run (no new worktree). */
+  onStarted(result: { workspaceId: string; managerAgentId: string; reusedAgent: boolean }): void;
   compact: boolean;
 }) {
   const { theme, playbook } = props;
@@ -30,6 +34,12 @@ export function StartForm(props: {
   const [values, setValues] = useState(() => initialValues(playbook));
   const [busy, setBusy] = useState(false);
   const [duplicate, setDuplicate] = useState<string | null>(null);
+  const listAgents = useRpc(listWorkspaceAgents);
+  const agents = useQuery({ queryKey: ["playbooks", "agents", props.workspaceId], queryFn: () => listAgents({ workspaceId: props.workspaceId }) });
+  const current = props.target === "current";
+  /** The current agent: the most recent agent of the workspace that manages no active run. */
+  const manager = current ? agents.data?.agents.find((agent) => !agent.managing) ?? null : null;
+  const blocked = current && (agents.isLoading || manager === null);
   /** Descriptions shown on hover (desktop, web); pressing pins them (phones have no hover). */
   const [hovered, setHovered] = useState<string | null>(null);
   const [info, setInfo] = useState<Set<string>>(() => new Set());
@@ -52,13 +62,14 @@ export function StartForm(props: {
         if (value === "" || value === undefined) continue;
         inputs[name] = def.type === "number" ? Number(value) : value;
       }
-      const result = await start({ workspaceId: props.workspaceId, playbook: playbook.id, inputs, force });
+      const agentId = manager?.id;
+      const result = await start({ workspaceId: props.workspaceId, playbook: playbook.id, inputs, force, ...(agentId ? { agentId } : {}) });
       if (result.status === "duplicate") {
         setDuplicate(result.message);
         return;
       }
       toast.show(`Started ${result.runId}`, { variant: "success" });
-      props.onStarted(result.workspaceId);
+      props.onStarted({ workspaceId: result.workspaceId, managerAgentId: result.managerAgentId, reusedAgent: agentId !== undefined });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : String(error));
     } finally {
@@ -79,8 +90,14 @@ export function StartForm(props: {
     <Modal title={`Start · ${playbook.title}`} open onOpenChange={(open) => !open && props.onClose()}>
       <Modal.Content>
         {playbook.description ? <Text style={{ color: theme.colors.foregroundMuted, fontSize: 13 }}>{playbook.description}</Text> : null}
-        <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>
-          Start creates a worktree on a new branch from this workspace, then a Playbook Manager agent there.
+        <Text style={{ color: current && !agents.isLoading && !manager ? theme.colors.statusWarning : theme.colors.foregroundMuted, fontSize: 12 }}>
+          {!current
+            ? "Creates a worktree on a new branch from this workspace, with a new Playbook Manager agent in it."
+            : agents.isLoading
+              ? "Finding this workspace's agent…"
+              : manager
+                ? `${manager.title ?? manager.id.slice(0, 8)} manages the run, in this workspace on its current branch. It is reloaded to get the playbook tools, then receives the kickoff.${manager.status === "running" ? " It is busy: wait for its turn to end." : ""}`
+                : "No agent in this workspace can manage the run. Use “Start on a new agent” instead."}
         </Text>
         {Object.keys(playbook.inputs).length > 0 ? (
           <View style={{ borderRadius: 8, borderWidth: 1, borderColor: theme.colors.border }}>
@@ -182,7 +199,7 @@ export function StartForm(props: {
             <Button theme={theme} kind="primary" label="Start anyway" disabled={busy} onPress={() => void submit(true)} />
           </View>
         ) : (
-          <Button theme={theme} kind="primary" label={busy ? "Starting…" : "Start"} disabled={busy} onPress={() => void submit(false)} />
+          <Button theme={theme} kind="primary" label={busy ? "Starting…" : "Start"} disabled={busy || blocked} onPress={() => void submit(false)} />
         )}
       </Modal.Content>
     </Modal>

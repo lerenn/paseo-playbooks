@@ -107,7 +107,7 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
     }),
     defineAgentTool({
       name: "start_playbook",
-      description: "Create a run of a playbook with you as its manager. Only in a worktree workspace with no active run. Returns the run id and the ready steps.",
+      description: "Create a run of a playbook with you as its manager, in your workspace (one active run per workspace). Returns the run id and the ready steps.",
       input: z.object({
         playbook: z.string().describe("Playbook id (its file name without .yaml)"),
         inputs: z.record(z.string(), VarValueSchema).default({}).describe("Playbook inputs by name"),

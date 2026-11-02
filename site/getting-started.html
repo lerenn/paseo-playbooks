@@ -90,7 +90,7 @@ steps:
 
 <h2>4. Validate and commit</h2>
 <p>Any agent in the workspace can call the <code>validate_playbooks</code> tool. It runs the same checks as the panel, including the daemon's mode cap, and lists every error with its file and field.</p>
-<p>Commit the folder. Start creates the run's worktree from the current commit.</p>
+<p>Press Start and fill in the inputs: the workspace's agent becomes the manager and runs the playbook in this workspace. To run in a separate worktree with a new manager, open the arrow next to Start and choose <em>Start on a new agent</em>; commit the folder first, because the worktree branches from the current commit.</p>
 <div class="note">To let agents write playbooks for you, copy <a href="https://github.com/lerenn/paseo-playbooks/tree/main/skills/paseo-playbooks"><code>skills/paseo-playbooks/SKILL.md</code></a> into your repository's <code>.agents/skills/</code> or <code>.claude/skills/</code>.</div>
 
 <h2>5. Start a run</h2>

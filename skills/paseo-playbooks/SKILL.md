@@ -43,7 +43,7 @@ agent:                 # defaults for every step
   provider: claude
   model: claude-opus-5-5
   mode: bypassPermissions
-manager:               # the manager agent that the panel's Start creates
+manager:               # settings of the manager agent when Start creates a new one
   mode: default
 timeout: 1h            # default step timeout (optional)
 ```
