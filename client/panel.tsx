@@ -70,9 +70,11 @@ export function PlaybooksPanel(props: PluginWorkspacePanelProps) {
         <ScrollView contentContainerStyle={{ paddingHorizontal: pad, paddingBottom: pad, gap: 12 }}>
           {playbooks.isLoading ? <Text style={{ color: theme.colors.foregroundMuted }}>Loading…</Text> : null}
           {playbooks.error ? <Text style={{ color: theme.colors.statusDanger }}>{(playbooks.error as Error).message}</Text> : null}
-          {cards.map((card) => (
+          {cards.map((card, index) => (
             <PlaybookCard
               key={card.id}
+              // Earlier cards stack above later ones, so a card's dropdown menus are not covered by the cards below it.
+              zIndex={cards.length - index}
               card={card}
               compact={layout.compact}
               theme={theme}
@@ -114,6 +116,7 @@ function EmptyState(props: { theme: Theme; compact: boolean }) {
 const CARD_PAD = 10;
 
 function PlaybookCard(props: {
+  zIndex: number;
   compact: boolean;
   card: Card;
   theme: Theme;
@@ -141,7 +144,7 @@ function PlaybookCard(props: {
   const errors = card.entry?.errors ?? [];
 
   return (
-    <View style={{ borderRadius: 12, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface1, padding: CARD_PAD, gap: 8 }}>
+    <View style={{ zIndex: props.zIndex, borderRadius: 12, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface1, padding: CARD_PAD, gap: 8 }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 6, zIndex: 20 }}>
         <Pressable
           accessibilityRole="button"
