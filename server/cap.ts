@@ -15,15 +15,24 @@ export function modeViolation(cap: Cap, provider: string, mode: string | undefin
   return `mode "${mode}" on provider "${provider}" is not allowed by this daemon (allowed: ${allowed.join(", ") || "none"}); the daemon owner can allow it in Settings → Plugins → paseo-playbooks`;
 }
 
-/** Checks the manager and every agent step against the cap. */
+/** Checks the manager and every agent step against the cap: one error per disallowed provider/mode, listing who uses it. */
 export function checkModes(cap: Cap, manager: AgentSettings, steps: readonly Step[]): string[] {
-  const errors: string[] = [];
-  const managerProblem = modeViolation(cap, manager.provider ?? DEFAULT_PROVIDER, manager.mode);
-  if (managerProblem) errors.push(`manager: ${managerProblem}`);
+  const users = new Map<string, { provider: string; mode: string; who: string[] }>();
+  const note = (provider: string, mode: string | undefined, who: string) => {
+    if (mode === undefined || modeViolation(cap, provider, mode) === null) return;
+    const key = `${provider}\u0000${mode}`;
+    const entry = users.get(key) ?? { provider, mode, who: [] };
+    entry.who.push(who);
+    users.set(key, entry);
+  };
+  note(manager.provider ?? DEFAULT_PROVIDER, manager.mode, "the manager");
   for (const step of steps) {
-    if (step.kind !== "agent") continue;
-    const problem = modeViolation(cap, step.agent.provider ?? manager.provider ?? DEFAULT_PROVIDER, step.agent.mode);
-    if (problem) errors.push(`step "${step.id}": ${problem}`);
+    if (step.kind === "agent") note(step.agent.provider ?? manager.provider ?? DEFAULT_PROVIDER, step.agent.mode, `"${step.id}"`);
   }
-  return errors;
+  return [...users.values()].map(({ provider, mode, who }) => {
+    const stepNames = who.filter((name) => name !== "the manager");
+    const stepsPart = stepNames.length === 0 ? "" : `${stepNames.length === 1 ? "step" : "steps"} ${stepNames.join(", ")}`;
+    const subject = who.includes("the manager") ? (stepsPart ? `the manager and ${stepsPart}` : "the manager") : stepsPart;
+    return `${subject}: ${modeViolation(cap, provider, mode)}`;
+  });
 }

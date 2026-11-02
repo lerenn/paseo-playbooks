@@ -48,6 +48,13 @@ describe("loadPlaybooks", () => {
     expect(playbook.roles.reviewer!.readonly).toBe(true);
   });
 
+  it("reports a disallowed mode once, listing every step that uses it", async () => {
+    const result = await loadPlaybooks(EXAMPLES, { allowedModes: { claude: ["default", "acceptEdits"] } });
+    const errors = result.entries.find((entry) => entry.id === "pr")!.errors;
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatch(/steps "investigate", "implement", "review", "local_qa", "babysit": mode "bypassPermissions"/);
+  });
+
   it("refuses modes outside the daemon cap", async () => {
     const result = await loadPlaybooks(EXAMPLES, { allowedModes: { claude: ["default"] } });
     const pr = result.entries.find((entry) => entry.id === "pr")!;
