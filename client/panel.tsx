@@ -162,6 +162,10 @@ function PlaybookCard(props: {
         </Text>
       ))}
       {expanded && card.runs.length > 0 ? (
+        // Full-width rule between the title row and the run tabs (the card has 10px padding).
+        <View style={{ height: 1, marginHorizontal: -10, backgroundColor: theme.colors.border }} />
+      ) : null}
+      {expanded && card.runs.length > 0 ? (
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, zIndex: 15 }}>
           {card.entry?.playbook ? (
             <Pressable
