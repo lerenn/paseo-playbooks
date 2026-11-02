@@ -139,7 +139,7 @@ function PlaybookCard(props: {
 
   return (
     <View style={{ borderRadius: 12, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface1, padding: CARD_PAD, gap: 8 }}>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 6, zIndex: 20, marginBottom: 6 }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 6, zIndex: 20 }}>
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={`${expanded ? "Collapse" : "Expand"} ${title}`}
@@ -166,7 +166,7 @@ function PlaybookCard(props: {
       ))}
       {expanded && card.runs.length > 0 ? (
         // Full-width rule between the title row and the run tabs (the card has CARD_PAD padding).
-        <View style={{ height: 1, marginHorizontal: -CARD_PAD, backgroundColor: theme.colors.border }} />
+        <View style={{ height: 1, marginTop: 6, marginHorizontal: -CARD_PAD, backgroundColor: theme.colors.border }} />
       ) : null}
       {expanded && card.runs.length > 0 ? (
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, zIndex: 15 }}>
