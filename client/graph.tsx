@@ -2,7 +2,7 @@ import { useAgent } from "@getpaseo/plugin/client";
 import { Icon, ScrollView } from "@getpaseo/plugin/client/ui";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AccessibilityInfo, Animated, Pressable, Text, View } from "react-native";
-import { layerOf, layoutGraph } from "../shared/graph";
+import { END, layerOf, layoutGraph, START, withTerminals } from "../shared/graph";
 import type { Playbook, Run, Step } from "../shared/types";
 import { agentBackground, gateBackground, stepLabel, nodeColor, nodeIcon, nodeStateLabel, type NodeState, type Theme } from "./theme";
 
@@ -78,8 +78,10 @@ function useReduceMotion(): boolean {
 /** Layered top-down DAG built from plain views: nodes in rows, org-chart connectors between rows. */
 export function Graph(props: GraphProps) {
   const { playbook, run, theme } = props;
-  const layout = useMemo(() => layoutGraph(playbook.steps), [playbook]);
-  const layers = useMemo(() => layerOf(playbook.steps), [playbook]);
+  // Start and End are laid out like steps: Start above the roots, End below every step nothing needs.
+  const nodes = useMemo(() => withTerminals(playbook.steps), [playbook]);
+  const layout = useMemo(() => layoutGraph(nodes), [nodes]);
+  const layers = useMemo(() => layerOf(nodes), [nodes]);
   const [available, setAvailable] = useState(0);
   const loops = useMemo(() => loopEdges(playbook, run), [playbook, run]);
   const forward = useMemo(() => forwardLabels(playbook), [playbook]);
@@ -140,6 +142,16 @@ export function Graph(props: GraphProps) {
             <View style={{ flexDirection: "row", justifyContent: "center" }}>
               {row.map((id) => (
                 <View key={id} style={{ width: SLOT, alignItems: "center" }}>
+                  {id === START || id === END ? (
+                    <Terminal
+                      kind={id === START ? "start" : "end"}
+                      playbook={playbook}
+                      run={run}
+                      theme={theme}
+                      nodeWidth={nodeWidth}
+                      longNeeds={id === END ? nodes.find((node) => node.id === END)!.needs.filter((need) => (layers.get(need) ?? 0) < index - 1) : []}
+                    />
+                  ) : (
                   <Node
                     step={byId.get(id)!}
                     longNeeds={byId.get(id)!.needs.filter((need) => (layers.get(need) ?? 0) < index - 1)}
@@ -148,6 +160,7 @@ export function Graph(props: GraphProps) {
                     onBoxHeight={(height) => setHeights((current) => (current[id] === height ? current : { ...current, [id]: height }))}
                     {...props}
                   />
+                  )}
                 </View>
               ))}
             </View>
@@ -211,6 +224,57 @@ function Band(props: {
           <Icon name="ChevronDown" size={ARROW} color={running.has(id) ? hot : line} />
         </View>
       ))}
+    </View>
+  );
+}
+
+/** The playbook's entry (its inputs) and exit (its outputs), as pills above and below the steps. */
+function Terminal(props: { kind: "start" | "end"; playbook: Playbook; run: Run | null; theme: Theme; nodeWidth: number; longNeeds: string[] }) {
+  const { theme, run, playbook } = props;
+  const start = props.kind === "start";
+  const names = Object.keys(start ? playbook.inputs : playbook.outputs);
+  const color = start
+    ? run
+      ? theme.colors.statusSuccess
+      : theme.colors.foregroundMuted
+    : run?.status === "completed"
+      ? theme.colors.statusSuccess
+      : run?.status === "failed" || run?.status === "canceled"
+        ? theme.colors.statusDanger
+        : theme.colors.foregroundMuted;
+  const label = start ? "Start" : run?.status === "failed" ? "Failed" : run?.status === "canceled" ? "Canceled" : "End";
+  const detail = names.length > 0 ? names.join(", ") : start ? "no inputs" : "no outputs";
+  return (
+    <View style={{ width: props.nodeWidth, alignItems: "center" }}>
+      <View
+        accessible
+        accessibilityLabel={`${label}. ${start ? "Inputs" : "Outputs"}: ${detail}`}
+        style={{
+          maxWidth: props.nodeWidth,
+          flexDirection: "row",
+          alignItems: "center",
+          gap: 6,
+          paddingHorizontal: 12,
+          paddingVertical: 5,
+          borderRadius: 999,
+          borderWidth: 1,
+          borderColor: color,
+          backgroundColor: theme.colors.surface2,
+        }}
+      >
+        <Icon name={start ? "CirclePlay" : run?.status === "failed" || run?.status === "canceled" ? "CircleX" : "Flag"} size={13} color={color} />
+        <Text numberOfLines={1} style={{ color: theme.colors.foreground, fontSize: 12, fontWeight: "600" }}>
+          {label}
+        </Text>
+        <Text numberOfLines={1} style={{ flexShrink: 1, color: theme.colors.foregroundMuted, fontSize: 11 }}>
+          {detail}
+        </Text>
+      </View>
+      {props.longNeeds.length > 0 ? (
+        <Text style={{ color: theme.colors.foregroundMuted, fontSize: 10, textAlign: "center", marginTop: 2 }}>
+          also after {props.longNeeds.join(", ")}
+        </Text>
+      ) : null}
     </View>
   );
 }

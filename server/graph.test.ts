@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ancestorsOf, descendantsOf, findCycle, layoutGraph } from "../shared/graph";
+import { ancestorsOf, descendantsOf, END, findCycle, layoutGraph, START, withTerminals } from "../shared/graph";
 
 const PR = [
   { id: "investigate", needs: [] },
@@ -35,5 +35,15 @@ describe("graph", () => {
   it("finds cycles", () => {
     expect(findCycle(PR)).toBeNull();
     expect(findCycle([{ id: "a", needs: ["b"] }, { id: "b", needs: ["a"] }])).toEqual(["a", "b", "a"]);
+  });
+});
+
+describe("withTerminals", () => {
+  it("puts Start above the roots and End below every sink", () => {
+    const layout = layoutGraph(withTerminals([...PR, { id: "notes", needs: ["investigate"] }]));
+    expect(layout.layers[0]).toEqual([START]);
+    expect(layout.layers.at(-1)).toEqual([END]);
+    expect(layout.edges).toContainEqual({ from: START, to: "investigate" });
+    expect(layout.edges.filter((edge) => edge.to === END).map((edge) => edge.from).sort()).toEqual(["notes", "pr_approval"]);
   });
 });

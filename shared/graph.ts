@@ -100,3 +100,19 @@ export function layoutGraph(nodes: readonly GraphNode[]): GraphLayout {
   );
   return { layers, edges };
 }
+
+/** Ids of the synthetic Start and End nodes the panel draws around a playbook. */
+export const START = "__start";
+export const END = "__end";
+
+/** Adds Start (needed by every root step) and End (needing every step that nothing needs). */
+export function withTerminals(nodes: readonly GraphNode[]): GraphNode[] {
+  const ids = new Set(nodes.map((node) => node.id));
+  const needed = new Set(nodes.flatMap((node) => node.needs.filter((need) => ids.has(need))));
+  const steps = nodes.map((node) => {
+    const needs = node.needs.filter((need) => ids.has(need));
+    return { id: node.id, needs: needs.length === 0 ? [START] : needs };
+  });
+  const sinks = nodes.filter((node) => !needed.has(node.id)).map((node) => node.id);
+  return [{ id: START, needs: [] }, ...steps, { id: END, needs: nodes.length === 0 ? [START] : sinks }];
+}
