@@ -16,6 +16,9 @@ export function gateChoices(step: Step): GateChoice[] {
   return step.choices.length > 0 ? step.choices : DEFAULT_GATE_CHOICES;
 }
 
+/** The single choice of an `ask` gate: the answer, required, becomes the feedback of the step it goes back to. */
+export const ASK_CHOICES: GateChoice[] = [{ id: "answered", label: "Send answer", comment: "required" }];
+
 /** Where a gate outcome leads: "next", "end", "fail" or "goto", with display names of the targets. */
 export interface Destination {
   kind: "next" | "end" | "fail" | "goto";
@@ -31,6 +34,7 @@ export function destinationOf(playbook: Playbook, step: Step, outcome: string): 
   const transition = outcomeTransition(step, outcome);
   switch (transition.kind) {
     case "goto":
+    case "ask":
       return { kind: "goto", targets: [transition.target] };
     case "end":
       return { kind: "end", targets: [] };

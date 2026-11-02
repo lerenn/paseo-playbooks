@@ -42,6 +42,8 @@ const RawOutputSchema = RawVarDefSchema.extend({ value: z.string().optional() })
 
 const RawTransitionSchema = z.union([
   z.enum(["complete", "end", "fail"]),
+  /** Ask a human (gate with a required comment), then go back to `goto` (default: this step) with the answer. */
+  z.object({ ask: z.string().min(1), goto: z.string().optional(), max_loops: z.number().int().positive().optional() }),
   z.object({ goto: z.string(), max_loops: z.number().int().positive().optional() }),
 ]);
 
@@ -405,6 +407,11 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     const on: Record<string, Transition> = {};
     for (const [outcome, transition] of Object.entries(rawStep.on ?? {})) {
       if (!outcomes.includes(outcome)) err(`${where}: on.${outcome}: not an outcome of this step (${outcomes.join(", ")})`);
+      if (typeof transition === "object" && "ask" in transition) {
+        if (isGate) err(`${where}: on.${outcome}: \`ask\` only applies to an agent step`);
+        on[outcome] = { kind: "ask", ask: transition.ask, target: transition.goto ?? rawStep.id, ...(transition.max_loops !== undefined ? { maxLoops: transition.max_loops } : {}) };
+        continue;
+      }
       on[outcome] =
         typeof transition === "string"
           ? { kind: transition }
@@ -459,7 +466,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     const ancestors = new Map(steps.map((step) => [step.id, ancestorsOf(steps, step.id)]));
     for (const step of steps) {
       for (const [outcome, transition] of Object.entries(step.on)) {
-        if (transition.kind !== "goto") continue;
+        if (transition.kind !== "goto" && transition.kind !== "ask") continue;
         if (!ids.has(transition.target)) err(`step "${step.id}": on.${outcome}: goto unknown step "${transition.target}"`);
         else if (transition.target !== step.id && !ancestors.get(step.id)!.has(transition.target)) {
           err(`step "${step.id}": on.${outcome}: goto "${transition.target}" must point to an earlier step this one needs`);
@@ -685,7 +692,7 @@ function expandBlocks(
     if (!sub) {
       const on = Object.fromEntries(
         Object.entries(step.on).map(([outcome, transition]) => {
-          if (transition.kind !== "goto" || !blocks.has(transition.target)) return [outcome, transition];
+          if ((transition.kind !== "goto" && transition.kind !== "ask") || !blocks.has(transition.target)) return [outcome, transition];
           const first = roots.get(transition.target)!;
           if (first.length !== 1) {
             err(`step "${step.id}": on.${outcome}: goto "${transition.target}" needs a playbook with a single first step (it has ${first.join(", ")})`);
@@ -700,7 +707,7 @@ function expandBlocks(
     for (const innerStep of sub.steps) {
       const on = Object.fromEntries(
         Object.entries(innerStep.on).map(([outcome, transition]) =>
-          [outcome, transition.kind === "goto" ? { ...transition, target: `${step.id}.${transition.target}` } : transition],
+          [outcome, transition.kind === "goto" || transition.kind === "ask" ? { ...transition, target: `${step.id}.${transition.target}` } : transition],
         ),
       );
       const inputs = Object.fromEntries(
