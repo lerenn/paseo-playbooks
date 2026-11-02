@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { AccessibilityInfo, Animated, Pressable, Text, View } from "react-native";
 import { layerOf, layoutGraph } from "../shared/graph";
 import type { Playbook, Run, Step } from "../shared/types";
-import { nodeColor, nodeIcon, nodeStateLabel, type NodeState, type Theme } from "./theme";
+import { agentBackground, gateBackground, nodeColor, nodeIcon, nodeStateLabel, type NodeState, type Theme } from "./theme";
 
 /** Nodes grow with the panel between these widths; below the minimum the graph scrolls sideways. */
 const NODE_MIN = 132;
@@ -175,7 +175,7 @@ function Node(props: GraphProps & { step: Step; longNeeds: string[]; nodeWidth: 
           borderRadius: isGate ? 4 : 12,
           borderWidth: nodeState === "running" || isHighlighted ? 2 : 1,
           borderColor: isHighlighted ? theme.colors.accent : color,
-          backgroundColor: theme.colors.surface1,
+          backgroundColor: isGate ? gateBackground(theme) : agentBackground(theme),
           opacity: nodeState === "running" ? pulse.interpolate({ inputRange: [0.35, 1], outputRange: [0.7, 1] }) : 1,
         }}
       >

@@ -78,3 +78,21 @@ export function runStatusColor(theme: Theme, status: RunStatus): string {
       return theme.colors.accent;
   }
 }
+
+/** Adds an alpha channel to a #rgb or #rrggbb theme colour; null for any other format. */
+export function withAlpha(color: string, alpha: number): string | null {
+  const hex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(color.trim())?.[1];
+  if (!hex) return null;
+  const full = hex.length === 3 ? [...hex].map((c) => c + c).join("") : hex;
+  return `#${full}${Math.round(alpha * 255).toString(16).padStart(2, "0")}`;
+}
+
+/** Agent steps: the theme's raised surface, distinct from the card (surface1). */
+export function agentBackground(theme: Theme): string {
+  return theme.colors.surface2;
+}
+
+/** Human gates: a light tint of the theme's warning colour, or surface0 if it cannot be tinted. */
+export function gateBackground(theme: Theme): string {
+  return withAlpha(theme.colors.statusWarning, 0.14) ?? theme.colors.surface0;
+}
