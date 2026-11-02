@@ -1,0 +1,241 @@
+import { useAgent } from "@getpaseo/plugin/client";
+import { Icon, ScrollView } from "@getpaseo/plugin/client/ui";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { AccessibilityInfo, Animated, Pressable, Text, View } from "react-native";
+import { layerOf, layoutGraph } from "../shared/graph";
+import type { Playbook, Run, Step } from "../shared/types";
+import { nodeColor, nodeIcon, nodeStateLabel, type NodeState, type Theme } from "./theme";
+
+const NODE_W = 132;
+const GAP = 14;
+const SLOT = NODE_W + GAP;
+const BAND_H = 26;
+
+export interface GraphProps {
+  playbook: Playbook;
+  run: Run | null;
+  theme: Theme;
+  highlighted: string | null;
+  onOpenAgent(agentId: string): void;
+  onOpenSheet(stepId: string): void;
+  onHighlight(stepId: string | null): void;
+}
+
+function useReduceMotion(): boolean {
+  const [reduce, setReduce] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    AccessibilityInfo.isReduceMotionEnabled()
+      .then((value) => alive && setReduce(value))
+      .catch(() => undefined);
+    const subscription = AccessibilityInfo.addEventListener("reduceMotionChanged", setReduce);
+    return () => {
+      alive = false;
+      subscription.remove();
+    };
+  }, []);
+  return reduce;
+}
+
+/** Layered top-down DAG built from plain views: nodes in rows, org-chart connectors between rows. */
+export function Graph(props: GraphProps) {
+  const { playbook, run, theme } = props;
+  const layout = useMemo(() => layoutGraph(playbook.steps), [playbook]);
+  const layers = useMemo(() => layerOf(playbook.steps), [playbook]);
+  const width = Math.max(1, ...layout.layers.map((row) => row.length)) * SLOT;
+  const centers = useMemo(() => {
+    const result = new Map<string, number>();
+    for (const row of layout.layers) {
+      const offset = (width - row.length * SLOT) / 2;
+      row.forEach((id, index) => result.set(id, offset + index * SLOT + SLOT / 2));
+    }
+    return result;
+  }, [layout, width]);
+  const byId = useMemo(() => new Map(playbook.steps.map((step) => [step.id, step])), [playbook]);
+  const running = new Set(run ? playbook.steps.filter((step) => run.steps[step.id]?.status === "running").map((step) => step.id) : []);
+
+  return (
+    <ScrollView horizontal style={{ flexGrow: 0 }} contentContainerStyle={{ minWidth: "100%", justifyContent: "center" }}>
+      <View style={{ width, paddingVertical: 4 }}>
+        {layout.layers.map((row, index) => (
+          <View key={row.join(",")}>
+            {index > 0 ? (
+              <Band
+                theme={theme}
+                width={width}
+                edges={layout.edges.filter((edge) => layers.get(edge.from) === index - 1 && layers.get(edge.to) === index)}
+                centers={centers}
+                running={running}
+              />
+            ) : null}
+            <View style={{ flexDirection: "row", justifyContent: "center" }}>
+              {row.map((id) => (
+                <View key={id} style={{ width: SLOT, alignItems: "center" }}>
+                  <Node
+                    step={byId.get(id)!}
+                    longNeeds={byId.get(id)!.needs.filter((need) => (layers.get(need) ?? 0) < index - 1)}
+                    {...props}
+                  />
+                </View>
+              ))}
+            </View>
+          </View>
+        ))}
+      </View>
+    </ScrollView>
+  );
+}
+
+function Band(props: {
+  theme: Theme;
+  width: number;
+  edges: Array<{ from: string; to: string }>;
+  centers: Map<string, number>;
+  running: Set<string>;
+}) {
+  const { theme, edges, centers, running } = props;
+  const sources = [...new Set(edges.map((edge) => edge.from))];
+  const targets = [...new Set(edges.map((edge) => edge.to))];
+  const xs = [...sources, ...targets].map((id) => centers.get(id) ?? 0);
+  const mid = BAND_H / 2;
+  const line = theme.colors.border;
+  const hot = theme.colors.accent;
+  const segments: Array<{ key: string; left: number; top: number; width: number; height: number; color: string }> = [];
+  for (const id of sources) segments.push({ key: `s-${id}`, left: (centers.get(id) ?? 0) - 0.5, top: 0, width: 1, height: mid, color: line });
+  for (const id of targets) {
+    const isHot = running.has(id);
+    segments.push({ key: `t-${id}`, left: (centers.get(id) ?? 0) - (isHot ? 1 : 0.5), top: mid, width: isHot ? 2 : 1, height: mid, color: isHot ? hot : line });
+  }
+  if (xs.length > 0 && Math.max(...xs) - Math.min(...xs) > 1) {
+    segments.push({ key: "bus", left: Math.min(...xs), top: mid - 0.5, width: Math.max(...xs) - Math.min(...xs), height: 1, color: line });
+  }
+  return (
+    <View style={{ height: BAND_H, width: props.width }} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+      {segments.map((segment) => (
+        <View
+          key={segment.key}
+          style={{ position: "absolute", left: segment.left, top: segment.top, width: segment.width, height: segment.height, backgroundColor: segment.color }}
+        />
+      ))}
+    </View>
+  );
+}
+
+function Node(props: GraphProps & { step: Step; longNeeds: string[] }) {
+  const { step, run, theme, playbook, highlighted } = props;
+  const state = run?.steps[step.id];
+  const attempts = state?.attempts ?? [];
+  const latest = attempts.at(-1);
+  const live = useAgent(latest?.agentId ?? "", (agent) => ({ status: agent.status, attention: agent.attentionReason }));
+  const reduceMotion = useReduceMotion();
+  let nodeState: NodeState = run ? state?.status ?? "pending" : "definition";
+  if (nodeState === "running" && live?.attention === "permission") nodeState = "needs_permission";
+  const color = nodeColor(theme, nodeState);
+  const dimmed = nodeState === "pending";
+  const isGate = step.kind === "gate";
+  const role = step.role ? playbook.roles[step.role] : undefined;
+  const pulse = useRef(new Animated.Value(1)).current;
+  useEffect(() => {
+    if (nodeState !== "running" || reduceMotion) {
+      pulse.setValue(1);
+      return;
+    }
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, { toValue: 0.35, duration: 900, useNativeDriver: false }),
+        Animated.timing(pulse, { toValue: 1, duration: 900, useNativeDriver: false }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [nodeState, reduceMotion, pulse]);
+
+  const loops = Object.entries(step.on).flatMap(([outcome, transition]) =>
+    transition.kind === "goto"
+      ? [{ outcome, target: transition.target, count: run?.loops[`${step.id}->${transition.target}`] ?? 0, max: transition.maxLoops }]
+      : [],
+  );
+  const subtitle = isGate ? "gate" : `${role?.title ?? step.role}${role?.readonly ? " · ro" : ""}`;
+  const stateLabel = nodeStateLabel(nodeState);
+  const onPress = () => (latest ? props.onOpenAgent(latest.agentId) : props.onOpenSheet(step.id));
+  const isHighlighted = highlighted === step.id;
+
+  return (
+    <View style={{ width: NODE_W, opacity: dimmed ? 0.55 : 1 }}>
+      <Animated.View
+        style={{
+          borderRadius: isGate ? 4 : 12,
+          borderWidth: nodeState === "running" || isHighlighted ? 2 : 1,
+          borderColor: isHighlighted ? theme.colors.accent : color,
+          backgroundColor: theme.colors.surface1,
+          opacity: nodeState === "running" ? pulse.interpolate({ inputRange: [0.35, 1], outputRange: [0.7, 1] }) : 1,
+        }}
+      >
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`${step.id}, ${subtitle}${stateLabel ? `, ${stateLabel}` : ""}${latest ? `, attempt ${latest.n}, opens conversation` : ", opens details"}`}
+          onPress={onPress}
+          style={{ paddingHorizontal: 8, paddingVertical: 6, gap: 2 }}
+        >
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+            <Icon name={isGate ? "Diamond" : nodeIcon(nodeState)} size={13} color={nodeState === "definition" ? theme.colors.foregroundMuted : color} />
+            <Text numberOfLines={1} style={{ flex: 1, color: theme.colors.foreground, fontSize: 12, fontWeight: "600" }}>
+              {step.id}
+            </Text>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Details for ${step.id}`}
+              hitSlop={8}
+              onPress={() => props.onOpenSheet(step.id)}
+            >
+              <Icon name="Info" size={13} color={theme.colors.foregroundMuted} />
+            </Pressable>
+          </View>
+          <Text numberOfLines={1} style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>
+            {subtitle}
+          </Text>
+          {stateLabel ? (
+            <Text numberOfLines={1} style={{ color, fontSize: 10 }}>
+              {stateLabel}
+            </Text>
+          ) : null}
+        </Pressable>
+        {attempts.length > 1 ? (
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4, paddingHorizontal: 8, paddingBottom: 6 }}>
+            {attempts.map((attempt) => (
+              <Pressable
+                key={attempt.n}
+                accessibilityRole="button"
+                accessibilityLabel={`Open attempt ${attempt.n} of ${step.id}`}
+                onPress={() => props.onOpenAgent(attempt.agentId)}
+                style={{ borderRadius: 6, paddingHorizontal: 5, paddingVertical: 1, backgroundColor: theme.colors.surface2 }}
+              >
+                <Text style={{ color: theme.colors.foreground, fontSize: 10 }}>#{attempt.n}</Text>
+              </Pressable>
+            ))}
+          </View>
+        ) : null}
+      </Animated.View>
+      {loops.map((loop) => (
+        <Pressable
+          key={loop.outcome}
+          accessibilityRole="button"
+          accessibilityLabel={`On ${loop.outcome}, loops back to ${loop.target}. Highlight it.`}
+          onPressIn={() => props.onHighlight(loop.target)}
+          onPressOut={() => props.onHighlight(null)}
+          style={{ marginTop: 3, alignSelf: "center" }}
+        >
+          <Text style={{ color: theme.colors.foregroundMuted, fontSize: 10 }}>
+            ↺ {loop.outcome} → {loop.target}
+            {loop.max !== undefined ? ` · ${loop.count}/${loop.max}` : loop.count > 0 ? ` · ${loop.count}` : ""}
+          </Text>
+        </Pressable>
+      ))}
+      {props.longNeeds.length > 0 ? (
+        <Text style={{ color: theme.colors.foregroundMuted, fontSize: 10, textAlign: "center", marginTop: 2 }}>
+          also needs {props.longNeeds.join(", ")}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
