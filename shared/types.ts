@@ -113,7 +113,9 @@ export const PlaybookSchema = z.object({
    * Sub-playbooks expanded into this one, by id prefix ("pr", or "release.deploy" when
    * nested): their steps are named "<prefix>.<step>". Used to draw a frame around them.
    */
-  blocks: z.record(z.string(), z.object({ title: z.string(), playbook: z.string() })).default({}),
+  blocks: z
+    .record(z.string(), z.object({ title: z.string(), playbook: z.string(), concurrency: z.number().int().positive().optional() }))
+    .default({}),
 });
 export type Playbook = z.infer<typeof PlaybookSchema>;
 
@@ -137,6 +139,8 @@ export const StepStatusSchema = z.enum([
   "completed",
   "failed",
   "waiting",
+  /** Ready, but its sub-playbook's `concurrency` slots are all held by other runs. */
+  "queued",
 ]);
 export type StepStatus = z.infer<typeof StepStatusSchema>;
 
@@ -175,6 +179,8 @@ export const RunStepSchema = z.object({
   /** Feedback injected into the next attempt after a goto. */
   feedback: z.string().nullable(),
   completedSeq: z.number().int().nullable(),
+  /** When the step started waiting for a free `concurrency` slot of its block (orders the queue). */
+  queuedAt: z.string().nullable().default(null),
 });
 export type RunStep = z.infer<typeof RunStepSchema>;
 

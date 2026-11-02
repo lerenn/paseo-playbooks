@@ -11,6 +11,7 @@ import { checkoutSnapshot, currentRef, snapshotDiff } from "./git";
 import { loadPlaybooks } from "./loader";
 import { managerKickoff, managerTakeover, stepSystemPrompt } from "./prompts";
 import type { RunStore } from "./store";
+import { planAdmissions, slotHolders } from "../shared/slots";
 
 export class UserError extends Error {}
 
@@ -123,6 +124,7 @@ export class Runtime {
       }
       await this.deliver(run.id);
     }
+    await this.admitQueued();
   }
 
   // ---------------------------------------------------------------- lookups
@@ -247,18 +249,32 @@ export class Runtime {
     });
     await this.store.create(run);
     this.reservations.delete(workspace.id);
-    return run;
+    await this.admitQueued(run.id);
+    return this.store.get(run.id)!;
   }
 
+  /** Slots are shared: active runs of the playbook, and blocks of it that other runs hold. */
   private checkConcurrency(playbook: Playbook, projectId: string): void {
     if (playbook.concurrency === undefined) return;
-    const active = this.store
-      .list()
-      .filter((run) => run.projectId === projectId && run.playbook.id === playbook.id && !isTerminal(run.status));
-    if (active.length >= playbook.concurrency) {
+    const holders = slotHolders(this.store.list(), projectId, playbook.id);
+    if (holders.length >= playbook.concurrency) {
       throw new UserError(
-        `playbook "${playbook.id}" allows ${playbook.concurrency} active run(s) in this project; active: ${active.map((run) => run.id).join(", ")}`,
+        `playbook "${playbook.id}" allows ${playbook.concurrency} active run(s) in this project; active: ${holders.join(", ")}`,
       );
+    }
+  }
+
+  /**
+   * Starts the blocks that were waiting for a `concurrency` slot and can enter now, oldest
+   * first. Called wherever a run may have released a slot. The caller's own run is not
+   * announced: its manager reads the result of the call.
+   */
+  private async admitQueued(callerRunId?: string): Promise<void> {
+    for (const { runId, prefix } of planAdmissions(this.store.list())) {
+      const admitted = await this.store.mutate(runId, (run) => engine.admitBlock(run, prefix, nowIso()));
+      if (admitted.length === 0 || runId === callerRunId) continue;
+      await this.enqueue(runId, [`A concurrency slot is free: ${admitted.join(", ")} ${admitted.length === 1 ? "is" : "are"} now ready. Start ${admitted.length === 1 ? "it" : "them"} with start_step.`]);
+      await this.deliver(runId);
     }
   }
 
@@ -310,6 +326,7 @@ export class Runtime {
       return engine.completeStep(current, stepId, args);
     });
     await this.applyEffects(run.id, effects);
+    await this.admitQueued(run.id);
     return this.store.get(run.id)!;
   }
 
@@ -322,6 +339,7 @@ export class Runtime {
   async decideGate(runId: string, gateId: string, decision: engine.GateDecision): Promise<{ alreadyDecided: boolean; gate: Run["gates"][number] }> {
     const result = await this.store.mutate(runId, (current) => engine.decideGate(current, gateId, decision));
     await this.applyEffects(runId, result.effects);
+    await this.admitQueued(runId);
     if (!result.alreadyDecided && decision.via === "panel") {
       const run = this.store.get(runId)!;
       const comment = decision.comment ? `: "${decision.comment}"` : "";
@@ -347,6 +365,7 @@ export class Runtime {
   async cancelRun(runId: string, reason: string, notifyManager: boolean): Promise<Run> {
     const effects = await this.store.mutate(runId, (current) => engine.cancelRun(current, reason, nowIso()));
     await this.applyEffects(runId, effects);
+    await this.admitQueued(runId);
     if (notifyManager) {
       await this.enqueue(runId, [`The run was canceled from the panel: ${reason}. Tell the human and stop.`]);
       await this.deliver(runId);
@@ -357,6 +376,7 @@ export class Runtime {
   private async failRun(runId: string, reason: string): Promise<void> {
     const effects = await this.store.mutate(runId, (current) => engine.failRun(current, reason, nowIso()));
     await this.applyEffects(runId, effects);
+    await this.admitQueued(runId);
   }
 
   /** Sends a follow-up to the current attempt's agent, in the same conversation. */
@@ -465,6 +485,7 @@ export class Runtime {
       await this.store.delete(run.id);
     }
     this.reservations.delete(workspaceId);
+    await this.admitQueued();
   }
 
   private clearTimeout(agentId: string): void {

@@ -3,6 +3,7 @@
  * applies the returned effects (cancel agents, wake the manager).
  */
 import { descendantsOf } from "../shared/graph";
+import { blockEntrySteps, blockStepIds, holdsBlock } from "../shared/slots";
 import { gateChoices, LOOP_LIMIT_CHOICES, outcomeTransition } from "../shared/gates";
 import type { Attempt, Gate, Playbook, Run, RunStep, Step, VarValue } from "../shared/types";
 import { isTerminal } from "../shared/types";
@@ -99,7 +100,7 @@ export function newRun(input: NewRunInput): Run {
     steps: Object.fromEntries(
       input.playbook.steps.map((step) => [
         step.id,
-        { status: "pending", attempts: [], outputs: {}, summary: null, feedback: null, completedSeq: null },
+        { status: "pending", attempts: [], outputs: {}, summary: null, feedback: null, completedSeq: null, queuedAt: null },
       ]),
     ),
     loops: {},
@@ -110,23 +111,58 @@ export function newRun(input: NewRunInput): Run {
     seq: 0,
   };
   log(run, input.now, "run_started", null, `playbook ${input.playbook.id}`);
-  refreshReady(run);
+  refreshReady(run, input.now);
   return run;
 }
 
-/** Pending steps whose needs are all completed become ready. Returns the newly ready ids. */
-export function refreshReady(run: Run): string[] {
-  if (isTerminal(run.status)) return [];
+/**
+ * Pending steps whose needs are all completed become ready, except the first steps of a
+ * block with `concurrency` while it is not held: those are queued until the runtime admits
+ * them (see planAdmissions). Returns the newly ready and the newly queued ids.
+ */
+export function refreshReady(run: Run, now: string): { ready: string[]; queued: string[] } {
   const ready: string[] = [];
+  const queued: string[] = [];
+  if (isTerminal(run.status)) return { ready, queued };
+  const limited = Object.entries(run.playbook.blocks).filter(([, block]) => block.concurrency !== undefined);
   for (const step of run.playbook.steps) {
     const state = run.steps[step.id]!;
     if (state.status !== "pending") continue;
-    if (step.needs.every((need) => run.steps[need]?.status === "completed")) {
+    if (!step.needs.every((need) => run.steps[need]?.status === "completed")) continue;
+    const gating = limited.some(([prefix]) => blockEntrySteps(run.playbook, prefix).includes(step.id) && !holdsBlock(run, prefix));
+    if (gating) {
+      state.status = "queued";
+      state.queuedAt = now;
+      queued.push(step.id);
+      log(run, now, "step_queued", step.id, "waiting for a free concurrency slot");
+    } else {
       state.status = "ready";
       ready.push(step.id);
     }
   }
-  return ready;
+  return { ready, queued };
+}
+
+/** Steps waiting for a free `concurrency` slot of their block. */
+export function queuedSteps(run: Run): string[] {
+  return run.playbook.steps.filter((step) => run.steps[step.id]!.status === "queued").map((step) => step.id);
+}
+
+/** Lets a queued block start: its queued steps become ready. Returns them. */
+export function admitBlock(run: Run, prefix: string, now: string): string[] {
+  if (isTerminal(run.status)) return [];
+  const admitted = blockStepIds(run.playbook, prefix).filter((id) => run.steps[id]!.status === "queued");
+  for (const id of admitted) {
+    run.steps[id]!.status = "ready";
+    run.steps[id]!.queuedAt = null;
+    log(run, now, "step_admitted", id, "got a concurrency slot");
+  }
+  return admitted;
+}
+
+function queueNote(run: Run, queued: string[]): string {
+  const playbooks = [...new Set(Object.entries(run.playbook.blocks).filter(([prefix]) => queued.some((id) => id.startsWith(`${prefix}.`))).map(([, block]) => block.playbook))];
+  return `Queued: ${queued.join(", ")}, waiting for a free "${playbooks.join('", "')}" slot held by other runs. You are woken when they are ready; do not start them before.`;
 }
 
 export function readySteps(run: Run): string[] {
@@ -357,8 +393,9 @@ function markCompleted(run: Run, stepId: string, now: string, fx: Effects): void
     completeRun(run, now, fx);
     return;
   }
-  const ready = refreshReady(run);
+  const { ready, queued } = refreshReady(run, now);
   if (ready.length > 0) fx.notes.push(`Ready: ${ready.join(", ")}.`);
+  if (queued.length > 0) fx.notes.push(queueNote(run, queued));
 }
 
 function performGoto(run: Run, source: string, target: string, feedback: string, now: string, fx: Effects): void {
@@ -388,8 +425,9 @@ function performGoto(run: Run, source: string, target: string, feedback: string,
   }
   run.steps[target]!.feedback = feedback || null;
   log(run, now, "goto", source, `${key} (loop ${run.loops[key]})`);
-  const ready = refreshReady(run);
+  const { ready, queued } = refreshReady(run, now);
   fx.notes.push(`Looping back to "${target}" (loop ${run.loops[key]}). Ready: ${ready.join(", ") || "none"}.`);
+  if (queued.length > 0) fx.notes.push(queueNote(run, queued));
 }
 
 function gotoOrLimit(run: Run, step: Step, target: string, maxLoops: number | undefined, feedback: string, now: string, fx: Effects): void {

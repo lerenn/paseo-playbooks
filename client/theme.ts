@@ -34,6 +34,7 @@ export function nodeIcon(state: NodeState): string {
     case "running":
       return "Loader";
     case "waiting":
+    case "queued":
       return "Hourglass";
     case "reported":
       return "MessageSquare";
@@ -54,6 +55,8 @@ export function nodeStateLabel(state: NodeState): string {
       return "waiting for manager";
     case "waiting":
       return "waiting for a human";
+    case "queued":
+      return "waiting for a free slot";
     case "definition":
       return "";
     default:

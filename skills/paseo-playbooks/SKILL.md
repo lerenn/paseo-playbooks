@@ -73,7 +73,7 @@ the index and HEAD unchanged; build output in ignored files is fine.
 title: Pull request
 description: Investigate, implement, open a PR and babysit it until it is green.
 agent: { model: claude-opus-5-5 }          # optional playbook-wide settings
-concurrency: 1                             # optional: max active runs in the project
+concurrency: 1                             # optional: max active runs (or held blocks) in the project
 
 inputs:                                    # the Start form; the manager fills them from chat
   request: { type: string, required: true, description: What to change }
@@ -179,8 +179,15 @@ steps:
   first step (the sub-playbook must have exactly one).
 - `prompt`, `outputs`, `outcomes`, `timeout`, `agent`, `choices` and `on` do not apply to
   a playbook step. A playbook that includes itself (directly or not) is an error.
-- The sub-playbook's `next`, `concurrency` and manager settings are ignored; its gates
-  stay gates of the run.
+- The sub-playbook's `next` and manager settings are ignored; its gates stay gates of the
+  run.
+- The sub-playbook's `concurrency` applies to the block. Its slots are shared by every run
+  in the project (also top-level runs of that playbook). A run takes a slot when the block's
+  first steps become ready and keeps it until all the block's steps complete (also while a
+  gate inside waits), or the run ends. Until a slot is free those steps are `queued`
+  instead of `ready`: do not start them; the plugin wakes you when they are ready. Use it
+  to serialise a part of a playbook (for example `release`) across runs that do the rest in
+  parallel. A `goto` that restarts the block's first steps gives the slot back and queues again.
 
 ### Variables
 

@@ -656,7 +656,7 @@ function expandBlocks(
     const needed = new Set(sub.steps.flatMap((step) => step.needs));
     sinks.set(blockId, sub.steps.filter((step) => !needed.has(step.id)).map((step) => `${blockId}.${step.id}`));
     roots.set(blockId, sub.steps.filter((step) => step.needs.length === 0).map((step) => `${blockId}.${step.id}`));
-    info[blockId] = { title: sub.title, playbook: sub.id };
+    info[blockId] = { title: sub.title, playbook: sub.id, ...(sub.concurrency !== undefined ? { concurrency: sub.concurrency } : {}) };
     for (const [prefix, nested] of Object.entries(sub.blocks)) info[`${blockId}.${prefix}`] = nested;
   }
   const mapNeeds = (needs: string[]) => needs.flatMap((need) => sinks.get(need) ?? [need]);

@@ -33,6 +33,7 @@ export function runSummary(run: Run) {
     inputs: run.inputs,
     outputs: run.outputs,
     ready: engine.readySteps(run),
+    queued: engine.queuedSteps(run),
     steps: Object.fromEntries(
       run.playbook.steps.map((step) => {
         const state = run.steps[step.id]!;
@@ -117,7 +118,7 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
         guard(async () => {
           const run = await runtime.startPlaybook(agent, playbook, inputs);
           return ok(
-            `Run ${run.id} started on branch ${run.branch ?? "(unknown)"}. Ready: ${engine.readySteps(run).join(", ")}. Start them with start_step.`,
+            `Run ${run.id} started on branch ${run.branch ?? "(unknown)"}. Ready: ${engine.readySteps(run).join(", ") || "none"}. Start them with start_step.${engine.queuedSteps(run).length ? ` Queued for a free concurrency slot of another run: ${engine.queuedSteps(run).join(", ")}; you are woken when they are ready.` : ""}`,
             runSummary(run),
           );
         }),
@@ -153,6 +154,7 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
           const run = await runtime.completeStep(agent.id, runId, stepId, input);
           await runtime.clearInbox(run.id);
           const ready = engine.readySteps(run);
+          const queued = engine.queuedSteps(run);
           const gates = ready.filter((id) => engine.stepDef(run, id).kind === "gate");
           const text =
             run.status === "completed"
@@ -161,7 +163,7 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
                 ? `Run ${run.id} failed: ${run.failure}.`
                 : run.status === "waiting_gate"
                   ? `A gate is waiting for a human decision. End your turn.`
-                  : `Ready: ${ready.join(", ") || "none (waiting for running steps)"}.${gates.length ? ` Gate(s) to open with request_gate: ${gates.join(", ")}.` : ""}`;
+                  : `Ready: ${ready.join(", ") || (queued.length ? "none" : "none (waiting for running steps)")}.${queued.length ? ` Queued for a free concurrency slot of another run: ${queued.join(", ")}; end your turn, you are woken when they are ready.` : ""}${gates.length ? ` Gate(s) to open with request_gate: ${gates.join(", ")}.` : ""}`;
           return ok(text, runSummary(run));
         }),
     }),
@@ -206,7 +208,7 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
           });
           const run = (await runtime.ownedRun(agent.id, runId))!;
           const prefix = result.alreadyDecided ? `Already decided: ${result.gate.status} via ${result.gate.decidedVia}.` : `Recorded ${decision}.`;
-          return ok(`${prefix} Run is ${run.status}. Ready: ${engine.readySteps(run).join(", ") || "none"}.`, runSummary(run));
+          return ok(`${prefix} Run is ${run.status}. Ready: ${engine.readySteps(run).join(", ") || "none"}.${engine.queuedSteps(run).length ? ` Queued for a free concurrency slot: ${engine.queuedSteps(run).join(", ")}.` : ""}`, runSummary(run));
         }),
     }),
     defineAgentTool({
