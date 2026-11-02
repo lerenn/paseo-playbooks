@@ -8,6 +8,8 @@ import type { Playbook, VarValue } from "../shared/types";
 import { Button } from "./sheet";
 import type { Theme } from "./theme";
 
+export type StartTarget = "current" | "agent" | "workspace";
+
 function initialValues(playbook: Playbook): Record<string, string | boolean> {
   return Object.fromEntries(
     Object.entries(playbook.inputs).map(([name, def]) => [
@@ -21,11 +23,11 @@ export function StartForm(props: {
   theme: Theme;
   playbook: Playbook;
   workspaceId: string;
-  /** "current": the workspace's agent manages the run here; "new": a new worktree and manager. */
-  target: "current" | "new";
+  /** "current": the workspace's agent manages the run here; "agent": a new manager in this workspace; "workspace": a new worktree and manager. */
+  target: StartTarget;
   onClose(): void;
-  /** reusedAgent: an existing agent of this workspace manages the run (no new worktree). */
-  onStarted(result: { workspaceId: string; managerAgentId: string; reusedAgent: boolean }): void;
+  /** sameWorkspace: the manager is in this workspace (open the agent rather than a new workspace). */
+  onStarted(result: { workspaceId: string; managerAgentId: string; sameWorkspace: boolean }): void;
   compact: boolean;
 }) {
   const { theme, playbook } = props;
@@ -63,13 +65,20 @@ export function StartForm(props: {
         inputs[name] = def.type === "number" ? Number(value) : value;
       }
       const agentId = manager?.id;
-      const result = await start({ workspaceId: props.workspaceId, playbook: playbook.id, inputs, force, ...(agentId ? { agentId } : {}) });
+      const result = await start({
+        workspaceId: props.workspaceId,
+        playbook: playbook.id,
+        inputs,
+        force,
+        sameWorkspace: props.target === "agent",
+        ...(agentId ? { agentId } : {}),
+      });
       if (result.status === "duplicate") {
         setDuplicate(result.message);
         return;
       }
       toast.show(result.queued ? `Queued ${result.runId}: the agent starts it when its current turn ends` : `Started ${result.runId}`, { variant: "success" });
-      props.onStarted({ workspaceId: result.workspaceId, managerAgentId: result.managerAgentId, reusedAgent: agentId !== undefined });
+      props.onStarted({ workspaceId: result.workspaceId, managerAgentId: result.managerAgentId, sameWorkspace: props.target !== "workspace" });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : String(error));
     } finally {
@@ -91,9 +100,11 @@ export function StartForm(props: {
       <Modal.Content>
         {playbook.description ? <Text style={{ color: theme.colors.foregroundMuted, fontSize: 13 }}>{playbook.description}</Text> : null}
         <Text style={{ color: current && !agents.isLoading && !manager ? theme.colors.statusWarning : theme.colors.foregroundMuted, fontSize: 12 }}>
-          {!current
-            ? "Creates a worktree on a new branch from this workspace, with a new Playbook Manager agent in it."
-            : agents.isLoading
+          {props.target === "workspace"
+            ? "Creates a new workspace (a worktree on a new branch from this one), with a new Playbook Manager agent in it."
+            : props.target === "agent"
+              ? "Creates a new Playbook Manager agent in this workspace; the run uses this workspace's current branch."
+              : agents.isLoading
               ? "Finding this workspace's agent…"
               : manager
                 ? `${manager.title ?? manager.id.slice(0, 8)} manages the run, in this workspace on its current branch. It is reloaded to get the playbook tools, then receives the kickoff${manager.status === "running" ? " when its current turn ends (it is busy now; it is not interrupted)" : ""}.`

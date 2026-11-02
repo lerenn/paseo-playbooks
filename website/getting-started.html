@@ -82,13 +82,13 @@ steps:
 
 <h2>3. Validate and commit</h2>
 <p>Any agent in the workspace can call the <code>validate_playbooks</code> tool. It runs the same checks as the panel and lists every error with its file and field.</p>
-<p>Press Start and fill in the inputs: the workspace's agent becomes the manager and runs the playbook in this workspace. To run in a separate worktree with a new manager, open the arrow next to Start and choose <em>Start on a new agent</em>; commit the folder first, because the worktree branches from the current commit.</p>
+<p>Press Start and fill in the inputs: the workspace's agent becomes the manager and runs the playbook in this workspace. To use a new manager agent here instead, open the arrow next to Start and choose <em>Start on a new agent</em>. To run in a separate worktree with a new manager, choose <em>Start in a new workspace</em>; commit the folder first, because the worktree branches from the current commit.</p>
 <div class="note">To let agents write playbooks for you, copy <a href="https://github.com/lerenn/paseo-playbooks/tree/main/skills/paseo-playbooks"><code>skills/paseo-playbooks/SKILL.md</code></a> into your repository's <code>.agents/skills/</code> or <code>.claude/skills/</code>.</div>
 
 <h2>4. Start a run</h2>
 <ol class="steps">
 <li>Open the <strong>Playbooks</strong> panel in the workspace's right-hand sidebar, or press Ctrl+K (Cmd+K on macOS) and choose <strong>Open Playbooks</strong>. Each playbook is a card with its title, file path and step graph.</li>
-<li>Press <strong>Start</strong>. A form built from the playbook's inputs opens. Start makes the workspace's most recently used agent (the one you last sent a message to) the Playbook Manager and runs the playbook in this workspace, on its current branch. To use a separate worktree instead, open the arrow next to Start and choose <em>Start on a new agent</em>: it creates a worktree on a new branch named <code>playbooks/&lt;playbook&gt;-&lt;run id&gt;</code>, starts a Playbook Manager agent there, and opens that workspace.</li>
+<li>Press <strong>Start</strong>. A form built from the playbook's inputs opens. Start makes the workspace's most recently used agent (the one you last sent a message to) the Playbook Manager and runs the playbook in this workspace, on its current branch. To have a new agent manage the run in this workspace, open the arrow next to Start and choose <em>Start on a new agent</em>. To use a separate worktree instead, choose <em>Start in a new workspace</em>: it creates a worktree on a new branch named <code>playbooks/&lt;playbook&gt;-&lt;run id&gt;</code>, starts a Playbook Manager agent there, and opens that workspace.</li>
 <li>Watch the graph. The running step pulses. Press a node to open its agent's conversation, or ⓘ for its details: inputs and their sources, the manager's brief, the report and every attempt.</li>
 <li>When the run reaches a gate, the gate node turns amber and Paseo notifies you. Approve, or reject with a comment. A rejected gate with <code>on.rejected: { goto: … }</code> sends the work back with your comment as feedback.</li>
 </ol>

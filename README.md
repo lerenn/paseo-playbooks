@@ -37,7 +37,8 @@ adjust the roles and playbooks and commit them. Then open the Playbooks panel in
 that repository and press Start. Start runs the playbook with the workspace's most
 recently used agent as manager (see Known limits), in that workspace (the run starts at
 once, but if that agent is busy, its kickoff waits until its current turn ends). The arrow
-next to Start offers "Start on a new agent", which creates a new worktree and manager.
+next to Start offers "Start on a new agent", which creates a new manager agent in the same
+workspace, and "Start in a new workspace", which creates a new worktree and manager.
 
 ## Known limits
 

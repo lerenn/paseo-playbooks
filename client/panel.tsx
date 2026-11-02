@@ -8,7 +8,7 @@ import { archiveRunRpc, cancelRunRpc, listPlaybooks, listRuns } from "../shared/
 import { isTerminal, type Playbook, type PlaybookEntry, type Run } from "../shared/types";
 import { Graph } from "./graph";
 import { Button, StepSheet } from "./sheet";
-import { StartForm } from "./start-form";
+import { StartForm, type StartTarget } from "./start-form";
 import { splitError } from "../shared/errors";
 import { runStatusColor, runStatusLabel, withAlpha, type Theme } from "./theme";
 
@@ -134,7 +134,7 @@ function PlaybookCard(props: {
   const [selected, setSelected] = useState<string | "definition" | null>(null);
   const [sheet, setSheet] = useState<string | null>(null);
   const [highlighted, setHighlighted] = useState<string | null>(null);
-  const [starting, setStarting] = useState<"current" | "new" | null>(null);
+  const [starting, setStarting] = useState<StartTarget | null>(null);
   // A selected run that disappeared (archived) falls back to the default tab.
   const current = selected === "definition" || card.runs.some((candidate) => candidate.id === selected) ? selected : null;
   const runId = current ?? active?.id ?? card.runs[0]?.id ?? "definition";
@@ -244,7 +244,7 @@ function PlaybookCard(props: {
           onStarted={(result) => {
             setStarting(null);
             void queryClient.invalidateQueries({ queryKey: ["playbooks"] });
-            if (result.reusedAgent) props.onOpenAgent(result.managerAgentId);
+            if (result.sameWorkspace) props.onOpenAgent(result.managerAgentId);
             else props.onOpenWorkspace(result.workspaceId);
           }}
         />
@@ -267,11 +267,17 @@ function RunBar(props: { theme: Theme; run: Run; hostLabel: string }) {
   );
 }
 
-/** Split button: Start runs with the workspace's agent; the chevron menu offers a new agent in a new worktree. */
-function StartButton(props: { theme: Theme; title: string; onStart(target: "current" | "new"): void }) {
+/** Split button: Start runs with the workspace's agent; the chevron menu offers a new agent here, or a new workspace. */
+/** The Start button's menu: other ways to start than the workspace's current agent. */
+const START_OPTIONS = [
+  { target: "agent", label: "Start on a new agent", icon: "Bot" },
+  { target: "workspace", label: "Start in a new workspace", icon: "GitBranchPlus" },
+] as const;
+
+function StartButton(props: { theme: Theme; title: string; onStart(target: StartTarget): void }) {
   const { theme } = props;
   const [menu, setMenu] = useState(false);
-  const [hover, setHover] = useState(false);
+  const [hover, setHover] = useState<StartTarget | null>(null);
   const segment = { flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 7, backgroundColor: theme.colors.accent } as const;
   return (
     <View style={{ zIndex: 20 }}>
@@ -312,27 +318,30 @@ function StartButton(props: { theme: Theme; title: string; onStart(target: "curr
             elevation: 6,
           }}
         >
-          <Pressable
-            accessibilityRole="menuitem"
-            onPress={() => {
-              setMenu(false);
-              props.onStart("new");
-            }}
-            onHoverIn={() => setHover(true)}
-            onHoverOut={() => setHover(false)}
-            style={{
-              flexDirection: "row",
-              alignItems: "center",
-              gap: 8,
-              paddingHorizontal: 10,
-              paddingVertical: 8,
-              borderRadius: 6,
-              backgroundColor: hover ? theme.colors.surface1 : "transparent",
-            }}
-          >
-            <Icon name="GitBranchPlus" size={15} color={theme.colors.foreground} />
-            <Text style={{ color: theme.colors.foreground, fontSize: 13 }}>Start on a new agent</Text>
-          </Pressable>
+          {START_OPTIONS.map((option) => (
+            <Pressable
+              key={option.target}
+              accessibilityRole="menuitem"
+              onPress={() => {
+                setMenu(false);
+                props.onStart(option.target);
+              }}
+              onHoverIn={() => setHover(option.target)}
+              onHoverOut={() => setHover((current) => (current === option.target ? null : current))}
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 8,
+                paddingHorizontal: 10,
+                paddingVertical: 8,
+                borderRadius: 6,
+                backgroundColor: hover === option.target ? theme.colors.surface1 : "transparent",
+              }}
+            >
+              <Icon name={option.icon} size={15} color={theme.colors.foreground} />
+              <Text style={{ color: theme.colors.foreground, fontSize: 13 }}>{option.label}</Text>
+            </Pressable>
+          ))}
         </View>
       ) : null}
     </View>
