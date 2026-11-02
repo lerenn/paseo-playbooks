@@ -33,7 +33,7 @@ describe("loadPlaybooks", () => {
     const pr = result.entries.find((entry) => entry.id === "pr")!;
     expect(pr.errors).toEqual([]);
     const playbook = pr.playbook!;
-    expect(playbook.steps.map((step) => step.id)).toEqual(["investigate", "implement", "review", "local_qa", "babysit", "pr_approval"]);
+    expect(playbook.steps.map((step) => step.id)).toEqual(["investigate", "implement", "review", "local_qa", "babysit"]);
     const implement = playbook.steps.find((step) => step.id === "implement")!;
     expect(implement.inputs.plan).toMatchObject({ auto: true, label: "investigate.plan", source: "{{ steps.investigate.outputs.plan }}" });
     expect(implement.inputs.request).toMatchObject({ auto: true, label: "playbook.request" });
@@ -136,10 +136,10 @@ steps:
 
   it("reads gate choices in order, with labels and comment rules", async () => {
     const result = await loadPlaybooks(EXAMPLES);
-    const gate = result.entries.find((entry) => entry.id === "pr")!.playbook!.steps.find((step) => step.id === "pr_approval")!;
+    const gate = result.entries.find((entry) => entry.id === "capability")!.playbook!.steps.find((step) => step.id === "approve")!;
     expect(gate.outcomes).toEqual(["approved", "rejected"]);
     expect(gate.choices).toEqual([
-      { id: "approved", label: "Approve", comment: "none" },
+      { id: "approved", label: "Release to dev", comment: "none" },
       { id: "rejected", label: "Request changes", comment: "required", color: "danger" },
     ]);
   });

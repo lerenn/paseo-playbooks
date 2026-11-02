@@ -70,7 +70,7 @@ the index and HEAD unchanged; build output in ignored files is fine.
 
 ```yaml
 title: Pull request
-description: Investigate, implement, open a PR and babysit it to a human gate.
+description: Investigate, implement, open a PR and babysit it until it is green.
 agent: { model: claude-opus-5-5 }          # optional playbook-wide settings
 concurrency: 1                             # optional: max active runs in the project
 
@@ -123,15 +123,6 @@ steps:
     outcomes: [ready, changes_requested]
     on:
       changes_requested: { goto: implement, max_loops: 3 }
-
-  - id: pr_approval
-    needs: [babysit]
-    gate: The PR is ready. Approve to finish, or request changes to send it back to the implementer.
-    choices:
-      approved: { label: Approve }
-      rejected: { label: Request changes, comment: required, color: danger }
-    on:
-      rejected: { goto: implement }
 ```
 
 ### Steps
