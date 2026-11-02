@@ -29,6 +29,8 @@ export const TransitionSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("end") }),
   z.object({ kind: z.literal("fail") }),
   z.object({ kind: z.literal("goto"), target: z.string(), maxLoops: z.number().int().positive().optional() }),
+  /** Opens a human gate asking for an answer, then goes back to `target` with the answer as feedback. */
+  z.object({ kind: z.literal("ask"), ask: z.string(), target: z.string(), maxLoops: z.number().int().positive().optional() }),
 ]);
 export type Transition = z.infer<typeof TransitionSchema>;
 
@@ -186,9 +188,9 @@ export type RunStep = z.infer<typeof RunStepSchema>;
 
 export const GateSchema = z.object({
   id: z.string(),
-  kind: z.enum(["gate", "loop_limit"]),
+  kind: z.enum(["gate", "loop_limit", "ask"]),
   stepId: z.string(),
-  /** For loop_limit gates: the goto waiting on approval. */
+  /** For loop_limit and ask gates: the step the goto leads to. */
   gotoTarget: z.string().nullable(),
   /** "pending", or the chosen outcome (a choice id; "approved" / "rejected" for loop-limit gates). */
   status: z.string(),

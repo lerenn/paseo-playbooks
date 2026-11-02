@@ -4,8 +4,8 @@
  */
 import { descendantsOf } from "../shared/graph";
 import { blockEntrySteps, blockStepIds, holdsBlock } from "../shared/slots";
-import { gateChoices, LOOP_LIMIT_CHOICES, outcomeTransition } from "../shared/gates";
-import type { Attempt, Gate, Playbook, Run, RunStep, Step, VarValue } from "../shared/types";
+import { ASK_CHOICES, gateChoices, LOOP_LIMIT_CHOICES, outcomeTransition } from "../shared/gates";
+import type { Attempt, Gate, Playbook, Run, RunStep, Step, Transition, VarValue } from "../shared/types";
 import { isTerminal } from "../shared/types";
 import { coerceValue, formatValue, renderTemplate, resolveValue } from "../shared/vars";
 
@@ -301,7 +301,8 @@ export function recordReport(
     throw new EngineError(`outcome "${report.outcome}" is not allowed; use one of: ${step.outcomes.join(", ")}`);
   }
   let outputs: Record<string, VarValue> = {};
-  if (report.outcome !== "failure") {
+  // A failure, or a question for a human (`ask`), is not a result: no outputs expected.
+  if (report.outcome !== "failure" && defaultTransition(step, report.outcome).kind !== "ask") {
     const checked = validateOutputs(step, report.outputs);
     if (!checked.ok) throw new EngineError(`report refused: ${checked.errors.join("; ")}. Fix these and call report_step_result again.`);
     outputs = checked.outputs;
@@ -458,6 +459,30 @@ function gotoOrLimit(run: Run, step: Step, target: string, maxLoops: number | un
   fx.notes.push(`Loop limit reached for ${key}: a human gate (${gate.id}) is open. Tell the human; wait for the decision.`);
 }
 
+/** An `ask` transition: the step waits while a human answers, then goes back to the target with the answer. */
+function openAskGate(run: Run, step: Step, transition: Extract<Transition, { kind: "ask" }>, summary: string, now: string, fx: Effects): void {
+  run.steps[step.id]!.status = "waiting";
+  const asked = run.gates.filter((gate) => gate.kind === "ask" && gate.stepId === step.id).length;
+  const gate: Gate = {
+    id: `ask-${step.id}-${asked + 1}`,
+    kind: "ask",
+    stepId: step.id,
+    gotoTarget: transition.target,
+    status: "pending",
+    message: [transition.ask, summary].filter(Boolean).join("\n\n"),
+    summary: transition.ask,
+    details: summary,
+    requestedAt: now,
+    comment: null,
+    decidedBy: null,
+    decidedVia: null,
+    decidedAt: null,
+  };
+  run.gates.push(gate);
+  log(run, now, "gate_opened", step.id, gate.id);
+  fx.notes.push(`"${step.id}" needs input: a human gate (${gate.id}) is open in the panel. Tell the human; wait for the answer.`);
+}
+
 /** The manager's verdict on a reported (or running) agent step. */
 export function completeStep(
   run: Run,
@@ -521,6 +546,9 @@ export function completeStep(
     case "goto":
       gotoOrLimit(run, step, transition.target, transition.maxLoops, summary, input.now, fx);
       break;
+    case "ask":
+      openAskGate(run, step, transition, summary, input.now, fx);
+      break;
   }
   updateStatus(run);
   return fx;
@@ -579,7 +607,7 @@ export function decideGate(run: Run, ref: string, decision: GateDecision): { gat
   const fx = effects();
   if (gate.status !== "pending") return { gate, alreadyDecided: true, effects: fx };
   assertActive(run);
-  const choices = gate.kind === "loop_limit" ? LOOP_LIMIT_CHOICES : gateChoices(stepDef(run, gate.stepId));
+  const choices = gate.kind === "loop_limit" ? LOOP_LIMIT_CHOICES : gate.kind === "ask" ? ASK_CHOICES : gateChoices(stepDef(run, gate.stepId));
   const choice = choices.find((candidate) => candidate.id === decision.decision);
   if (!choice) throw new EngineError(`"${decision.decision}" is not a choice of gate "${gate.stepId}" (${choices.map((c) => c.id).join(", ")})`);
   if (choice.comment === "required" && !decision.comment?.trim()) throw new EngineError(`"${choice.label}" needs a comment`);
@@ -590,6 +618,12 @@ export function decideGate(run: Run, ref: string, decision: GateDecision): { gat
   gate.decidedAt = decision.now;
   log(run, decision.now, "gate_decided", gate.stepId, `${gate.id}: ${decision.decision} via ${decision.via}`);
   const step = stepDef(run, gate.stepId);
+  if (gate.kind === "ask") {
+    const ask = Object.values(step.on).find((transition) => transition.kind === "ask" && transition.target === gate.gotoTarget);
+    gotoOrLimit(run, step, gate.gotoTarget!, ask?.kind === "ask" ? ask.maxLoops : undefined, decision.comment ?? "", decision.now, fx);
+    updateStatus(run);
+    return { gate, alreadyDecided: false, effects: fx };
+  }
   if (gate.kind === "loop_limit") {
     if (decision.decision === "approved") {
       const key = `${gate.stepId}->${gate.gotoTarget}`;

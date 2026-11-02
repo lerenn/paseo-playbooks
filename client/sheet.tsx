@@ -4,7 +4,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useState, type ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
 import { decideGateRpc, nudgeStepRpc, retryStepRpc } from "../shared/contracts";
-import { destinationOf, gateChoices, gateText, linkify, LOOP_LIMIT_CHOICES } from "../shared/gates";
+import { ASK_CHOICES, destinationOf, gateChoices, gateText, linkify, LOOP_LIMIT_CHOICES } from "../shared/gates";
 import { isTerminal, type Gate, type GateChoice, type Playbook, type Run } from "../shared/types";
 import { stepLabel, type Theme } from "./theme";
 
@@ -74,6 +74,7 @@ function choiceColors(theme: Theme, color: NonNullable<GateChoice["color"]>): { 
 
 /** Where a choice leads, for its button: "→ End", "→ Write", "→ Fail run". */
 function destinationLabel(run: Run, gate: Gate, choiceId: string): string {
+  if (gate.kind === "ask") return `→ ${stepLabel(gate.gotoTarget ?? "")}`;
   if (gate.kind === "loop_limit") return choiceId === "approved" ? `→ ${stepLabel(gate.gotoTarget ?? "")}` : "→ Fail run";
   const step = run.playbook.steps.find((candidate) => candidate.id === gate.stepId);
   if (!step) return "";
@@ -94,7 +95,7 @@ export function GateActions(props: { theme: Theme; run: Run; gate: Gate; hostLab
   const [busy, setBusy] = useState(false);
   const text = gateText(gate);
   const step = run.playbook.steps.find((candidate) => candidate.id === gate.stepId);
-  const choices = gate.kind === "loop_limit" ? LOOP_LIMIT_CHOICES : step ? gateChoices(step) : [];
+  const choices = gate.kind === "loop_limit" ? LOOP_LIMIT_CHOICES : gate.kind === "ask" ? ASK_CHOICES : step ? gateChoices(step) : [];
   const submit = async (choice: GateChoice, withComment: string) => {
     setBusy(true);
     try {

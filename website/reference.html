@@ -100,6 +100,7 @@ timeout: 1h         # default step timeout</code></pre><table><thead><tr><th>Key
 <li><code>goto</code> must point to the step itself or to a step it needs, directly or not. Loops are the only backward edges.</li>
 <li>A <code>goto</code> resets the target and every step downstream of it to pending, clears their outputs, and interrupts any of their agents still running. The target becomes ready again.</li>
 <li>The summary of the step that looped, or the gate comment, is added to the target's next prompt as "Feedback to address".</li>
+<li><code>on: { &lt;outcome&gt;: { ask: "...", goto: &lt;step&gt;, max_loops: N } }</code> (agent steps) lets a step ask a human. Completing the step with that outcome opens a gate with your <code>ask</code> text and the step's summary (the question); the human's answer is required and becomes the feedback of <code>goto</code>'s target, which defaults to the step itself. The report needs no outputs, and <code>max_loops</code> works as for <code>goto</code>. Example: <code>outcomes: [success, needs_input]</code> with <code>on: { needs_input: { ask: "The investigation needs your input." } }</code>.</li>
 <li><code>max_loops</code> counts how many times that edge fired. At the limit the plugin opens a "loop limit" gate: approve allows one more loop, reject fails the run.</li>
 </ul>
 

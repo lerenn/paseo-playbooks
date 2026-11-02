@@ -43,7 +43,7 @@ function forwardLabels(playbook: Playbook): Map<string, string> {
 function loopEdges(playbook: Playbook, run: Run | null): LoopEdge[] {
   return playbook.steps.flatMap((step) =>
     Object.entries(step.on).flatMap(([outcome, transition]) =>
-      transition.kind === "goto"
+      transition.kind === "goto" || (transition.kind === "ask" && transition.target !== step.id)
         ? [{ from: step.id, to: transition.target, outcome, count: run?.loops[`${step.id}->${transition.target}`] ?? 0, max: transition.maxLoops }]
         : [],
     ),
