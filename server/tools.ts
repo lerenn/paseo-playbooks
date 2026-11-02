@@ -1,4 +1,5 @@
 import { defineAgentTool, type AgentToolDefinition, type AgentToolResult } from "@getpaseo/plugin/server";
+import { GATE_SUMMARY_MAX } from "../shared/gates";
 import { z } from "zod";
 import type { PlaybookEntry, Run } from "../shared/types";
 import { VarValueSchema } from "../shared/types";
@@ -171,7 +172,10 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
       input: z.object({
         runId: IdArg,
         stepId: z.string(),
-        summary: z.string().describe("One sentence: what the human is asked to decide"),
+        summary: z
+          .string()
+          .max(GATE_SUMMARY_MAX, `One short sentence (at most ${GATE_SUMMARY_MAX} characters); put everything else in details`)
+          .describe(`One short sentence (at most ${GATE_SUMMARY_MAX} characters): what the human decides, e.g. "PR #3 is green and ready to merge."`),
         details: z.string().default("").describe("What was done, links, risks, follow-ups (collapsed under the summary)"),
       }),
       execute: ({ runId, stepId, summary, details }, { agent }) =>

@@ -4,7 +4,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useState, type ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
 import { decideGateRpc, nudgeStepRpc, retryStepRpc } from "../shared/contracts";
-import { destinationOf, gateChoices, LOOP_LIMIT_CHOICES } from "../shared/gates";
+import { destinationOf, gateChoices, gateText, linkify, LOOP_LIMIT_CHOICES } from "../shared/gates";
 import { isTerminal, type Gate, type GateChoice, type Playbook, type Run } from "../shared/types";
 import { stepLabel, type Theme } from "./theme";
 
@@ -26,12 +26,6 @@ export function Button(props: { theme: Theme; label: string; onPress(): void; ki
   );
 }
 
-/** A gate's one-sentence summary and its details; gates from before the split fall back to their first paragraph. */
-export function gateText(gate: Gate): { summary: string; details: string } {
-  if (gate.summary) return { summary: gate.summary, details: gate.details };
-  const [first = "", ...rest] = gate.message.split(/\n\s*\n/);
-  return { summary: first.trim(), details: rest.join("\n\n").trim() };
-}
 
 /** A collapsible section of the step sheet, closed by default. */
 export function Section(props: { theme: Theme; title: string; children: ReactNode }) {
@@ -117,10 +111,10 @@ export function GateActions(props: { theme: Theme; run: Run; gate: Gate; hostLab
   };
   return (
     <View style={{ gap: 6 }}>
-      <Line theme={theme}>{text.summary}</Line>
+      <Markdown>{linkify(text.summary)}</Markdown>
       {text.details ? (
         <Section theme={theme} title="Details">
-          <Markdown>{text.details}</Markdown>
+          <Markdown>{linkify(text.details)}</Markdown>
         </Section>
       ) : null}
       {choices.map((choice, index) => {

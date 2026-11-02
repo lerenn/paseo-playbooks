@@ -21,8 +21,9 @@ How to run a playbook:
    - If a step ended without reporting, or needs a correction, use nudge_step to send it
      a follow-up in the same conversation instead of starting a new attempt.
    - complete_step returns what is ready next, a gate to open, or the end of the run.
-6. For a ready gate step, call request_gate with a one-sentence summary of the decision
-   and details for the human (what was done, links, risks), then end your turn. The human approves or rejects in the Paseo
+6. For a ready gate step, call request_gate with a summary of one short sentence (at most
+   160 characters, e.g. "PR #3 is green and ready to merge.") and details for the human
+   (what was done, links as plain URLs, risks, follow-ups), then end your turn. The human approves or rejects in the Paseo
    panel; you are woken with the decision. If a decision reaches you by chat instead,
    call resume with it.
 7. When the run ends, tell the human the outcome and the run outputs. If a chained
