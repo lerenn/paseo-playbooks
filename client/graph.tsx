@@ -119,6 +119,17 @@ export function Graph(props: GraphProps) {
     <View onLayout={(event) => setAvailable(event.nativeEvent.layout.width)}>
     <ScrollView horizontal style={{ flexGrow: 0 }} contentContainerStyle={{ minWidth: "100%", justifyContent: "center" }}>
       <View style={{ width: width + 2 * gutter, paddingHorizontal: gutter, paddingTop: 4, paddingBottom: 16 }}>
+        <BlockFrames
+          theme={theme}
+          blocks={playbook.blocks}
+          stepIds={playbook.steps.map((step) => step.id)}
+          layers={layers}
+          layerTops={layerTops}
+          heights={heights}
+          centers={centers}
+          offset={gutter}
+          widthOf={widthOf}
+        />
         <LoopLines
           theme={theme}
           loops={loops}
@@ -346,6 +357,72 @@ function Terminal(props: {
 }
 
 /** Dashed loop-back edges, drawn behind the nodes: out of the source's right side, up a lane, into the target's right side. */
+/** A labelled frame behind the steps of each sub-playbook (nested ones inside their parent's). */
+function BlockFrames(props: {
+  theme: Theme;
+  blocks: Playbook["blocks"];
+  stepIds: string[];
+  layers: Map<string, number>;
+  layerTops: Record<number, number>;
+  heights: Record<string, number>;
+  centers: Map<string, number>;
+  offset: number;
+  widthOf(id: string): number;
+}) {
+  const { theme } = props;
+  const frames = Object.entries(props.blocks).flatMap(([prefix, block]) => {
+    const members = props.stepIds.filter((id) => id.startsWith(`${prefix}.`));
+    let left = Infinity;
+    let right = -Infinity;
+    let top = Infinity;
+    let bottom = -Infinity;
+    for (const id of members) {
+      const layer = props.layers.get(id) ?? 0;
+      const layerTop = props.layerTops[layer];
+      const height = props.heights[id];
+      if (layerTop === undefined || !height) return [];
+      const nodeTop = layerTop + (layer > 0 ? BAND_H : 0);
+      const center = props.offset + (props.centers.get(id) ?? 0);
+      left = Math.min(left, center - props.widthOf(id) / 2);
+      right = Math.max(right, center + props.widthOf(id) / 2);
+      top = Math.min(top, nodeTop);
+      bottom = Math.max(bottom, nodeTop + height);
+    }
+    if (members.length === 0) return [];
+    const depth = prefix.split(".").length - 1;
+    const pad = Math.max(4, 10 - depth * 4);
+    return [{ prefix, title: block.title, depth, left: left - pad, top: top - pad - 8, width: right - left + 2 * pad, height: bottom - top + 2 * pad + 8 }];
+  });
+  return (
+    <View pointerEvents="none" style={{ position: "absolute", left: 0, top: 0, right: 0, bottom: 0 }}>
+      {frames
+        .sort((a, b) => a.depth - b.depth)
+        .map((frame) => (
+          <View
+            key={frame.prefix}
+            accessible
+            accessibilityLabel={`Sub-playbook ${frame.title}`}
+            style={{
+              position: "absolute",
+              left: frame.left,
+              top: frame.top,
+              width: frame.width,
+              height: frame.height,
+              borderRadius: 14,
+              borderWidth: 1,
+              borderColor: theme.colors.border,
+              backgroundColor: frame.depth % 2 === 0 ? theme.colors.surface0 : theme.colors.surface1,
+            }}
+          >
+            <Text numberOfLines={1} style={{ position: "absolute", top: 2, left: 10, right: 10, color: theme.colors.foregroundMuted, fontSize: 10, fontWeight: "600" }}>
+              {frame.title}
+            </Text>
+          </View>
+        ))}
+    </View>
+  );
+}
+
 function LoopLines(props: {
   theme: Theme;
   loops: LoopEdge[];

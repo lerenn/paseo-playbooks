@@ -11,7 +11,7 @@ to the human gates. See [OVERVIEW.md](OVERVIEW.md) for what it does and
 | `index.server.ts`, `server/` | Daemon side: YAML loader and validator, run engine, run store, agent tools, hooks, RPC handlers |
 | `index.client.tsx`, `client/` | The Playbooks panel (graph, node sheet, Start form) |
 | `shared/` | Zod types, RPC contracts, graph and template helpers |
-| `examples/.paseo/plugins/playbooks/` | Example PR playbook and its five roles (not loaded by the plugin) |
+| `examples/.paseo/plugins/playbooks/` | Example playbooks (PR, Release to dev, and Capability, which combines them as sub-playbooks) and their roles (not loaded by the plugin) |
 | `skills/paseo-playbooks/SKILL.md` | Agent skill for writing playbooks; copy or symlink it into a repo's `.agents/skills/` or `.claude/skills/` |
 
 ## Develop

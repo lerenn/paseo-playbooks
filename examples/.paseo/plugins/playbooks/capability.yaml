@@ -1,0 +1,36 @@
+title: Capability
+description: Build a change with the pull-request playbook, let a human approve it, then release it to the dev environment.
+
+inputs:
+  request:
+    type: string
+    required: true
+    description: What to change
+  base_branch:
+    type: string
+    default: main
+    description: Branch the PR targets
+
+outputs:
+  pr_url: { type: string }       # from the pr block
+  env_url: { type: string }      # from the release block
+
+steps:
+  # A step with `playbook:` runs another playbook of this folder in place. Its inputs are
+  # matched by name (request, base_branch); its outputs (pr_url, pr_number) become this
+  # step's outputs. Its steps appear as pr.investigate, pr.implement, …
+  - id: pr
+    playbook: pr
+
+  - id: approve
+    needs: [pr]
+    gate: The PR is green. Release it to the dev environment, or request changes to rework it.
+    choices:
+      approved: { label: Release to dev }
+      rejected: { label: Request changes, comment: required, color: danger }
+    on:
+      rejected: { goto: pr }     # restarts the whole pr block, with your comment as feedback
+
+  - id: release
+    needs: [approve]
+    playbook: release            # pr_url comes from the pr block
