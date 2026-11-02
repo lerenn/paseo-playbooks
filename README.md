@@ -4,6 +4,16 @@ Paseo plugin that makes an agent pick a playbook and run each step as a subagent
 to the human gates. See [OVERVIEW.md](OVERVIEW.md) for what it does and
 [docs/adrs/2026-11-02-design.md](docs/adrs/2026-11-02-design.md) for the design.
 
+![The Playbooks panel showing a running Docs check playbook as a graph](assets/panel.png)
+
+The panel next to the Playbook Manager's conversation, while a step runs:
+
+![The Playbooks panel beside the Playbook Manager conversation](assets/app.png)
+
+How the Playbook Manager drives steps, human gates and nested playbooks:
+
+![Architecture diagram: the Playbook Manager agent starts each step of a Capability playbook made of a PR playbook and a Release playbook, with a human gate between them](assets/diagram.png)
+
 ## Layout
 
 | Path | Contents |

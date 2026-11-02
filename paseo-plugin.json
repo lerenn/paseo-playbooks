@@ -3,5 +3,6 @@
   "name": "Playbooks",
   "description": "A Playbook Manager agent runs multi-step YAML playbooks with subagents, up to human gates.",
   "requirements": { "paseo": ">=0.14.0 <0.15.0" },
-  "build": [["npm", "ci", "--omit=dev"]]
+  "build": [["npm", "ci", "--omit=dev"]],
+  "media": ["assets/panel.png", "assets/app.png", "assets/diagram.png"]
 }
