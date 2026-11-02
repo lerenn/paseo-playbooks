@@ -109,6 +109,9 @@ function EmptyState(props: { theme: Theme; compact: boolean }) {
   );
 }
 
+/** Inner padding of a playbook card; with its 12px corner radius, less crowds the Start button. */
+const CARD_PAD = 14;
+
 function PlaybookCard(props: {
   compact: boolean;
   card: Card;
@@ -135,7 +138,7 @@ function PlaybookCard(props: {
   const errors = card.entry?.errors ?? [];
 
   return (
-    <View style={{ borderRadius: 12, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface1, padding: 10, gap: 8 }}>
+    <View style={{ borderRadius: 12, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface1, padding: CARD_PAD, gap: 10 }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 6, zIndex: 20 }}>
         <Pressable
           accessibilityRole="button"
@@ -162,8 +165,8 @@ function PlaybookCard(props: {
         </Text>
       ))}
       {expanded && card.runs.length > 0 ? (
-        // Full-width rule between the title row and the run tabs (the card has 10px padding).
-        <View style={{ height: 1, marginHorizontal: -10, backgroundColor: theme.colors.border }} />
+        // Full-width rule between the title row and the run tabs (the card has CARD_PAD padding).
+        <View style={{ height: 1, marginHorizontal: -CARD_PAD, backgroundColor: theme.colors.border }} />
       ) : null}
       {expanded && card.runs.length > 0 ? (
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, zIndex: 15 }}>
