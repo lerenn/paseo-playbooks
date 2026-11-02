@@ -35,4 +35,7 @@ To use playbooks in a repository, copy `examples/.paseo/plugins/playbooks/` into
 `.paseo/plugins/playbooks/` or `.paseo/playbooks/`),
 adjust the roles and playbooks, commit them, and allow the modes they use in
 Settings → Plugins → paseo-playbooks. Then open the Playbooks panel in a workspace of
-that repository and press Start.
+that repository and press Start. Start runs the playbook with the workspace's current
+agent as manager, in that workspace (the run starts at once, but if that agent is busy,
+its kickoff waits until its current turn ends). The arrow next to Start offers "Start on
+a new agent", which creates a new worktree and manager.
