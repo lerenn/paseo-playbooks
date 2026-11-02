@@ -40,7 +40,7 @@
 <h2>Run state</h2>
 <ul>
 <li>Each run is one JSON file in <code>$PASEO_HOME/plugin-data/paseo-playbooks/runs/</code>, written atomically. It holds the playbook snapshot, inputs, every step's attempts, reports and outputs, gates, loop counts, queued wake-ups and history.</li>
-<li>Runs survive daemon restarts and plugin reloads. On start the plugin checks running steps; agents that stopped without reporting are marked lost and the manager is told.</li>
+<li>Run state is saved on disk, so runs survive daemon restarts and plugin reloads. On start the plugin checks running steps; agents that stopped without reporting are marked lost and the manager is told. Two limits: a plugin reload removes the playbook tools from agents already running until their session restarts, and a busy agent's queued kickoff is kept in memory only, so a daemon restart before it is delivered leaves the run with nothing driving it (cancel it and start again).</li>
 <li>When a run ends, its agents and worktree stay, so conversations remain reachable. Archiving the worktree cancels any active run in it and deletes its run files.</li>
 <li>If the manager is archived during a run, the run fails and its running steps are stopped.</li>
 </ul>
