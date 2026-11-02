@@ -50,6 +50,20 @@ once, but if that agent is busy, its kickoff waits until its current turn ends).
 next to Start offers "Start on a new agent", which creates a new manager agent in the same
 workspace, and "Start in a new workspace", which creates a new worktree and manager.
 
+## Release
+
+The version lives in `package.json`. A pull request that changes shipped files
+(`client/`, `server/`, `shared/`, `skills/`, `assets/`, `index.*`, `paseo-plugin.json` or
+`OVERVIEW*.md`) must bump it, or CI fails:
+
+```bash
+npm version patch --no-git-tag-version   # or minor / major
+```
+
+When a new version reaches `main`, the Release workflow tags it `vX.Y.Z` and creates a GitHub
+release. To update the Paseo Cafe listing, reply on the registry review PR (or open a new
+submission) with that tag.
+
 ## Known limits
 
 - Reloading the plugin (`paseo plugin reload`) removes the playbook tools from agents that
