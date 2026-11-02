@@ -17,18 +17,18 @@
 <h1>Examples</h1>
 <p class="lead">Two complete playbook folders. Copy one into your repository as <code>.paseo/plugins/playbooks/</code> or <code>.paseo/playbooks/</code>, adjust it, then run <code>validate_playbooks</code>.</p>
 <ul>
-<li><a href="#pr">Pull request</a>: investigate, implement, review and local QA in parallel, babysit the PR, human gate.</li>
+<li><a href="#pr">Pull request</a>: investigate, implement, review and local QA in parallel, babysit the PR until it is green.</li>
+<li><a href="#capability">Capability</a>: the Pull request playbook, a human gate, then the Release to dev playbook, as <a href="reference.html#subplaybooks">sub-playbooks</a>.</li>
 <li><a href="#docs">Docs check</a>: compare the docs with the code, fix them, review and check in parallel, loop until clean, human gate. It needs no shell commands.</li>
 </ul>
 
 <h2 id="pr">Pull request</h2>
 <p>From <a href="https://github.com/lerenn/paseo-playbooks/tree/main/examples/.paseo/plugins/playbooks"><code>examples/.paseo/plugins/playbooks/</code></a>. Steps run with <code>bypassPermissions</code>, so they run shell commands without asking. The Implementer pushes and opens the PR with <code>gh</code>.</p>
-<pre><code>investigate ─▶ implement ─┬─▶ review ───┬─▶ babysit ─▶ ◆ pr_approval ─▶ end
-                  ▲       └─▶ local_qa ─┘      │              │
-                  └───── changes_requested ────┘              │
-                  └───────────────── rejected ─────────────────┘</code></pre><p class="file">pr.yaml</p>
+<pre><code>investigate ─▶ implement ─┬─▶ review ───┬─▶ babysit ─▶ end
+                  ▲       └─▶ local_qa ─┘      │
+                  └───── changes_requested ────┘</code></pre><p class="file">pr.yaml</p>
 <pre><code>title: Pull request
-description: Investigate a request, implement it, open a PR and babysit it to a human gate.
+description: Investigate a request, implement it, open a PR and babysit it until it is green.
 
 inputs:
   request:
@@ -108,16 +108,7 @@ steps:
       Local QA report:
       {{ inputs.qa }}
     on:
-      changes_requested: { goto: implement, max_loops: 3 }
-
-  - id: pr_approval
-    needs: [babysit]
-    gate: The PR is ready. Approve to finish, or request changes to send it back to the implementer.
-    choices:
-      approved: { label: Approve }
-      rejected: { label: Request changes, comment: required, color: danger }
-    on:
-      rejected: { goto: implement }</code></pre>
+      changes_requested: { goto: implement, max_loops: 3 }</code></pre>
 <p class="file">defaults/main.yaml</p>
 <pre><code># Repo-wide agent defaults. Precedence: step &gt; role &gt; playbook &gt; these &gt; the manager's own.
 agent:
@@ -183,6 +174,84 @@ readonly: true</code></pre>
 Review the pull request diff (`gh pr diff`) for correctness, security, missing tests and
 clarity. Do not edit files or push. Report concrete findings with file and line, ordered
 by severity, as the `findings` output. Say "No findings" when the change is good.</code></pre>
+
+<h2 id="capability">Capability (sub-playbooks)</h2>
+<p>From <a href="https://github.com/lerenn/paseo-playbooks/tree/main/examples/.paseo/plugins/playbooks"><code>examples/.paseo/plugins/playbooks/</code></a>. It builds a change with the Pull request playbook, waits for a human, then releases it with the Release to dev playbook: three steps, two of them <a href="reference.html#subplaybooks">sub-playbooks</a>. Rejecting the gate restarts the whole PR block with your comment.</p>
+<pre><code># capability.yaml
+title: Capability
+description: Build a change with the pull-request playbook, let a human approve it, then release it to the dev environment.
+
+inputs:
+  request:
+    type: string
+    required: true
+    description: What to change
+  base_branch:
+    type: string
+    default: main
+    description: Branch the PR targets
+
+outputs:
+  pr_url: { type: string }       # from the pr block
+  env_url: { type: string }      # from the release block
+
+steps:
+  # A step with `playbook:` runs another playbook of this folder in place. Its inputs are
+  # matched by name (request, base_branch); its outputs (pr_url, pr_number) become this
+  # step&#x27;s outputs. Its steps appear as pr.investigate, pr.implement, …
+  - id: pr
+    playbook: pr
+
+  - id: approve
+    needs: [pr]
+    gate: The PR is green. Release it to the dev environment, or request changes to rework it.
+    choices:
+      approved: { label: Release to dev }
+      rejected: { label: Request changes, comment: required, color: danger }
+    on:
+      rejected: { goto: pr }     # restarts the whole pr block, with your comment as feedback
+
+  - id: release
+    needs: [approve]
+    playbook: release            # pr_url comes from the pr block
+</code></pre>
+<pre><code># release.yaml
+title: Release to dev
+description: Deploy a change to the development environment and check it there.
+
+inputs:
+  pr_url:
+    type: string
+    required: true
+    description: Pull request (or branch) to deploy
+
+outputs:
+  env_url: { type: string }      # auto-matched from the release step
+  qa_report: { type: string, value: &quot;{{ steps.qa.outputs.report }}&quot; }
+
+steps:
+  - id: release
+    role: dev_env_releaser
+    inputs: [pr_url]
+    outputs:
+      env_url: { type: string, description: URL of the deployed dev environment }
+      log: { type: string, description: What was run to deploy }
+    timeout: 30m
+    prompt: &quot;Deploy {{ inputs.pr_url }} to the development environment.&quot;
+
+  - id: qa
+    role: dev_env_qa
+    needs: [release]
+    inputs: [env_url, pr_url]
+    outputs:
+      report: { type: string }
+      passed: { type: boolean }
+    outcomes: [success, redeploy]
+    prompt: &quot;Check {{ inputs.pr_url }} on {{ inputs.env_url }}.&quot;
+    on:
+      redeploy: { goto: release, max_loops: 1 }
+</code></pre>
+<p>The Release to dev roles, <code>dev_env_releaser</code> and <code>dev_env_qa</code>, deploy and check the change with the process your repository documents, and report a failure when there is none.</p>
 
 <h2 id="docs">Docs check</h2>
 <p>Every role only reads or edits files, so <code>default</code> and <code>acceptEdits</code> are enough. The verdict step loops back to the writer at most twice, and a rejected gate sends the work back with your comment.</p>

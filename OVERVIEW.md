@@ -18,7 +18,8 @@ graph. When a run is in progress, nodes show their live status, the running step
 and pressing a node opens that step's conversation. Gates show Approve and Reject buttons.
 Start opens a form built from the playbook's inputs and runs the playbook with the
 workspace's most recent agent as manager, on its current branch. The arrow next to Start
-offers "Start on a new agent", which creates a worktree on a new branch and starts a
+offers "Start on a new agent", which starts a new manager agent in the same workspace,
+and "Start in a new workspace", which creates a worktree on a new branch and starts a
 manager there.
 
 Agent modes: playbooks may use any mode, `bypassPermissions` included, so steps that run

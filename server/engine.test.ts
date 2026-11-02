@@ -16,18 +16,21 @@ import { loadPlaybooks } from "./loader";
 
 const EXAMPLES = path.resolve(__dirname, "..", "examples");
 let playbook: Playbook;
+/** The example Capability playbook: the PR playbook as a block, a gate, then the Release block. */
+let capability: Playbook;
 let clock = 0;
 const now = () => new Date(Date.UTC(2026, 10, 2, 12, 0, clock++)).toISOString();
 
 beforeAll(async () => {
   const result = await loadPlaybooks(EXAMPLES);
   playbook = result.entries.find((entry) => entry.id === "pr")!.playbook!;
+  capability = result.entries.find((entry) => entry.id === "capability")!.playbook!;
 });
 
-function run(): Run {
+function run(from: Playbook = playbook): Run {
   return newRun({
     id: "run_test",
-    playbook,
+    playbook: from,
     workspaceId: "ws",
     workspaceDir: "/tmp/ws",
     projectId: "proj",
@@ -44,12 +47,21 @@ const OUTPUTS: Record<string, Record<string, unknown>> = {
   review: { findings: "No findings" },
   local_qa: { report: "all green", tests_passed: "true" },
   babysit: {},
+  release: { env_url: "https://dev.example.com", log: "deployed" },
 };
+
+/** A Capability run with the whole pr block done, so the "approve" gate is ready. */
+function capabilityAtGate(): Run {
+  const r = run(capability);
+  for (const id of ["pr.investigate", "pr.implement", "pr.review", "pr.local_qa"]) runStep(r, id, "success");
+  runStep(r, "pr.babysit", "ready");
+  return r;
+}
 
 /** Starts, reports and ends the turn of a step with the given outcome. */
 function runStep(r: Run, stepId: string, outcome: string, agentId = `${stepId}-${Math.random()}`) {
   const started = startAttempt(r, stepId, { agentId, brief: `brief for ${stepId}`, now: now(), readonlySnapshot: null });
-  recordReport(r, agentId, { outcome, summary: `${stepId} ${outcome}`, outputs: outcome === "failure" ? {} : OUTPUTS[stepId]! }, now());
+  recordReport(r, agentId, { outcome, summary: `${stepId} ${outcome}`, outputs: outcome === "failure" ? {} : OUTPUTS[stepId.slice(stepId.lastIndexOf(".") + 1)]! }, now());
   endTurn(r, agentId, { turnEnd: "completed", lastMessage: null, now: now() });
   return { started, fx: completeStep(r, stepId, { outcome, now: now() }) };
 }
@@ -82,17 +94,23 @@ describe("engine", () => {
     runStep(r, "local_qa", "success");
     expect(readySteps(r)).toEqual(["babysit"]);
     runStep(r, "babysit", "ready");
-    expect(readySteps(r)).toEqual(["pr_approval"]);
-    const gate = requestGate(r, "pr_approval", "PR green", now(), "CI passed; link: https://github.com/o/r/pull/7");
+    expect(r.status).toBe("completed");
+    expect(r.outputs).toEqual({ pr_url: "https://github.com/o/r/pull/7", pr_number: 7 });
+  });
+
+  it("opens a gate with a summary and details; the first decision wins", () => {
+    const r = capabilityAtGate();
+    expect(readySteps(r)).toEqual(["approve"]);
+    const gate = requestGate(r, "approve", "PR green", now(), "CI passed; link: https://github.com/o/r/pull/7");
     expect(r.status).toBe("waiting_gate");
     expect(gate.summary).toBe("PR green");
     expect(gate.details).toContain("CI passed");
     expect(gate.message.startsWith("PR green")).toBe(true);
-    const decided = decideGate(r, "pr_approval", { decision: "approved", comment: null, by: "host", via: "panel", now: now() });
+    const decided = decideGate(r, "approve", { decision: "approved", comment: null, by: "host", via: "panel", now: now() });
     expect(decided.alreadyDecided).toBe(false);
-    expect(r.status).toBe("completed");
-    expect(r.outputs).toEqual({ pr_url: "https://github.com/o/r/pull/7", pr_number: 7 });
-    expect(decideGate(r, "pr_approval", { decision: "rejected", comment: null, by: null, via: "chat", now: now() }).alreadyDecided).toBe(true);
+    expect(r.status).toBe("running");
+    expect(readySteps(r)).toEqual(["release.release"]);
+    expect(decideGate(r, "approve", { decision: "rejected", comment: "x", by: null, via: "chat", now: now() }).alreadyDecided).toBe(true);
   });
 
   it("refuses a report with missing or mistyped outputs", () => {
@@ -159,24 +177,20 @@ describe("engine", () => {
   });
 
   it("refuses unknown choices and a missing required comment", () => {
-    const r = run();
-    for (const id of ["investigate", "implement", "review", "local_qa"]) runStep(r, id, "success");
-    runStep(r, "babysit", "ready");
-    requestGate(r, "pr_approval", "", now());
-    expect(() => decideGate(r, "pr_approval", { decision: "maybe", comment: null, by: null, via: "panel", now: now() })).toThrow(/not a choice/);
-    expect(() => decideGate(r, "pr_approval", { decision: "rejected", comment: "  ", by: null, via: "panel", now: now() })).toThrow(/needs a comment/);
+    const r = capabilityAtGate();
+    requestGate(r, "approve", "", now());
+    expect(() => decideGate(r, "approve", { decision: "maybe", comment: null, by: null, via: "panel", now: now() })).toThrow(/not a choice/);
+    expect(() => decideGate(r, "approve", { decision: "rejected", comment: "  ", by: null, via: "panel", now: now() })).toThrow(/needs a comment/);
     expect(r.gates[0]!.status).toBe("pending");
   });
 
-  it("gate rejection loops back to implement", () => {
-    const r = run();
-    for (const id of ["investigate", "implement", "review", "local_qa"]) runStep(r, id, "success");
-    runStep(r, "babysit", "ready");
-    requestGate(r, "pr_approval", "", now());
-    decideGate(r, "pr_approval", { decision: "rejected", comment: "rename the flag", by: "host", via: "panel", now: now() });
+  it("gate rejection restarts the pr block with the comment as feedback", () => {
+    const r = capabilityAtGate();
+    requestGate(r, "approve", "", now());
+    decideGate(r, "approve", { decision: "rejected", comment: "rename the flag", by: "host", via: "panel", now: now() });
     expect(r.status).toBe("running");
-    expect(r.steps.implement!.feedback).toBe("rename the flag");
-    expect(readySteps(r)).toEqual(["implement"]);
+    expect(r.steps["pr.investigate"]!.feedback).toBe("rename the flag");
+    expect(readySteps(r)).toEqual(["pr.investigate"]);
   });
 
   it("cancels running agents when the run is canceled", () => {

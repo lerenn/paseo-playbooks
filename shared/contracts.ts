@@ -26,8 +26,10 @@ export const startRun = defineRpc({
     inputs: z.record(z.string(), VarValueSchema),
     /** Start even when an active run of this playbook has the same inputs. */
     force: z.boolean().default(false),
-    /** Manage the run with this agent of the workspace; omitted = new worktree and new manager. */
+    /** Manage the run with this agent of the workspace. */
     agentId: z.string().optional(),
+    /** Without agentId: true = a new manager agent in this workspace; false = a new worktree with a new manager. */
+    sameWorkspace: z.boolean().default(false),
   }),
   output: z.discriminatedUnion("status", [
     z.object({

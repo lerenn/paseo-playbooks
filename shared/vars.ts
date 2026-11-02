@@ -15,13 +15,26 @@ export function singleRef(template: string): string | null {
 
 export type TemplateContext = Record<string, unknown>;
 
+/** Follows a dotted path. Keys may contain dots themselves (steps of a sub-playbook are "pr.investigate"). */
 function lookup(context: TemplateContext, path: string): unknown {
+  const parts = path.split(".");
   let current: unknown = context;
-  for (const part of path.split(".")) {
+  let i = 0;
+  while (i < parts.length) {
     if (current === null || typeof current !== "object") return undefined;
-    current = (current as Record<string, unknown>)[part];
+    const record = current as Record<string, unknown>;
+    let j = i + 1;
+    while (j <= parts.length && !(parts.slice(i, j).join(".") in record)) j++;
+    if (j > parts.length) return undefined;
+    current = record[parts.slice(i, j).join(".")];
+    i = j;
   }
   return current;
+}
+
+/** Replaces each `{{ ref }}` for which `replace` returns text; other placeholders stay. */
+export function replaceRefs(template: string, replace: (ref: string) => string | null): string {
+  return template.replace(PLACEHOLDER, (match, ref: string) => replace(ref) ?? match);
 }
 
 /** Plain `{{ path }}` substitution. Unknown or empty values render as "(none)". */

@@ -71,7 +71,7 @@ the index and HEAD unchanged; build output in ignored files is fine.
 
 ```yaml
 title: Pull request
-description: Investigate, implement, open a PR and babysit it to a human gate.
+description: Investigate, implement, open a PR and babysit it until it is green.
 agent: { model: claude-opus-5-5 }          # optional playbook-wide settings
 concurrency: 1                             # optional: max active runs in the project
 
@@ -124,24 +124,15 @@ steps:
     outcomes: [ready, changes_requested]
     on:
       changes_requested: { goto: implement, max_loops: 3 }
-
-  - id: pr_approval
-    needs: [babysit]
-    gate: The PR is ready. Approve to finish, or request changes to send it back to the implementer.
-    choices:
-      approved: { label: Approve }
-      rejected: { label: Request changes, comment: required, color: danger }
-    on:
-      rejected: { goto: implement }
 ```
 
 ### Steps
 
 | Field | Meaning |
 | --- | --- |
-| `id` | Unique; `end` and `fail` are reserved. |
+| `id` | Unique; `end`, `fail` and `outputs` are reserved. |
 | `needs` | Steps that must complete first. No `needs` = starts with the run. Steps ready together run in parallel. File order does not matter. |
-| `role` / `gate` | Exactly one: an agent step, or a human gate with its message. |
+| `role` / `gate` / `playbook` | Exactly one: an agent step, a human gate with its message, or a sub-playbook (see below). |
 | `inputs` | List of names (auto-matched) or map of name → source (`"{{ playbook.inputs.x }}"`, `"{{ steps.<id>.outputs.y }}"`) or `~`. |
 | `outputs` | Typed values the step must return with any outcome except `failure` (a failure report skips output validation). All are required then. |
 | `prompt` | Template; may use only `{{ inputs.<name> }}`, `{{ run.id }}`, `{{ attempt }}`. |
@@ -158,6 +149,38 @@ by default; any other choice fails the run unless `on` sends it elsewhere. The p
 one full-width button per choice with where it leads (→ End, → Implement, → Fail run). A
 choice with `comment: optional` or `required` opens a text box with Send; the comment goes
 to the manager and, on a `goto`, to the target step as feedback.
+
+### Sub-playbooks
+
+A step with `playbook: <id>` runs another playbook of the same folder in place, like a
+building block:
+
+```yaml
+steps:
+  - id: pr
+    playbook: pr                 # its inputs match by name, or map them in `inputs`
+  - id: approve
+    needs: [pr]
+    gate: Release it?
+    on:
+      rejected: { goto: pr }     # restarts the whole block, with the comment as feedback
+  - id: release
+    needs: [approve]
+    playbook: release            # gets pr_url from the pr block's outputs
+```
+
+- The loader expands the block: its steps become `pr.investigate`, `pr.implement`, … in
+  the same run, with the same manager. Its first steps take the block's `needs`; steps that
+  need the block wait for its last steps.
+- The block's inputs are the sub-playbook's inputs (auto-matched by name, or mapped in
+  `inputs`; unmatched ones use their default). Its outputs are the sub-playbook's outputs,
+  so later steps can use them by name or as `{{ steps.pr.outputs.pr_url }}`.
+- Loops inside the sub-playbook stay inside. A `goto` to the block restarts it from its
+  first step (the sub-playbook must have exactly one).
+- `prompt`, `outputs`, `outcomes`, `timeout`, `agent`, `choices` and `on` do not apply to
+  a playbook step. A playbook that includes itself (directly or not) is an error.
+- The sub-playbook's `next`, `concurrency` and manager settings are ignored; its gates
+  stay gates of the run.
 
 ### Variables
 
@@ -198,5 +221,5 @@ outputs:
 2. Draw the graph with `needs`; keep parallel steps readonly.
 3. Declare typed outputs on producers and inputs on consumers; prefer matching names.
 4. Add gates where a human must decide, and `goto` loops with `max_loops`.
-5. Run `validate_playbooks`; fix everything; commit the files (Start on a new agent branches
-   a worktree from the current commit; plain Start runs in this checkout).
+5. Run `validate_playbooks`; fix everything; commit the files (Start in a new workspace
+   branches a worktree from the current commit; Start and Start on a new agent run in this checkout).

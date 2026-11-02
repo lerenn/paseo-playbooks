@@ -1,0 +1,34 @@
+title: Release to dev
+description: Deploy a change to the development environment and check it there.
+
+inputs:
+  pr_url:
+    type: string
+    required: true
+    description: Pull request (or branch) to deploy
+
+outputs:
+  env_url: { type: string }      # auto-matched from the release step
+  qa_report: { type: string, value: "{{ steps.qa.outputs.report }}" }
+
+steps:
+  - id: release
+    role: dev_env_releaser
+    inputs: [pr_url]
+    outputs:
+      env_url: { type: string, description: URL of the deployed dev environment }
+      log: { type: string, description: What was run to deploy }
+    timeout: 30m
+    prompt: "Deploy {{ inputs.pr_url }} to the development environment."
+
+  - id: qa
+    role: dev_env_qa
+    needs: [release]
+    inputs: [env_url, pr_url]
+    outputs:
+      report: { type: string }
+      passed: { type: boolean }
+    outcomes: [success, redeploy]
+    prompt: "Check {{ inputs.pr_url }} on {{ inputs.env_url }}."
+    on:
+      redeploy: { goto: release, max_loops: 1 }

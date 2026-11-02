@@ -27,6 +27,7 @@
 <li><a href="#loops">Loops</a></li>
 <li><a href="#variables">Variables</a></li>
 <li><a href="#templates">Prompt templates</a></li>
+<li><a href="#subplaybooks">Sub-playbooks</a></li>
 <li><a href="#chaining">Chaining</a></li>
 <li><a href="#agents">Agent settings</a></li>
 <li><a href="#readonly">Readonly roles and concurrency</a></li>
@@ -70,8 +71,8 @@ timeout: 1h         # default step timeout</code></pre><table><thead><tr><th>Key
 <table><thead><tr><th>Field</th><th>Meaning</th></tr></thead><tbody><tr><td><code>title</code></td><td>Display title. Defaults to the file name.</td></tr><tr><td><code>description</code></td><td>Shown in the Start form. Also returned to agents by <code>list_playbooks</code> and <code>validate_playbooks</code>.</td></tr><tr><td><code>agent</code></td><td>Agent settings for all steps of this playbook.</td></tr><tr><td><code>inputs</code></td><td>Typed variables. They make up the Start form, and <code>start_playbook</code> takes them. See <a href="#variables">variables</a>.</td></tr><tr><td><code>outputs</code></td><td>Typed run results, resolved when the run completes. <code>value</code> maps them from step outputs or playbook inputs; without it they are matched by name.</td></tr><tr><td><code>next</code></td><td>Playbooks that may follow: <code>[{ playbook, on: completed, inputs? }]</code>. See <a href="#chaining">chaining</a>.</td></tr><tr><td><code>concurrency</code></td><td>Maximum active runs of this playbook in the Paseo project, across all worktrees. Unlimited when absent.</td></tr><tr><td><code>steps</code></td><td>At least one step.</td></tr></tbody></table>
 
 <h2 id="steps">Step fields</h2>
-<p>A step is either an agent step (<code>role</code>) or a human gate (<code>gate</code>), never both. The order of steps in the file does not matter.</p>
-<table><thead><tr><th>Field</th><th>Applies to</th><th>Meaning</th></tr></thead><tbody><tr><td><code>id</code></td><td>all</td><td>Unique in the playbook. <code>end</code> and <code>fail</code> are reserved.</td></tr><tr><td><code>needs</code></td><td>all</td><td>Steps that must complete first. A step without <code>needs</code> is ready when the run starts. Steps that are ready at the same time run in parallel.</td></tr><tr><td><code>role</code></td><td>agent</td><td>Role folder name under <code>roles/</code>.</td></tr><tr><td><code>gate</code></td><td>gate</td><td>Message shown to the human.</td></tr><tr><td><code>choices</code></td><td>gate</td><td>The gate's buttons, in order. Each key is an outcome with <code>label</code>, <code>comment</code> and <code>color</code>. See <a href="#gates">gates</a>.</td></tr><tr><td><code>prompt</code></td><td>agent</td><td>Template for the step's first message. See <a href="#templates">prompt templates</a>.</td></tr><tr><td><code>inputs</code></td><td>agent</td><td>A list of names (each matched automatically), or a map of name to a source template or <code>~</code> (matched automatically).</td></tr><tr><td><code>outputs</code></td><td>agent</td><td>Typed values the step must return with any outcome except <code>failure</code>; a failure report skips output validation. All of them are required then.</td></tr><tr><td><code>outcomes</code></td><td>agent</td><td>Allowed outcomes. Default <code>[success, failure]</code>.</td></tr><tr><td><code>on</code></td><td>all</td><td>Per outcome: <code>complete</code>, <code>end</code>, <code>fail</code>, or <code>{ goto: &lt;step&gt;, max_loops: N }</code>.</td></tr><tr><td><code>retries</code></td><td>agent</td><td>Extra attempts allowed after <code>failure</code>. Default 0.</td></tr><tr><td><code>timeout</code></td><td>agent</td><td>Duration such as <code>30m</code> or <code>2h</code>. Defaults to <code>defaults/main.yaml</code>.</td></tr><tr><td><code>agent</code></td><td>agent</td><td>Agent settings for this step only.</td></tr></tbody></table>
+<p>A step is an agent step (<code>role</code>), a human gate (<code>gate</code>) or a sub-playbook (<code>playbook</code>), exactly one of them. The order of steps in the file does not matter.</p>
+<table><thead><tr><th>Field</th><th>Applies to</th><th>Meaning</th></tr></thead><tbody><tr><td><code>id</code></td><td>all</td><td>Unique in the playbook. <code>end</code>, <code>fail</code> and <code>outputs</code> are reserved.</td></tr><tr><td><code>needs</code></td><td>all</td><td>Steps that must complete first. A step without <code>needs</code> is ready when the run starts. Steps that are ready at the same time run in parallel.</td></tr><tr><td><code>role</code></td><td>agent</td><td>Role folder name under <code>roles/</code>.</td></tr><tr><td><code>gate</code></td><td>gate</td><td>Message shown to the human.</td></tr><tr><td><code>choices</code></td><td>gate</td><td>The gate's buttons, in order. Each key is an outcome with <code>label</code>, <code>comment</code> and <code>color</code>. See <a href="#gates">gates</a>.</td></tr><tr><td><code>prompt</code></td><td>agent</td><td>Template for the step's first message. See <a href="#templates">prompt templates</a>.</td></tr><tr><td><code>inputs</code></td><td>agent</td><td>A list of names (each matched automatically), or a map of name to a source template or <code>~</code> (matched automatically).</td></tr><tr><td><code>outputs</code></td><td>agent</td><td>Typed values the step must return with any outcome except <code>failure</code>; a failure report skips output validation. All of them are required then.</td></tr><tr><td><code>outcomes</code></td><td>agent</td><td>Allowed outcomes. Default <code>[success, failure]</code>.</td></tr><tr><td><code>on</code></td><td>all</td><td>Per outcome: <code>complete</code>, <code>end</code>, <code>fail</code>, or <code>{ goto: &lt;step&gt;, max_loops: N }</code>.</td></tr><tr><td><code>retries</code></td><td>agent</td><td>Extra attempts allowed after <code>failure</code>. Default 0.</td></tr><tr><td><code>timeout</code></td><td>agent</td><td>Duration such as <code>30m</code> or <code>2h</code>. Defaults to <code>defaults/main.yaml</code>.</td></tr><tr><td><code>agent</code></td><td>agent</td><td>Agent settings for this step only.</td></tr></tbody></table>
 
 <h2 id="flow">Outcomes and flow</h2>
 <ul>
@@ -116,6 +117,28 @@ timeout: 1h         # default step timeout</code></pre><table><thead><tr><th>Key
 
 <h2 id="templates">Prompt templates</h2>
 <p>Templates use plain <code>{{ path }}</code> substitution, with no conditionals or loops. A step prompt may use only <code>{{ inputs.&lt;name&gt; }}</code> (a declared input), <code>{{ run.id }}</code> and <code>{{ attempt }}</code>. Missing or empty values render as <code>(none)</code>. If a prompt has no placeholders, the plugin lists the step's inputs after it. The manager's brief and any loop feedback are appended to the prompt.</p>
+
+<h2 id="subplaybooks">Sub-playbooks</h2>
+<p>A step with <code>playbook: &lt;id&gt;</code> runs another playbook of the same folder in place, as a building block. The loader expands it: its steps become <code>pr.investigate</code>, <code>pr.implement</code>… in the same run, under the same manager, and the panel draws a labelled frame around them.</p>
+<pre><code>steps:
+  - id: pr
+    playbook: pr                 # inputs match by name, or map them in `inputs`
+  - id: approve
+    needs: [pr]
+    gate: Release it?
+    on:
+      rejected: { goto: pr }     # restarts the whole block, with the comment as feedback
+  - id: release
+    needs: [approve]
+    playbook: release            # gets pr_url from the pr block's outputs</code></pre>
+<ul>
+<li>The block's first steps take its <code>needs</code>; steps that need the block wait for its last steps.</li>
+<li>Its inputs are the sub-playbook's inputs, auto-matched by name or mapped in <code>inputs</code>; unmatched ones use their default. Its outputs are the sub-playbook's outputs, usable by name or as <code>{{ steps.pr.outputs.pr_url }}</code>.</li>
+<li>Loops inside the sub-playbook stay inside. A <code>goto</code> to the block restarts it from its first step; the sub-playbook must have exactly one.</li>
+<li><code>prompt</code>, <code>outputs</code>, <code>outcomes</code>, <code>timeout</code>, <code>agent</code>, <code>choices</code> and <code>on</code> do not apply to a playbook step. A playbook that includes itself, directly or not, is an error.</li>
+<li>The sub-playbook's <code>next</code>, <code>concurrency</code> and manager settings are ignored; its gates stay gates of the run.</li>
+</ul>
+<p>Unlike chaining, sub-playbooks give one run and one graph, so a gate or a loop can sit between two playbooks.</p>
 
 <h2 id="chaining">Chaining</h2>
 <pre><code>next:

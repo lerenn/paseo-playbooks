@@ -55,7 +55,8 @@ function errorText(error: unknown): string {
 
 interface Reservation {
   runId: string;
-  branch: string;
+  /** null: the workspace's current branch, read when the run is created. */
+  branch: string | null;
   playbook: Playbook;
   inputs: Record<string, VarValue>;
 }
@@ -552,7 +553,26 @@ export class Runtime {
     }
   }
 
-  async startFromPanel(input: { workspaceId: string; playbook: string; inputs: Record<string, VarValue>; force: boolean; agentId?: string | undefined }) {
+  /** Agent config of a new Playbook Manager for this playbook. */
+  private managerConfig(playbook: Playbook): AgentConfig {
+    const provider = playbook.manager.provider ?? DEFAULT_PROVIDER;
+    const model = playbook.manager.model ?? (provider === DEFAULT_PROVIDER ? DEFAULT_MODEL : undefined);
+    if (!model) throw new UserError(`no model for the manager on provider "${provider}"; set manager.model in defaults/main.yaml`);
+    const config: AgentConfig = { provider: `${provider}/${model}` };
+    if (playbook.manager.mode) config.modeId = playbook.manager.mode;
+    if (playbook.manager.thinking) config.thinkingOptionId = playbook.manager.thinking;
+    preapprove(config, provider, MANAGER_TOOL_NAMES);
+    return config;
+  }
+
+  async startFromPanel(input: {
+    workspaceId: string;
+    playbook: string;
+    inputs: Record<string, VarValue>;
+    force: boolean;
+    agentId?: string | undefined;
+    sameWorkspace?: boolean | undefined;
+  }) {
     const workspace = await this.api().workspaces.ref(input.workspaceId).refresh();
     if (!workspace) throw new UserError("workspace not found");
     const workspaceDir = workspace.workspaceDirectory ?? workspace.projectRootPath;
@@ -576,6 +596,20 @@ export class Runtime {
       return { status: "duplicate" as const, runId: same.id, message: `Run ${same.id} of "${playbook.id}" is already active with the same inputs.` };
     }
     if (input.agentId) return this.startWithAgent(workspace.id, input.agentId, playbook, resolved.inputs);
+    if (input.sameWorkspace) {
+      const busy = this.store.list().find((run) => run.workspaceId === workspace.id && !isTerminal(run.status));
+      if (busy) throw new UserError(`this workspace already has an active run (${busy.id}); use "Start in a new workspace"`);
+      // The new agent creates the run itself with start_playbook, which takes this reserved id.
+      const runId = `run_${shortId()}`;
+      this.reservations.set(workspace.id, { runId, branch: null, playbook, inputs: resolved.inputs });
+      const manager = await this.api().workspaces.ref(workspace.id).agents.create({
+        config: this.managerConfig(playbook),
+        title: `Playbook Manager · ${playbook.title}`,
+        labels: { [MANAGER_LABEL]: "true" },
+        prompt: managerKickoff(playbook, resolved.inputs),
+      });
+      return { status: "started" as const, workspaceId: workspace.id, managerAgentId: manager.id, runId, queued: false };
+    }
     const id = shortId();
     const runId = `run_${id}`;
     const branch = `playbooks/${playbook.id}-${id}`;
@@ -586,15 +620,8 @@ export class Runtime {
       source: { kind: "worktree", cwd: workspaceDir, action: "branch-off", branchName: branch, ...(base ? { refName: base } : {}) },
     });
     this.reservations.set(created.id, { runId, branch, playbook, inputs: resolved.inputs });
-    const provider = playbook.manager.provider ?? DEFAULT_PROVIDER;
-    const model = playbook.manager.model ?? (provider === DEFAULT_PROVIDER ? DEFAULT_MODEL : undefined);
-    if (!model) throw new UserError(`no model for the manager on provider "${provider}"; set manager.model in defaults/main.yaml`);
-    const config: AgentConfig = { provider: `${provider}/${model}` };
-    if (playbook.manager.mode) config.modeId = playbook.manager.mode;
-    if (playbook.manager.thinking) config.thinkingOptionId = playbook.manager.thinking;
-    preapprove(config, provider, MANAGER_TOOL_NAMES);
     const manager = await created.agents.create({
-      config,
+      config: this.managerConfig(playbook),
       title: `Playbook Manager · ${playbook.title}`,
       labels: { [MANAGER_LABEL]: "true" },
       prompt: managerKickoff(playbook, resolved.inputs),
