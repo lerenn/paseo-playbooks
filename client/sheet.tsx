@@ -1,5 +1,5 @@
 import { useRpc } from "@getpaseo/plugin/client";
-import { Modal, TextInput, useToast } from "@getpaseo/plugin/client/ui";
+import { Icon, Markdown, Modal, TextInput, useToast } from "@getpaseo/plugin/client/ui";
 import { useQueryClient } from "@tanstack/react-query";
 import { useState, type ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
@@ -25,11 +25,23 @@ export function Button(props: { theme: Theme; label: string; onPress(): void; ki
   );
 }
 
+/** A collapsible section of the step sheet, closed by default. */
 function Section(props: { theme: Theme; title: string; children: ReactNode }) {
+  const { theme } = props;
+  const [open, setOpen] = useState(false);
   return (
-    <View style={{ gap: 4 }}>
-      <Text style={{ color: props.theme.colors.foregroundMuted, fontSize: 11, fontWeight: "600", textTransform: "uppercase" }}>{props.title}</Text>
-      {props.children}
+    <View style={{ borderRadius: 8, borderWidth: 1, borderColor: theme.colors.border, overflow: "hidden" }}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={{ expanded: open }}
+        accessibilityLabel={`${open ? "Collapse" : "Expand"} ${props.title}`}
+        onPress={() => setOpen((value) => !value)}
+        style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 10, paddingVertical: 8, backgroundColor: theme.colors.surface2 }}
+      >
+        <Icon name={open ? "ChevronDown" : "ChevronRight"} size={14} color={theme.colors.foregroundMuted} />
+        <Text style={{ flex: 1, color: theme.colors.foregroundMuted, fontSize: 11, fontWeight: "600", textTransform: "uppercase" }}>{props.title}</Text>
+      </Pressable>
+      {open ? <View style={{ gap: 4, paddingHorizontal: 10, paddingVertical: 8 }}>{props.children}</View> : null}
     </View>
   );
 }
@@ -226,9 +238,7 @@ export function StepSheet(props: {
         ) : null}
         {role ? (
           <Section theme={theme} title={`Role instructions${role.readonly ? " · readonly" : ""}`}>
-            <Line theme={theme} muted>
-              {role.instructions}
-            </Line>
+            <Markdown>{role.instructions}</Markdown>
           </Section>
         ) : null}
         {step.prompt ? (
