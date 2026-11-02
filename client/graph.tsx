@@ -10,7 +10,10 @@ import { agentBackground, gateBackground, nodeColor, nodeIcon, nodeStateLabel, t
 const NODE_MIN = 132;
 const NODE_MAX = 240;
 const GAP = 14;
-const BAND_H = 26;
+const BAND_H = 32;
+/** Edge thickness and arrowhead size, in px. */
+const EDGE_STROKE = 2;
+const ARROW = 14;
 
 export interface GraphProps {
   playbook: Playbook;
@@ -105,17 +108,21 @@ function Band(props: {
   const sources = [...new Set(edges.map((edge) => edge.from))];
   const targets = [...new Set(edges.map((edge) => edge.to))];
   const xs = [...sources, ...targets].map((id) => centers.get(id) ?? 0);
-  const mid = BAND_H / 2;
-  const line = theme.colors.border;
+  const mid = Math.round(BAND_H / 2);
+  const stroke = EDGE_STROKE;
+  const line = theme.colors.foregroundMuted;
   const hot = theme.colors.accent;
   const segments: Array<{ key: string; left: number; top: number; width: number; height: number; color: string }> = [];
-  for (const id of sources) segments.push({ key: `s-${id}`, left: (centers.get(id) ?? 0) - 0.5, top: 0, width: 1, height: mid, color: line });
+  for (const id of sources) {
+    segments.push({ key: `s-${id}`, left: (centers.get(id) ?? 0) - stroke / 2, top: 0, width: stroke, height: mid, color: line });
+  }
   for (const id of targets) {
-    const isHot = running.has(id);
-    segments.push({ key: `t-${id}`, left: (centers.get(id) ?? 0) - (isHot ? 1 : 0.5), top: mid, width: isHot ? 2 : 1, height: mid, color: isHot ? hot : line });
+    const color = running.has(id) ? hot : line;
+    // Stop the line above the arrowhead.
+    segments.push({ key: `t-${id}`, left: (centers.get(id) ?? 0) - stroke / 2, top: mid, width: stroke, height: BAND_H - mid - ARROW + 4, color });
   }
   if (xs.length > 0 && Math.max(...xs) - Math.min(...xs) > 1) {
-    segments.push({ key: "bus", left: Math.min(...xs), top: mid - 0.5, width: Math.max(...xs) - Math.min(...xs), height: 1, color: line });
+    segments.push({ key: "bus", left: Math.min(...xs) - stroke / 2, top: mid - stroke / 2, width: Math.max(...xs) - Math.min(...xs) + stroke, height: stroke, color: line });
   }
   return (
     <View style={{ height: BAND_H, width: props.width }} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
@@ -124,6 +131,11 @@ function Band(props: {
           key={segment.key}
           style={{ position: "absolute", left: segment.left, top: segment.top, width: segment.width, height: segment.height, backgroundColor: segment.color }}
         />
+      ))}
+      {targets.map((id) => (
+        <View key={`a-${id}`} style={{ position: "absolute", left: (centers.get(id) ?? 0) - ARROW / 2, top: BAND_H - ARROW, width: ARROW, height: ARROW }}>
+          <Icon name="ChevronDown" size={ARROW} color={running.has(id) ? hot : line} />
+        </View>
       ))}
     </View>
   );
