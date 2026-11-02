@@ -287,7 +287,7 @@ function StartButton(props: { theme: Theme; title: string; onStart(target: "curr
   const [hover, setHover] = useState(false);
   const segment = { flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 7, backgroundColor: theme.colors.accent } as const;
   return (
-    <View style={{ zIndex: 20 }}>
+    <View style={{ zIndex: 20, alignSelf: "flex-start" }}>
       <View style={{ flexDirection: "row", borderRadius: 8, overflow: "hidden" }}>
         <Pressable
           accessibilityRole="button"
