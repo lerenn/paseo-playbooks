@@ -1,4 +1,5 @@
-import { openExternalUrl, useRpc, type PluginWorkspacePanelProps } from "@getpaseo/plugin/client";
+import { openExternalUrl, useRpc, useTabState, type PluginWorkspacePanelProps } from "@getpaseo/plugin/client";
+import { z } from "zod";
 import { Icon, ScrollView, useToast } from "@getpaseo/plugin/client/ui";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
@@ -31,6 +32,11 @@ export function PlaybooksPanel(props: PluginWorkspacePanelProps) {
     refetchInterval: (query) => (query.state.data?.runs.some((run) => !isTerminal(run.status)) ? 3_000 : 30_000),
   });
   const queryClient = useQueryClient();
+  /** Completed runs whose tab was opened: they turn from green to grey, like read conversations in Paseo. */
+  const [readRuns, setReadRuns] = useTabState(props.tab, z.array(z.string()), []);
+  const markRead = (runId: string) => {
+    if (!readRuns.includes(runId)) setReadRuns([...readRuns, runId].slice(-200));
+  };
 
   const cards = useMemo<Card[]>(() => {
     const entries = playbooks.data?.entries ?? [];
@@ -73,6 +79,8 @@ export function PlaybooksPanel(props: PluginWorkspacePanelProps) {
               hostLabel={props.host.label}
               onOpenAgent={(agentId) => navigation?.openAgent({ agentId })}
               onOpenWorkspace={(id) => navigation?.openWorkspace({ workspaceId: id })}
+              readRuns={readRuns}
+              onRead={markRead}
             />
           ))}
         </ScrollView>
@@ -109,6 +117,8 @@ function PlaybookCard(props: {
   hostLabel: string;
   onOpenAgent(agentId: string): void;
   onOpenWorkspace(workspaceId: string): void;
+  readRuns: string[];
+  onRead(runId: string): void;
 }) {
   const { card, theme } = props;
   const queryClient = useQueryClient();
@@ -158,9 +168,16 @@ function PlaybookCard(props: {
               accessibilityRole="tab"
               accessibilityState={{ selected: runId === "definition" }}
               onPress={() => setSelected("definition")}
-              style={{ borderRadius: 10, borderWidth: 1, borderColor: runId === "definition" ? theme.colors.foregroundMuted : theme.colors.border, paddingHorizontal: 8, paddingVertical: 2 }}
+              style={{
+                borderRadius: 10,
+                borderWidth: 1,
+                borderColor: theme.colors.foregroundMuted,
+                backgroundColor: runId === "definition" ? theme.colors.foregroundMuted : "transparent",
+                paddingHorizontal: 8,
+                paddingVertical: 2,
+              }}
             >
-              <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>Definition</Text>
+              <Text style={{ color: runId === "definition" ? theme.colors.surface1 : theme.colors.foregroundMuted, fontSize: 11 }}>Definition</Text>
             </Pressable>
           ) : null}
           {card.runs.map((candidate) => (
@@ -169,7 +186,11 @@ function PlaybookCard(props: {
               theme={theme}
               run={candidate}
               selected={candidate.id === runId}
-              onSelect={() => setSelected(candidate.id)}
+              read={props.readRuns.includes(candidate.id)}
+              onSelect={() => {
+                setSelected(candidate.id);
+                if (candidate.status === "completed") props.onRead(candidate.id);
+              }}
               onCanceled={() => void queryClient.invalidateQueries({ queryKey: ["playbooks"] })}
               onOpenManager={() => props.onOpenAgent(candidate.managerAgentId)}
             />
@@ -325,18 +346,20 @@ function StartButton(props: { theme: Theme; title: string; onStart(target: "curr
 }
 
 /** A run tab with a chevron menu: the run's details (branch, start, inputs, manager), then Cancel for active runs. */
-function RunChip(props: { theme: Theme; run: Run; selected: boolean; onSelect(): void; onCanceled(): void; onOpenManager(): void }) {
+function RunChip(props: { theme: Theme; run: Run; selected: boolean; read: boolean; onSelect(): void; onCanceled(): void; onOpenManager(): void }) {
   const { theme, run, selected } = props;
   const cancel = useRpc(cancelRunRpc);
   const toast = useToast();
   const [menu, setMenu] = useState<"closed" | "open" | "confirm">("closed");
-  const color = runStatusColor(theme, run.status);
+  // Blue running, yellow waiting for a decision, green done, grey done and opened, red failed.
+  const color = run.status === "completed" && props.read ? theme.colors.foregroundMuted : runStatusColor(theme, run.status);
   const active = !isTerminal(run.status);
-  const border = selected ? color : theme.colors.border;
-  const text = selected ? color : theme.colors.foregroundMuted;
+  // Selected: filled with the colour. Not selected: outlined in it.
+  const border = color;
+  const text = selected ? (color === theme.colors.foregroundMuted ? theme.colors.surface1 : theme.colors.accentForeground) : color;
   return (
     <View style={{ zIndex: menu === "closed" ? 0 : 30 }}>
-      <View style={{ flexDirection: "row", borderRadius: 10, borderWidth: 1, borderColor: border, overflow: "hidden" }}>
+      <View style={{ flexDirection: "row", borderRadius: 10, borderWidth: 1, borderColor: border, backgroundColor: selected ? color : "transparent", overflow: "hidden" }}>
         <Pressable accessibilityRole="tab" accessibilityState={{ selected }} onPress={props.onSelect} style={{ paddingLeft: 8, paddingRight: 6, paddingVertical: 2 }}>
           <Text style={{ color: text, fontSize: 11 }}>
             {run.id.replace(/^run_/, "")} · {runStatusLabel(run.status)}
@@ -344,7 +367,7 @@ function RunChip(props: { theme: Theme; run: Run; selected: boolean; onSelect():
         </Pressable>
         {(
           <>
-            <View style={{ width: 1, backgroundColor: border }} />
+            <View style={{ width: 1, backgroundColor: selected ? text : border, opacity: selected ? 0.35 : 1 }} />
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={`Details and actions for run ${run.id}`}
