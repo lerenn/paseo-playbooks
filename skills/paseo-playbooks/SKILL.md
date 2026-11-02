@@ -174,6 +174,16 @@ to the target as "Feedback to address". Reaching `max_loops` opens a "loop limit
 - modes within the daemon cap
 - `next` targets exist and their required inputs are covered
 
+## YAML pitfall
+
+Inside a flow mapping (`{ ... }`), a comma ends the value. Quote any text that contains a
+comma, or use block style:
+
+```yaml
+outputs:
+  changes: { type: string, description: "What you changed, per file" }
+```
+
 ## Checklist
 
 1. Write roles first (`role.yaml` + a clear `instructions.md` that names its outputs).
