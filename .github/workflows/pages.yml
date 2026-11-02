@@ -3,7 +3,7 @@ name: Pages
 on:
   push:
     branches: [main]
-    paths: ["site/**", ".github/workflows/pages.yml"]
+    paths: ["website/**", ".github/workflows/pages.yml"]
   workflow_dispatch:
 
 permissions:
@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   deploy:
-    name: Deploy site/ to GitHub Pages
+    name: Deploy website/ to GitHub Pages
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment:
@@ -28,6 +28,6 @@ jobs:
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v4
         with:
-          path: site
+          path: website
       - id: deployment
         uses: actions/deploy-pages@v4
