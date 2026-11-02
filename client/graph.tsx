@@ -2,6 +2,7 @@ import { useAgent } from "@getpaseo/plugin/client";
 import { Icon, ScrollView } from "@getpaseo/plugin/client/ui";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AccessibilityInfo, Animated, Pressable, Text, View } from "react-native";
+import { GateActions } from "./sheet";
 import { END, layerOf, layoutGraph, START, withTerminals } from "../shared/graph";
 import type { Playbook, Run, Step } from "../shared/types";
 import { agentBackground, gateBackground, stepLabel, nodeColor, nodeIcon, nodeStateLabel, type NodeState, type Theme } from "./theme";
@@ -57,6 +58,8 @@ export interface GraphProps {
   onOpenAgent(agentId: string): void;
   onOpenSheet(stepId: string): void;
   onHighlight(stepId: string | null): void;
+  /** Host label recorded with gate decisions made in a node. */
+  hostLabel: string;
 }
 
 function useReduceMotion(): boolean {
@@ -103,6 +106,8 @@ export function Graph(props: GraphProps) {
     return result;
   }, [layout, width, SLOT]);
   const byId = useMemo(() => new Map(playbook.steps.map((step) => [step.id, step])), [playbook]);
+  /** Steps with a pending decision: their node widens to the graph's width, alone in its row, to hold the choices. */
+  const deciding = new Set(run ? run.gates.filter((gate) => gate.status === "pending").map((gate) => gate.stepId) : []);
   const running = new Set(run ? playbook.steps.filter((step) => run.steps[step.id]?.status === "running").map((step) => step.id) : []);
 
   return (
@@ -155,7 +160,7 @@ export function Graph(props: GraphProps) {
                   <Node
                     step={byId.get(id)!}
                     longNeeds={byId.get(id)!.needs.filter((need) => (layers.get(need) ?? 0) < index - 1)}
-                    nodeWidth={nodeWidth}
+                    nodeWidth={deciding.has(id) && row.length === 1 ? Math.max(nodeWidth, width - GAP) : nodeWidth}
                     loops={loops.filter((loop) => loop.from === id)}
                     onBoxHeight={(height) => setHeights((current) => (current[id] === height ? current : { ...current, [id]: height }))}
                     {...props}
@@ -389,6 +394,7 @@ function Node(props: GraphProps & { step: Step; longNeeds: string[]; nodeWidth: 
   const color = nodeColor(theme, nodeState);
   const dimmed = nodeState === "pending";
   const isGate = step.kind === "gate";
+  const pendingGate = run?.gates.find((gate) => gate.status === "pending" && gate.stepId === step.id);
   const role = step.role ? playbook.roles[step.role] : undefined;
   const pulse = useRef(new Animated.Value(1)).current;
   useEffect(() => {
@@ -452,6 +458,11 @@ function Node(props: GraphProps & { step: Step; longNeeds: string[]; nodeWidth: 
             </Text>
           ) : null}
         </Pressable>
+        {pendingGate && run ? (
+          <View style={{ paddingHorizontal: 8, paddingBottom: 8 }}>
+            <GateActions theme={theme} run={run} gate={pendingGate} hostLabel={props.hostLabel} />
+          </View>
+        ) : null}
         {attempts.length > 1 ? (
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4, paddingHorizontal: 8, paddingBottom: 6 }}>
             {attempts.map((attempt) => (

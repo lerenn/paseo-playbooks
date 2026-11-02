@@ -6,9 +6,9 @@ import { Pressable, Text, View } from "react-native";
 import { cancelRunRpc, listPlaybooks, listRuns } from "../shared/contracts";
 import { isTerminal, type Playbook, type PlaybookEntry, type Run } from "../shared/types";
 import { Graph } from "./graph";
-import { Button, GateActions, StepSheet } from "./sheet";
+import { Button, StepSheet } from "./sheet";
 import { StartForm } from "./start-form";
-import { runStatusColor, runStatusLabel, stepLabel, type Theme } from "./theme";
+import { runStatusColor, runStatusLabel, type Theme } from "./theme";
 
 interface Card {
   id: string;
@@ -186,6 +186,7 @@ function PlaybookCard(props: {
           onHighlight={setHighlighted}
           onOpenAgent={props.onOpenAgent}
           onOpenSheet={setSheet}
+          hostLabel={props.hostLabel}
         />
       ) : null}
       {sheet && playbook ? (
@@ -224,7 +225,6 @@ function PlaybookCard(props: {
 
 function RunBar(props: { theme: Theme; run: Run; hostLabel: string }) {
   const { theme, run } = props;
-  const pending = run.gates.filter((gate) => gate.status === "pending");
   return (
     <View style={{ gap: 6 }}>
       {run.failure ? <Text style={{ color: theme.colors.statusDanger, fontSize: 12 }}>{run.failure}</Text> : null}
@@ -248,14 +248,6 @@ function RunBar(props: { theme: Theme; run: Run; hostLabel: string }) {
           Next offered to the manager: {run.playbook.next.map((next) => next.playbook).join(", ")}
         </Text>
       ) : null}
-      {pending.map((gate) => (
-        <View key={gate.id} style={{ borderRadius: 8, borderWidth: 1, borderColor: theme.colors.statusWarning, padding: 8, gap: 4 }}>
-          <Text style={{ color: theme.colors.statusWarning, fontSize: 12, fontWeight: "600" }}>
-            ◆ {gate.kind === "loop_limit" ? "Loop limit" : stepLabel(gate.stepId)} needs a decision
-          </Text>
-          <GateActions theme={theme} run={run} gate={gate} hostLabel={props.hostLabel} />
-        </View>
-      ))}
     </View>
   );
 }
