@@ -6,12 +6,12 @@ import { loadPlaybooks } from "./loader";
 describe("destinationOf", () => {
   it("shows where each gate choice leads", async () => {
     const result = await loadPlaybooks(path.resolve(__dirname, "..", "examples"));
-    const playbook = result.entries.find((entry) => entry.id === "pr")!.playbook!;
-    const gate = playbook.steps.find((step) => step.id === "pr_approval")!;
-    expect(destinationOf(playbook, gate, "approved")).toEqual({ kind: "end", targets: [] });
-    expect(destinationOf(playbook, gate, "rejected")).toEqual({ kind: "goto", targets: ["implement"] });
-    const review = playbook.steps.find((step) => step.id === "implement")!;
-    expect(destinationOf(playbook, review, "success").kind).toBe("next");
+    const playbook = result.entries.find((entry) => entry.id === "capability")!.playbook!;
+    const gate = playbook.steps.find((step) => step.id === "approve")!;
+    expect(destinationOf(playbook, gate, "approved")).toEqual({ kind: "next", targets: ["release.release"] });
+    expect(destinationOf(playbook, gate, "rejected")).toEqual({ kind: "goto", targets: ["pr.investigate"] });
+    const qa = playbook.steps.find((step) => step.id === "release.qa")!;
+    expect(destinationOf(playbook, qa, "success")).toEqual({ kind: "end", targets: [] });
   });
 });
 

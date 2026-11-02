@@ -1,4 +1,8 @@
-/** Display form of an id: first letter capitalised ("review" → "Review"). The id itself is unchanged. */
+/**
+ * Display form of an id: its last segment (steps of a sub-playbook are "pr.investigate"),
+ * first letter capitalised ("investigate" → "Investigate"). The id itself is unchanged.
+ */
 export function stepLabel(id: string): string {
-  return id.charAt(0).toUpperCase() + id.slice(1);
+  const name = id.slice(id.lastIndexOf(".") + 1);
+  return name.charAt(0).toUpperCase() + name.slice(1);
 }

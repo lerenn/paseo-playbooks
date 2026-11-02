@@ -109,6 +109,11 @@ export const PlaybookSchema = z.object({
   steps: z.array(StepSchema),
   roles: z.record(z.string(), RoleSchema),
   manager: AgentSettingsSchema,
+  /**
+   * Sub-playbooks expanded into this one, by id prefix ("pr", or "release.deploy" when
+   * nested): their steps are named "<prefix>.<step>". Used to draw a frame around them.
+   */
+  blocks: z.record(z.string(), z.object({ title: z.string(), playbook: z.string() })).default({}),
 });
 export type Playbook = z.infer<typeof PlaybookSchema>;
 

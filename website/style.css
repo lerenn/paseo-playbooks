@@ -191,7 +191,7 @@ ol.steps > li { margin-bottom: 1.1rem; }
 .tab { font-size: 0.66rem; border: 1px solid var(--muted-foreground); color: var(--muted-foreground); border-radius: 10px; padding: 0.05rem 0.5rem; }
 .tab.sel { background: var(--running); border-color: var(--running); color: #0b1a2a; }
 .tab i { font-style: normal; margin-left: 0.35rem; padding-left: 0.35rem; border-left: 1px solid rgba(11, 26, 42, 0.3); }
-.mgraph { position: relative; height: 424px; }
+.mgraph { position: relative; height: 354px; }
 .mgraph > * { position: absolute; left: 50%; transform: translateX(-50%); }
 .mgraph .v { width: 2px; background: var(--muted-foreground); }
 .mgraph .h { height: 2px; transform: none; background: var(--muted-foreground); }

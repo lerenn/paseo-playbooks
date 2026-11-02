@@ -18,12 +18,13 @@ import type {
   VarType,
 } from "../shared/types";
 import { AgentSettingsSchema, VarTypeSchema, VarValueSchema } from "../shared/types";
-import { parseDuration, singleRef, templateRefs, typeCompatible } from "../shared/vars";
+import { parseDuration, replaceRefs, singleRef, templateRefs, typeCompatible } from "../shared/vars";
 
 /** Folders searched for playbooks, relative to the workspace. Each folder is self-contained. */
 export const PLAYBOOKS_DIRS = [".paseo/plugins/playbooks", ".paseo/playbooks"] as const;
 const ID = /^[a-z][a-z0-9_-]*$/;
-const RESERVED_STEP_IDS = new Set(["end", "fail"]);
+// "outputs" would make steps.<id>.outputs.<name> ambiguous once sub-playbook ids contain dots.
+const RESERVED_STEP_IDS = new Set(["end", "fail", "outputs"]);
 const AGENT_OUTCOMES = ["success", "failure"];
 const GATE_OUTCOMES = DEFAULT_GATE_CHOICES.map((choice) => choice.id);
 
@@ -49,6 +50,8 @@ const RawStepSchema = z.object({
     needs: z.array(z.string()).default([]),
     role: z.string().optional(),
     gate: z.string().optional(),
+    /** A sub-playbook from the same folder, run in place of this step. */
+    playbook: z.string().optional(),
     prompt: z.string().optional(),
     inputs: z.union([z.array(z.string()), z.record(z.string(), z.string().nullable())]).optional(),
     outputs: z.record(z.string(), RawVarDefSchema.nullable()).optional(),
@@ -256,9 +259,24 @@ export async function loadPlaybooks(workspaceDir: string): Promise<LoadResult> {
       if (!roleCache.has(id)) roleCache.set(id, loadRole(root, relDir, id));
       return roleCache.get(id)!;
     };
+    const loads = new Map<string, Promise<Loaded>>();
+    const folder: Folder = {
+      root,
+      relDir,
+      defaults,
+      role,
+      ids: new Set(files.map((name) => name.replace(/\.ya?ml$/, ""))),
+      load: (id, stack) => {
+        if (!loads.has(id)) {
+          const name = files.find((candidate) => candidate.replace(/\.ya?ml$/, "") === id)!;
+          loads.set(id, loadPlaybook(folder, name, `${relDir}/${name}`, id, stack));
+        }
+        return loads.get(id)!;
+      },
+    };
     for (const name of files) {
       const id = name.replace(/\.ya?ml$/, "");
-      const { entry, next } = await loadPlaybook(root, name, `${relDir}/${name}`, id, defaults, role);
+      const { entry, next } = await folder.load(id, []);
       if (defaultsErrors.length > 0) {
         entry.errors.unshift(...defaultsErrors);
         entry.playbook = null;
@@ -277,14 +295,21 @@ export async function loadPlaybooks(workspaceDir: string): Promise<LoadResult> {
   return { roots, exists: roots.length > 0, entries };
 }
 
-async function loadPlaybook(
-  root: string,
-  name: string,
-  file: string,
-  id: string,
-  defaults: RawDefaults,
-  role: (id: string) => Promise<RoleLoad>,
-): Promise<{ entry: PlaybookEntry; next: Array<{ playbook: string; inputs: Record<string, string> }> }> {
+/** One playbook folder: its files, defaults, roles, and a cached loader for sub-playbooks. */
+interface Folder {
+  root: string;
+  relDir: string;
+  defaults: RawDefaults;
+  role: (id: string) => Promise<RoleLoad>;
+  ids: Set<string>;
+  /** `stack` holds the playbooks being expanded above this one, to refuse self-inclusion. */
+  load: (id: string, stack: string[]) => Promise<Loaded>;
+}
+
+type Loaded = { entry: PlaybookEntry; next: Array<{ playbook: string; inputs: Record<string, string> }> };
+
+async function loadPlaybook(folder: Folder, name: string, file: string, id: string, stack: string[]): Promise<Loaded> {
+  const { root, defaults, role } = folder;
   const entry: PlaybookEntry = { id, file, title: id, errors: [], playbook: null };
   const fail = (errors: string[]) => {
     entry.errors.push(...errors);
@@ -316,9 +341,10 @@ async function loadPlaybook(
     else errors.push(...loaded.errors.map((message) => `${file}: role "${roleId}": ${message}`));
   }
 
-  // Steps, first pass.
+  // Steps, first pass. A `playbook:` step is a placeholder until expansion below.
   const seen = new Set<string>();
   const steps: Step[] = [];
+  const blocks = new Map<string, Playbook>();
   const defaultTimeout = defaults.timeout ? parseDuration(defaults.timeout) ?? undefined : undefined;
   for (const rawStep of pb.steps) {
     const where = `step "${rawStep.id}"`;
@@ -327,7 +353,41 @@ async function loadPlaybook(
     if (seen.has(rawStep.id)) err(`${where}: duplicate id`);
     seen.add(rawStep.id);
     const isGate = rawStep.gate !== undefined;
-    if (isGate === (rawStep.role !== undefined)) err(`${where}: set exactly one of \`role\` or \`gate\``);
+    const isBlock = rawStep.playbook !== undefined;
+    if ([rawStep.role, rawStep.gate, rawStep.playbook].filter((value) => value !== undefined).length !== 1) {
+      err(`${where}: set exactly one of \`role\`, \`gate\` or \`playbook\``);
+    }
+    if (isBlock) {
+      for (const field of ["prompt", "outputs", "outcomes", "timeout", "agent", "choices", "on"] as const) {
+        if (rawStep[field] !== undefined) err(`${where}: \`${field}\` does not apply to a playbook step (the sub-playbook defines it)`);
+      }
+      const subId = rawStep.playbook!;
+      let sub: Playbook | null = null;
+      if (subId === id || stack.includes(subId)) {
+        err(`${where}: playbook "${subId}" includes itself (${[...stack, id, subId].join(" → ")})`);
+      } else if (!folder.ids.has(subId)) {
+        err(`${where}: playbook "${subId}" not found in ${folder.relDir}/`);
+      } else {
+        const loaded = await folder.load(subId, [...stack, id]);
+        sub = loaded.entry.playbook;
+        if (!sub) err(`${where}: playbook "${subId}" is invalid: ${loaded.entry.errors[0] ?? "see that file"}`);
+      }
+      if (sub) blocks.set(rawStep.id, sub);
+      steps.push({
+        id: rawStep.id,
+        kind: "agent",
+        needs: rawStep.needs,
+        prompt: "",
+        inputs: {},
+        outputs: Object.fromEntries(Object.entries(sub?.outputs ?? {}).map(([name, def]) => [name, { type: def.type, ...(def.values ? { values: def.values } : {}) }])),
+        outcomes: ["success"],
+        retries: 0,
+        agent: {},
+        on: {},
+        choices: [],
+      });
+      continue;
+    }
     if (isGate) {
       for (const field of ["prompt", "inputs", "outputs", "outcomes", "timeout", "agent"] as const) {
         if (rawStep[field] !== undefined) err(`${where}: \`${field}\` does not apply to a gate`);
@@ -406,20 +466,13 @@ async function loadPlaybook(
         }
       }
     }
-    // Concurrency rule: two steps that may run together must not both edit files.
-    const agents = steps.filter((step) => step.kind === "agent" && step.role && roles[step.role]);
-    for (let i = 0; i < agents.length; i++) {
-      for (let j = i + 1; j < agents.length; j++) {
-        const a = agents[i]!;
-        const b = agents[j]!;
-        if (ancestors.get(a.id)!.has(b.id) || ancestors.get(b.id)!.has(a.id)) continue;
-        if (!roles[a.role!]!.readonly && !roles[b.role!]!.readonly) {
-          err(`steps "${a.id}" and "${b.id}" can run at the same time and both may edit files; make one role readonly or order them with needs`);
-        }
-      }
+    // Inputs wiring and prompt references. A playbook step takes the sub-playbook's inputs.
+    for (const step of steps) {
+      const raw = pb.steps.find((candidate) => candidate.id === step.id)!;
+      const sub = blocks.get(step.id);
+      if (sub) wireBlock(step, raw, sub, steps, ancestors.get(step.id)!, inputs, err);
+      else wireStep(step, raw, steps, ancestors.get(step.id)!, inputs, err);
     }
-    // Inputs wiring and prompt references.
-    for (const step of steps) wireStep(step, pb.steps.find((raw) => raw.id === step.id)!, steps, ancestors.get(step.id)!, inputs, err);
   }
 
   // Playbook outputs.
@@ -434,6 +487,31 @@ async function loadPlaybook(
     }
   }
 
+  // Expand playbook steps into their sub-playbook's steps, then check the expanded graph.
+  let finalSteps = steps;
+  const blockInfo: Playbook["blocks"] = {};
+  if (errors.length === 0 && blocks.size > 0) {
+    const expanded = expandBlocks(steps, blocks, outputs, err);
+    finalSteps = expanded.steps;
+    Object.assign(blockInfo, expanded.blocks);
+    for (const sub of blocks.values()) Object.assign(roles, sub.roles);
+  }
+  if (errors.length === 0) {
+    // Concurrency rule: two steps that may run together must not both edit files.
+    const ancestors = new Map(finalSteps.map((step) => [step.id, ancestorsOf(finalSteps, step.id)]));
+    const agents = finalSteps.filter((step) => step.kind === "agent" && step.role && roles[step.role]);
+    for (let i = 0; i < agents.length; i++) {
+      for (let j = i + 1; j < agents.length; j++) {
+        const a = agents[i]!;
+        const b = agents[j]!;
+        if (ancestors.get(a.id)!.has(b.id) || ancestors.get(b.id)!.has(a.id)) continue;
+        if (!roles[a.role!]!.readonly && !roles[b.role!]!.readonly) {
+          err(`steps "${a.id}" and "${b.id}" can run at the same time and both may edit files; make one role readonly or order them with needs`);
+        }
+      }
+    }
+  }
+
   if (errors.length > 0) return fail(errors);
   const manager = mergeAgent(defaults.agent?.provider ? { provider: defaults.agent.provider, model: defaults.agent.model } : undefined, defaults.manager);
   entry.playbook = {
@@ -444,9 +522,10 @@ async function loadPlaybook(
     inputs,
     outputs,
     next: [],
-    steps,
+    steps: finalSteps,
     roles,
     manager,
+    blocks: blockInfo,
   };
   if (pb.concurrency !== undefined) entry.playbook.concurrency = pb.concurrency;
   return {
@@ -460,7 +539,7 @@ const PROMPT_REFS = /^(inputs\.[A-Za-z_][\w-]*|run\.id|attempt)$/;
 function parseSourceRef(ref: string): { kind: "playbook"; name: string } | { kind: "step"; step: string; output: string } | null {
   const playbook = /^playbook\.inputs\.([A-Za-z_][\w-]*)$/.exec(ref);
   if (playbook) return { kind: "playbook", name: playbook[1]! };
-  const step = /^steps\.([a-z][a-z0-9_-]*)\.outputs\.([A-Za-z_][\w-]*)$/.exec(ref);
+  const step = /^steps\.([a-z][a-z0-9_.-]*)\.outputs\.([A-Za-z_][\w-]*)$/.exec(ref);
   if (step) return { kind: "step", step: step[1]!, output: step[2]! };
   return null;
 }
@@ -472,11 +551,13 @@ function wireStep(
   ancestors: Set<string>,
   playbookInputs: Record<string, VarDef>,
   err: (message: string) => void,
+  /** Inputs that may stay unwired (a sub-playbook input with a default or not required). */
+  optional: Set<string> = new Set(),
+  declaredOverride?: Record<string, string | null>,
 ): void {
   const where = `step "${step.id}"`;
-  const declared: Record<string, string | null> = Array.isArray(raw.inputs)
-    ? Object.fromEntries(raw.inputs.map((name) => [name, null]))
-    : raw.inputs ?? {};
+  const declared: Record<string, string | null> =
+    declaredOverride ?? (Array.isArray(raw.inputs) ? Object.fromEntries(raw.inputs.map((name) => [name, null])) : raw.inputs ?? {});
   const byId = new Map(steps.map((s) => [s.id, s]));
   for (const [name, explicit] of Object.entries(declared)) {
     if (!ID.test(name)) {
@@ -522,7 +603,7 @@ function wireStep(
       step.inputs[name] = wiring(`{{ steps.${source}.outputs.${name} }}`, true, `${source}.${name}`, byId.get(source)!.outputs[name]!.type);
     } else if (playbookInputs[name]) {
       step.inputs[name] = wiring(`{{ playbook.inputs.${name} }}`, true, `playbook.${name}`, playbookInputs[name]!.type);
-    } else {
+    } else if (!optional.has(name)) {
       err(`${where}: input "${name}" has no source: no earlier step outputs it and the playbook has no such input`);
     }
   }
@@ -532,6 +613,115 @@ function wireStep(
       err(`${where}: prompt uses "{{ ${ref} }}" but the step declares no such input`);
     }
   }
+}
+
+/** Wires a playbook step: its inputs are the sub-playbook's inputs, by name or mapped explicitly. */
+function wireBlock(
+  step: Step,
+  raw: z.infer<typeof RawStepSchema>,
+  sub: Playbook,
+  steps: Step[],
+  ancestors: Set<string>,
+  playbookInputs: Record<string, VarDef>,
+  err: (message: string) => void,
+): void {
+  const where = `step "${step.id}"`;
+  const explicit: Record<string, string | null> = Array.isArray(raw.inputs)
+    ? Object.fromEntries(raw.inputs.map((name) => [name, null]))
+    : raw.inputs ?? {};
+  for (const name of Object.keys(explicit)) {
+    if (!sub.inputs[name]) err(`${where}: inputs.${name}: playbook "${sub.id}" has no input "${name}" (it has: ${Object.keys(sub.inputs).join(", ") || "none"})`);
+  }
+  const declared: Record<string, string | null> = Object.fromEntries(Object.keys(sub.inputs).map((name) => [name, explicit[name] ?? null]));
+  const optional = new Set(Object.entries(sub.inputs).filter(([, def]) => def.default !== undefined || !def.required).map(([name]) => name));
+  wireStep(step, raw, steps, ancestors, playbookInputs, err, optional, declared);
+}
+
+/**
+ * Replaces each playbook step by its sub-playbook's steps, ids prefixed "<step>.":
+ * the block's first steps take its needs, steps that needed the block need its last steps,
+ * sources are rewritten (playbook.inputs.* → what the parent wired; steps.<block>.outputs.* →
+ * the inner step that produces it), and a goto to the block targets its first step.
+ */
+function expandBlocks(
+  steps: Step[],
+  blocks: Map<string, Playbook>,
+  outputs: Playbook["outputs"],
+  err: (message: string) => void,
+): { steps: Step[]; blocks: Playbook["blocks"] } {
+  const info: Playbook["blocks"] = {};
+  const sinks = new Map<string, string[]>();
+  const roots = new Map<string, string[]>();
+  for (const [blockId, sub] of blocks) {
+    const needed = new Set(sub.steps.flatMap((step) => step.needs));
+    sinks.set(blockId, sub.steps.filter((step) => !needed.has(step.id)).map((step) => `${blockId}.${step.id}`));
+    roots.set(blockId, sub.steps.filter((step) => step.needs.length === 0).map((step) => `${blockId}.${step.id}`));
+    info[blockId] = { title: sub.title, playbook: sub.id };
+    for (const [prefix, nested] of Object.entries(sub.blocks)) info[`${blockId}.${prefix}`] = nested;
+  }
+  const mapNeeds = (needs: string[]) => needs.flatMap((need) => sinks.get(need) ?? [need]);
+  const outer = (template: string): string =>
+    replaceRefs(template, (ref) => {
+      const match = /^steps\.([a-z][a-z0-9_.-]*)\.outputs\.([A-Za-z_][\w-]*)$/.exec(ref);
+      const sub = match ? blocks.get(match[1]!) : undefined;
+      return sub ? inner(match![1]!, sub, sub.outputs[match![2]!]!.source) : null;
+    });
+  const wiredBy = new Map(steps.filter((step) => blocks.has(step.id)).map((step) => [step.id, step.inputs]));
+  const inner = (blockId: string, sub: Playbook, template: string): string =>
+    replaceRefs(template, (ref) => {
+      const input = /^playbook\.inputs\.([A-Za-z_][\w-]*)$/.exec(ref);
+      if (input) {
+        const wired = wiredBy.get(blockId)?.[input[1]!];
+        if (wired) return outer(wired.source);
+        const fallback = sub.inputs[input[1]!]?.default;
+        return fallback === undefined ? "" : String(fallback);
+      }
+      const step = /^steps\.([a-z][a-z0-9_.-]*)\.outputs\.([A-Za-z_][\w-]*)$/.exec(ref);
+      return step ? `{{ steps.${blockId}.${step[1]}.outputs.${step[2]} }}` : null;
+    });
+  const result: Step[] = [];
+  for (const step of steps) {
+    const sub = blocks.get(step.id);
+    if (!sub) {
+      const on = Object.fromEntries(
+        Object.entries(step.on).map(([outcome, transition]) => {
+          if (transition.kind !== "goto" || !blocks.has(transition.target)) return [outcome, transition];
+          const first = roots.get(transition.target)!;
+          if (first.length !== 1) {
+            err(`step "${step.id}": on.${outcome}: goto "${transition.target}" needs a playbook with a single first step (it has ${first.join(", ")})`);
+          }
+          return [outcome, { ...transition, target: first[0] ?? transition.target }];
+        }),
+      );
+      const inputs = Object.fromEntries(Object.entries(step.inputs).map(([name, wired]) => [name, { ...wired, source: outer(wired.source) }]));
+      result.push({ ...step, needs: mapNeeds(step.needs), inputs, on });
+      continue;
+    }
+    for (const innerStep of sub.steps) {
+      const on = Object.fromEntries(
+        Object.entries(innerStep.on).map(([outcome, transition]) =>
+          [outcome, transition.kind === "goto" ? { ...transition, target: `${step.id}.${transition.target}` } : transition],
+        ),
+      );
+      const inputs = Object.fromEntries(
+        Object.entries(innerStep.inputs).map(([name, wired]) => {
+          const source = inner(step.id, sub, wired.source);
+          const fromParent = /^playbook\.inputs\.([A-Za-z_][\w-]*)$/.exec(singleRef(wired.source) ?? "");
+          const label = fromParent ? step.inputs[fromParent[1]!]?.label ?? "(default)" : `${step.id}.${wired.label}`;
+          return [name, { ...wired, source, label }];
+        }),
+      );
+      result.push({
+        ...innerStep,
+        id: `${step.id}.${innerStep.id}`,
+        needs: innerStep.needs.length === 0 ? mapNeeds(step.needs) : innerStep.needs.map((need) => `${step.id}.${need}`),
+        inputs,
+        on,
+      });
+    }
+  }
+  for (const [name, output] of Object.entries(outputs)) outputs[name] = { ...output, source: outer(output.source) };
+  return { steps: result, blocks: info };
 }
 
 function wiring(source: string, auto: boolean, label: string, type: VarType | undefined): InputWiring {
