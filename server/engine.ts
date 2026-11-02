@@ -95,6 +95,7 @@ export function newRun(input: NewRunInput): Run {
     failure: null,
     createdAt: input.now,
     updatedAt: input.now,
+    archivedAt: null,
     steps: Object.fromEntries(
       input.playbook.steps.map((step) => [
         step.id,

@@ -221,6 +221,8 @@ export const RunSchema = z.object({
   failure: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
+  /** Set when the run is archived from the panel: hidden there, its state and agents kept. */
+  archivedAt: z.string().nullable().default(null),
   steps: z.record(z.string(), RunStepSchema),
   /** Times each goto edge fired, keyed "source->target", and extra loops granted at a loop-limit gate. */
   loops: z.record(z.string(), z.number().int()),

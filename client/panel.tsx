@@ -4,7 +4,7 @@ import { Icon, ScrollView, useToast } from "@getpaseo/plugin/client/ui";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { Pressable, Text, View } from "react-native";
-import { cancelRunRpc, listPlaybooks, listRuns } from "../shared/contracts";
+import { archiveRunRpc, cancelRunRpc, listPlaybooks, listRuns } from "../shared/contracts";
 import { isTerminal, type Playbook, type PlaybookEntry, type Run } from "../shared/types";
 import { Graph } from "./graph";
 import { Button, StepSheet } from "./sheet";
@@ -131,7 +131,9 @@ function PlaybookCard(props: {
   const [sheet, setSheet] = useState<string | null>(null);
   const [highlighted, setHighlighted] = useState<string | null>(null);
   const [starting, setStarting] = useState<"current" | "new" | null>(null);
-  const runId = selected ?? active?.id ?? card.runs[0]?.id ?? "definition";
+  // A selected run that disappeared (archived) falls back to the default tab.
+  const current = selected === "definition" || card.runs.some((candidate) => candidate.id === selected) ? selected : null;
+  const runId = current ?? active?.id ?? card.runs[0]?.id ?? "definition";
   const run = runId === "definition" ? null : card.runs.find((candidate) => candidate.id === runId) ?? null;
   const playbook: Playbook | null = run?.playbook ?? card.entry?.playbook ?? null;
   const title = playbook?.title ?? card.entry?.title ?? card.id;
@@ -341,6 +343,7 @@ function StartButton(props: { theme: Theme; title: string; onStart(target: "curr
 function RunChip(props: { theme: Theme; run: Run; selected: boolean; read: boolean; onSelect(): void; onCanceled(): void; onOpenManager(): void }) {
   const { theme, run, selected } = props;
   const cancel = useRpc(cancelRunRpc);
+  const archive = useRpc(archiveRunRpc);
   const toast = useToast();
   const [menu, setMenu] = useState<"closed" | "open" | "confirm">("closed");
   // Blue running, yellow waiting for a decision, green done, grey done and opened, red failed.
@@ -442,7 +445,30 @@ function RunChip(props: { theme: Theme; run: Run; selected: boolean; read: boole
               <Text style={{ color: theme.colors.statusDanger, fontSize: 13 }}>Cancel run…</Text>
             </Pressable>
             </>
-            ) : null}
+            ) : (
+            <>
+            <View style={{ height: 1, backgroundColor: theme.colors.border }} />
+            <Pressable
+              accessibilityRole="menuitem"
+              accessibilityHint="Hides the run from this panel. Its agents and saved state are kept."
+              onPress={() =>
+                void archive({ runId: run.id })
+                  .then(() => {
+                    setMenu("closed");
+                    props.onCanceled();
+                  })
+                  .catch((error: unknown) => toast.error(error instanceof Error ? error.message : String(error)))
+              }
+              style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 10, paddingVertical: 8, borderRadius: 6 }}
+            >
+              <Icon name="Archive" size={15} color={theme.colors.foreground} />
+              <View style={{ flex: 1 }}>
+                <Text style={{ color: theme.colors.foreground, fontSize: 13 }}>Archive run</Text>
+                <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>Hides it here; agents are kept</Text>
+              </View>
+            </Pressable>
+            </>
+            )}
             </>
           ) : (
             <View style={{ padding: 6, gap: 8 }}>

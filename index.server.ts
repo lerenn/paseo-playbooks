@@ -1,6 +1,7 @@
 import type { PaseoApi } from "@getpaseo/client";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import {
+  archiveRunRpc,
   cancelRunRpc,
   decideGateRpc,
   listPlaybooks,
@@ -85,7 +86,8 @@ export default function contribute(server: PluginServerContext) {
     if (!workspace) throw new UserError("workspace not found");
     return loadPlaybooks(workspace.workspaceDirectory ?? workspace.projectRootPath, await runtime.cap());
   });
-  handle(listRuns, async ({ workspaceId }) => ({ runs: store.list().filter((run) => run.workspaceId === workspaceId) }));
+  handle(listRuns, async ({ workspaceId }) => ({ runs: store.list().filter((run) => run.workspaceId === workspaceId && !run.archivedAt) }));
+  handle(archiveRunRpc, async ({ runId }) => ({ archivedAt: await runtime.archiveRun(runId) }));
   handle(startRun, (input) => runtime.startFromPanel(input));
   handle(listWorkspaceAgents, async ({ workspaceId }) => ({ agents: await runtime.workspaceAgents(workspaceId) }));
   handle(decideGateRpc, async ({ runId, gateId, decision, comment, hostLabel }) => {

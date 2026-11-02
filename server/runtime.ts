@@ -345,6 +345,15 @@ export class Runtime {
     return { alreadyDecided: result.alreadyDecided, gate: result.gate };
   }
 
+  /** Hides a finished run from the panel; nothing else changes (no agent is archived or stopped). */
+  async archiveRun(runId: string): Promise<string> {
+    return this.store.mutate(runId, (run) => {
+      if (!isTerminal(run.status)) throw new UserError(`run ${runId} is ${run.status}: cancel it before archiving`);
+      run.archivedAt ??= nowIso();
+      return run.archivedAt;
+    });
+  }
+
   async cancelRun(runId: string, reason: string, notifyManager: boolean): Promise<Run> {
     const effects = await this.store.mutate(runId, (current) => engine.cancelRun(current, reason, nowIso()));
     await this.applyEffects(runId, effects);

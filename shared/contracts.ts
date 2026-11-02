@@ -72,6 +72,13 @@ export const cancelRunRpc = defineRpc({
   output: z.object({ status: z.string() }),
 });
 
+/** Hides a finished run from the panel. Its saved state and its agents (manager and steps) are kept. */
+export const archiveRunRpc = defineRpc({
+  name: "runs.archive",
+  input: z.object({ runId: z.string() }),
+  output: z.object({ archivedAt: z.string() }),
+});
+
 export const retryStepRpc = defineRpc({
   name: "steps.retry",
   input: z.object({ runId: z.string(), stepId: z.string() }),
