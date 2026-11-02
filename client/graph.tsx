@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { AccessibilityInfo, Animated, Pressable, Text, View } from "react-native";
 import { layerOf, layoutGraph } from "../shared/graph";
 import type { Playbook, Run, Step } from "../shared/types";
-import { agentBackground, gateBackground, nodeColor, nodeIcon, nodeStateLabel, type NodeState, type Theme } from "./theme";
+import { agentBackground, gateBackground, stepLabel, nodeColor, nodeIcon, nodeStateLabel, type NodeState, type Theme } from "./theme";
 
 /** Nodes grow with the panel between these widths; below the minimum the graph scrolls sideways. */
 const NODE_MIN = 132;
@@ -175,7 +175,7 @@ function Node(props: GraphProps & { step: Step; longNeeds: string[]; nodeWidth: 
       ? [{ outcome, target: transition.target, count: run?.loops[`${step.id}->${transition.target}`] ?? 0, max: transition.maxLoops }]
       : [],
   );
-  const subtitle = isGate ? "gate" : `${role?.title ?? step.role}${role?.readonly ? " · ro" : ""}`;
+  const subtitle = isGate ? "Gate" : `${role?.title ?? step.role}${role?.readonly ? " · ro" : ""}`;
   const stateLabel = nodeStateLabel(nodeState);
   const onPress = () => (latest ? props.onOpenAgent(latest.agentId) : props.onOpenSheet(step.id));
   const isHighlighted = highlighted === step.id;
@@ -193,14 +193,14 @@ function Node(props: GraphProps & { step: Step; longNeeds: string[]; nodeWidth: 
       >
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel={`${step.id}, ${subtitle}${stateLabel ? `, ${stateLabel}` : ""}${latest ? `, attempt ${latest.n}, opens conversation` : ", opens details"}`}
+          accessibilityLabel={`${stepLabel(step.id)}, ${subtitle}${stateLabel ? `, ${stateLabel}` : ""}${latest ? `, attempt ${latest.n}, opens conversation` : ", opens details"}`}
           onPress={onPress}
           style={{ paddingHorizontal: 8, paddingVertical: 6, gap: 2 }}
         >
           <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
             <Icon name={isGate ? "Diamond" : nodeIcon(nodeState)} size={13} color={nodeState === "definition" ? theme.colors.foregroundMuted : color} />
             <Text numberOfLines={1} style={{ flex: 1, color: theme.colors.foreground, fontSize: 12, fontWeight: "600" }}>
-              {step.id}
+              {stepLabel(step.id)}
             </Text>
             <Pressable
               accessibilityRole="button"

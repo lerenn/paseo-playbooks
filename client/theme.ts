@@ -96,3 +96,8 @@ export function agentBackground(theme: Theme): string {
 export function gateBackground(theme: Theme): string {
   return withAlpha(theme.colors.statusWarning, 0.14) ?? theme.colors.surface0;
 }
+
+/** Display form of a step id: first letter capitalised ("review" → "Review"). The id itself is unchanged. */
+export function stepLabel(id: string): string {
+  return id.charAt(0).toUpperCase() + id.slice(1);
+}

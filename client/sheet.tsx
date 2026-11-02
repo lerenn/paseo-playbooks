@@ -5,7 +5,7 @@ import { useState, type ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
 import { decideGateRpc, nudgeStepRpc, retryStepRpc } from "../shared/contracts";
 import { isTerminal, type Gate, type Playbook, type Run } from "../shared/types";
-import type { Theme } from "./theme";
+import { stepLabel, type Theme } from "./theme";
 
 export function Button(props: { theme: Theme; label: string; onPress(): void; kind?: "primary" | "danger" | "plain"; disabled?: boolean; accessibilityLabel?: string }) {
   const { theme, kind = "plain" } = props;
@@ -120,7 +120,7 @@ export function StepSheet(props: {
   const canRetry = active && state?.status === "reported" && (latest?.report?.outcome === "failure" || latest?.report === null);
 
   return (
-    <Modal title={`${step.id}${role ? ` · ${role.title}` : step.kind === "gate" ? " · gate" : ""}`} open onOpenChange={(open) => !open && props.onClose()}>
+    <Modal title={`${stepLabel(step.id)}${role ? ` · ${role.title}` : step.kind === "gate" ? " · Gate" : ""}`} open onOpenChange={(open) => !open && props.onClose()}>
       <Modal.Content>
         {state ? <Line theme={theme}>Status: {state.status}{latest ? ` · attempt ${latest.n}` : ""}</Line> : null}
         {step.kind === "agent" ? (
