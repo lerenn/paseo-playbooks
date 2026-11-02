@@ -461,6 +461,10 @@ export class Runtime {
     this.pendingHandoffs.delete(agentId);
     const active = this.activeRunOfManager(agentId);
     if (active) await this.failRun(active.id, "manager lost (archived)");
+    // Archiving the manager archives its runs (an active one was just failed above).
+    for (const run of this.runsOfManager(agentId)) {
+      if (!run.archivedAt) await this.archiveRun(run.id).catch(() => undefined);
+    }
     const step = this.stepRunOf(agentId);
     if (step) await this.onStepTurnEnded(step.run.id, agentId, "lost");
   }
