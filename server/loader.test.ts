@@ -153,6 +153,30 @@ steps:
     expect(entry.errors.join("\n")).toMatch(/`choices` only applies to a gate/);
   });
 
+  it("ignores unknown keys instead of failing", async () => {
+    const dir = await workspace({
+      "odd.yaml": [
+        "title: Odd",
+        "colour: blue",
+        "inputs:",
+        "  request: { type: string, hint: ignored }",
+        "steps:",
+        "  - id: investigate",
+        "    role: investigator",
+        "    owner: someone",
+        "    agent: { model: claude-haiku-5-5, flavour: mild }",
+        "  - id: approve",
+        "    needs: [investigate]",
+        "    gate: Looks good?",
+        "    choices:",
+        "      approved: { label: Approve, emoji: yes }",
+      ].join("\n"),
+    });
+    const entry = (await loadPlaybooks(dir, OPEN_CAP)).entries.find((candidate) => candidate.id === "odd")!;
+    expect(entry.errors).toEqual([]);
+    expect(entry.playbook!.title).toBe("Odd");
+  });
+
   it("validates next chains", async () => {
     const dir = await workspace({
       "first.yaml": `

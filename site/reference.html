@@ -141,7 +141,7 @@ timeout: 1h         # default step timeout</code></pre><table><thead><tr><th>Key
 <h2 id="validation">Validation</h2>
 <p>The Playbooks panel and the <code>validate_playbooks</code> tool report, per file:</p>
 <ul>
-<li>YAML syntax errors and unknown keys</li>
+<li>YAML syntax errors and values of the wrong type (unknown keys are ignored)</li>
 <li>duplicate step ids, reserved ids, invalid names</li>
 <li>a step with both or neither of <code>role</code> and <code>gate</code>, or gate-only fields on agent steps</li>
 <li>missing roles (<code>role.yaml</code> or <code>instructions.md</code>), unknown <code>needs</code>, cycles in <code>needs</code></li>

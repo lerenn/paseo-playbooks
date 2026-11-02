@@ -30,25 +30,22 @@ const GATE_OUTCOMES = DEFAULT_GATE_CHOICES.map((choice) => choice.id);
 
 // ------------------------------------------------------------------ raw YAML
 
-const RawVarDefSchema = z
-  .object({
+const RawVarDefSchema = z.object({
     type: VarTypeSchema.default("string"),
     values: z.array(z.string()).optional(),
     required: z.boolean().optional(),
     default: VarValueSchema.optional(),
     description: z.string().optional(),
-  })
-  .strict();
+  });
 
-const RawOutputSchema = RawVarDefSchema.extend({ value: z.string().optional() }).strict();
+const RawOutputSchema = RawVarDefSchema.extend({ value: z.string().optional() });
 
 const RawTransitionSchema = z.union([
   z.enum(["complete", "end", "fail"]),
-  z.object({ goto: z.string(), max_loops: z.number().int().positive().optional() }).strict(),
+  z.object({ goto: z.string(), max_loops: z.number().int().positive().optional() }),
 ]);
 
-const RawStepSchema = z
-  .object({
+const RawStepSchema = z.object({
     id: z.string(),
     needs: z.array(z.string()).default([]),
     role: z.string().optional(),
@@ -59,7 +56,7 @@ const RawStepSchema = z
     outcomes: z.array(z.string()).min(1).optional(),
     retries: z.number().int().min(0).default(0),
     timeout: z.string().optional(),
-    agent: AgentSettingsSchema.strict().optional(),
+    agent: AgentSettingsSchema.optional(),
     on: z.record(z.string(), RawTransitionSchema).optional(),
     /** Gates only: the buttons, in order. Keys are the outcomes; the first one continues by default. */
     choices: z
@@ -71,18 +68,15 @@ const RawStepSchema = z
             comment: z.enum(["none", "optional", "required"]).default("none"),
             color: z.enum(["primary", "neutral", "success", "warning", "danger"]).optional(),
           })
-          .strict()
           .nullable(),
       )
       .optional(),
-  })
-  .strict();
+  });
 
-const RawPlaybookSchema = z
-  .object({
+const RawPlaybookSchema = z.object({
     title: z.string().optional(),
     description: z.string().optional(),
-    agent: AgentSettingsSchema.strict().optional(),
+    agent: AgentSettingsSchema.optional(),
     inputs: z.record(z.string(), RawVarDefSchema.nullable()).optional(),
     outputs: z.record(z.string(), RawOutputSchema.nullable()).optional(),
     next: z
@@ -92,30 +86,24 @@ const RawPlaybookSchema = z
             playbook: z.string(),
             on: z.literal("completed").default("completed"),
             inputs: z.record(z.string(), z.string()).optional(),
-          })
-          .strict(),
+          }),
       )
       .optional(),
     concurrency: z.number().int().positive().optional(),
     steps: z.array(RawStepSchema).min(1),
-  })
-  .strict();
+  });
 
-const RawRoleSchema = z
-  .object({
+const RawRoleSchema = z.object({
     title: z.string().optional(),
     readonly: z.boolean().default(false),
-    agent: AgentSettingsSchema.strict().optional(),
-  })
-  .strict();
+    agent: AgentSettingsSchema.optional(),
+  });
 
-const RawDefaultsSchema = z
-  .object({
-    agent: AgentSettingsSchema.strict().optional(),
-    manager: AgentSettingsSchema.strict().optional(),
+const RawDefaultsSchema = z.object({
+    agent: AgentSettingsSchema.optional(),
+    manager: AgentSettingsSchema.optional(),
     timeout: z.string().optional(),
-  })
-  .strict();
+  });
 type RawDefaults = z.infer<typeof RawDefaultsSchema>;
 
 function formatZodError(file: string, error: z.ZodError): string[] {
