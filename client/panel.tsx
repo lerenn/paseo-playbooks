@@ -152,26 +152,30 @@ function PlaybookCard(props: {
         </Text>
       ))}
       {expanded && card.runs.length > 0 ? (
-        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
-          {[...card.runs.map((candidate) => ({ id: candidate.id, label: `${candidate.id.replace(/^run_/, "")} · ${runStatusLabel(candidate.status)}`, color: runStatusColor(theme, candidate.status) })), card.entry?.playbook ? { id: "definition", label: "definition", color: theme.colors.foregroundMuted } : null]
-            .filter((chip): chip is { id: string; label: string; color: string } => chip !== null)
-            .map((chip) => {
-              const isSelected = chip.id === runId;
-              return (
-                <Pressable
-                  key={chip.id}
-                  accessibilityRole="tab"
-                  accessibilityState={{ selected: isSelected }}
-                  onPress={() => setSelected(chip.id)}
-                  style={{ borderRadius: 10, borderWidth: 1, borderColor: isSelected ? chip.color : theme.colors.border, paddingHorizontal: 8, paddingVertical: 2 }}
-                >
-                  <Text style={{ color: isSelected ? chip.color : theme.colors.foregroundMuted, fontSize: 11 }}>{chip.label}</Text>
-                </Pressable>
-              );
-            })}
+        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, zIndex: 15 }}>
+          {card.runs.map((candidate) => (
+            <RunChip
+              key={candidate.id}
+              theme={theme}
+              run={candidate}
+              selected={candidate.id === runId}
+              onSelect={() => setSelected(candidate.id)}
+              onCanceled={() => void queryClient.invalidateQueries({ queryKey: ["playbooks"] })}
+            />
+          ))}
+          {card.entry?.playbook ? (
+            <Pressable
+              accessibilityRole="tab"
+              accessibilityState={{ selected: runId === "definition" }}
+              onPress={() => setSelected("definition")}
+              style={{ borderRadius: 10, borderWidth: 1, borderColor: runId === "definition" ? theme.colors.foregroundMuted : theme.colors.border, paddingHorizontal: 8, paddingVertical: 2 }}
+            >
+              <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>definition</Text>
+            </Pressable>
+          ) : null}
         </View>
       ) : null}
-      {expanded && run ? <RunBar theme={theme} run={run} hostLabel={props.hostLabel} onDone={() => void queryClient.invalidateQueries({ queryKey: ["playbooks"] })} /> : null}
+      {expanded && run ? <RunBar theme={theme} run={run} hostLabel={props.hostLabel} /> : null}
       {expanded && playbook ? (
         <Graph
           playbook={playbook}
@@ -222,43 +226,12 @@ function PlaybookCard(props: {
   );
 }
 
-function RunBar(props: { theme: Theme; run: Run; hostLabel: string; onDone(): void }) {
+function RunBar(props: { theme: Theme; run: Run; hostLabel: string }) {
   const { theme, run } = props;
-  const cancel = useRpc(cancelRunRpc);
-  const toast = useToast();
-  const [confirming, setConfirming] = useState(false);
   const pending = run.gates.filter((gate) => gate.status === "pending");
-  const color = runStatusColor(theme, run.status);
   return (
     <View style={{ gap: 6 }}>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-        <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: color }} />
-        <Text style={{ color, fontSize: 12, fontWeight: "600" }}>{runStatusLabel(run.status)}</Text>
-        {run.branch ? <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>· {run.branch}</Text> : null}
-        <View style={{ flex: 1 }} />
-        {!isTerminal(run.status) ? (
-          confirming ? (
-            <View style={{ flexDirection: "row", gap: 6 }}>
-              <Button
-                theme={theme}
-                kind="danger"
-                label="Cancel run"
-                onPress={() =>
-                  void cancel({ runId: run.id })
-                    .then(() => {
-                      setConfirming(false);
-                      props.onDone();
-                    })
-                    .catch((error: unknown) => toast.error(error instanceof Error ? error.message : String(error)))
-                }
-              />
-              <Button theme={theme} label="Keep" onPress={() => setConfirming(false)} />
-            </View>
-          ) : (
-            <Button theme={theme} label="Cancel…" onPress={() => setConfirming(true)} accessibilityLabel="Cancel this run" />
-          )
-        ) : null}
-      </View>
+      {run.branch ? <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>Branch {run.branch}</Text> : null}
       {Object.keys(run.inputs).length > 0 ? (
         <Text numberOfLines={2} style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>
           {Object.entries(run.inputs)
@@ -365,6 +338,92 @@ function StartButton(props: { theme: Theme; title: string; onStart(target: "curr
             <Icon name="GitBranchPlus" size={15} color={theme.colors.foreground} />
             <Text style={{ color: theme.colors.foreground, fontSize: 13 }}>Start on a new agent</Text>
           </Pressable>
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+/** A run tab; active runs get a chevron menu with Cancel (confirmed in place), like the Start split button. */
+function RunChip(props: { theme: Theme; run: Run; selected: boolean; onSelect(): void; onCanceled(): void }) {
+  const { theme, run, selected } = props;
+  const cancel = useRpc(cancelRunRpc);
+  const toast = useToast();
+  const [menu, setMenu] = useState<"closed" | "open" | "confirm">("closed");
+  const color = runStatusColor(theme, run.status);
+  const active = !isTerminal(run.status);
+  const border = selected ? color : theme.colors.border;
+  const text = selected ? color : theme.colors.foregroundMuted;
+  return (
+    <View style={{ zIndex: menu === "closed" ? 0 : 30 }}>
+      <View style={{ flexDirection: "row", borderRadius: 10, borderWidth: 1, borderColor: border, overflow: "hidden" }}>
+        <Pressable accessibilityRole="tab" accessibilityState={{ selected }} onPress={props.onSelect} style={{ paddingLeft: 8, paddingRight: active ? 6 : 8, paddingVertical: 2 }}>
+          <Text style={{ color: text, fontSize: 11 }}>
+            {run.id.replace(/^run_/, "")} · {runStatusLabel(run.status)}
+          </Text>
+        </Pressable>
+        {active ? (
+          <>
+            <View style={{ width: 1, backgroundColor: border }} />
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Actions for run ${run.id}`}
+              accessibilityState={{ expanded: menu !== "closed" }}
+              onPress={() => setMenu((value) => (value === "closed" ? "open" : "closed"))}
+              style={{ paddingHorizontal: 5, justifyContent: "center" }}
+            >
+              <Icon name="ChevronDown" size={12} color={text} />
+            </Pressable>
+          </>
+        ) : null}
+      </View>
+      {menu !== "closed" ? (
+        <View
+          accessibilityRole="menu"
+          style={{
+            position: "absolute",
+            top: 26,
+            left: 0,
+            minWidth: 180,
+            padding: 4,
+            gap: 4,
+            borderRadius: 10,
+            borderWidth: 1,
+            borderColor: theme.colors.border,
+            backgroundColor: theme.colors.surface2,
+            elevation: 6,
+          }}
+        >
+          {menu === "open" ? (
+            <Pressable
+              accessibilityRole="menuitem"
+              onPress={() => setMenu("confirm")}
+              style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 10, paddingVertical: 8, borderRadius: 6 }}
+            >
+              <Icon name="CircleStop" size={15} color={theme.colors.statusDanger} />
+              <Text style={{ color: theme.colors.statusDanger, fontSize: 13 }}>Cancel run…</Text>
+            </Pressable>
+          ) : (
+            <View style={{ padding: 6, gap: 8 }}>
+              <Text style={{ color: theme.colors.foreground, fontSize: 12 }}>Cancel run {run.id}? Running steps are stopped.</Text>
+              <View style={{ flexDirection: "row", gap: 6 }}>
+                <Button
+                  theme={theme}
+                  kind="danger"
+                  label="Cancel run"
+                  onPress={() =>
+                    void cancel({ runId: run.id })
+                      .then(() => {
+                        setMenu("closed");
+                        props.onCanceled();
+                      })
+                      .catch((error: unknown) => toast.error(error instanceof Error ? error.message : String(error)))
+                  }
+                />
+                <Button theme={theme} label="Keep" onPress={() => setMenu("closed")} />
+              </View>
+            </View>
+          )}
         </View>
       ) : null}
     </View>
