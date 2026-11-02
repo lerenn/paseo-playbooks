@@ -4,7 +4,7 @@ description: Compare the docs with the code, fix the gaps, review and check in p
 inputs:
   focus:
     type: string
-    default: README.md, OVERVIEW.md and skills/paseo-playbooks/SKILL.md
+    default: README.md, OVERVIEW.md, skills/paseo-playbooks/SKILL.md and the website/ pages
     description: Which documents to check
   strictness:
     type: enum
