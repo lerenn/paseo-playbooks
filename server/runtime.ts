@@ -74,6 +74,8 @@ export class Runtime {
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
   /** Start reserves a run id and playbook snapshot for the worktree it creates. */
   private readonly reservations = new Map<string, Reservation>();
+  /** Runs started from the panel for a busy agent: agent id → run id, delivered when its turn ends. */
+  private readonly pendingHandoffs = new Map<string, string>();
 
   constructor(
     private readonly store: RunStore,
@@ -436,10 +438,18 @@ export class Runtime {
   async onTurnEnded(agentId: string, outcome: "completed" | "failed" | "canceled"): Promise<void> {
     const step = this.stepRunOf(agentId);
     if (step) await this.onStepTurnEnded(step.run.id, agentId, outcome);
+    const handoff = this.pendingHandoffs.get(agentId);
+    if (handoff) {
+      this.pendingHandoffs.delete(agentId);
+      this.busyManagers.delete(agentId);
+      await this.handOff(agentId, handoff, false);
+      return;
+    }
     await this.onManagerTurnEnded(agentId);
   }
 
   async onAgentArchived(agentId: string): Promise<void> {
+    this.pendingHandoffs.delete(agentId);
     const active = this.activeRunOfManager(agentId);
     if (active) await this.failRun(active.id, "manager lost (archived)");
     const step = this.stepRunOf(agentId);
@@ -513,19 +523,31 @@ export class Runtime {
     if (!agent || agent.archivedAt) throw new UserError("that agent no longer exists");
     if (agent.workspaceId !== workspaceId) throw new UserError("that agent is not in this workspace");
     if (agent.labels?.[STEP_LABEL]) throw new UserError("a step agent cannot manage a run");
-    if (agent.status === "running") throw new UserError("that agent is busy: wait for its turn to end, then press Start again");
     const managing = this.activeRunOfManager(agentId);
     if (managing) throw new UserError(`that agent already manages run ${managing.id}`);
     const run = await this.startPlaybook({ id: agentId, workspaceId, cwd: agent.cwd }, playbook.id, inputs, playbook);
+    // A busy agent is never interrupted: the kickoff waits for the end of its current turn.
+    if (agent.status === "running" || this.busyManagers.has(agentId)) {
+      this.pendingHandoffs.set(agentId, run.id);
+      return { status: "started" as const, workspaceId, managerAgentId: agentId, runId: run.id, queued: true };
+    }
+    await this.handOff(agentId, run.id, true);
+    return { status: "started" as const, workspaceId, managerAgentId: agentId, runId: run.id, queued: false };
+  }
+
+  /** Reloads the agent (session_open then gives it the manager tools) and sends it the kickoff. */
+  private async handOff(agentId: string, runId: string, rethrow: boolean): Promise<void> {
+    const run = this.store.get(runId);
+    if (!run || isTerminal(run.status)) return;
     try {
-      // Reopening the session reruns session_open, which gives a manager its tools.
+      const handle = this.api().agents.ref(agentId);
       await handle.reload();
       await handle.send(managerTakeover(run, engine.readySteps(run)));
     } catch (error) {
-      await this.cancelRun(run.id, "could not hand the run to the agent", false).catch(() => undefined);
-      throw error;
+      await this.cancelRun(runId, "could not hand the run to the agent", false).catch(() => undefined);
+      if (rethrow) throw error;
+      console.error(`[playbooks] hand-off of ${runId} to ${agentId} failed:`, errorText(error));
     }
-    return { status: "started" as const, workspaceId, managerAgentId: agentId, runId: run.id };
   }
 
   async startFromPanel(input: { workspaceId: string; playbook: string; inputs: Record<string, VarValue>; force: boolean; agentId?: string | undefined }) {

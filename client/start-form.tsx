@@ -68,7 +68,7 @@ export function StartForm(props: {
         setDuplicate(result.message);
         return;
       }
-      toast.show(`Started ${result.runId}`, { variant: "success" });
+      toast.show(result.queued ? `Queued ${result.runId}: the agent starts it when its current turn ends` : `Started ${result.runId}`, { variant: "success" });
       props.onStarted({ workspaceId: result.workspaceId, managerAgentId: result.managerAgentId, reusedAgent: agentId !== undefined });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : String(error));
@@ -96,7 +96,7 @@ export function StartForm(props: {
             : agents.isLoading
               ? "Finding this workspace's agent…"
               : manager
-                ? `${manager.title ?? manager.id.slice(0, 8)} manages the run, in this workspace on its current branch. It is reloaded to get the playbook tools, then receives the kickoff.${manager.status === "running" ? " It is busy: wait for its turn to end." : ""}`
+                ? `${manager.title ?? manager.id.slice(0, 8)} manages the run, in this workspace on its current branch. It is reloaded to get the playbook tools, then receives the kickoff${manager.status === "running" ? " when its current turn ends (it is busy now; it is not interrupted)" : ""}.`
                 : "No agent in this workspace can manage the run. Use “Start on a new agent” instead."}
         </Text>
         {Object.keys(playbook.inputs).length > 0 ? (

@@ -30,7 +30,14 @@ export const startRun = defineRpc({
     agentId: z.string().optional(),
   }),
   output: z.discriminatedUnion("status", [
-    z.object({ status: z.literal("started"), workspaceId: z.string(), managerAgentId: z.string(), runId: z.string() }),
+    z.object({
+      status: z.literal("started"),
+      workspaceId: z.string(),
+      managerAgentId: z.string(),
+      runId: z.string(),
+      /** The agent was busy: it receives the kickoff when its current turn ends. */
+      queued: z.boolean().default(false),
+    }),
     z.object({ status: z.literal("duplicate"), runId: z.string(), message: z.string() }),
   ]),
 });
