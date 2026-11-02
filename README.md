@@ -39,3 +39,14 @@ that repository and press Start. Start runs the playbook with the workspace's cu
 agent as manager, in that workspace (the run starts at once, but if that agent is busy,
 its kickoff waits until its current turn ends). The arrow next to Start offers "Start on
 a new agent", which creates a new worktree and manager.
+
+## Known limits
+
+- Reloading the plugin (`paseo plugin reload`) removes the playbook tools from agents that
+  are already running. They get the tools back when their session restarts.
+- If the daemon restarts before a busy agent's queued kickoff is delivered, the run never
+  starts. The queue is kept in memory, not saved.
+- Plain Start picks the workspace's most recently used agent (the one with the latest
+  message, skipping agents that already manage a run), because the panel cannot see which
+  tab has focus. To pick a specific agent, send it a message first, or use "Start on a new
+  agent".
