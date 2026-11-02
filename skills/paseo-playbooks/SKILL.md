@@ -29,11 +29,12 @@ Everything lives in the repository, under `.paseo/plugins/playbooks/` or the sho
         └── instructions.md    # the role's system prompt (required, non-empty)
 ```
 
-- Every top-level `*.yaml` file is a playbook. Shared settings live in folders, so no file
+- Every top-level `*.yaml` or `*.yml` file is a playbook. Shared settings live in folders, so no file
   name is reserved.
 - Each of the two folders is self-contained: a playbook uses the `roles/` and
   `defaults/main.yaml` of its own folder. The same playbook id in both folders is an error.
-- Ids (playbooks, roles, steps, inputs, outputs) use lowercase letters, digits, `-` and `_`.
+- Ids (playbooks, roles, steps, inputs, outputs) use lowercase letters, digits, `-` and `_`,
+  and start with a letter.
 - A playbook refers to a role by its directory name. Roles are shared by playbooks.
 
 ## defaults/main.yaml
@@ -133,14 +134,14 @@ steps:
 | `needs` | Steps that must complete first. No `needs` = starts with the run. Steps ready together run in parallel. File order does not matter. |
 | `role` / `gate` / `playbook` | Exactly one: an agent step, a human gate with its message, or a sub-playbook (see below). |
 | `inputs` | List of names (auto-matched) or map of name → source (`"{{ playbook.inputs.x }}"`, `"{{ steps.<id>.outputs.y }}"`) or `~`. |
-| `outputs` | Typed values the step must return. All are required. |
+| `outputs` | Typed values the step must return with any outcome except `failure` (a failure report skips output validation). All are required then. |
 | `prompt` | Template; may use only `{{ inputs.<name> }}`, `{{ run.id }}`, `{{ attempt }}`. |
 | `outcomes` | Default `[success, failure]`. The first one completes the step by default. |
 | `on` | Per outcome: `complete`, `end`, `fail`, or `{ goto: <earlier step>, max_loops: N }`. Every outcome other than the first and `failure` needs an entry. |
 | `retries` | Extra attempts after `failure`. |
 | `timeout` | `30m`, `2h`… Expiry counts as a failure. |
 | `agent` | Step-level agent settings. |
-| `choices` | Gates only: the buttons, in order. Each key is an outcome, with `label`, `comment: none \| optional \| required` and `color: primary \| neutral \| success \| warning \| danger` (theme colours; default primary for the first, neutral for the others). |
+| `choices` | Gates only: the buttons, in order. Each key is an outcome, with `label`, `comment: none \| optional \| required` and `color: primary \| neutral \| success \| warning \| danger` (theme colours; default primary for the first, neutral for the others). Without `choices`, the default Reject is `danger`. |
 
 A gate's outcomes are the keys of its `choices` (default: `approved` with label Approve, and
 `rejected` with label Reject and an optional comment). The first choice completes the gate
@@ -220,5 +221,5 @@ outputs:
 2. Draw the graph with `needs`; keep parallel steps readonly.
 3. Declare typed outputs on producers and inputs on consumers; prefer matching names.
 4. Add gates where a human must decide, and `goto` loops with `max_loops`.
-5. Run `validate_playbooks`; fix everything; commit the files (the panel's Start branches
-   a worktree from the current commit).
+5. Run `validate_playbooks`; fix everything; commit the files (Start in a new workspace
+   branches a worktree from the current commit; Start and Start on a new agent run in this checkout).

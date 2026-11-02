@@ -16,16 +16,20 @@ manager only makes judgment calls: briefing steps, reading results and choosing 
 The Playbooks panel, in the right-hand sidebar of a workspace, shows each playbook as a
 graph. When a run is in progress, nodes show their live status, the running step pulses,
 and pressing a node opens that step's conversation. Gates show Approve and Reject buttons.
-Start opens a form built from the playbook's inputs, creates a worktree on a new branch,
-and starts a manager there.
+Start opens a form built from the playbook's inputs and runs the playbook with the
+workspace's most recent agent as manager, on its current branch. The arrow next to Start
+offers "Start on a new agent", which starts a new manager agent in the same workspace,
+and "Start in a new workspace", which creates a worktree on a new branch and starts a
+manager there.
 
 Agent modes: playbooks may use any mode, `bypassPermissions` included, so steps that run
 shell commands work unattended. Only start playbooks from repositories you trust.
 
-Agents get tools from the plugin: every agent gets `validate_playbooks`; agents in a
-workspace with playbooks get the manager tools; step agents get `report_step_result`. The
+Agents get tools from the plugin: every agent except step agents gets `validate_playbooks`;
+agents in a workspace with playbooks get the manager tools; step agents get
+`report_step_result`. The
 repository also ships an agent skill, `skills/paseo-playbooks/SKILL.md`, that teaches
 agents to write playbooks.
 
-Requires Paseo 0.14. Run state is stored in `$PASEO_HOME/plugin-data/paseo-playbooks/` and
+Requires Paseo 0.14. Run state is stored in `$PASEO_HOME/plugin-data/paseo-playbooks/runs/` and
 deleted when the run's worktree is archived. Server code runs `git` in workspace folders.
