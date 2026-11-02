@@ -1,4 +1,7 @@
-import type { PaseoApi } from "@getpaseo/client";
+import type { PluginHandlerContext } from "@getpaseo/plugin/server";
+
+/** The daemon API handed to plugin handlers (typed via the SDK, so the build needs no @getpaseo/client). */
+type PaseoApi = PluginHandlerContext["paseo"];
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import {
   archiveRunRpc,
