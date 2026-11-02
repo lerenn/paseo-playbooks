@@ -3,6 +3,7 @@
  * applies the returned effects (cancel agents, wake the manager).
  */
 import { descendantsOf } from "../shared/graph";
+import { gateChoices, LOOP_LIMIT_CHOICES, outcomeTransition } from "../shared/gates";
 import type { Attempt, Gate, Playbook, Run, RunStep, Step, VarValue } from "../shared/types";
 import { isTerminal } from "../shared/types";
 import { coerceValue, formatValue, renderTemplate, resolveValue } from "../shared/vars";
@@ -293,7 +294,7 @@ export function endTurn(
 
 function defaultTransition(step: Step, outcome: string) {
   if (step.on[outcome]) return step.on[outcome]!;
-  if (step.kind === "gate") return outcome === "approved" ? ({ kind: "complete" } as const) : ({ kind: "fail" } as const);
+  if (step.kind === "gate") return outcomeTransition(step, outcome);
   if (outcome === "failure") return { kind: "retry" } as const;
   if (outcome === step.outcomes[0] || outcome === "success") return { kind: "complete" } as const;
   return { kind: "fail" } as const;
@@ -524,7 +525,8 @@ export function findGate(run: Run, ref: string): Gate | null {
 }
 
 export interface GateDecision {
-  decision: "approved" | "rejected";
+  /** A choice id of the gate; "approved" / "rejected" for loop-limit gates. */
+  decision: string;
   comment: string | null;
   by: string | null;
   via: "panel" | "chat";
@@ -538,6 +540,10 @@ export function decideGate(run: Run, ref: string, decision: GateDecision): { gat
   const fx = effects();
   if (gate.status !== "pending") return { gate, alreadyDecided: true, effects: fx };
   assertActive(run);
+  const choices = gate.kind === "loop_limit" ? LOOP_LIMIT_CHOICES : gateChoices(stepDef(run, gate.stepId));
+  const choice = choices.find((candidate) => candidate.id === decision.decision);
+  if (!choice) throw new EngineError(`"${decision.decision}" is not a choice of gate "${gate.stepId}" (${choices.map((c) => c.id).join(", ")})`);
+  if (choice.comment === "required" && !decision.comment?.trim()) throw new EngineError(`"${choice.label}" needs a comment`);
   gate.status = decision.decision;
   gate.comment = decision.comment;
   gate.decidedBy = decision.by;

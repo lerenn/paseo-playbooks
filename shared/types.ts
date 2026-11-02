@@ -53,6 +53,15 @@ export const RoleSchema = z.object({
 });
 export type Role = z.infer<typeof RoleSchema>;
 
+/** A button on a human gate. Its id is the outcome; where it leads comes from the step's `on`. */
+export const GateChoiceSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  /** Whether pressing it asks for a comment first (sent to the manager and, on a goto, to the target step). */
+  comment: z.enum(["none", "optional", "required"]),
+});
+export type GateChoice = z.infer<typeof GateChoiceSchema>;
+
 export const StepSchema = z.object({
   id: z.string(),
   kind: z.enum(["agent", "gate"]),
@@ -68,6 +77,8 @@ export const StepSchema = z.object({
   /** Resolved agent settings (step > role > playbook > defaults). Provider/model may stay unset. */
   agent: AgentSettingsSchema,
   on: z.record(z.string(), TransitionSchema),
+  /** Gate steps: the choices offered, in order (empty = the default Approve / Reject). */
+  choices: z.array(GateChoiceSchema).default([]),
 });
 export type Step = z.infer<typeof StepSchema>;
 
@@ -166,7 +177,8 @@ export const GateSchema = z.object({
   stepId: z.string(),
   /** For loop_limit gates: the goto waiting on approval. */
   gotoTarget: z.string().nullable(),
-  status: z.enum(["pending", "approved", "rejected"]),
+  /** "pending", or the chosen outcome (a choice id; "approved" / "rejected" for loop-limit gates). */
+  status: z.string(),
   /** Full text (summary then details), as sent by chat. */
   message: z.string(),
   /** One sentence shown on the gate; empty on gates opened before it existed. */

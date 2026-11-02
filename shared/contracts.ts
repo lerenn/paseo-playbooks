@@ -58,11 +58,12 @@ export const decideGateRpc = defineRpc({
   input: z.object({
     runId: z.string(),
     gateId: z.string(),
-    decision: z.enum(["approved", "rejected"]),
+    /** A choice id of the gate ("approved" / "rejected" by default). */
+    decision: z.string(),
     comment: z.string().optional(),
     hostLabel: z.string(),
   }),
-  output: z.object({ alreadyDecided: z.boolean(), decision: z.enum(["pending", "approved", "rejected"]) }),
+  output: z.object({ alreadyDecided: z.boolean(), decision: z.string() }),
 });
 
 export const cancelRunRpc = defineRpc({

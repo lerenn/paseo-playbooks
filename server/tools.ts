@@ -186,7 +186,7 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
       input: z.object({
         runId: IdArg,
         stepId: z.string().describe("Gate step id or gate id"),
-        decision: z.enum(["approved", "rejected"]),
+        decision: z.string().describe('One of the gate\'s choices (by default "approved" or "rejected")'),
         comment: z.string().optional(),
         decidedBy: z.string().optional().describe("Who decided, e.g. a Slack user id"),
       }),

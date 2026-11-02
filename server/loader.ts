@@ -2,8 +2,11 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
+import { DEFAULT_GATE_CHOICES } from "../shared/gates";
 import { ancestorsOf, findCycle } from "../shared/graph";
+import { stepLabel } from "../shared/labels";
 import type {
+  GateChoice,
   AgentSettings,
   InputWiring,
   Playbook,
@@ -23,7 +26,7 @@ export const PLAYBOOKS_DIRS = [".paseo/plugins/playbooks", ".paseo/playbooks"] a
 const ID = /^[a-z][a-z0-9_-]*$/;
 const RESERVED_STEP_IDS = new Set(["end", "fail"]);
 const AGENT_OUTCOMES = ["success", "failure"];
-const GATE_OUTCOMES = ["approved", "rejected"];
+const GATE_OUTCOMES = DEFAULT_GATE_CHOICES.map((choice) => choice.id);
 
 // ------------------------------------------------------------------ raw YAML
 
@@ -58,6 +61,16 @@ const RawStepSchema = z
     timeout: z.string().optional(),
     agent: AgentSettingsSchema.strict().optional(),
     on: z.record(z.string(), RawTransitionSchema).optional(),
+    /** Gates only: the buttons, in order. Keys are the outcomes; the first one continues by default. */
+    choices: z
+      .record(
+        z.string(),
+        z
+          .object({ label: z.string().optional(), comment: z.enum(["none", "optional", "required"]).default("none") })
+          .strict()
+          .nullable(),
+      )
+      .optional(),
   })
   .strict();
 
@@ -330,7 +343,13 @@ async function loadPlaybook(
         if (rawStep[field] !== undefined) err(`${where}: \`${field}\` does not apply to a gate`);
       }
     }
-    const outcomes = isGate ? GATE_OUTCOMES : rawStep.outcomes ?? AGENT_OUTCOMES;
+    if (!isGate && rawStep.choices !== undefined) err(`${where}: \`choices\` only applies to a gate`);
+    const choices: GateChoice[] = Object.entries(isGate ? rawStep.choices ?? {} : {}).map(([id, raw]) => {
+      if (!ID.test(id)) err(`${where}: choices.${id}: invalid name (lowercase letters, digits, - and _)`);
+      return { id, label: raw?.label ?? stepLabel(id.replace(/[_-]+/g, " ")), comment: raw?.comment ?? "none" };
+    });
+    if (isGate && rawStep.choices !== undefined && choices.length === 0) err(`${where}: choices: declare at least one choice`);
+    const outcomes = isGate ? (choices.length > 0 ? choices.map((choice) => choice.id) : GATE_OUTCOMES) : rawStep.outcomes ?? AGENT_OUTCOMES;
     const on: Record<string, Transition> = {};
     for (const [outcome, transition] of Object.entries(rawStep.on ?? {})) {
       if (!outcomes.includes(outcome)) err(`${where}: on.${outcome}: not an outcome of this step (${outcomes.join(", ")})`);
@@ -368,6 +387,7 @@ async function loadPlaybook(
       retries: rawStep.retries,
       agent: isGate ? {} : mergeAgent(defaults.agent, pb.agent, stepRole?.agent, rawStep.agent),
       on,
+      choices,
     };
     if (rawStep.role) step.role = rawStep.role;
     if (rawStep.gate !== undefined) step.gate = rawStep.gate;

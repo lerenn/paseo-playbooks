@@ -127,7 +127,10 @@ steps:
 
   - id: pr_approval
     needs: [babysit]
-    gate: The PR is ready. Approve to finish, or reject with a comment to send it back.
+    gate: The PR is ready. Approve to finish, or request changes to send it back to the implementer.
+    choices:
+      approved: { label: Approve }
+      rejected: { label: Request changes, comment: required }
     on:
       rejected: { goto: implement }
 ```
@@ -147,8 +150,14 @@ steps:
 | `retries` | Extra attempts after `failure`. |
 | `timeout` | `30m`, `2h`… Expiry counts as a failure. |
 | `agent` | Step-level agent settings. |
+| `choices` | Gates only: the buttons, in order. Each key is an outcome, with `label` and `comment: none \| optional \| required`. |
 
-Gates have outcomes `approved` (completes) and `rejected` (fails the run unless `on.rejected`).
+A gate's outcomes are the keys of its `choices` (default: `approved` with label Approve, and
+`rejected` with label Reject and an optional comment). The first choice completes the gate
+by default; any other choice fails the run unless `on` sends it elsewhere. The panel shows
+one full-width button per choice with where it leads (→ End, → Implement, → Fail run). A
+choice with `comment: optional` or `required` opens a text box with Send; the comment goes
+to the manager and, on a `goto`, to the target step as feedback.
 
 ### Variables
 

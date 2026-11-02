@@ -79,6 +79,9 @@ steps:
 
   - id: approve
     needs: [verdict]
-    gate: The docs are updated (uncommitted in the run's worktree). Approve to finish, or reject with a comment to send them back to the writer.
+    gate: The docs are updated, uncommitted. Approve to finish, or request changes to send them back to the writer.
+    choices:
+      approved: { label: Approve }
+      rejected: { label: Request changes, comment: required }
     on:
       rejected: { goto: write }

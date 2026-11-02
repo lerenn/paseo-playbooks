@@ -4,7 +4,8 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useState, type ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
 import { decideGateRpc, nudgeStepRpc, retryStepRpc } from "../shared/contracts";
-import { isTerminal, type Gate, type Playbook, type Run } from "../shared/types";
+import { destinationOf, gateChoices, LOOP_LIMIT_CHOICES } from "../shared/gates";
+import { isTerminal, type Gate, type GateChoice, type Playbook, type Run } from "../shared/types";
 import { stepLabel, type Theme } from "./theme";
 
 export function Button(props: { theme: Theme; label: string; onPress(): void; kind?: "primary" | "danger" | "plain"; disabled?: boolean; accessibilityLabel?: string }) {
@@ -61,20 +62,36 @@ function Line(props: { theme: Theme; children: ReactNode; muted?: boolean }) {
   );
 }
 
-/** Approve / reject a pending gate, with an optional comment. Used in the sheet and under gate nodes. */
+/** Where a choice leads, for its button: "→ End", "→ Write", "→ Fail run". */
+function destinationLabel(run: Run, gate: Gate, choiceId: string): string {
+  if (gate.kind === "loop_limit") return choiceId === "approved" ? `→ ${stepLabel(gate.gotoTarget ?? "")}` : "→ Fail run";
+  const step = run.playbook.steps.find((candidate) => candidate.id === gate.stepId);
+  if (!step) return "";
+  const destination = destinationOf(run.playbook, step, choiceId);
+  if (destination.kind === "end") return "→ End";
+  if (destination.kind === "fail") return "→ Fail run";
+  return `→ ${destination.targets.map(stepLabel).join(", ")}`;
+}
+
+/** A pending gate: its summary, collapsed details, and one full-width button per choice. Choices that take a comment open a text box with Send. */
 export function GateActions(props: { theme: Theme; run: Run; gate: Gate; hostLabel: string }) {
   const { theme, run, gate } = props;
   const decide = useRpc(decideGateRpc);
   const queryClient = useQueryClient();
   const toast = useToast();
+  const [open, setOpen] = useState<string | null>(null);
   const [comment, setComment] = useState("");
   const [busy, setBusy] = useState(false);
   const text = gateText(gate);
-  const submit = async (decision: "approved" | "rejected") => {
+  const step = run.playbook.steps.find((candidate) => candidate.id === gate.stepId);
+  const choices = gate.kind === "loop_limit" ? LOOP_LIMIT_CHOICES : step ? gateChoices(step) : [];
+  const submit = async (choice: GateChoice, withComment: string) => {
     setBusy(true);
     try {
-      const result = await decide({ runId: run.id, gateId: gate.id, decision, comment, hostLabel: props.hostLabel });
-      toast.show(result.alreadyDecided ? `Already ${result.decision}` : decision === "approved" ? "Approved" : "Rejected", { variant: "success" });
+      const result = await decide({ runId: run.id, gateId: gate.id, decision: choice.id, comment: withComment, hostLabel: props.hostLabel });
+      toast.show(result.alreadyDecided ? `Already decided: ${result.decision}` : `${choice.label}: sent`, { variant: "success" });
+      setOpen(null);
+      setComment("");
       await queryClient.invalidateQueries({ queryKey: ["playbooks"] });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : String(error));
@@ -90,19 +107,72 @@ export function GateActions(props: { theme: Theme; run: Run; gate: Gate; hostLab
           <Markdown>{text.details}</Markdown>
         </Section>
       ) : null}
-      <TextInput
-        accessibilityLabel="Comment for the decision"
-        placeholder="Comment (sent back on reject)"
-        placeholderTextColor={theme.colors.foregroundMuted}
-        value={comment}
-        onChangeText={setComment}
-        multiline
-        style={{ minHeight: 36, borderRadius: 8, borderWidth: 1, borderColor: theme.colors.border, padding: 8, color: theme.colors.foreground, backgroundColor: theme.colors.surface2 }}
-      />
-      <View style={{ flexDirection: "row", gap: 8 }}>
-        <Button theme={theme} kind="primary" label="Approve" disabled={busy} onPress={() => void submit("approved")} />
-        <Button theme={theme} kind="danger" label="Reject" disabled={busy} onPress={() => void submit("rejected")} />
-      </View>
+      {choices.map((choice, index) => {
+        const destination = destinationLabel(run, gate, choice.id);
+        const expanded = open === choice.id;
+        const primary = index === 0;
+        const background = primary ? theme.colors.accent : theme.colors.surface2;
+        const foreground = primary ? theme.colors.accentForeground : theme.colors.foreground;
+        return (
+          <View key={choice.id} style={{ gap: 6 }}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`${choice.label}, ${destination.replace("→", "goes to")}${choice.comment !== "none" ? ", asks for a comment" : ""}`}
+              accessibilityState={{ disabled: busy, expanded: choice.comment !== "none" ? expanded : undefined }}
+              disabled={busy}
+              onPress={() => {
+                if (choice.comment === "none") void submit(choice, "");
+                else {
+                  setOpen(expanded ? null : choice.id);
+                  setComment("");
+                }
+              }}
+              style={{
+                width: "100%",
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 8,
+                borderRadius: 8,
+                paddingHorizontal: 12,
+                paddingVertical: 9,
+                backgroundColor: background,
+                borderWidth: 1,
+                borderColor: expanded ? theme.colors.accent : "transparent",
+                opacity: busy ? 0.6 : 1,
+              }}
+            >
+              <Text style={{ flex: 1, color: foreground, fontSize: 13, fontWeight: "600" }}>{choice.label}</Text>
+              <Text style={{ color: foreground, opacity: 0.75, fontSize: 12 }}>{destination}</Text>
+              {choice.comment !== "none" ? <Icon name={expanded ? "ChevronUp" : "MessageSquare"} size={13} color={foreground} /> : null}
+            </Pressable>
+            {expanded ? (
+              <View style={{ gap: 6, paddingLeft: 8, borderLeftWidth: 2, borderLeftColor: theme.colors.accent }}>
+                <TextInput
+                  accessibilityLabel={`Comment for ${choice.label}`}
+                  placeholder={choice.comment === "required" ? "Comment (required)" : "Comment (optional)"}
+                  placeholderTextColor={theme.colors.foregroundMuted}
+                  value={comment}
+                  onChangeText={setComment}
+                  multiline
+                  autoFocus
+                  style={{ minHeight: 64, borderRadius: 8, borderWidth: 1, borderColor: theme.colors.border, padding: 8, color: theme.colors.foreground, backgroundColor: theme.colors.surface2 }}
+                />
+                <View style={{ flexDirection: "row", gap: 8 }}>
+                  <Button
+                    theme={theme}
+                    kind="primary"
+                    label={busy ? "Sending…" : "Send"}
+                    disabled={busy || (choice.comment === "required" && !comment.trim())}
+                    onPress={() => void submit(choice, comment)}
+                    accessibilityLabel={`Send ${choice.label}`}
+                  />
+                  <Button theme={theme} label="Cancel" onPress={() => setOpen(null)} />
+                </View>
+              </View>
+            ) : null}
+          </View>
+        );
+      })}
     </View>
   );
 }

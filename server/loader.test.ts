@@ -135,6 +135,24 @@ steps:
     expect(errors).toMatch(/goto "b" must point to an earlier step/);
   });
 
+  it("reads gate choices in order, with labels and comment rules", async () => {
+    const result = await loadPlaybooks(EXAMPLES, OPEN_CAP);
+    const gate = result.entries.find((entry) => entry.id === "pr")!.playbook!.steps.find((step) => step.id === "pr_approval")!;
+    expect(gate.outcomes).toEqual(["approved", "rejected"]);
+    expect(gate.choices).toEqual([
+      { id: "approved", label: "Approve", comment: "none" },
+      { id: "rejected", label: "Request changes", comment: "required" },
+    ]);
+  });
+
+  it("refuses choices on agent steps", async () => {
+    const dir = await workspace({
+      "bad.yaml": "steps:\n  - id: investigate\n    role: investigator\n    choices:\n      ok: {}\n",
+    });
+    const entry = (await loadPlaybooks(dir, OPEN_CAP)).entries.find((candidate) => candidate.id === "bad")!;
+    expect(entry.errors.join("\n")).toMatch(/`choices` only applies to a gate/);
+  });
+
   it("validates next chains", async () => {
     const dir = await workspace({
       "first.yaml": `

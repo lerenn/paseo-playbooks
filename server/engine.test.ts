@@ -158,6 +158,16 @@ describe("engine", () => {
     expect(r.failure).toMatch(/failed after 2 attempt/);
   });
 
+  it("refuses unknown choices and a missing required comment", () => {
+    const r = run();
+    for (const id of ["investigate", "implement", "review", "local_qa"]) runStep(r, id, "success");
+    runStep(r, "babysit", "ready");
+    requestGate(r, "pr_approval", "", now());
+    expect(() => decideGate(r, "pr_approval", { decision: "maybe", comment: null, by: null, via: "panel", now: now() })).toThrow(/not a choice/);
+    expect(() => decideGate(r, "pr_approval", { decision: "rejected", comment: "  ", by: null, via: "panel", now: now() })).toThrow(/needs a comment/);
+    expect(r.gates[0]!.status).toBe("pending");
+  });
+
   it("gate rejection loops back to implement", () => {
     const r = run();
     for (const id of ["investigate", "implement", "review", "local_qa"]) runStep(r, id, "success");

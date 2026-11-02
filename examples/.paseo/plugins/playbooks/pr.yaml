@@ -83,6 +83,9 @@ steps:
 
   - id: pr_approval
     needs: [babysit]
-    gate: The PR is ready. Approve to finish, or reject with a comment to send it back.
+    gate: The PR is ready. Approve to finish, or request changes to send it back to the implementer.
+    choices:
+      approved: { label: Approve }
+      rejected: { label: Request changes, comment: required }
     on:
       rejected: { goto: implement }
