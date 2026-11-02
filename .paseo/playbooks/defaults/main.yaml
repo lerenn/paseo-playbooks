@@ -1,7 +1,0 @@
-# Repo-wide agent defaults. Precedence: step > role > playbook > these > the manager's own.
-agent:
-  provider: claude
-  model: claude-opus-5-5
-  mode: bypassPermissions      # steps run unattended; the daemon cap must allow it
-manager:
-  mode: default                # the manager never edits files
