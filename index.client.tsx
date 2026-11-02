@@ -1,4 +1,5 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
+import { contributeHeaderButtons } from "./client/header";
 import { PlaybooksPanel } from "./client/panel";
 
 export default function contribute(client: PluginClientContext) {
@@ -19,5 +20,5 @@ export default function contribute(client: PluginClientContext) {
       openPanel("playbooks", { location: "explorer" });
     },
   });
-  return () => {};
+  return contributeHeaderButtons(client);
 }
