@@ -83,8 +83,11 @@ describe("engine", () => {
     expect(readySteps(r)).toEqual(["babysit"]);
     runStep(r, "babysit", "ready");
     expect(readySteps(r)).toEqual(["pr_approval"]);
-    requestGate(r, "pr_approval", "PR green", now());
+    const gate = requestGate(r, "pr_approval", "PR green", now(), "CI passed; link: https://github.com/o/r/pull/7");
     expect(r.status).toBe("waiting_gate");
+    expect(gate.summary).toBe("PR green");
+    expect(gate.details).toContain("CI passed");
+    expect(gate.message.startsWith("PR green")).toBe(true);
     const decided = decideGate(r, "pr_approval", { decision: "approved", comment: null, by: "host", via: "panel", now: now() });
     expect(decided.alreadyDecided).toBe(false);
     expect(r.status).toBe("completed");

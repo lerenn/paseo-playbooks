@@ -405,6 +405,8 @@ function gotoOrLimit(run: Run, step: Step, target: string, maxLoops: number | un
     gotoTarget: target,
     status: "pending",
     message: `Loop limit reached: "${step.id}" → "${target}" ran ${run.loops[key] ?? 0} times (max ${maxLoops}). Approve one more loop, or reject to fail the run.\n\nLatest feedback: ${feedback || "(none)"}`,
+    summary: `Loop limit reached: "${step.id}" → "${target}" ran ${run.loops[key] ?? 0} times (max ${maxLoops}). Approve one more loop, or reject to fail the run.`,
+    details: `Latest feedback: ${feedback || "(none)"}`,
     requestedAt: now,
     comment: feedback || null,
     decidedBy: null,
@@ -485,7 +487,7 @@ export function completeStep(
 }
 
 /** Opens the human gate of a ready gate step. */
-export function requestGate(run: Run, stepId: string, message: string, now: string): Gate {
+export function requestGate(run: Run, stepId: string, summary: string, now: string, details = ""): Gate {
   assertActive(run);
   const step = stepDef(run, stepId);
   const state = runStep(run, stepId);
@@ -497,7 +499,9 @@ export function requestGate(run: Run, stepId: string, message: string, now: stri
     stepId,
     gotoTarget: null,
     status: "pending",
-    message: [step.gate, message].filter(Boolean).join("\n\n"),
+    message: [summary, step.gate, details].filter(Boolean).join("\n\n"),
+    summary,
+    details: [step.gate, details].filter(Boolean).join("\n\n"),
     requestedAt: now,
     comment: null,
     decidedBy: null,

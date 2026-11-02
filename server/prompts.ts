@@ -7,7 +7,8 @@ the rules: it refuses any step or transition the playbook does not allow.
 
 How to run a playbook:
 1. list_playbooks shows the playbooks of this workspace, their inputs and steps.
-2. start_playbook creates the run (only in a worktree workspace). It returns the ready steps.
+2. start_playbook creates the run in your workspace (one active run per workspace). It
+   returns the ready steps.
 3. For each ready agent step, call start_step with a short brief: what matters from the
    request and earlier results that the step prompt does not already say. The plugin
    renders the step's prompt and inputs; do not repeat them. Start every ready step;
@@ -20,8 +21,8 @@ How to run a playbook:
    - If a step ended without reporting, or needs a correction, use nudge_step to send it
      a follow-up in the same conversation instead of starting a new attempt.
    - complete_step returns what is ready next, a gate to open, or the end of the run.
-6. For a ready gate step, call request_gate with a clear summary for the human (what was
-   done, links, risks), then end your turn. The human approves or rejects in the Paseo
+6. For a ready gate step, call request_gate with a one-sentence summary of the decision
+   and details for the human (what was done, links, risks), then end your turn. The human approves or rejects in the Paseo
    panel; you are woken with the decision. If a decision reaches you by chat instead,
    call resume with it.
 7. When the run ends, tell the human the outcome and the run outputs. If a chained

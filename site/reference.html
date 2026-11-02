@@ -85,7 +85,7 @@ timeout: 1h         # default step timeout</code></pre><table><thead><tr><th>Key
 </ul>
 
 <h2 id="gates">Gates</h2>
-<p>A gate becomes ready like any step. The manager opens it with a summary for the human (<code>request_gate</code>). Its outcomes are <code>approved</code>, which completes it, and <code>rejected</code>, which fails the run unless <code>on.rejected</code> is set. Decisions come from the panel, or by chat through the manager's <code>resume</code> tool. The first decision wins.</p>
+<p>A gate becomes ready like any step. The manager opens it with <code>request_gate</code>: a one-sentence summary shown on the gate, and details (your <code>gate:</code> text, then the manager's notes) collapsed under it. Its outcomes are <code>approved</code>, which completes it, and <code>rejected</code>, which fails the run unless <code>on.rejected</code> is set. Decisions come from the panel, or by chat through the manager's <code>resume</code> tool. The first decision wins.</p>
 <pre><code>- id: pr_approval
   needs: [babysit]
   gate: The PR is ready. Approve to finish, or reject with a comment to send it back.

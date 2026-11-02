@@ -25,8 +25,15 @@ export function Button(props: { theme: Theme; label: string; onPress(): void; ki
   );
 }
 
+/** A gate's one-sentence summary and its details; gates from before the split fall back to their first paragraph. */
+export function gateText(gate: Gate): { summary: string; details: string } {
+  if (gate.summary) return { summary: gate.summary, details: gate.details };
+  const [first = "", ...rest] = gate.message.split(/\n\s*\n/);
+  return { summary: first.trim(), details: rest.join("\n\n").trim() };
+}
+
 /** A collapsible section of the step sheet, closed by default. */
-function Section(props: { theme: Theme; title: string; children: ReactNode }) {
+export function Section(props: { theme: Theme; title: string; children: ReactNode }) {
   const { theme } = props;
   const [open, setOpen] = useState(false);
   return (
@@ -62,6 +69,7 @@ export function GateActions(props: { theme: Theme; run: Run; gate: Gate; hostLab
   const toast = useToast();
   const [comment, setComment] = useState("");
   const [busy, setBusy] = useState(false);
+  const text = gateText(gate);
   const submit = async (decision: "approved" | "rejected") => {
     setBusy(true);
     try {
@@ -76,7 +84,12 @@ export function GateActions(props: { theme: Theme; run: Run; gate: Gate; hostLab
   };
   return (
     <View style={{ gap: 6 }}>
-      <Line theme={theme}>{gate.message}</Line>
+      <Line theme={theme}>{text.summary}</Line>
+      {text.details ? (
+        <Section theme={theme} title="Details">
+          <Markdown>{text.details}</Markdown>
+        </Section>
+      ) : null}
       <TextInput
         accessibilityLabel="Comment for the decision"
         placeholder="Comment (sent back on reject)"

@@ -167,7 +167,12 @@ export const GateSchema = z.object({
   /** For loop_limit gates: the goto waiting on approval. */
   gotoTarget: z.string().nullable(),
   status: z.enum(["pending", "approved", "rejected"]),
+  /** Full text (summary then details), as sent by chat. */
   message: z.string(),
+  /** One sentence shown on the gate; empty on gates opened before it existed. */
+  summary: z.string().default(""),
+  /** Longer text, collapsed under the summary: the playbook's gate text, then the manager's details. */
+  details: z.string().default(""),
   requestedAt: z.string(),
   comment: z.string().nullable(),
   decidedBy: z.string().nullable(),

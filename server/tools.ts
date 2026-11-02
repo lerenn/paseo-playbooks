@@ -166,11 +166,17 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
     }),
     defineAgentTool({
       name: "request_gate",
-      description: "Open a ready gate step for a human, with your summary (what was done, links, risks). Then end your turn.",
-      input: z.object({ runId: IdArg, stepId: z.string(), message: z.string().describe("Summary for the human") }),
-      execute: ({ runId, stepId, message }, { agent }) =>
+      description:
+        "Open a ready gate step for a human: a one-sentence summary shown on the gate, and details (what was done, links, risks) shown collapsed under it. Then end your turn.",
+      input: z.object({
+        runId: IdArg,
+        stepId: z.string(),
+        summary: z.string().describe("One sentence: what the human is asked to decide"),
+        details: z.string().default("").describe("What was done, links, risks, follow-ups (collapsed under the summary)"),
+      }),
+      execute: ({ runId, stepId, summary, details }, { agent }) =>
         guard(async () => {
-          const gate = await runtime.requestGate(agent.id, runId, stepId, message);
+          const gate = await runtime.requestGate(agent.id, runId, stepId, summary, details);
           return ok(`Gate ${gate.id} is open in the Paseo panel. Tell the human, then end your turn.`, gate);
         }),
     }),

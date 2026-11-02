@@ -323,9 +323,9 @@ export class Runtime {
     return this.store.get(run.id)!;
   }
 
-  async requestGate(managerId: string, runId: string, stepId: string, message: string) {
+  async requestGate(managerId: string, runId: string, stepId: string, summary: string, details: string) {
     const run = this.ownedRun(managerId, runId);
-    return this.store.mutate(run.id, (current) => engine.requestGate(current, stepId, message, nowIso()));
+    return this.store.mutate(run.id, (current) => engine.requestGate(current, stepId, summary, nowIso(), details));
   }
 
   /** A gate decision from the panel (wakes the manager) or from chat via resume (does not). */
