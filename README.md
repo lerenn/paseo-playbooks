@@ -35,7 +35,19 @@ To use playbooks in a repository, copy `examples/.paseo/plugins/playbooks/` into
 `.paseo/plugins/playbooks/` or `.paseo/playbooks/`),
 adjust the roles and playbooks, commit them, and allow the modes they use in
 Settings → Plugins → paseo-playbooks. Then open the Playbooks panel in a workspace of
-that repository and press Start. Start runs the playbook with the workspace's current
-agent as manager, in that workspace (the run starts at once, but if that agent is busy,
-its kickoff waits until its current turn ends). The arrow next to Start offers "Start on
-a new agent", which creates a new worktree and manager.
+that repository and press Start. Start runs the playbook with the workspace's most
+recently used agent as manager (see Known limits), in that workspace (the run starts at
+once, but if that agent is busy, its kickoff waits until its current turn ends). The arrow
+next to Start offers "Start on a new agent", which creates a new worktree and manager.
+
+## Known limits
+
+- Reloading the plugin (`paseo plugin reload`) removes the playbook tools from agents that
+  are already running. They get the tools back when their session restarts.
+- If the daemon restarts before a busy agent's queued kickoff is delivered, the kickoff is
+  lost (the queue is kept in memory only). The run stays active but nothing drives it.
+  Cancel it from the panel and start again.
+- Plain Start picks the workspace's most recently used agent (the one you last sent a
+  message to, skipping agents that already manage a run), because the panel cannot see
+  which tab has focus. To pick a specific agent, send it a message first, or use "Start on
+  a new agent".
