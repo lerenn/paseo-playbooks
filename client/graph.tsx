@@ -1,4 +1,4 @@
-import { useAgent } from "@getpaseo/plugin/client";
+import { openExternalUrl, useAgent } from "@getpaseo/plugin/client";
 import { Icon, ScrollView } from "@getpaseo/plugin/client/ui";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AccessibilityInfo, Animated, Pressable, Text, View } from "react-native";
@@ -159,6 +159,7 @@ export function Graph(props: GraphProps) {
                       run={run}
                       theme={theme}
                       nodeWidth={nodeWidth}
+                      areaWidth={Math.max(nodeWidth, width - GAP)}
                       longNeeds={id === END ? nodes.find((node) => node.id === END)!.needs.filter((need) => (layers.get(need) ?? 0) < index - 1) : []}
                     />
                   ) : (
@@ -238,11 +239,22 @@ function Band(props: {
   );
 }
 
-/** The playbook's entry (its inputs) and exit (its outputs), as pills above and below the steps. */
-function Terminal(props: { kind: "start" | "end"; playbook: Playbook; run: Run | null; theme: Theme; nodeWidth: number; longNeeds: string[] }) {
+/** The playbook's entry (its inputs) and exit (its outputs), as pills above and below the steps. A finished run's End opens its output values. */
+function Terminal(props: {
+  kind: "start" | "end";
+  playbook: Playbook;
+  run: Run | null;
+  theme: Theme;
+  nodeWidth: number;
+  /** Width of the outputs area under End (the graph's width). */
+  areaWidth: number;
+  longNeeds: string[];
+}) {
   const { theme, run, playbook } = props;
+  const [open, setOpen] = useState(false);
   const start = props.kind === "start";
   const names = Object.keys(start ? playbook.inputs : playbook.outputs);
+  const values = !start && run?.outputs ? Object.entries(run.outputs) : [];
   const color = start
     ? run
       ? theme.colors.statusSuccess
@@ -254,34 +266,78 @@ function Terminal(props: { kind: "start" | "end"; playbook: Playbook; run: Run |
         : theme.colors.foregroundMuted;
   const label = start ? "Start" : run?.status === "failed" ? "Failed" : run?.status === "canceled" ? "Canceled" : "End";
   const detail = names.length > 0 ? names.join(", ") : start ? "no inputs" : "no outputs";
+  const pill = (
+    <>
+      <Icon name={start ? "CirclePlay" : run?.status === "failed" || run?.status === "canceled" ? "CircleX" : "Flag"} size={13} color={color} />
+      <Text numberOfLines={1} style={{ color: theme.colors.foreground, fontSize: 12, fontWeight: "600" }}>
+        {label}
+      </Text>
+      <Text numberOfLines={1} style={{ flexShrink: 1, color: theme.colors.foregroundMuted, fontSize: 11 }}>
+        {detail}
+      </Text>
+      {values.length > 0 ? <Icon name={open ? "ChevronUp" : "ChevronDown"} size={13} color={theme.colors.foregroundMuted} /> : null}
+    </>
+  );
+  const pillStyle = {
+    maxWidth: props.nodeWidth,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: color,
+    backgroundColor: theme.colors.surface2,
+  } as const;
   return (
-    <View style={{ width: props.nodeWidth, alignItems: "center" }}>
-      <View
-        accessible
-        accessibilityLabel={`${label}. ${start ? "Inputs" : "Outputs"}: ${detail}`}
-        style={{
-          maxWidth: props.nodeWidth,
-          flexDirection: "row",
-          alignItems: "center",
-          gap: 6,
-          paddingHorizontal: 12,
-          paddingVertical: 5,
-          borderRadius: 999,
-          borderWidth: 1,
-          borderColor: color,
-          backgroundColor: theme.colors.surface2,
-        }}
-      >
-        <Icon name={start ? "CirclePlay" : run?.status === "failed" || run?.status === "canceled" ? "CircleX" : "Flag"} size={13} color={color} />
-        <Text numberOfLines={1} style={{ color: theme.colors.foreground, fontSize: 12, fontWeight: "600" }}>
-          {label}
-        </Text>
-        <Text numberOfLines={1} style={{ flexShrink: 1, color: theme.colors.foregroundMuted, fontSize: 11 }}>
-          {detail}
-        </Text>
-      </View>
+    <View style={{ width: props.nodeWidth, alignItems: "center", gap: 6 }}>
+      {values.length > 0 ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ expanded: open }}
+          accessibilityLabel={`${label}. ${open ? "Hide" : "Show"} the run's outputs: ${detail}`}
+          onPress={() => setOpen((value) => !value)}
+          style={pillStyle}
+        >
+          {pill}
+        </Pressable>
+      ) : (
+        <View accessible accessibilityLabel={`${label}. ${start ? "Inputs" : "Outputs"}: ${detail}`} style={pillStyle}>
+          {pill}
+        </View>
+      )}
+      {open && values.length > 0 ? (
+        <View
+          style={{
+            width: props.areaWidth,
+            borderRadius: 8,
+            borderWidth: 1,
+            borderColor: theme.colors.border,
+            backgroundColor: theme.colors.surface2,
+          }}
+        >
+          {values.map(([name, value], index) => {
+            const text = String(value);
+            const isUrl = /^https?:\/\//.test(text);
+            return (
+              <View
+                key={name}
+                style={{ gap: 2, paddingHorizontal: 10, paddingVertical: 8, borderTopWidth: index === 0 ? 0 : 1, borderTopColor: theme.colors.border }}
+              >
+                <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11, fontWeight: "600" }}>{name}</Text>
+                <Pressable disabled={!isUrl} onPress={() => void openExternalUrl(text)} accessibilityRole={isUrl ? "link" : "text"}>
+                  <Text selectable style={{ color: isUrl ? theme.colors.accent : theme.colors.foreground, fontSize: 12 }}>
+                    {text}
+                  </Text>
+                </Pressable>
+              </View>
+            );
+          })}
+        </View>
+      ) : null}
       {props.longNeeds.length > 0 ? (
-        <Text style={{ color: theme.colors.foregroundMuted, fontSize: 10, textAlign: "center", marginTop: 2 }}>
+        <Text style={{ color: theme.colors.foregroundMuted, fontSize: 10, textAlign: "center" }}>
           also after {props.longNeeds.join(", ")}
         </Text>
       ) : null}

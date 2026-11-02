@@ -256,21 +256,6 @@ function RunBar(props: { theme: Theme; run: Run; hostLabel: string }) {
   return (
     <View style={{ gap: 6 }}>
       {run.failure ? <Text style={{ color: theme.colors.statusDanger, fontSize: 12 }}>{run.failure}</Text> : null}
-      {run.outputs && Object.keys(run.outputs).length > 0 ? (
-        <View style={{ gap: 2 }}>
-          {Object.entries(run.outputs).map(([name, value]) => {
-            const text = String(value);
-            const isUrl = /^https?:\/\//.test(text);
-            return (
-              <Pressable key={name} disabled={!isUrl} onPress={() => void openExternalUrl(text)} accessibilityRole={isUrl ? "link" : "text"}>
-                <Text style={{ color: isUrl ? theme.colors.accent : theme.colors.foreground, fontSize: 12 }}>
-                  {name}: {text}
-                </Text>
-              </Pressable>
-            );
-          })}
-        </View>
-      ) : null}
       {run.status === "completed" && run.playbook.next.length > 0 ? (
         <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>
           Next offered to the manager: {run.playbook.next.map((next) => next.playbook).join(", ")}
