@@ -20,20 +20,41 @@
 <div class="actions"><a class="button" href="getting-started.html">Get started</a><a class="button secondary" href="https://github.com/lerenn/paseo-playbooks">View on GitHub</a></div>
 </section>
 
-<div class="mock" aria-label="Drawing of the Playbooks panel during a pull-request run">
+<div class="mock" role="img" aria-label="Drawing of the Playbooks panel during a pull-request run: Review is running, a dashed loop goes from Babysit back to Implement">
 <div class="mock-bar"><span class="dots"><i></i><i></i><i></i></span>Playbooks</div>
 <div class="mock-body">
-<div class="mock-title"><span>Pull request</span><span class="run">running</span></div>
-<div class="mock-graph">
-<div class="mock-row"><div><div class="node "><b><span class="dot ok"></span>investigate</b><small>Investigator · ro</small></div></div></div>
-<div class="mock-line"></div>
-<div class="mock-row"><div><div class="node "><b><span class="dot ok"></span>implement</b><small>Implementer · #1 #2</small></div></div></div>
-<div class="mock-line"></div><div class="mock-fork"></div>
-<div class="mock-row"><div><div class="node running"><b><span class="dot run"></span>review</b><small>Reviewer · running</small></div></div><div><div class="node "><b><span class="dot ok"></span>local_qa</b><small>Local QA · ro</small></div></div></div>
-<div class="mock-fork"></div><div class="mock-line"></div>
-<div class="mock-row"><div><div class="node dim"><b><span class="dot idle"></span>babysit</b><small>PR Babysitter</small></div><div class="loop">↺ changes_requested → implement · 1/3</div></div></div>
-<div class="mock-line"></div>
-<div class="mock-row"><div><div class="node gate dim"><b><span class="dot warn"></span>pr_approval</b><small>gate</small></div></div></div>
+<div class="mcard">
+<div class="mcard-head">
+<span class="chev">⌄</span>
+<div class="mcard-title"><b>Pull request</b><small>.paseo/playbooks/pr.yaml</small></div>
+<span class="split"><span>▷ Start</span><span>⌄</span></span>
+</div>
+<div class="mcard-rule"></div>
+<div class="tabs"><span class="tab">Definition</span><span class="tab sel">7f3k2 · running<i>⌄</i></span></div>
+<div class="mgraph">
+<div class="pill ok" style="top:0">▷ <b>Start</b> <small>request, base_branch</small></div>
+<div class="v arrow" style="top:26px;height:22px"></div>
+<div class="n ok" style="top:48px"><b>✓ Investigate</b><small>Investigator · ro</small></div>
+<div class="v arrow" style="top:96px;height:22px"></div>
+<div class="n ok" style="top:118px"><b>✓ Implement</b><small>Implementer · #1 #2</small></div>
+<div class="v" style="top:166px;height:11px"></div>
+<div class="h" style="top:176px;left:calc(50% - 74px);width:148px"></div>
+<div class="v arrow" style="top:177px;height:11px;left:calc(50% - 74px)"></div>
+<div class="v arrow" style="top:177px;height:11px;left:calc(50% + 74px)"></div>
+<div class="n run" style="top:188px;left:calc(50% - 74px)"><b>◌ Review</b><small>Reviewer · ro</small></div>
+<div class="n ok" style="top:188px;left:calc(50% + 74px)"><b>✓ Local_qa</b><small>Local QA · ro</small></div>
+<div class="v" style="top:236px;height:11px;left:calc(50% - 74px)"></div>
+<div class="v" style="top:236px;height:11px;left:calc(50% + 74px)"></div>
+<div class="h" style="top:246px;left:calc(50% - 74px);width:148px"></div>
+<div class="v arrow" style="top:247px;height:11px"></div>
+<div class="n dim" style="top:258px"><b>○ Babysit</b><small>PR Babysitter · ro</small></div>
+<div class="v arrow" style="top:306px;height:22px"></div><span class="elabel" style="top:308px">ready</span>
+<div class="n gate dim" style="top:328px"><b>◇ Pr_approval</b><small>Gate</small></div>
+<div class="v arrow" style="top:376px;height:22px"></div><span class="elabel" style="top:378px">approved</span>
+<div class="pill" style="top:398px">⚑ <b>End</b> <small>pr_url, pr_number</small></div>
+<div class="loopline" style="top:136px;height:154px"></div>
+<span class="looplabel" style="top:213px">changes_requested · 1/3</span>
+</div>
 </div>
 </div>
 </div>

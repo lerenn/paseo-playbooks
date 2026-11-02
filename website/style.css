@@ -154,10 +154,10 @@ th { font-weight: 500; background: var(--card); }
 ol.steps > li { margin-bottom: 1.1rem; }
 .toc ul { columns: 2; padding-left: 1.2rem; font-size: 0.92rem; }
 
-/* Mock Paseo panel with the PR graph */
+/* Mock Paseo panel with the PR graph (positions match the real panel's graph) */
 .mock {
   margin: 2rem auto;
-  max-width: 24rem;
+  max-width: 28rem;
   background: var(--panel-0);
   border: 1px solid var(--border);
   border-radius: var(--radius-2xl);
@@ -176,35 +176,64 @@ ol.steps > li { margin-bottom: 1.1rem; }
 }
 .mock-bar .dots { display: flex; gap: 0.3rem; }
 .mock-bar .dots i { width: 9px; height: 9px; border-radius: 50%; background: var(--panel-2); display: block; }
-.mock-body { padding: 0.9rem; }
-.mock-title { display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; margin-bottom: 0.4rem; }
-.mock-title .run { color: var(--warning); font-size: 0.75rem; }
-.mock-graph { display: flex; flex-direction: column; align-items: center; }
-.mock-row { display: flex; gap: 0.8rem; justify-content: center; }
-.mock-line { width: 1px; height: 14px; background: var(--panel-2); }
-.mock-fork { width: 9.2rem; height: 1px; background: var(--panel-2); }
-.node {
-  width: 8.4rem;
-  background: var(--panel-1);
-  border: 1px solid var(--panel-2);
-  border-radius: var(--radius-xl);
-  padding: 0.35rem 0.55rem;
-  font-size: 0.75rem;
-  line-height: 1.35;
+.mock-body { padding: 0.9rem 0.9rem 1.75rem; }
+.mcard { background: var(--panel-1); border: 1px solid var(--border); border-radius: var(--radius-xl); padding: 10px 10px 18px; }
+.mcard-head { display: flex; align-items: center; gap: 0.45rem; }
+.mcard-head .chev { color: var(--muted-foreground); font-size: 0.8rem; }
+.mcard-title { flex: 1; line-height: 1.25; }
+.mcard-title b { display: block; color: var(--foreground); font-size: 0.85rem; font-weight: 600; }
+.mcard-title small { color: var(--muted-foreground); font-size: 0.68rem; }
+.split { display: flex; border-radius: var(--radius-lg); overflow: hidden; font-size: 0.72rem; font-weight: 600; color: #0b1a2a; }
+.split span { background: var(--running); padding: 0.3rem 0.6rem; }
+.split span + span { border-left: 1px solid rgba(11, 26, 42, 0.25); padding: 0.3rem 0.4rem; }
+.mcard-rule { height: 1px; background: var(--border); margin: 10px -10px 8px; }
+.tabs { display: flex; gap: 0.4rem; margin-bottom: 0.8rem; }
+.tab { font-size: 0.66rem; border: 1px solid var(--muted-foreground); color: var(--muted-foreground); border-radius: 10px; padding: 0.05rem 0.5rem; }
+.tab.sel { background: var(--running); border-color: var(--running); color: #0b1a2a; }
+.tab i { font-style: normal; margin-left: 0.35rem; padding-left: 0.35rem; border-left: 1px solid rgba(11, 26, 42, 0.3); }
+.mgraph { position: relative; height: 424px; }
+.mgraph > * { position: absolute; left: 50%; transform: translateX(-50%); }
+.mgraph .v { width: 2px; background: var(--muted-foreground); }
+.mgraph .h { height: 2px; transform: none; background: var(--muted-foreground); }
+.mgraph .arrow::after {
+  content: ""; position: absolute; left: 50%; bottom: -1px; width: 6px; height: 6px; transform: translateX(-50%) rotate(45deg);
+  border-right: 2px solid var(--muted-foreground); border-bottom: 2px solid var(--muted-foreground); background: var(--panel-1);
 }
-.node b { font-weight: 600; color: var(--foreground); display: flex; align-items: center; gap: 0.35rem; }
-.node small { color: var(--muted-foreground); display: block; }
-.node .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex: none; }
-.dot.ok { background: var(--success); }
-.dot.run { background: var(--running); }
-.dot.warn { background: var(--warning); }
-.dot.idle { background: var(--extra-muted-foreground); }
-.node.running { border-color: var(--running); box-shadow: 0 0 0 1px var(--running); animation: pulse 1.8s ease-in-out infinite; }
-.node.gate { border-radius: var(--radius-md); }
-.node.dim { opacity: 0.55; }
-.loop { font-size: 0.68rem; color: var(--extra-muted-foreground); margin-top: 0.15rem; }
+.mgraph .n {
+  width: 136px; height: 48px; box-sizing: border-box;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 12px;
+  padding: 0.3rem 0.55rem; font-size: 0.72rem; line-height: 1.35; z-index: 1;
+}
+.mgraph .n b { display: block; color: var(--foreground); font-weight: 600; white-space: nowrap; }
+.mgraph .n small { display: block; color: var(--muted-foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mgraph .n.ok { border-color: var(--success); }
+.mgraph .n.ok b { color: var(--foreground); }
+.mgraph .n.run { border: 2px solid var(--running); animation: pulse 1.8s ease-in-out infinite; }
+.mgraph .n.dim { opacity: 0.6; background: #2a2d2c; }
+.mgraph .n.gate { border-radius: 4px; background: #3a3229; }
+.mgraph .pill {
+  height: 26px; box-sizing: border-box; display: flex; align-items: center; gap: 0.35rem; white-space: nowrap;
+  padding: 0 0.75rem; border-radius: 999px; border: 1px solid var(--muted-foreground); background: var(--panel-2);
+  font-size: 0.7rem; color: var(--muted-foreground); z-index: 1;
+}
+.mgraph .pill.ok { border-color: var(--success); color: var(--success); }
+.mgraph .pill b { color: var(--foreground); font-weight: 600; }
+.mgraph .pill small { color: var(--muted-foreground); }
+.mgraph .elabel { transform: none; margin-left: 6px; font-size: 0.62rem; color: var(--muted-foreground); }
+.mgraph .loopline {
+  left: calc(50% + 68px); width: 90px; transform: none; box-sizing: border-box;
+  border: 2px dashed var(--muted-foreground); border-left: 0;
+}
+.mgraph .loopline::before {
+  content: ""; position: absolute; left: 0; top: -5px; width: 6px; height: 6px; transform: rotate(45deg);
+  border-left: 2px solid var(--muted-foreground); border-bottom: 2px solid var(--muted-foreground);
+}
+.mgraph .looplabel {
+  left: calc(50% + 157px); transform: translate(-50%, -50%) rotate(-90deg);
+  white-space: nowrap; font-size: 0.6rem; color: var(--muted-foreground); background: var(--panel-1); padding: 0 3px;
+}
 @keyframes pulse { 50% { box-shadow: 0 0 0 3px rgba(92, 170, 246, 0.25); } }
-@media (prefers-reduced-motion: reduce) { .node.running { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .mgraph .n.run { animation: none; } }
 
 footer.site { border-top: 1px solid var(--border); color: var(--extra-muted-foreground); font-size: 0.85rem; }
 footer.site .inner { max-width: var(--max); margin: 0 auto; padding: 1.25rem; }
