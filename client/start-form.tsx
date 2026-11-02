@@ -30,6 +30,8 @@ export function StartForm(props: {
   const [values, setValues] = useState(() => initialValues(playbook));
   const [busy, setBusy] = useState(false);
   const [duplicate, setDuplicate] = useState<string | null>(null);
+  /** Descriptions shown on hover (desktop, web); pressing pins them (phones have no hover). */
+  const [hovered, setHovered] = useState<string | null>(null);
   const [info, setInfo] = useState<Set<string>>(() => new Set());
   const toggleInfo = (name: string) =>
     setInfo((current) => {
@@ -81,7 +83,7 @@ export function StartForm(props: {
           Start creates a worktree on a new branch from this workspace, then a Playbook Manager agent there.
         </Text>
         {Object.keys(playbook.inputs).length > 0 ? (
-          <View style={{ borderRadius: 8, borderWidth: 1, borderColor: theme.colors.border, overflow: "hidden" }}>
+          <View style={{ borderRadius: 8, borderWidth: 1, borderColor: theme.colors.border }}>
             {Object.entries(playbook.inputs).map(([name, def], index) => (
               <View
                 key={name}
@@ -93,10 +95,12 @@ export function StartForm(props: {
                   paddingVertical: 8,
                   borderTopWidth: index === 0 ? 0 : 1,
                   borderTopColor: theme.colors.border,
+                  // The open tooltip must sit above the following rows.
+                  zIndex: hovered === name || info.has(name) ? 10 : 0,
                 }}
               >
                 <View style={{ width: compact ? undefined : 140, gap: 4 }}>
-                  <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 6, zIndex: 10 }}>
                     <Text style={{ color: theme.colors.foreground, fontSize: 13, fontWeight: "600", flexShrink: 1 }}>
                       {name}
                       {def.required ? <Text style={{ color: theme.colors.statusDanger }}> *</Text> : null}
@@ -106,10 +110,32 @@ export function StartForm(props: {
                         accessibilityRole="button"
                         accessibilityLabel={`${info.has(name) ? "Hide" : "Show"} description of ${name}`}
                         hitSlop={8}
+                        onHoverIn={() => setHovered(name)}
+                        onHoverOut={() => setHovered((current) => (current === name ? null : current))}
                         onPress={() => toggleInfo(name)}
                       >
-                        <Icon name="Info" size={13} color={info.has(name) ? theme.colors.accent : theme.colors.foregroundMuted} />
+                        <Icon name="Info" size={13} color={hovered === name || info.has(name) ? theme.colors.accent : theme.colors.foregroundMuted} />
                       </Pressable>
+                    ) : null}
+                    {def.description && (hovered === name || info.has(name)) ? (
+                      <View
+                        pointerEvents="none"
+                        accessibilityLiveRegion="polite"
+                        style={{
+                          position: "absolute",
+                          top: 22,
+                          left: 0,
+                          width: 260,
+                          padding: 8,
+                          borderRadius: 8,
+                          borderWidth: 1,
+                          borderColor: theme.colors.border,
+                          backgroundColor: theme.colors.surface0,
+                          elevation: 6,
+                        }}
+                      >
+                        <Text style={{ color: theme.colors.foreground, fontSize: 12 }}>{def.description}</Text>
+                      </View>
                     ) : null}
                   </View>
                   <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>{def.type === "enum" ? "choice" : def.type}</Text>
@@ -145,9 +171,6 @@ export function StartForm(props: {
                     style={[fieldStyle, def.type === "string" && name === "request" ? { minHeight: 72 } : {}]}
                   />
                 )}
-                  {def.description && info.has(name) ? (
-                    <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>{def.description}</Text>
-                  ) : null}
                 </View>
               </View>
             ))}
