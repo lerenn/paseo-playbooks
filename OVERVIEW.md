@@ -31,5 +31,5 @@ agents in a workspace with playbooks get the manager tools; step agents get
 repository also ships an agent skill, `skills/paseo-playbooks/SKILL.md`, that teaches
 agents to write playbooks.
 
-Requires Paseo 0.14. Run state is stored in `$PASEO_HOME/plugin-data/paseo-playbooks/runs/` and
+Requires Paseo 0.14 or later. Run state is stored in `$PASEO_HOME/plugin-data/paseo-playbooks/runs/` and
 deleted when the run's worktree is archived. Server code runs `git` in workspace folders.
