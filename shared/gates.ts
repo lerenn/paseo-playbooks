@@ -1,3 +1,4 @@
+import { innermostBlock } from "./slots";
 import type { Gate, GateChoice, Playbook, Step } from "./types";
 
 /** Choices of a gate step that declares none in its YAML. */
@@ -19,9 +20,12 @@ export function gateChoices(step: Step): GateChoice[] {
 /** The single choice of an `ask` gate: the answer, required, becomes the feedback of the step it goes back to. */
 export const ASK_CHOICES: GateChoice[] = [{ id: "answered", label: "Send answer", comment: "required" }];
 
-/** Where a gate outcome leads: "next", "end", "fail" or "goto", with display names of the targets. */
+/**
+ * Where a gate outcome leads: "next", "end" (the run), "end_block" (an `end` inside a
+ * sub-playbook block ends only that block; targets holds its prefix), "fail" or "goto".
+ */
 export interface Destination {
-  kind: "next" | "end" | "fail" | "goto";
+  kind: "next" | "end" | "end_block" | "fail" | "goto";
   targets: string[];
 }
 
@@ -36,8 +40,10 @@ export function destinationOf(playbook: Playbook, step: Step, outcome: string): 
     case "goto":
     case "ask":
       return { kind: "goto", targets: [transition.target] };
-    case "end":
-      return { kind: "end", targets: [] };
+    case "end": {
+      const block = innermostBlock(playbook, step.id);
+      return block === null ? { kind: "end", targets: [] } : { kind: "end_block", targets: [block] };
+    }
     case "fail":
       return { kind: "fail", targets: [] };
     default: {

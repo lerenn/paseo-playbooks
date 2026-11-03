@@ -3,10 +3,10 @@
  * applies the returned effects (cancel agents, wake the manager).
  */
 import { descendantsOf } from "../shared/graph";
-import { blockEntrySteps, blockStepIds, holdsBlock } from "../shared/slots";
+import { blockEntrySteps, blockStepIds, holdsBlock, innermostBlock } from "../shared/slots";
 import { ASK_CHOICES, gateChoices, LOOP_LIMIT_CHOICES, outcomeTransition } from "../shared/gates";
 import type { Attempt, Gate, Playbook, Run, RunStep, Step, Transition, VarValue } from "../shared/types";
-import { isTerminal } from "../shared/types";
+import { isStepDone, isTerminal } from "../shared/types";
 import { coerceValue, formatValue, renderTemplate, resolveValue } from "../shared/vars";
 
 export class EngineError extends Error {}
@@ -128,7 +128,7 @@ export function refreshReady(run: Run, now: string): { ready: string[]; queued: 
   for (const step of run.playbook.steps) {
     const state = run.steps[step.id]!;
     if (state.status !== "pending") continue;
-    if (!step.needs.every((need) => run.steps[need]?.status === "completed")) continue;
+    if (!step.needs.every((need) => { const status = run.steps[need]?.status; return status !== undefined && isStepDone(status); })) continue;
     const gating = limited.some(([prefix]) => blockEntrySteps(run.playbook, prefix).includes(step.id) && !holdsBlock(run, prefix));
     if (gating) {
       state.status = "queued";
@@ -387,13 +387,55 @@ function markCompleted(run: Run, stepId: string, now: string, fx: Effects): void
   state.status = "completed";
   state.completedSeq = run.seq + 1;
   log(run, now, "step_completed", stepId, state.attempts.at(-1)?.outcome ?? "approved");
-  if (run.playbook.steps.every((step) => run.steps[step.id]!.status === "completed")) {
+  if (run.playbook.steps.every((step) => isStepDone(run.steps[step.id]!.status))) {
     completeRun(run, now, fx);
     return;
   }
   const { ready, queued } = refreshReady(run, now);
   if (ready.length > 0) fx.notes.push(`Ready: ${ready.join(", ")}.`);
   if (queued.length > 0) fx.notes.push(queueNote(run, queued));
+}
+
+/**
+ * An `end` transition. At top level it completes the run. Inside a sub-playbook block it
+ * ends only the innermost block: the step completes, the block's other unfinished steps are
+ * skipped (running agents canceled, pending gates closed), and the parent goes on with the
+ * steps that need the block. The block's outputs are whatever its completed steps produced.
+ */
+function endFrom(run: Run, stepId: string, now: string, fx: Effects): void {
+  const prefix = innermostBlock(run.playbook, stepId);
+  if (prefix === null) {
+    run.steps[stepId]!.status = "completed";
+    completeRun(run, now, fx);
+    return;
+  }
+  const skipped: string[] = [];
+  for (const id of blockStepIds(run.playbook, prefix)) {
+    const state = run.steps[id]!;
+    if (id === stepId || isStepDone(state.status)) continue;
+    if (state.status === "running") {
+      const attempt = state.attempts.at(-1);
+      if (attempt) {
+        fx.cancelAgents.push(attempt.agentId);
+        attempt.turnEnd = "canceled";
+        attempt.endedAt = now;
+      }
+    }
+    state.status = "skipped";
+    state.queuedAt = null;
+    state.completedSeq = null;
+    skipped.push(id);
+    log(run, now, "step_skipped", id, `block "${prefix}" ended by "${stepId}"`);
+  }
+  for (const gate of run.gates) {
+    if (gate.status === "pending" && skipped.includes(gate.stepId)) {
+      gate.status = "rejected";
+      gate.comment = `block "${prefix}" ended`;
+      gate.decidedAt = now;
+    }
+  }
+  fx.notes.push(`"${stepId}" ended block "${prefix}"${skipped.length ? `; skipped: ${skipped.join(", ")}` : ""}.`);
+  markCompleted(run, stepId, now, fx);
 }
 
 function performGoto(run: Run, source: string, target: string, feedback: string, now: string, fx: Effects): void {
@@ -521,8 +563,7 @@ export function completeStep(
       markCompleted(run, stepId, input.now, fx);
       break;
     case "end":
-      state.status = "completed";
-      completeRun(run, input.now, fx);
+      endFrom(run, stepId, input.now, fx);
       break;
     case "fail":
       state.status = "failed";
@@ -641,8 +682,7 @@ export function decideGate(run: Run, ref: string, decision: GateDecision): { gat
       markCompleted(run, gate.stepId, decision.now, fx);
       break;
     case "end":
-      state.status = "completed";
-      completeRun(run, decision.now, fx);
+      endFrom(run, gate.stepId, decision.now, fx);
       break;
     case "goto":
       gotoOrLimit(run, step, transition.target, transition.maxLoops, decision.comment ?? "", decision.now, fx);

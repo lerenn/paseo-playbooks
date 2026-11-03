@@ -72,7 +72,7 @@ function choiceColors(theme: Theme, color: NonNullable<GateChoice["color"]>): { 
   }
 }
 
-/** Where a choice leads, for its button: "→ End", "→ Write", "→ Fail run". */
+/** Where a choice leads, for its button: "→ End", "→ End Release" (inside a block), "→ Write", "→ Fail run". */
 function destinationLabel(run: Run, gate: Gate, choiceId: string): string {
   if (gate.kind === "ask") return `→ ${stepLabel(gate.gotoTarget ?? "")}`;
   if (gate.kind === "loop_limit") return choiceId === "approved" ? `→ ${stepLabel(gate.gotoTarget ?? "")}` : "→ Fail run";
@@ -80,6 +80,7 @@ function destinationLabel(run: Run, gate: Gate, choiceId: string): string {
   if (!step) return "";
   const destination = destinationOf(run.playbook, step, choiceId);
   if (destination.kind === "end") return "→ End";
+  if (destination.kind === "end_block") return `→ End ${run.playbook.blocks[destination.targets[0]!]?.title ?? destination.targets[0]}`;
   if (destination.kind === "fail") return "→ Fail run";
   return `→ ${destination.targets.map(stepLabel).join(", ")}`;
 }

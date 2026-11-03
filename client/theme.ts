@@ -42,6 +42,8 @@ export function nodeIcon(state: NodeState): string {
       return "ShieldAlert";
     case "ready":
       return "CirclePlay";
+    case "skipped":
+      return "SkipForward";
     default:
       return "Circle";
   }
@@ -57,6 +59,8 @@ export function nodeStateLabel(state: NodeState): string {
       return "waiting for a human";
     case "queued":
       return "waiting for a free slot";
+    case "skipped":
+      return "skipped (block ended)";
     case "definition":
       return "";
     default:

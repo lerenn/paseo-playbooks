@@ -143,8 +143,8 @@ steps:
 A gate's outcomes are the keys of its `choices` (default: `approved` with label Approve, and
 `rejected` with label Reject and an optional comment). The first choice completes the gate
 by default; any other choice fails the run unless `on` sends it elsewhere. The panel shows
-one full-width button per choice with where it leads (→ End, → Implement, → Fail run). A
-choice with `comment: optional` or `required` opens a text box with Send; the comment goes
+one full-width button per choice with where it leads (→ End, → End Release inside a block,
+→ Implement, → Fail run). A choice with `comment: optional` or `required` opens a text box with Send; the comment goes
 to the manager and, on a `goto`, to the target step as feedback.
 
 ### Sub-playbooks
@@ -174,13 +174,18 @@ steps:
   so later steps can use them by name or as `{{ steps.pr.outputs.pr_url }}`.
 - Loops inside the sub-playbook stay inside. A `goto` to the block restarts it from its
   first step (the sub-playbook must have exactly one).
+- `end` inside the sub-playbook ends the block, not the run: the step completes, the
+  block's other unfinished steps become `skipped` (running ones are interrupted), and the
+  steps that need the block go on. In nested blocks it ends only the innermost one. The
+  block's outputs are what its completed steps produced. `fail` still fails the whole run.
+  A `goto` to the block runs it again.
 - `prompt`, `outputs`, `outcomes`, `timeout`, `agent`, `choices` and `on` do not apply to
   a playbook step. A playbook that includes itself (directly or not) is an error.
 - The sub-playbook's manager settings are ignored; its gates stay gates of the run.
 - The sub-playbook's `concurrency` applies to the block. Its slots are shared by every run
   in the project (also top-level runs of that playbook). A run takes a slot when the block's
   first steps become ready and keeps it until all the block's steps complete (also while a
-  gate inside waits), or the run ends. Until a slot is free those steps are `queued`
+  gate inside waits; skipped steps count as done), or the run ends. Until a slot is free those steps are `queued`
   instead of `ready`: do not start them; the plugin wakes you when they are ready. Use it
   to serialise a part of a playbook (for example `release`) across runs that do the rest in
   parallel. A `goto` that restarts the block's first steps gives the slot back and queues again.

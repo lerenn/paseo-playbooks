@@ -4,7 +4,9 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Run } from "../shared/types";
 import { renderTemplate } from "../shared/vars";
-import { completeStep, decideGate, newRun, readySteps, recordReport, requestGate, startAttempt, endTurn, stepInputs } from "./engine";
+import { destinationOf } from "../shared/gates";
+import { holdsBlock, planAdmissions, slotHolders } from "../shared/slots";
+import { admitBlock, completeStep, decideGate, newRun, readySteps, recordReport, requestGate, startAttempt, endTurn, stepInputs } from "./engine";
 import { loadPlaybooks } from "./loader";
 
 const EXAMPLES = path.resolve(__dirname, "..", "examples");
@@ -143,5 +145,174 @@ describe("sub-playbooks", () => {
     expect(entries.get("b")!.errors.join("\n")).toMatch(/includes itself|is invalid/);
     expect(entries.get("c")!.errors.join("\n")).toMatch(/playbook "nope" not found/);
     expect(entries.get("d")!.errors.join("\n")).toMatch(/has no input "colour"/);
+  });
+
+});
+
+// A block that can stop early: `trivial` at triage, `enough` at deep, or a rejected wrap gate.
+const CHECK = `
+title: Check
+concurrency: 1
+inputs:
+  request: { required: true }
+outputs:
+  verdict: {}
+steps:
+  - id: triage
+    role: investigator
+    inputs: [request]
+    outcomes: [deep, trivial]
+    on:
+      trivial: end
+  - id: deep
+    role: reviewer
+    needs: [triage]
+    outputs: { verdict: {} }
+    outcomes: [success, enough]
+    on:
+      enough: end
+  - id: side
+    role: reviewer
+    needs: [triage]
+  - id: wrap
+    needs: [deep, side]
+    gate: Looks right?
+    on:
+      rejected: end
+`;
+const OUTER = `
+title: Outer
+inputs:
+  request: { required: true }
+steps:
+  - id: check
+    playbook: check
+  - id: tail
+    role: reviewer
+    needs: [check]
+`;
+const PARENT = `
+inputs:
+  request: { required: true }
+outputs:
+  verdict: {}
+steps:
+  - id: check
+    playbook: check
+  - id: after
+    needs: [check]
+    gate: Done?
+    on:
+      rejected: { goto: check }
+`;
+const NESTED = `
+inputs:
+  request: { required: true }
+steps:
+  - id: outer
+    playbook: outer
+  - id: last
+    role: reviewer
+    needs: [outer]
+`;
+
+describe("end inside a sub-playbook block", () => {
+  async function start(id: string) {
+    const dir = await folder({ "check.yaml": CHECK, "outer.yaml": OUTER, "parent.yaml": PARENT, "nested.yaml": NESTED });
+    const entry = (await loadPlaybooks(dir)).entries.find((candidate) => candidate.id === id)!;
+    expect(entry.errors).toEqual([]);
+    let clock = 0;
+    const now = () => new Date(Date.UTC(2026, 10, 3, 12, 0, clock++)).toISOString();
+    const run: Run = newRun({ id: `run_${id}`, playbook: entry.playbook!, workspaceId: "ws", workspaceDir: "/tmp", projectId: "p", branch: null, managerAgentId: "m", inputs: { request: "R" }, now: now() });
+    // What the runtime does after every change: admit queued blocks while slots are free.
+    const admit = () => {
+      for (const { prefix } of planAdmissions([run])) admitBlock(run, prefix, now());
+    };
+    const begin = (stepId: string) => {
+      admit();
+      const agentId = `a-${stepId}-${clock}`;
+      startAttempt(run, stepId, { agentId, brief: "", now: now(), readonlySnapshot: null });
+      return agentId;
+    };
+    const finish = (stepId: string, outcome: string, outputs: Record<string, string> = {}) => {
+      const agentId = begin(stepId);
+      recordReport(run, agentId, { outcome, summary: "ok", outputs }, now());
+      endTurn(run, agentId, { turnEnd: "completed", lastMessage: null, now: now() });
+      return completeStep(run, stepId, { outcome, now: now() });
+    };
+    return { run, now, begin, finish };
+  }
+
+  it("at top level, end still completes the run", async () => {
+    const { run, finish } = await start("check");
+    finish("triage", "trivial");
+    expect(run.status).toBe("completed");
+    expect(run.steps.deep!.status).toBe("pending");
+  });
+
+  it("ends only the block: its other steps are skipped and the parent goes on", async () => {
+    const { run, finish, now } = await start("parent");
+    const fx = finish("check.triage", "trivial");
+    expect(run.status).toBe("running");
+    expect(run.steps["check.triage"]!.status).toBe("completed");
+    for (const id of ["check.deep", "check.side", "check.wrap"]) expect(run.steps[id]!.status).toBe("skipped");
+    expect(readySteps(run)).toEqual(["after"]);
+    expect(fx.notes.join(" ")).toMatch(/ended block "check"/);
+    // The block no longer holds its concurrency slot.
+    expect(holdsBlock(run, "check")).toBe(false);
+    expect(slotHolders([run], "p", "check")).toEqual([]);
+    requestGate(run, "after", "Done?", now());
+    decideGate(run, "after", { decision: "approved", comment: null, by: null, via: "panel", now: now() });
+    expect(run.status).toBe("completed");
+    // The block's outputs resolve as far as its completed steps go: deep never ran.
+    expect(run.outputs).toEqual({});
+  });
+
+  it("cancels running steps of the block and closes their gates", async () => {
+    const { run, finish, begin } = await start("parent");
+    finish("check.triage", "deep");
+    const side = begin("check.side");
+    const fx = finish("check.deep", "enough", { verdict: "fine" });
+    expect(fx.cancelAgents).toContain(side);
+    expect(run.steps["check.side"]!.status).toBe("skipped");
+    expect(run.steps["check.side"]!.attempts.at(-1)!.turnEnd).toBe("canceled");
+    expect(run.steps["check.wrap"]!.status).toBe("skipped");
+    expect(readySteps(run)).toEqual(["after"]);
+  });
+
+  it("works from a gate choice, and a goto to the ended block restarts it", async () => {
+    const { run, finish, now } = await start("parent");
+    finish("check.triage", "deep");
+    finish("check.deep", "success", { verdict: "fine" });
+    finish("check.side", "success");
+    expect(destinationOf(run.playbook, run.playbook.steps.find((step) => step.id === "check.wrap")!, "rejected")).toEqual({ kind: "end_block", targets: ["check"] });
+    requestGate(run, "check.wrap", "Looks right?", now());
+    decideGate(run, "check.wrap", { decision: "rejected", comment: "stop here", by: null, via: "panel", now: now() });
+    expect(run.steps["check.wrap"]!.status).toBe("completed");
+    expect(readySteps(run)).toEqual(["after"]);
+    // Now end at triage, then send the block round again from the parent's gate.
+    requestGate(run, "after", "Done?", now());
+    decideGate(run, "after", { decision: "rejected", comment: "again", by: null, via: "panel", now: now() });
+    expect(run.status).toBe("running");
+    expect(run.steps["check.triage"]!.status).toBe("queued");
+    finish("check.triage", "trivial");
+    expect(readySteps(run)).toEqual(["after"]);
+    requestGate(run, "after", "Done?", now());
+    decideGate(run, "after", { decision: "rejected", comment: "once more", by: null, via: "panel", now: now() });
+    for (const id of ["check.deep", "check.side", "check.wrap"]) expect(run.steps[id]!.status).toBe("pending");
+    // The ended block gave its slot back, so it queues for it again like any restart.
+    expect(run.steps["check.triage"]!.status).toBe("queued");
+  });
+
+  it("in nested blocks, ends only the innermost one", async () => {
+    const { run, finish } = await start("nested");
+    finish("outer.check.triage", "trivial");
+    for (const id of ["outer.check.deep", "outer.check.side", "outer.check.wrap"]) expect(run.steps[id]!.status).toBe("skipped");
+    expect(readySteps(run)).toEqual(["outer.tail"]);
+    expect(run.steps.last!.status).toBe("pending");
+    finish("outer.tail", "success");
+    expect(readySteps(run)).toEqual(["last"]);
+    finish("last", "success");
+    expect(run.status).toBe("completed");
   });
 });

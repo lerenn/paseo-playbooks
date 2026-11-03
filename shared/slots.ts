@@ -3,7 +3,7 @@
  * run holds one from the moment its block is admitted until all the block's steps complete.
  */
 import type { Playbook, Run } from "./types";
-import { isTerminal } from "./types";
+import { isStepDone, isTerminal } from "./types";
 
 /** Ids of the steps inside a block (nested blocks included). */
 export function blockStepIds(playbook: Playbook, prefix: string): string[] {
@@ -16,11 +16,20 @@ export function blockEntrySteps(playbook: Playbook, prefix: string): string[] {
   return playbook.steps.filter((step) => inside.has(step.id) && step.needs.every((need) => !inside.has(need))).map((step) => step.id);
 }
 
-/** Held once any step moved past pending/queued and the block is not finished. */
+/** The innermost block a step belongs to ("release.deploy" before "release"), or null at top level. */
+export function innermostBlock(playbook: Playbook, stepId: string): string | null {
+  let found: string | null = null;
+  for (const prefix of Object.keys(playbook.blocks)) {
+    if (stepId.startsWith(`${prefix}.`) && (found === null || prefix.length > found.length)) found = prefix;
+  }
+  return found;
+}
+
+/** Held once any step moved past pending/queued and the block is not finished (all steps completed or skipped). */
 export function holdsBlock(run: Run, prefix: string): boolean {
   if (isTerminal(run.status)) return false;
   const states = blockStepIds(run.playbook, prefix).map((id) => run.steps[id]!.status);
-  if (states.every((status) => status === "completed")) return false;
+  if (states.every(isStepDone)) return false;
   return states.some((status) => status !== "pending" && status !== "queued");
 }
 

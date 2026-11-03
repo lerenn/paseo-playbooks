@@ -530,7 +530,7 @@ function Node(props: GraphProps & { step: Step; longNeeds: string[]; nodeWidth: 
   let nodeState: NodeState = run ? state?.status ?? "pending" : "definition";
   if (nodeState === "running" && live?.attention === "permission") nodeState = "needs_permission";
   const color = nodeColor(theme, nodeState);
-  const dimmed = nodeState === "pending";
+  const dimmed = nodeState === "pending" || nodeState === "skipped";
   const isGate = step.kind === "gate";
   const pendingGate = run?.gates.find((gate) => gate.status === "pending" && gate.stepId === step.id);
   const role = step.role ? playbook.roles[step.role] : undefined;

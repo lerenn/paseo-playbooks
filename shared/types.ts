@@ -135,8 +135,15 @@ export const StepStatusSchema = z.enum([
   "waiting",
   /** Ready, but its sub-playbook's `concurrency` slots are all held by other runs. */
   "queued",
+  /** Not run: an `end` inside its sub-playbook block ended the block first. Counts as done. */
+  "skipped",
 ]);
 export type StepStatus = z.infer<typeof StepStatusSchema>;
+
+/** Completed, or skipped by an `end` in its block: either way it no longer blocks what needs it. */
+export function isStepDone(status: StepStatus): boolean {
+  return status === "completed" || status === "skipped";
+}
 
 export const TurnEndSchema = z.enum(["completed", "failed", "canceled", "lost", "timeout"]);
 
