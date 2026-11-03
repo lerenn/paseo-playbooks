@@ -25,6 +25,7 @@ export const MANAGER_TOOL_NAMES = [
   "resume",
   "nudge_step",
   "get_run",
+  "list_runs",
   "cancel_run",
   "validate_playbooks",
 ];
@@ -128,6 +129,10 @@ export class Runtime {
   }
 
   // ---------------------------------------------------------------- lookups
+
+  allRuns(): Run[] {
+    return this.store.list();
+  }
 
   runsOfManager(agentId: string): Run[] {
     return this.store.list().filter((run) => run.managerAgentId === agentId);
@@ -363,16 +368,17 @@ export class Runtime {
     });
   }
 
-  async cancelRun(runId: string, reason: string, notifyManager: boolean): Promise<Run> {
+  /** `by` (e.g. "from the panel") tells the manager who canceled; null when the manager did it or is gone. */
+  async cancelRun(runId: string, reason: string, by: string | null): Promise<Run> {
     const effects = await this.store.mutate(runId, (current) => engine.cancelRun(current, reason, nowIso()));
     await this.applyEffects(runId, effects);
     await this.admitQueued(runId);
-    if (notifyManager) {
+    if (by) {
       const status = this.store.get(runId)!.status;
       await this.enqueue(runId, [
         status === "canceled"
-          ? `The run was canceled from the panel: ${reason}. Tell the human and stop.`
-          : `The after-tasks were canceled from the panel: ${reason}. The run stays ${status}. Tell the human and stop.`,
+          ? `The run was canceled ${by}: ${reason}. Tell the human and stop.`
+          : `The after-tasks were canceled ${by}: ${reason}. The run stays ${status}. Tell the human and stop.`,
       ]);
       await this.deliver(runId);
     }
@@ -501,7 +507,7 @@ export class Runtime {
 
   async onWorkspaceArchived(workspaceId: string): Promise<void> {
     for (const run of this.store.list().filter((candidate) => candidate.workspaceId === workspaceId)) {
-      if (isActive(run)) await this.cancelRun(run.id, "worktree archived", false).catch(() => undefined);
+      if (isActive(run)) await this.cancelRun(run.id, "worktree archived", null).catch(() => undefined);
       await this.store.delete(run.id);
     }
     this.reservations.delete(workspaceId);
@@ -588,7 +594,7 @@ export class Runtime {
       await handle.reload();
       await handle.send(managerTakeover(run, engine.readySteps(run)));
     } catch (error) {
-      await this.cancelRun(runId, "could not hand the run to the agent", false).catch(() => undefined);
+      await this.cancelRun(runId, "could not hand the run to the agent", null).catch(() => undefined);
       if (rethrow) throw error;
       console.error(`[playbooks] hand-off of ${runId} to ${agentId} failed:`, errorText(error));
     }

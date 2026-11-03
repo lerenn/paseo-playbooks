@@ -254,15 +254,69 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
           return ok(JSON.stringify(summary, null, 2), summary);
         }),
     }),
+  ];
+}
+
+/** One line per run for agents that do not manage it. */
+export function runListing(run: Run) {
+  return {
+    runId: run.id,
+    playbook: run.playbook.id,
+    title: run.playbook.title,
+    status: run.status,
+    active: isActive(run),
+    workspaceId: run.workspaceId,
+    workspaceDir: run.workspaceDir,
+    branch: run.branch,
+    managerAgentId: run.managerAgentId,
+    createdAt: run.createdAt,
+    runningSteps: Object.entries(run.steps).filter(([, state]) => state.status === "running").map(([id]) => id),
+  };
+}
+
+/** The run cancel_run targets without a runId: the caller's own active run, else the only active run of its workspace. */
+export function defaultRunToCancel(runs: Run[], agentId: string, workspaceId: string | null): Run {
+  const active = runs.filter((run) => isActive(run));
+  const own = active.find((run) => run.managerAgentId === agentId);
+  if (own) return own;
+  const here = active.filter((run) => workspaceId !== null && run.workspaceId === workspaceId);
+  if (here.length === 1) return here[0]!;
+  if (here.length > 1) throw new UserError(`several runs are active in your workspace (${here.map((run) => run.id).join(", ")}): pass runId`);
+  throw new UserError(
+    active.length === 0
+      ? "no run is active"
+      : `no run is active in your workspace: pass runId (active runs: ${active.map((run) => `${run.id} (${run.playbook.id}, ${run.branch ?? run.workspaceDir})`).join(", ")})`,
+  );
+}
+
+/** Tools for every agent except step agents: find runs and cancel them, e.g. when the human asks in any chat. */
+export function runTools(runtime: Runtime): AgentToolDefinition[] {
+  return [
+    defineAgentTool({
+      name: "list_runs",
+      description: "List playbook runs on this Paseo daemon (by default only active ones): id, playbook, status, workspace, branch, manager, running steps.",
+      input: z.object({ all: z.boolean().default(false).describe("Include finished runs that are not archived") }),
+      execute: ({ all }) =>
+        guard(async () => {
+          const runs = runtime.allRuns().filter((run) => !run.archivedAt && (all || isActive(run))).map(runListing);
+          return ok(runs.length === 0 ? (all ? "No runs." : "No active run.") : JSON.stringify(runs, null, 2), { runs });
+        }),
+    }),
     defineAgentTool({
       name: "cancel_run",
-      description: "Cancel a run and stop its running step agents. On a run that has ended, cancels its running after-tasks (its status stays).",
-      input: z.object({ runId: IdArg, reason: z.string() }),
+      description:
+        "Cancel a playbook run and stop its running step agents; its manager is told. On a run that has ended, cancels its running after-tasks (its status stays). Without runId: the run you manage, else the active run of your workspace (see list_runs).",
+      input: z.object({ runId: IdArg.optional(), reason: z.string().describe("Why, shown on the run") }),
       execute: ({ runId, reason }, { agent }) =>
         guard(async () => {
-          runtime.ownedRun(agent.id, runId);
-          const run = await runtime.cancelRun(runId, reason, false);
-          return ok(isTerminal(run.status) && run.status !== "canceled" ? `After-tasks of run ${run.id} canceled; the run stays ${run.status}.` : `Run ${run.id} canceled.`, runSummary(run));
+          const target = runId ? runtime.allRuns().find((run) => run.id === runId) : defaultRunToCancel(runtime.allRuns(), agent.id, agent.workspaceId);
+          if (!target) throw new UserError(`unknown run "${runId}"`);
+          const isManager = target.managerAgentId === agent.id;
+          const run = await runtime.cancelRun(target.id, reason, isManager ? null : `by agent ${agent.id}`);
+          return ok(
+            isTerminal(run.status) && run.status !== "canceled" ? `After-tasks of run ${run.id} canceled; the run stays ${run.status}.` : `Run ${run.id} canceled.`,
+            isManager ? runSummary(run) : runListing(run),
+          );
         }),
     }),
   ];

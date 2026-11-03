@@ -19,7 +19,7 @@ import {
 import { hasPlaybooks, loadPlaybooks } from "./server/loader";
 import { Runtime, STEP_LABEL, UserError } from "./server/runtime";
 import { defaultRunsDir, RunStore } from "./server/store";
-import { managerTools, stepTool, validateTool } from "./server/tools";
+import { managerTools, runTools, stepTool, validateTool } from "./server/tools";
 
 export default function contribute(server: PluginServerContext) {
   const store = new RunStore(defaultRunsDir());
@@ -45,15 +45,16 @@ export default function contribute(server: PluginServerContext) {
     });
 
   // Tools: report_step_result for step agents; manager tools for agents whose workspace has
-  // playbooks (or that already manage a run); validate_playbooks for every other agent.
-  const tools = { manager: managerTools(runtime), validate: validateTool(runtime), step: stepTool(runtime) };
+  // playbooks (or that already manage a run); validate_playbooks, list_runs and cancel_run for
+  // every other agent, so a human can stop a run from any chat.
+  const tools = { manager: managerTools(runtime), common: [validateTool(runtime), ...runTools(runtime)], step: stepTool(runtime) };
   server.before("agent.session_open", async ({ request }, context) => {
     if (request.purpose === "history") return;
     await enter(context.paseo);
     if (request.labels[STEP_LABEL]) return { ...request, tools: [...request.tools, tools.step] };
     const manages = runtime.runsOfManager(request.agentId).length > 0 || request.labels["playbooks/manager"] === "true";
     const extra = manages || runtime.hasReservation(request.workspaceId) || (await hasPlaybooks(request.cwd)) ? tools.manager : [];
-    return { ...request, tools: [...request.tools, tools.validate, ...extra] };
+    return { ...request, tools: [...request.tools, ...tools.common, ...extra] };
   });
 
   server.on("agent.turn_started", ({ agent }, context) =>
@@ -114,7 +115,7 @@ export default function contribute(server: PluginServerContext) {
     return { alreadyDecided: result.alreadyDecided, decision: result.gate.status };
   });
   handle(cancelRunRpc, async ({ runId, reason }) => ({
-    status: (await runtime.cancelRun(runId, reason?.trim() || "canceled from the panel", true)).status,
+    status: (await runtime.cancelRun(runId, reason?.trim() || "canceled from the panel", "from the panel")).status,
   }));
   handle(startAfterTaskRpc, async ({ runId, taskId }) => {
     const run = await runtime.startAfterTask(runId, taskId);
