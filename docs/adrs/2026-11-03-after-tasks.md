@@ -33,6 +33,14 @@ parent and child.
   `concurrency` is ignored there.
 - Canceling the run during after-tasks cancels them; it does not change the run's status.
   Archiving the worktree or losing the manager does the same.
+- Details settled while implementing: an input of an after-task matches by name the
+  playbook's outputs, then `run_id` / `run_status` / `run_failure`, then the playbook's
+  inputs; `{{ run.outputs.<name> }}` and main steps' outputs can be mapped explicitly. A
+  manual task runs once. Auto tasks of a canceled run (or one whose manager was lost) are
+  marked canceled, never started. In a sub-playbook used as an after-task, `end` at its top
+  level completes the task and a nested block's `end` ends only that block
+  (`2026-11-03-end-inside-block.md`). While after-tasks run, the run stays active in its
+  workspace (no new run there, no archive).
 - No `before:` for now: a pre-task that matters is a first step, one that does not is a
   notification. Add it when a concrete need appears.
 

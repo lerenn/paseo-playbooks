@@ -13,6 +13,7 @@ import {
   listWorkspaceAgents,
   nudgeStepRpc,
   retryStepRpc,
+  startAfterTaskRpc,
   startRun,
 } from "./shared/contracts";
 import { hasPlaybooks, loadPlaybooks } from "./server/loader";
@@ -97,7 +98,7 @@ export default function contribute(server: PluginServerContext) {
     }
     const waiting = store
       .list()
-      .filter((run) => !run.archivedAt && run.status === "waiting_gate" && workspaceIds.includes(run.workspaceId))
+      .filter((run) => !run.archivedAt && run.gates.some((gate) => gate.status === "pending") && workspaceIds.includes(run.workspaceId))
       .map((run) => run.workspaceId);
     return { withPlaybooks, waiting: [...new Set(waiting)] };
   });
@@ -115,6 +116,10 @@ export default function contribute(server: PluginServerContext) {
   handle(cancelRunRpc, async ({ runId, reason }) => ({
     status: (await runtime.cancelRun(runId, reason?.trim() || "canceled from the panel", true)).status,
   }));
+  handle(startAfterTaskRpc, async ({ runId, taskId }) => {
+    const run = await runtime.startAfterTask(runId, taskId);
+    return { status: run.after[taskId]?.status ?? "pending" };
+  });
   handle(retryStepRpc, async ({ runId, stepId }) => {
     await runtime.askManagerToRetry(runId, stepId);
     return { queued: true };

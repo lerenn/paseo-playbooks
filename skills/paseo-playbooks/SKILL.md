@@ -190,6 +190,40 @@ steps:
   to serialise a part of a playbook (for example `release`) across runs that do the rest in
   parallel. A `goto` that restarts the block's first steps gives the slot back and queues again.
 
+### After-tasks
+
+`after:` lists tasks that run once the run has ended, whatever its outcome, such as a retro.
+Each one is an agent step (`role` + `prompt`), a gate, or a sub-playbook (`playbook: <id>`):
+
+```yaml
+after:
+  - id: retro
+    playbook: retro      # its run_id input matches {{ run.id }} by name
+  - id: notify
+    role: reviewer
+    trigger: manual      # a Start button on the finished run (default: auto)
+    inputs:
+      status: "{{ run.status }}"
+    prompt: "Post a summary of run {{ run.id }} ({{ inputs.status }})."
+```
+
+- They belong to the same run and manager and show below End in the panel. They never
+  change the run's status (fixed when the main graph ends).
+- `auto` tasks start when the run completes or fails, not when it is canceled. `manual`
+  tasks start from the panel on a finished run, in any end state, once.
+- No `needs`. Inside an after-task, `end` completes the task, and `fail`, exhausted retries
+  or a rejected gate fail the task only (in a sub-playbook, a nested block's `end` still
+  ends only that block).
+- Inputs may also use `{{ run.id }}`, `{{ run.status }}`, `{{ run.failure }}`,
+  `{{ run.outputs.<name> }}` (the run's outputs, partial if it failed) and any main step's
+  outputs. By name, an input matches the playbook's outputs, then `run_id`, `run_status`,
+  `run_failure`, then the playbook's inputs. Prompts may use `run.status` and `run.failure`.
+- A sub-playbook's own `after:` is ignored when it is nested; a sub-playbook used as an
+  after-task has its `concurrency` ignored.
+- Canceling the run while after-tasks run cancels them; the run's status stays.
+- The "may both edit files" rule applies between after-tasks, not between an after-task and
+  a main step.
+
 ### Variables
 
 Types: `string`, `number`, `boolean`, `enum` (with `values: [...]`); each may have
@@ -225,7 +259,9 @@ outputs. `ask` is not available on gate steps.
 - no cycles in `needs`; no unknown steps, roles, inputs or outputs
 - two steps that can run at the same time (neither needs the other) must not both be able
   to edit files: make one role `readonly: true` or order them with `needs`
-- prompts use only `inputs`, `run.id` and `attempt`; inputs only reference ancestors
+- prompts use only `inputs`, `run.id` and `attempt` (after-tasks also `run.status` and
+  `run.failure`); inputs only reference ancestors (after-tasks also main steps and `run.*`)
+- after-tasks have no `needs`, and only after-tasks have `trigger`
 - no `next` key: chaining was removed; to run a playbook after another, write a parent
   playbook that includes both as sub-playbook steps
 

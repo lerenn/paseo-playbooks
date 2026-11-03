@@ -28,6 +28,7 @@
 <li><a href="#variables">Variables</a></li>
 <li><a href="#templates">Prompt templates</a></li>
 <li><a href="#subplaybooks">Sub-playbooks</a></li>
+<li><a href="#after">After-tasks</a></li>
 <li><a href="#agents">Agent settings</a></li>
 <li><a href="#readonly">Readonly roles and concurrency</a></li>
 <li><a href="#validation">Validation</a></li>
@@ -67,7 +68,7 @@ timeout: 1h         # default step timeout</code></pre><table><thead><tr><th>Key
 <table><thead><tr><th>File / key</th><th>Meaning</th></tr></thead><tbody><tr><td><code>instructions.md</code></td><td>Required and non-empty. The system prompt of every step that uses the role. The plugin appends the step protocol: allowed outcomes, required outputs, and how to call <code>report_step_result</code>.</td></tr><tr><td><code>role.yaml</code> <code>title</code></td><td>Display name. Defaults to the id.</td></tr><tr><td><code>role.yaml</code> <code>readonly</code></td><td><code>true</code> if the role must not edit files. Default <code>false</code>. See <a href="#readonly">readonly roles</a>.</td></tr><tr><td><code>role.yaml</code> <code>agent</code></td><td>Agent settings for this role.</td></tr></tbody></table>
 
 <h2 id="playbook">Playbook fields</h2>
-<table><thead><tr><th>Field</th><th>Meaning</th></tr></thead><tbody><tr><td><code>title</code></td><td>Display title. Defaults to the file name.</td></tr><tr><td><code>description</code></td><td>Shown in the Start form. Also returned to agents by <code>list_playbooks</code> and <code>validate_playbooks</code>.</td></tr><tr><td><code>agent</code></td><td>Agent settings for all steps of this playbook.</td></tr><tr><td><code>inputs</code></td><td>Typed variables. They make up the Start form, and <code>start_playbook</code> takes them. See <a href="#variables">variables</a>.</td></tr><tr><td><code>outputs</code></td><td>Typed run results, resolved when the run completes. <code>value</code> maps them from step outputs or playbook inputs; without it they are matched by name.</td></tr><tr><td><code>concurrency</code></td><td>Maximum active runs of this playbook in the Paseo project, across all worktrees, and also the number of runs that may be inside it as a sub-playbook (see Sub-playbooks). Unlimited when absent.</td></tr><tr><td><code>steps</code></td><td>At least one step.</td></tr></tbody></table>
+<table><thead><tr><th>Field</th><th>Meaning</th></tr></thead><tbody><tr><td><code>title</code></td><td>Display title. Defaults to the file name.</td></tr><tr><td><code>description</code></td><td>Shown in the Start form. Also returned to agents by <code>list_playbooks</code> and <code>validate_playbooks</code>.</td></tr><tr><td><code>agent</code></td><td>Agent settings for all steps of this playbook.</td></tr><tr><td><code>inputs</code></td><td>Typed variables. They make up the Start form, and <code>start_playbook</code> takes them. See <a href="#variables">variables</a>.</td></tr><tr><td><code>outputs</code></td><td>Typed run results, resolved when the run completes. <code>value</code> maps them from step outputs or playbook inputs; without it they are matched by name.</td></tr><tr><td><code>concurrency</code></td><td>Maximum active runs of this playbook in the Paseo project, across all worktrees, and also the number of runs that may be inside it as a sub-playbook (see Sub-playbooks). Unlimited when absent.</td></tr><tr><td><code>steps</code></td><td>At least one step.</td></tr><tr><td><code>after</code></td><td>Tasks run once the run has ended, without changing its result. See <a href="#after">after-tasks</a>.</td></tr></tbody></table>
 
 <h2 id="steps">Step fields</h2>
 <p>A step is an agent step (<code>role</code>), a human gate (<code>gate</code>) or a sub-playbook (<code>playbook</code>), exactly one of them. The order of steps in the file does not matter.</p>
@@ -116,7 +117,7 @@ timeout: 1h         # default step timeout</code></pre><table><thead><tr><th>Key
 <p>Playbook outputs without <code>value</code> are matched the same way, from any step with a same-named, type-compatible output. Any type can feed a <code>string</code>. The detail sheet shows where each value came from, for example <code>pr_url ← implement.pr_url (auto)</code>.</p>
 
 <h2 id="templates">Prompt templates</h2>
-<p>Templates use plain <code>{{ path }}</code> substitution, with no conditionals or loops. A step prompt may use only <code>{{ inputs.&lt;name&gt; }}</code> (a declared input), <code>{{ run.id }}</code> and <code>{{ attempt }}</code>. Missing or empty values render as <code>(none)</code>. If a prompt has no placeholders, the plugin lists the step's inputs after it. The manager's brief and any loop feedback are appended to the prompt.</p>
+<p>Templates use plain <code>{{ path }}</code> substitution, with no conditionals or loops. A step prompt may use only <code>{{ inputs.&lt;name&gt; }}</code> (a declared input), <code>{{ run.id }}</code> and <code>{{ attempt }}</code>; steps of an <a href="#after">after-task</a> may also use <code>{{ run.status }}</code> and <code>{{ run.failure }}</code>. Missing or empty values render as <code>(none)</code>. If a prompt has no placeholders, the plugin lists the step's inputs after it. The manager's brief and any loop feedback are appended to the prompt.</p>
 
 <h2 id="subplaybooks">Sub-playbooks</h2>
 <p>A step with <code>playbook: &lt;id&gt;</code> runs another playbook of the same folder in place, as a building block. The loader expands it: its steps become <code>pr.investigate</code>, <code>pr.implement</code>… in the same run, under the same manager, and the panel draws a labelled frame around them.</p>
@@ -142,6 +143,28 @@ timeout: 1h         # default step timeout</code></pre><table><thead><tr><th>Key
 </ul>
 <p>Sub-playbooks are the only way to combine playbooks: one run and one graph, so a gate or a loop can sit between two playbooks. There is no chaining from one run to another.</p>
 
+<h2 id="after">After-tasks</h2>
+<p><code>after:</code> lists tasks that run once the run has ended, whatever its outcome: a retro that reflects on the run, a notification. Each task is an agent step (<code>role</code> and <code>prompt</code>), a gate, or a sub-playbook (<code>playbook: &lt;id&gt;</code>), with a <code>trigger</code>.</p>
+<pre><code>after:
+  - id: retro
+    playbook: retro      # its run_id input matches {{ run.id }} by name
+  - id: notify
+    role: reviewer
+    trigger: manual      # default: auto
+    inputs:
+      status: "{{ run.status }}"
+    prompt: "Post a summary of run {{ run.id }} ({{ inputs.status }})."</code></pre>
+<ul>
+<li>They belong to the same run: same run file, same manager, drawn below End in the panel graph, each in its own frame.</li>
+<li>They never change the run's status, which is fixed when the main graph ends. Inside an after-task, <code>end</code> completes the task; <code>fail</code>, exhausted retries or a rejected gate fail the task only. In a sub-playbook used as an after-task, a nested block's <code>end</code> still ends only that block.</li>
+<li><code>auto</code> (the default) starts when the run completes or fails, not when it is canceled. <code>manual</code> shows a Start button on the finished run, in any end state; each manual task runs once. The manager is woken with the task's ready steps.</li>
+<li>No <code>needs</code>: each task starts on its own, and several may run at once.</li>
+<li>Inputs may also use <code>{{ run.id }}</code>, <code>{{ run.status }}</code>, <code>{{ run.failure }}</code>, <code>{{ run.outputs.&lt;name&gt; }}</code> (the run's outputs; partial on a failed run) and the outputs of any main step. By name, an input matches the playbook's outputs, then <code>run_id</code>, <code>run_status</code> and <code>run_failure</code>, then the playbook's inputs. Prompts may use <code>{{ run.status }}</code> and <code>{{ run.failure }}</code>.</li>
+<li>A sub-playbook's own <code>after</code> is ignored when it is nested: only the outermost playbook's after-tasks run. A sub-playbook used as an after-task keeps its steps, gates and loops; its <code>concurrency</code> is ignored, and after-tasks hold no concurrency slot.</li>
+<li>While after-tasks run, the run is "wrapping up": its dot pulses in its final colour, it stays active in its workspace, and Cancel cancels the after-tasks without changing the run's status. Archiving the worktree or losing the manager does the same.</li>
+<li>The "both may edit files" rule applies between after-tasks, not between an after-task and a main step.</li>
+</ul>
+
 <h2 id="agents">Agent settings</h2>
 <p><code>provider</code>, <code>model</code>, <code>mode</code> and <code>thinking</code> merge field by field. Precedence: step &gt; role &gt; playbook &gt; <code>defaults/main.yaml</code> &gt; the manager's own provider and model. With no model at all, Claude steps use Claude Opus.</p>
 
@@ -163,7 +186,8 @@ timeout: 1h         # default step timeout</code></pre><table><thead><tr><th>Key
 <li>missing roles (<code>role.yaml</code> or <code>instructions.md</code>), unknown <code>needs</code>, cycles in <code>needs</code></li>
 <li><code>on</code> keys that are not outcomes, extra outcomes without an <code>on</code> entry, <code>goto</code> targets that are not earlier steps</li>
 <li>two steps that can run together and both edit files</li>
-<li>prompts using anything other than <code>inputs</code>, <code>run.id</code> and <code>attempt</code></li>
+<li>prompts using anything other than <code>inputs</code>, <code>run.id</code> and <code>attempt</code> (after-tasks may also use <code>run.status</code> and <code>run.failure</code>)</li>
+<li><code>needs</code> on an after-task, <code>trigger</code> on a step, an after-task id that clashes with a step id</li>
 <li>unresolved, ambiguous or type-incompatible inputs and outputs</li>
 <li><code>enum</code> without <code>values</code>, invalid durations</li>
 <li>a <code>next</code> key (chaining was removed; use a sub-playbook step)</li>

@@ -2,7 +2,7 @@ import { defineAgentTool, type AgentToolDefinition, type AgentToolResult } from 
 import { GATE_SUMMARY_MAX } from "../shared/gates";
 import { z } from "zod";
 import type { PlaybookEntry, Run } from "../shared/types";
-import { VarValueSchema } from "../shared/types";
+import { isActive, isTerminal, runningAfterTasks, VarValueSchema } from "../shared/types";
 import * as engine from "./engine";
 import { loadPlaybooks } from "./loader";
 import { MANAGER_PROTOCOL } from "./prompts";
@@ -29,6 +29,8 @@ export function runSummary(run: Run) {
     playbook: run.playbook.id,
     status: run.status,
     failure: run.failure,
+    /** True while the main graph or an after-task still runs. */
+    active: isActive(run),
     branch: run.branch,
     inputs: run.inputs,
     outputs: run.outputs,
@@ -43,6 +45,7 @@ export function runSummary(run: Run) {
           {
             kind: step.kind,
             role: step.role ?? null,
+            afterTask: step.afterTask ?? null,
             needs: step.needs,
             outcomes: step.outcomes,
             status: state.status,
@@ -59,7 +62,21 @@ export function runSummary(run: Run) {
     ),
     gates: run.gates,
     loops: run.loops,
+    after: run.playbook.after.map((task) => ({ ...task, ...(run.after[task.id] ?? { status: "pending" }) })),
   };
+}
+
+/** What a finished run still does: its running after-tasks and their ready steps. Empty while the main graph runs. */
+export function afterText(run: Run): string {
+  if (!isTerminal(run.status)) return "";
+  const running = runningAfterTasks(run);
+  if (running.length === 0) return "";
+  const ready = engine.readySteps(run);
+  const gates = ready.filter((id) => engine.stepDef(run, id).kind === "gate");
+  const waiting = run.gates.some((gate) => gate.status === "pending");
+  return ` After-tasks running: ${running.join(", ")} (their result does not change the run, which stays ${run.status}). ${
+    waiting ? "A gate is waiting for a human decision. " : ""
+  }Ready: ${ready.join(", ") || "none"}.${gates.length ? ` Gate(s) to open with request_gate: ${gates.join(", ")}.` : ""}`;
 }
 
 function describeEntry(entry: PlaybookEntry) {
@@ -74,11 +91,13 @@ function describeEntry(entry: PlaybookEntry) {
     inputs: pb.inputs,
     outputs: Object.fromEntries(Object.entries(pb.outputs).map(([name, def]) => [name, { type: def.type, from: def.label }])),
     concurrency: pb.concurrency ?? null,
+    after: pb.after.map((task) => ({ id: task.id, title: task.title, trigger: task.trigger, steps: task.steps })),
     steps: pb.steps.map((step) => ({
       id: step.id,
       kind: step.kind,
       role: step.role ? `${step.role} (${pb.roles[step.role]!.title}${pb.roles[step.role]!.readonly ? ", readonly" : ""})` : null,
       gate: step.gate ?? null,
+      afterTask: step.afterTask ?? null,
       needs: step.needs,
       inputs: Object.fromEntries(Object.entries(step.inputs).map(([name, wiring]) => [name, `${wiring.label}${wiring.auto ? " (auto)" : ""}`])),
       outputs: Object.fromEntries(Object.entries(step.outputs).map(([name, def]) => [name, def.type])),
@@ -156,10 +175,12 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
           const gates = ready.filter((id) => engine.stepDef(run, id).kind === "gate");
           const text =
             run.status === "completed"
-              ? `Run ${run.id} completed. Outputs: ${JSON.stringify(run.outputs)}.`
+              ? `Run ${run.id} completed. Outputs: ${JSON.stringify(run.outputs)}.${afterText(run)}`
               : run.status === "failed"
-                ? `Run ${run.id} failed: ${run.failure}.`
-                : run.status === "waiting_gate"
+                ? `Run ${run.id} failed: ${run.failure}.${afterText(run)}`
+                : run.status === "canceled"
+                  ? `Run ${run.id} canceled.${afterText(run)}`
+                  : run.status === "waiting_gate"
                   ? `A gate is waiting for a human decision. End your turn.`
                   : `Ready: ${ready.join(", ") || (queued.length ? "none" : "none (waiting for running steps)")}.${queued.length ? ` Queued for a free concurrency slot of another run: ${queued.join(", ")}; end your turn, you are woken when they are ready.` : ""}${gates.length ? ` Gate(s) to open with request_gate: ${gates.join(", ")}.` : ""}`;
           return ok(text, runSummary(run));
@@ -206,7 +227,7 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
           });
           const run = (await runtime.ownedRun(agent.id, runId))!;
           const prefix = result.alreadyDecided ? `Already decided: ${result.gate.status} via ${result.gate.decidedVia}.` : `Recorded ${decision}.`;
-          return ok(`${prefix} Run is ${run.status}. Ready: ${engine.readySteps(run).join(", ") || "none"}.${engine.queuedSteps(run).length ? ` Queued for a free concurrency slot: ${engine.queuedSteps(run).join(", ")}.` : ""}`, runSummary(run));
+          return ok(`${prefix} Run is ${run.status}.${afterText(run)} Ready: ${engine.readySteps(run).join(", ") || "none"}.${engine.queuedSteps(run).length ? ` Queued for a free concurrency slot: ${engine.queuedSteps(run).join(", ")}.` : ""}`, runSummary(run));
         }),
     }),
     defineAgentTool({
@@ -234,13 +255,13 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
     }),
     defineAgentTool({
       name: "cancel_run",
-      description: "Cancel a run and stop its running step agents.",
+      description: "Cancel a run and stop its running step agents. On a run that has ended, cancels its running after-tasks (its status stays).",
       input: z.object({ runId: IdArg, reason: z.string() }),
       execute: ({ runId, reason }, { agent }) =>
         guard(async () => {
           runtime.ownedRun(agent.id, runId);
           const run = await runtime.cancelRun(runId, reason, false);
-          return ok(`Run ${run.id} canceled.`, runSummary(run));
+          return ok(isTerminal(run.status) && run.status !== "canceled" ? `After-tasks of run ${run.id} canceled; the run stays ${run.status}.` : `Run ${run.id} canceled.`, runSummary(run));
         }),
     }),
   ];

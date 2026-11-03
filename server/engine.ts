@@ -5,8 +5,8 @@
 import { descendantsOf } from "../shared/graph";
 import { blockEntrySteps, blockStepIds, holdsBlock, innermostBlock } from "../shared/slots";
 import { ASK_CHOICES, gateChoices, LOOP_LIMIT_CHOICES, outcomeTransition } from "../shared/gates";
-import type { Attempt, Gate, Playbook, Run, RunStep, Step, Transition, VarValue } from "../shared/types";
-import { isStepDone, isTerminal } from "../shared/types";
+import type { AfterTask, Attempt, Gate, Playbook, Run, RunStep, Step, Transition, VarValue } from "../shared/types";
+import { isStepDone, isStepLive, isTerminal, runningAfterTasks } from "../shared/types";
 import { coerceValue, formatValue, renderTemplate, resolveValue } from "../shared/vars";
 
 export class EngineError extends Error {}
@@ -39,8 +39,21 @@ function log(run: Run, now: string, type: string, stepId: string | null, detail:
   run.updatedAt = now;
 }
 
-function assertActive(run: Run): void {
-  if (isTerminal(run.status)) throw new EngineError(`run ${run.id} is ${run.status}`);
+/** A main step moves while the run is not finished; an after-step while its task runs. */
+function assertLive(run: Run, stepId: string): void {
+  if (isStepLive(run, stepId)) return;
+  const task = stepDef(run, stepId).afterTask;
+  if (task) {
+    const status = run.after[task]?.status ?? "pending";
+    throw new EngineError(`after-task "${task}" is ${status === "pending" ? "not started" : status}`);
+  }
+  throw new EngineError(`run ${run.id} is ${run.status}`);
+}
+
+function afterTaskDef(run: Run, taskId: string): AfterTask {
+  const task = run.playbook.after.find((candidate) => candidate.id === taskId);
+  if (!task) throw new EngineError(`no after-task "${taskId}" in playbook "${run.playbook.id}"`);
+  return task;
 }
 
 export interface NewRunInput {
@@ -106,6 +119,9 @@ export function newRun(input: NewRunInput): Run {
     loops: {},
     loopAllowance: {},
     gates: [],
+    after: Object.fromEntries(
+      input.playbook.after.map((task) => [task.id, { status: "pending", startedAt: null, endedAt: null, detail: null }]),
+    ),
     inbox: [],
     history: [],
     seq: 0,
@@ -123,11 +139,10 @@ export function newRun(input: NewRunInput): Run {
 export function refreshReady(run: Run, now: string): { ready: string[]; queued: string[] } {
   const ready: string[] = [];
   const queued: string[] = [];
-  if (isTerminal(run.status)) return { ready, queued };
   const limited = Object.entries(run.playbook.blocks).filter(([, block]) => block.concurrency !== undefined);
   for (const step of run.playbook.steps) {
     const state = run.steps[step.id]!;
-    if (state.status !== "pending") continue;
+    if (state.status !== "pending" || !isStepLive(run, step.id)) continue;
     if (!step.needs.every((need) => { const status = run.steps[need]?.status; return status !== undefined && isStepDone(status); })) continue;
     const gating = limited.some(([prefix]) => blockEntrySteps(run.playbook, prefix).includes(step.id) && !holdsBlock(run, prefix));
     if (gating) {
@@ -165,8 +180,9 @@ function queueNote(run: Run, queued: string[]): string {
   return `Queued: ${queued.join(", ")}, waiting for a free "${playbooks.join('", "')}" slot held by other runs. You are woken when they are ready; do not start them before.`;
 }
 
+/** Ready steps that can start now (a finished run's leftover ready steps are not listed). */
 export function readySteps(run: Run): string[] {
-  return run.playbook.steps.filter((step) => run.steps[step.id]!.status === "ready").map((step) => step.id);
+  return run.playbook.steps.filter((step) => run.steps[step.id]!.status === "ready" && isStepLive(run, step.id)).map((step) => step.id);
 }
 
 function updateStatus(run: Run): void {
@@ -174,13 +190,24 @@ function updateStatus(run: Run): void {
   run.status = run.gates.some((gate) => gate.status === "pending") ? "waiting_gate" : "running";
 }
 
-export function templateContext(run: Run): Record<string, unknown> {
+function baseContext(run: Run): Record<string, unknown> & { run: Record<string, unknown> } {
   return {
     playbook: { inputs: run.inputs },
     steps: Object.fromEntries(
       Object.entries(run.steps).map(([id, state]) => [id, { outputs: state.outputs, summary: state.summary }]),
     ),
+    run: { id: run.id, status: run.status, failure: run.failure },
   };
+}
+
+/**
+ * What input sources render against. `run.outputs` are the run's outputs once it completed,
+ * or what they would be now (possibly partial): after-tasks of a failed run read them too.
+ */
+export function templateContext(run: Run): Record<string, unknown> {
+  const context = baseContext(run);
+  context.run.outputs = run.outputs ?? outputsFrom(run, context);
+  return context;
 }
 
 /** Values and sources a step would receive now. */
@@ -206,7 +233,7 @@ export function startAttempt(
   stepId: string,
   input: { agentId: string; brief: string; now: string; readonlySnapshot: string | null },
 ): StartedStep {
-  assertActive(run);
+  assertLive(run, stepId);
   const step = stepDef(run, stepId);
   const state = runStep(run, stepId);
   if (step.kind !== "agent") throw new EngineError(`step "${stepId}" is a gate; call request_gate`);
@@ -230,7 +257,7 @@ export function startAttempt(
   };
   const context = {
     inputs: Object.fromEntries(Object.entries(values).map(([name, entry]) => [name, entry.value])),
-    run: { id: run.id },
+    run: { id: run.id, status: run.status, failure: run.failure },
     attempt: n,
   };
   const sections: string[] = [];
@@ -291,10 +318,10 @@ export function recordReport(
   report: { outcome: string; summary: string; outputs: Record<string, unknown> },
   now: string,
 ): { stepId: string } {
-  assertActive(run);
   const found = findAttemptByAgent(run, agentId);
   if (!found) throw new EngineError("this agent is not the current attempt of any step");
   const { stepId, attempt } = found;
+  assertLive(run, stepId);
   const step = stepDef(run, stepId);
   if (attempt.endedAt !== null && attempt.report !== null) throw new EngineError("this attempt already reported");
   if (!step.outcomes.includes(report.outcome)) {
@@ -363,8 +390,7 @@ function finish(run: Run, status: "completed" | "failed" | "canceled", detail: s
   fx.notes.push(`Run ${run.id} ${status}${status === "completed" ? "" : `: ${detail}`}.`);
 }
 
-function resolveRunOutputs(run: Run): Record<string, VarValue> {
-  const context = templateContext(run);
+function outputsFrom(run: Run, context: Record<string, unknown>): Record<string, VarValue> {
   const outputs: Record<string, VarValue> = {};
   for (const [name, def] of Object.entries(run.playbook.outputs)) {
     const value = resolveValue(def.source, context);
@@ -376,10 +402,105 @@ function resolveRunOutputs(run: Run): Record<string, VarValue> {
 }
 
 function completeRun(run: Run, now: string, fx: Effects): void {
-  run.outputs = resolveRunOutputs(run);
+  run.outputs = outputsFrom(run, baseContext(run));
   finish(run, "completed", "", now, fx);
   const shown = Object.entries(run.outputs).map(([name, value]) => `${name}=${value}`).join(", ");
   if (shown) fx.notes.push(`Outputs: ${shown}.`);
+  startAutoTasks(run, now, fx);
+}
+
+/** The main graph failed: the run is failed, then its auto after-tasks start. */
+function failMain(run: Run, detail: string, now: string, fx: Effects): void {
+  finish(run, "failed", detail, now, fx);
+  startAutoTasks(run, now, fx);
+}
+
+/** Where `end` / `fail` lead: the run for a main step, only its task for an after-step. */
+function endFlow(run: Run, step: Step, status: "completed" | "failed", detail: string, now: string, fx: Effects): void {
+  if (step.afterTask) finishTask(run, step.afterTask, status, detail, now, fx);
+  else if (status === "completed") completeRun(run, now, fx);
+  else failMain(run, detail, now, fx);
+}
+
+// ---------------------------------------------------------------- after-tasks
+
+function launchTask(run: Run, taskId: string, now: string): string[] {
+  const task = afterTaskDef(run, taskId);
+  run.after[taskId] = { status: "running", startedAt: now, endedAt: null, detail: null };
+  log(run, now, "after_started", null, taskId);
+  for (const stepId of task.steps) {
+    const state = run.steps[stepId]!;
+    state.status = "pending";
+    state.outputs = {};
+    state.completedSeq = null;
+  }
+  const { ready } = refreshReady(run, now);
+  return ready.filter((id) => task.steps.includes(id));
+}
+
+function afterNote(run: Run, started: string[], ready: string[]): string {
+  return `After-task${started.length === 1 ? "" : "s"} started: ${started.join(", ")}. ${started.length === 1 ? "It does" : "They do"} not change the run's result (${run.status}). Ready: ${ready.join(", ") || "none"}; start ${ready.length === 1 ? "it" : "them"} like any step.`;
+}
+
+/** Starts the `auto` after-tasks of a run that just completed or failed. */
+function startAutoTasks(run: Run, now: string, fx: Effects): void {
+  const auto = run.playbook.after.filter((task) => task.trigger === "auto" && run.after[task.id]?.status === "pending");
+  if (auto.length === 0) return;
+  const ready = auto.flatMap((task) => launchTask(run, task.id, now));
+  fx.notes.push(afterNote(run, auto.map((task) => task.id), ready));
+}
+
+/** A run that ends without its after-tasks (canceled, manager lost): auto ones will never start. */
+function skipAutoTasks(run: Run, reason: string, now: string): void {
+  for (const task of run.playbook.after) {
+    const state = run.after[task.id];
+    if (task.trigger !== "auto" || !state || state.status !== "pending") continue;
+    run.after[task.id] = { ...state, status: "canceled", endedAt: now, detail: reason };
+  }
+}
+
+/** Ends an after-task. The run's status does not change. */
+function finishTask(run: Run, taskId: string, status: "completed" | "failed" | "canceled", detail: string, now: string, fx: Effects): void {
+  const task = afterTaskDef(run, taskId);
+  for (const stepId of task.steps) {
+    const state = run.steps[stepId]!;
+    if (state.status === "ready" || state.status === "queued") state.status = "pending";
+    if (state.status !== "running") continue;
+    const attempt = state.attempts.at(-1);
+    if (attempt) {
+      fx.cancelAgents.push(attempt.agentId);
+      attempt.turnEnd = "canceled";
+      attempt.endedAt = now;
+    }
+    state.status = "failed";
+    log(run, now, "step_canceled", stepId, detail || `after-task ${status}`);
+  }
+  for (const gate of run.gates) {
+    if (gate.status === "pending" && task.steps.includes(gate.stepId)) {
+      gate.status = "rejected";
+      gate.comment = `after-task ${status}`;
+      gate.decidedAt = now;
+    }
+  }
+  const state = run.after[taskId]!;
+  run.after[taskId] = { ...state, status, endedAt: now, detail: detail || null };
+  log(run, now, `after_${status}`, null, `${taskId}${detail ? `: ${detail}` : ""}`);
+  fx.notes.push(`After-task "${taskId}" ${status}${detail ? `: ${detail}` : ""}. The run stays ${run.status}.`);
+  const still = runningAfterTasks(run);
+  fx.notes.push(still.length > 0 ? `After-tasks still running: ${still.join(", ")}.` : "No after-task is running any more.");
+}
+
+/** A human starts a `manual` after-task of a finished run. */
+export function startAfterTask(run: Run, taskId: string, now: string): Effects {
+  const task = afterTaskDef(run, taskId);
+  if (!isTerminal(run.status)) throw new EngineError(`run ${run.id} is ${run.status}; after-tasks start once it has ended`);
+  if (task.trigger !== "manual") throw new EngineError(`after-task "${taskId}" starts on its own (trigger: auto)`);
+  const status = run.after[taskId]?.status ?? "pending";
+  if (status !== "pending") throw new EngineError(`after-task "${taskId}" is ${status}; it runs once`);
+  const fx = effects();
+  const ready = launchTask(run, taskId, now);
+  fx.notes.push(afterNote(run, [taskId], ready));
+  return fx;
 }
 
 function markCompleted(run: Run, stepId: string, now: string, fx: Effects): void {
@@ -387,8 +508,11 @@ function markCompleted(run: Run, stepId: string, now: string, fx: Effects): void
   state.status = "completed";
   state.completedSeq = run.seq + 1;
   log(run, now, "step_completed", stepId, state.attempts.at(-1)?.outcome ?? "approved");
-  if (run.playbook.steps.every((step) => isStepDone(run.steps[step.id]!.status))) {
-    completeRun(run, now, fx);
+  const task = stepDef(run, stepId).afterTask;
+  const flow = run.playbook.steps.filter((step) => step.afterTask === task);
+  if (flow.every((step) => isStepDone(run.steps[step.id]!.status))) {
+    if (task) finishTask(run, task, "completed", "", now, fx);
+    else completeRun(run, now, fx);
     return;
   }
   const { ready, queued } = refreshReady(run, now);
@@ -403,10 +527,13 @@ function markCompleted(run: Run, stepId: string, now: string, fx: Effects): void
  * steps that need the block. The block's outputs are whatever its completed steps produced.
  */
 function endFrom(run: Run, stepId: string, now: string, fx: Effects): void {
-  const prefix = innermostBlock(run.playbook, stepId);
+  const step = stepDef(run, stepId);
+  const block = innermostBlock(run.playbook, stepId);
+  // An after-task that is a sub-playbook is a block too: an `end` at its top level ends the task.
+  const prefix = block === step.afterTask ? null : block;
   if (prefix === null) {
     run.steps[stepId]!.status = "completed";
-    completeRun(run, now, fx);
+    endFlow(run, step, "completed", "", now, fx);
     return;
   }
   const skipped: string[] = [];
@@ -484,8 +611,8 @@ function gotoOrLimit(run: Run, step: Step, target: string, maxLoops: number | un
     stepId: step.id,
     gotoTarget: target,
     status: "pending",
-    message: `Loop limit reached: "${step.id}" → "${target}" ran ${run.loops[key] ?? 0} times (max ${maxLoops}). Approve one more loop, or reject to fail the run.\n\nLatest feedback: ${feedback || "(none)"}`,
-    summary: `Loop limit reached: "${step.id}" → "${target}" ran ${run.loops[key] ?? 0} times (max ${maxLoops}). Approve one more loop, or reject to fail the run.`,
+    message: `Loop limit reached: "${step.id}" → "${target}" ran ${run.loops[key] ?? 0} times (max ${maxLoops}). Approve one more loop, or reject to fail the ${step.afterTask ? "after-task" : "run"}.\n\nLatest feedback: ${feedback || "(none)"}`,
+    summary: `Loop limit reached: "${step.id}" → "${target}" ran ${run.loops[key] ?? 0} times (max ${maxLoops}). Approve one more loop, or reject to fail the ${step.afterTask ? "after-task" : "run"}.`,
     details: `Latest feedback: ${feedback || "(none)"}`,
     requestedAt: now,
     comment: feedback || null,
@@ -528,7 +655,7 @@ export function completeStep(
   stepId: string,
   input: { outcome: string; summary?: string; outputs?: Record<string, unknown>; now: string },
 ): Effects {
-  assertActive(run);
+  assertLive(run, stepId);
   const step = stepDef(run, stepId);
   const state = runStep(run, stepId);
   if (step.kind !== "agent") throw new EngineError(`step "${stepId}" is a gate; its outcome comes from a gate decision`);
@@ -567,7 +694,7 @@ export function completeStep(
       break;
     case "fail":
       state.status = "failed";
-      finish(run, "failed", `step "${stepId}" ended with "${input.outcome}"`, input.now, fx);
+      endFlow(run, step, "failed", `step "${stepId}" ended with "${input.outcome}"`, input.now, fx);
       break;
     case "retry": {
       const counted = state.attempts.filter((a) => a.turnEnd !== "lost").length;
@@ -577,7 +704,7 @@ export function completeStep(
         fx.notes.push(`"${stepId}" failed; retry ${counted}/${step.retries} allowed. Ready: ${readySteps(run).join(", ")}.`);
       } else {
         state.status = "failed";
-        finish(run, "failed", `step "${stepId}" failed after ${counted} attempt(s)`, input.now, fx);
+        endFlow(run, step, "failed", `step "${stepId}" failed after ${counted} attempt(s)`, input.now, fx);
       }
       break;
     }
@@ -594,7 +721,7 @@ export function completeStep(
 
 /** Opens the human gate of a ready gate step. */
 export function requestGate(run: Run, stepId: string, summary: string, now: string, details = ""): Gate {
-  assertActive(run);
+  assertLive(run, stepId);
   const step = stepDef(run, stepId);
   const state = runStep(run, stepId);
   if (step.kind !== "gate") throw new EngineError(`step "${stepId}" is not a gate`);
@@ -644,7 +771,7 @@ export function decideGate(run: Run, ref: string, decision: GateDecision): { gat
   if (!gate) throw new EngineError(`no gate "${ref}" in run ${run.id}`);
   const fx = effects();
   if (gate.status !== "pending") return { gate, alreadyDecided: true, effects: fx };
-  assertActive(run);
+  assertLive(run, gate.stepId);
   const choices = gate.kind === "loop_limit" ? LOOP_LIMIT_CHOICES : gate.kind === "ask" ? ASK_CHOICES : gateChoices(stepDef(run, gate.stepId));
   const choice = choices.find((candidate) => candidate.id === decision.decision);
   if (!choice) throw new EngineError(`"${decision.decision}" is not a choice of gate "${gate.stepId}" (${choices.map((c) => c.id).join(", ")})`);
@@ -669,7 +796,7 @@ export function decideGate(run: Run, ref: string, decision: GateDecision): { gat
       performGoto(run, gate.stepId, gate.gotoTarget!, run.steps[gate.stepId]!.summary ?? decision.comment ?? "", decision.now, fx);
     } else {
       run.steps[gate.stepId]!.status = "failed";
-      finish(run, "failed", `loop limit for "${gate.stepId}" → "${gate.gotoTarget}" rejected`, decision.now, fx);
+      endFlow(run, step, "failed", `loop limit for "${gate.stepId}" → "${gate.gotoTarget}" rejected`, decision.now, fx);
     }
     updateStatus(run);
     return { gate, alreadyDecided: false, effects: fx };
@@ -689,25 +816,37 @@ export function decideGate(run: Run, ref: string, decision: GateDecision): { gat
       break;
     default:
       state.status = "failed";
-      finish(run, "failed", `gate "${gate.stepId}" ${decision.decision}${decision.comment ? `: ${decision.comment}` : ""}`, decision.now, fx);
+      endFlow(run, step, "failed", `gate "${gate.stepId}" ${decision.decision}${decision.comment ? `: ${decision.comment}` : ""}`, decision.now, fx);
   }
   updateStatus(run);
   return { gate, alreadyDecided: false, effects: fx };
 }
 
-/** Cancels the run and returns the agents to interrupt. */
+/**
+ * Cancels the run and returns the agents to interrupt. While after-tasks run (the run has
+ * ended), cancels them instead: the run's status does not change.
+ */
 export function cancelRun(run: Run, reason: string, now: string): Effects {
-  assertActive(run);
   const fx = effects();
-  finish(run, "canceled", reason, now, fx);
+  if (!isTerminal(run.status)) {
+    finish(run, "canceled", reason, now, fx);
+    skipAutoTasks(run, "the run was canceled", now);
+    return fx;
+  }
+  const running = runningAfterTasks(run);
+  if (running.length === 0) throw new EngineError(`run ${run.id} is ${run.status}`);
+  for (const taskId of running) finishTask(run, taskId, "canceled", reason, now, fx);
   return fx;
 }
 
-/** Fails the run (e.g. the manager was lost). */
+/** Stops the run for good (e.g. the manager was lost): fails it, or cancels its running after-tasks. No after-task starts. */
 export function failRun(run: Run, reason: string, now: string): Effects {
   const fx = effects();
-  if (isTerminal(run.status)) return fx;
-  finish(run, "failed", reason, now, fx);
+  if (!isTerminal(run.status)) {
+    finish(run, "failed", reason, now, fx);
+    skipAutoTasks(run, reason, now);
+  }
+  for (const taskId of runningAfterTasks(run)) finishTask(run, taskId, "canceled", reason, now, fx);
   return fx;
 }
 

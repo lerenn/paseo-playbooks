@@ -5,7 +5,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Animated, Pressable, Text, View } from "react-native";
 import { archiveRunRpc, cancelRunRpc, listPlaybooks, listRuns } from "../shared/contracts";
-import { isTerminal, type Playbook, type PlaybookEntry, type Run } from "../shared/types";
+import { isActive, isTerminal, type Playbook, type PlaybookEntry, type Run } from "../shared/types";
 import { Graph, useReduceMotion } from "./graph";
 import { Button, StepSheet } from "./sheet";
 import { StartForm, type StartTarget } from "./start-form";
@@ -191,7 +191,7 @@ function PlaybookCard(props: {
 }) {
   const { card, theme } = props;
   const queryClient = useQueryClient();
-  const active = card.runs.find((run) => !isTerminal(run.status));
+  const active = card.runs.find((run) => isActive(run));
   const [expanded, setExpanded] = useState(false);
   const [selected, setSelected] = useState<string | "definition" | null>(null);
   const [sheet, setSheet] = useState<string | null>(null);
@@ -426,7 +426,9 @@ function RunChip(props: { theme: Theme; run: Run; selected: boolean; read: boole
   const [menu, setMenu] = useState<"closed" | "open" | "confirm">("closed");
   // Blue running, yellow waiting for a decision, green done, grey done and opened, red failed.
   const color = run.status === "completed" && props.read ? theme.colors.foregroundMuted : runStatusColor(theme, run.status);
-  const active = !isTerminal(run.status);
+  const active = isActive(run);
+  /** The run has ended and after-tasks are running. */
+  const wrapping = active && isTerminal(run.status);
   // Selected: filled with the colour. Not selected: outlined in it.
   const border = color;
   const text = selected ? (color === theme.colors.foregroundMuted ? theme.colors.surface1 : theme.colors.accentForeground) : color;
@@ -436,6 +438,7 @@ function RunChip(props: { theme: Theme; run: Run; selected: boolean; read: boole
         <Pressable accessibilityRole="tab" accessibilityState={{ selected }} onPress={props.onSelect} style={{ paddingLeft: 8, paddingRight: 6, paddingVertical: 2 }}>
           <Text style={{ color: text, fontSize: 11 }}>
             {run.id.replace(/^run_/, "")} · {runStatusLabel(run.status)}
+            {wrapping ? " · wrapping up" : ""}
           </Text>
         </Pressable>
         {(
@@ -520,7 +523,7 @@ function RunChip(props: { theme: Theme; run: Run; selected: boolean; read: boole
               style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 10, paddingVertical: 8, borderRadius: 6 }}
             >
               <Icon name="CircleStop" size={15} color={theme.colors.statusDanger} />
-              <Text style={{ color: theme.colors.statusDanger, fontSize: 13 }}>Cancel run…</Text>
+              <Text style={{ color: theme.colors.statusDanger, fontSize: 13 }}>{wrapping ? "Cancel after-tasks…" : "Cancel run…"}</Text>
             </Pressable>
             </>
             ) : (
@@ -550,12 +553,16 @@ function RunChip(props: { theme: Theme; run: Run; selected: boolean; read: boole
             </>
           ) : (
             <View style={{ padding: 6, gap: 8 }}>
-              <Text style={{ color: theme.colors.foreground, fontSize: 12 }}>Cancel run {run.id}? Running steps are stopped.</Text>
+              <Text style={{ color: theme.colors.foreground, fontSize: 12 }}>
+                {wrapping
+                  ? `Cancel the after-tasks of run ${run.id}? Their steps are stopped; the run stays ${run.status}.`
+                  : `Cancel run ${run.id}? Running steps are stopped.`}
+              </Text>
               <View style={{ flexDirection: "row", gap: 6 }}>
                 <Button
                   theme={theme}
                   kind="danger"
-                  label="Cancel run"
+                  label={wrapping ? "Cancel after-tasks" : "Cancel run"}
                   onPress={() =>
                     void cancel({ runId: run.id })
                       .then(() => {
@@ -635,7 +642,7 @@ function RunDots(props: { theme: Theme; runs: Run[]; readRuns: string[]; onOpen(
 function RunDot(props: { theme: Theme; run: Run; read: boolean; onPress(): void }) {
   const { theme, run } = props;
   const reduceMotion = useReduceMotion();
-  const pulsing = (run.status === "running" || run.status === "waiting_gate") && !reduceMotion;
+  const pulsing = isActive(run) && !reduceMotion;
   const color = run.status === "completed" && props.read ? theme.colors.foregroundMuted : runStatusColor(theme, run.status);
   const pulse = useRef(new Animated.Value(1)).current;
   useEffect(() => {
@@ -652,7 +659,10 @@ function RunDot(props: { theme: Theme; run: Run; read: boolean; onPress(): void 
     loop.start();
     return () => loop.stop();
   }, [pulsing, pulse]);
-  const label = `Run ${run.id.replace(/^run_/, "")}, ${run.status === "completed" && !props.read ? "completed, not opened yet" : runStatusLabel(run.status)}. Opens it.`;
+  // Ended with after-tasks still running: the run's own colour, pulsing, "completed, wrapping up".
+  const wrapping = isActive(run) && isTerminal(run.status);
+  const state = wrapping ? `${runStatusLabel(run.status)}, wrapping up` : run.status === "completed" && !props.read ? "completed, not opened yet" : runStatusLabel(run.status);
+  const label = `Run ${run.id.replace(/^run_/, "")}, ${state}. Opens it.`;
   return (
     <Pressable accessibilityRole="button" accessibilityLabel={label} hitSlop={6} onPress={props.onPress} style={{ padding: 3 }}>
       <View style={{ width: 10, height: 10, alignItems: "center", justifyContent: "center" }}>

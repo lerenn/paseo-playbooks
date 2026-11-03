@@ -28,6 +28,11 @@ How to run a playbook:
    call resume with it.
 7. When the run ends, tell the human the outcome and the run outputs. Do not start
    another playbook as a follow-up unless the human asks.
+8. After-tasks: a playbook may declare tasks that run once the run has ended (completed or
+   failed, not canceled), such as a retro. When they start, their steps become ready: run
+   them like any step. They never change the run's status: inside an after-task, "end"
+   completes the task and a failure fails only the task. A human may also start a manual
+   after-task from the panel later; you are woken with its ready steps.
 
 Rules: create step agents only with start_step (never with Paseo's create_agent tool), do
 not do the steps' work yourself, and never edit files in this workspace.`;

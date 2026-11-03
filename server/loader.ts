@@ -75,6 +75,16 @@ const RawStepSchema = z.object({
           .nullable(),
       )
       .optional(),
+    /** Only on after-tasks; read here to refuse it on a step. */
+    trigger: z.unknown().optional(),
+  });
+
+/** An after-task: a step (role, gate or playbook) with a trigger and no needs. */
+const RawAfterSchema = RawStepSchema.extend({
+    title: z.string().optional(),
+    trigger: z.enum(["auto", "manual"]).default("auto"),
+    /** Refused: each after-task starts on its own. */
+    needs: z.unknown().optional(),
   });
 
 const RawPlaybookSchema = z.object({
@@ -87,6 +97,8 @@ const RawPlaybookSchema = z.object({
     next: z.unknown().optional(),
     concurrency: z.number().int().positive().optional(),
     steps: z.array(RawStepSchema).min(1),
+    /** Tasks run once the main graph ends (completed or failed); they never change the run's status. */
+    after: z.array(RawAfterSchema).optional(),
   });
 
 const RawRoleSchema = z.object({
@@ -323,9 +335,18 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     checkVarDef(`${file}: inputs.${name}`, inputs[name]!, errors);
   }
 
+  // Main steps, then after-tasks as steps of their own (no needs), marked with their task id.
+  type RawStep = z.infer<typeof RawStepSchema>;
+  const rawAll: Array<{ raw: RawStep; task: string | undefined }> = [
+    ...pb.steps.map((raw) => ({ raw, task: undefined })),
+    ...(pb.after ?? []).map((raw) => ({ raw: { ...raw, needs: [] } as RawStep, task: raw.id })),
+  ];
+  for (const raw of pb.steps) if (raw.trigger !== undefined) err(`step "${raw.id}": \`trigger\` only applies to an after-task`);
+  for (const raw of pb.after ?? []) if (raw.needs !== undefined) err(`after "${raw.id}": \`needs\` does not apply to an after-task (each one starts when the run ends)`);
+
   // Roles used by agent steps.
   const roles: Record<string, Role> = {};
-  for (const roleId of new Set(pb.steps.flatMap((step) => (step.role ? [step.role] : [])))) {
+  for (const roleId of new Set(rawAll.flatMap(({ raw: step }) => (step.role ? [step.role] : [])))) {
     const loaded = await role(roleId);
     if (loaded.role) roles[roleId] = loaded.role;
     else errors.push(...loaded.errors.map((message) => `${file}: role "${roleId}": ${message}`));
@@ -336,8 +357,9 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
   const steps: Step[] = [];
   const blocks = new Map<string, Playbook>();
   const defaultTimeout = defaults.timeout ? parseDuration(defaults.timeout) ?? undefined : undefined;
-  for (const rawStep of pb.steps) {
-    const where = `step "${rawStep.id}"`;
+  for (const { raw: rawStep, task } of rawAll) {
+    const where = task ? `after "${rawStep.id}"` : `step "${rawStep.id}"`;
+    const afterTask = task ? { afterTask: task } : {};
     if (!ID.test(rawStep.id)) err(`${where}: invalid id (lowercase letters, digits, - and _)`);
     if (RESERVED_STEP_IDS.has(rawStep.id)) err(`${where}: "${rawStep.id}" is reserved`);
     if (seen.has(rawStep.id)) err(`${where}: duplicate id`);
@@ -375,6 +397,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
         agent: {},
         on: {},
         choices: [],
+        ...afterTask,
       });
       continue;
     }
@@ -435,6 +458,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
       agent: isGate ? {} : mergeAgent(defaults.agent, pb.agent, stepRole?.agent, rawStep.agent),
       on,
       choices,
+      ...afterTask,
     };
     if (rawStep.role) step.role = rawStep.role;
     if (rawStep.gate !== undefined) step.gate = rawStep.gate;
@@ -442,10 +466,12 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     steps.push(step);
   }
 
-  // Graph checks.
+  // Graph checks. Main steps only need main steps; after-tasks have no needs.
   const ids = new Set(steps.map((step) => step.id));
+  const mainSteps = steps.filter((step) => !step.afterTask);
+  const mainIds = new Set(mainSteps.map((step) => step.id));
   for (const step of steps) {
-    for (const need of step.needs) if (!ids.has(need)) err(`step "${step.id}": needs unknown step "${need}"`);
+    for (const need of step.needs) if (!mainIds.has(need)) err(`step "${step.id}": needs unknown step "${need}"${ids.has(need) ? " (an after-task)" : ""}`);
     if (step.needs.includes(step.id)) err(`step "${step.id}": needs itself`);
   }
   const cycle = findCycle(steps);
@@ -461,24 +487,30 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
         }
       }
     }
-    // Inputs wiring and prompt references. A playbook step takes the sub-playbook's inputs.
-    for (const step of steps) {
-      const raw = pb.steps.find((candidate) => candidate.id === step.id)!;
-      const sub = blocks.get(step.id);
-      if (sub) wireBlock(step, raw, sub, steps, ancestors.get(step.id)!, inputs, err);
-      else wireStep(step, raw, steps, ancestors.get(step.id)!, inputs, err);
-    }
   }
 
-  // Playbook outputs.
+  // Playbook outputs, from the main steps (after-tasks read them, so they come first).
   const outputs: Playbook["outputs"] = {};
   if (errors.length === 0) {
     for (const [name, rawOutput] of Object.entries(pb.outputs ?? {})) {
       const def = toVarDef(rawOutput);
       checkVarDef(`${file}: outputs.${name}`, def, errors);
-      const resolved = resolveOutputSource(name, def.type, rawOutput?.value, steps, inputs);
+      const resolved = resolveOutputSource(name, def.type, rawOutput?.value, mainSteps, inputs);
       if ("error" in resolved) err(`outputs.${name}: ${resolved.error}`);
       else outputs[name] = { ...def, ...resolved };
+    }
+  }
+
+  // Inputs wiring and prompt references. A playbook step takes the sub-playbook's inputs.
+  if (errors.length === 0) {
+    const afterContext: AfterContext = { mainIds, outputs };
+    for (const step of steps) {
+      const raw = rawAll.find((candidate) => candidate.raw.id === step.id)!.raw;
+      const sub = blocks.get(step.id);
+      const ancestors = ancestorsOf(steps, step.id);
+      const after = step.afterTask ? afterContext : undefined;
+      if (sub) wireBlock(step, raw, sub, steps, ancestors, inputs, err, after);
+      else wireStep(step, raw, steps, ancestors, inputs, err, new Set(), undefined, after);
     }
   }
 
@@ -492,7 +524,8 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     for (const sub of blocks.values()) Object.assign(roles, sub.roles);
   }
   if (errors.length === 0) {
-    // Concurrency rule: two steps that may run together must not both edit files.
+    // Concurrency rule: two steps that may run together must not both edit files. Main steps
+    // and after-tasks never run together; after-tasks may run with each other.
     const ancestors = new Map(finalSteps.map((step) => [step.id, ancestorsOf(finalSteps, step.id)]));
     const agents = finalSteps.filter((step) => step.kind === "agent" && step.role && roles[step.role]);
     for (let i = 0; i < agents.length; i++) {
@@ -500,6 +533,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
         const a = agents[i]!;
         const b = agents[j]!;
         if (ancestors.get(a.id)!.has(b.id) || ancestors.get(b.id)!.has(a.id)) continue;
+        if (Boolean(a.afterTask) !== Boolean(b.afterTask)) continue;
         if (!roles[a.role!]!.readonly && !roles[b.role!]!.readonly) {
           err(`steps "${a.id}" and "${b.id}" can run at the same time and both may edit files; make one role readonly or order them with needs`);
         }
@@ -520,16 +554,40 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     roles,
     manager,
     blocks: blockInfo,
+    after: (pb.after ?? []).map((raw) => ({
+      id: raw.id,
+      title: raw.title ?? blocks.get(raw.id)?.title ?? stepLabel(raw.id),
+      trigger: raw.trigger,
+      steps: finalSteps.filter((step) => step.afterTask === raw.id).map((step) => step.id),
+    })),
   };
   if (pb.concurrency !== undefined) entry.playbook.concurrency = pb.concurrency;
   return { entry };
 }
 
-const PROMPT_REFS = /^(inputs\.[A-Za-z_][\w-]*|run\.id|attempt)$/;
+const PROMPT_REFS = /^(inputs\.[A-Za-z_][\w-]*|run\.id|run\.status|run\.failure|attempt)$/;
+/** Run fields an after-task input auto-matches by name. */
+const RUN_FIELDS: Record<string, "id" | "status" | "failure"> = { run_id: "id", run_status: "status", run_failure: "failure" };
 
-function parseSourceRef(ref: string): { kind: "playbook"; name: string } | { kind: "step"; step: string; output: string } | null {
+/** What an after-task's steps may also read: the main steps' outputs and the run's outputs. */
+interface AfterContext {
+  mainIds: Set<string>;
+  outputs: Playbook["outputs"];
+}
+
+type SourceRef =
+  | { kind: "playbook"; name: string }
+  | { kind: "step"; step: string; output: string }
+  | { kind: "run"; field: "id" | "status" | "failure" }
+  | { kind: "output"; name: string };
+
+function parseSourceRef(ref: string): SourceRef | null {
   const playbook = /^playbook\.inputs\.([A-Za-z_][\w-]*)$/.exec(ref);
   if (playbook) return { kind: "playbook", name: playbook[1]! };
+  const run = /^run\.(id|status|failure)$/.exec(ref);
+  if (run) return { kind: "run", field: run[1] as "id" | "status" | "failure" };
+  const output = /^run\.outputs\.([A-Za-z_][\w-]*)$/.exec(ref);
+  if (output) return { kind: "output", name: output[1]! };
   const step = /^steps\.([a-z][a-z0-9_.-]*)\.outputs\.([A-Za-z_][\w-]*)$/.exec(ref);
   if (step) return { kind: "step", step: step[1]!, output: step[2]! };
   return null;
@@ -545,8 +603,10 @@ function wireStep(
   /** Inputs that may stay unwired (a sub-playbook input with a default or not required). */
   optional: Set<string> = new Set(),
   declaredOverride?: Record<string, string | null>,
+  /** Set for the steps of an after-task. */
+  after?: AfterContext,
 ): void {
-  const where = `step "${step.id}"`;
+  const where = step.afterTask === step.id ? `after "${step.id}"` : `step "${step.id}"`;
   const declared: Record<string, string | null> =
     declaredOverride ?? (Array.isArray(raw.inputs) ? Object.fromEntries(raw.inputs.map((name) => [name, null])) : raw.inputs ?? {});
   const byId = new Map(steps.map((s) => [s.id, s]));
@@ -561,14 +621,19 @@ function wireStep(
       let ok = true;
       for (const ref of refs) {
         const source = parseSourceRef(ref);
-        if (!source) {
-          err(`${where}: inputs.${name}: "{{ ${ref} }}" must be playbook.inputs.<name> or steps.<id>.outputs.<name>`);
+        if (!source || (!after && (source.kind === "run" || source.kind === "output"))) {
+          err(
+            `${where}: inputs.${name}: "{{ ${ref} }}" must be playbook.inputs.<name> or steps.<id>.outputs.<name>${after ? ", run.id, run.status, run.failure or run.outputs.<name>" : ""}`,
+          );
           ok = false;
         } else if (source.kind === "playbook" && !playbookInputs[source.name]) {
           err(`${where}: inputs.${name}: playbook input "${source.name}" is not declared`);
           ok = false;
+        } else if (source.kind === "output" && !after!.outputs[source.name]) {
+          err(`${where}: inputs.${name}: the playbook has no output "${source.name}"`);
+          ok = false;
         } else if (source.kind === "step") {
-          if (!ancestors.has(source.step)) {
+          if (!ancestors.has(source.step) && !after?.mainIds.has(source.step)) {
             err(`${where}: inputs.${name}: step "${source.step}" is not one this step needs (directly or not)`);
             ok = false;
           } else if (!byId.get(source.step)!.outputs[source.output]) {
@@ -581,7 +646,14 @@ function wireStep(
       const single = singleRef(explicit);
       if (single) {
         const source = parseSourceRef(single)!;
-        type = source.kind === "playbook" ? playbookInputs[source.name]!.type : byId.get(source.step)!.outputs[source.output]!.type;
+        type =
+          source.kind === "playbook"
+            ? playbookInputs[source.name]!.type
+            : source.kind === "step"
+              ? byId.get(source.step)!.outputs[source.output]!.type
+              : source.kind === "output"
+                ? after!.outputs[source.name]!.type
+                : "string";
       }
       step.inputs[name] = wiring(explicit, false, single ?? "template", type);
       continue;
@@ -592,14 +664,23 @@ function wireStep(
     } else if (candidates.length === 1) {
       const source = candidates[0]!;
       step.inputs[name] = wiring(`{{ steps.${source}.outputs.${name} }}`, true, `${source}.${name}`, byId.get(source)!.outputs[name]!.type);
+    } else if (after?.outputs[name]) {
+      step.inputs[name] = wiring(`{{ run.outputs.${name} }}`, true, `run.outputs.${name}`, after.outputs[name]!.type);
+    } else if (after && RUN_FIELDS[name]) {
+      step.inputs[name] = wiring(`{{ run.${RUN_FIELDS[name]} }}`, true, `run.${RUN_FIELDS[name]}`, "string");
     } else if (playbookInputs[name]) {
       step.inputs[name] = wiring(`{{ playbook.inputs.${name} }}`, true, `playbook.${name}`, playbookInputs[name]!.type);
     } else if (!optional.has(name)) {
-      err(`${where}: input "${name}" has no source: no earlier step outputs it and the playbook has no such input`);
+      err(
+        `${where}: input "${name}" has no source: no earlier step outputs it and the playbook has no such input${after ? " or output (after-tasks also get run_id, run_status and run_failure)" : ""}`,
+      );
     }
   }
   for (const ref of templateRefs(step.prompt)) {
-    if (!PROMPT_REFS.test(ref)) err(`${where}: prompt uses "{{ ${ref} }}"; prompts may only use inputs.<name>, run.id and attempt`);
+    if (!PROMPT_REFS.test(ref)) err(`${where}: prompt uses "{{ ${ref} }}"; prompts may only use inputs.<name>, run.id, attempt${after ? ", run.status and run.failure" : ""}`);
+    else if (!after && (ref === "run.status" || ref === "run.failure")) {
+      err(`${where}: prompt uses "{{ ${ref} }}", which only after-tasks can use (the run is still running in its own steps)`);
+    }
     else if (ref.startsWith("inputs.") && !(ref.slice("inputs.".length) in declared)) {
       err(`${where}: prompt uses "{{ ${ref} }}" but the step declares no such input`);
     }
@@ -615,8 +696,9 @@ function wireBlock(
   ancestors: Set<string>,
   playbookInputs: Record<string, VarDef>,
   err: (message: string) => void,
+  after?: AfterContext,
 ): void {
-  const where = `step "${step.id}"`;
+  const where = step.afterTask ? `after "${step.id}"` : `step "${step.id}"`;
   const explicit: Record<string, string | null> = Array.isArray(raw.inputs)
     ? Object.fromEntries(raw.inputs.map((name) => [name, null]))
     : raw.inputs ?? {};
@@ -625,7 +707,7 @@ function wireBlock(
   }
   const declared: Record<string, string | null> = Object.fromEntries(Object.keys(sub.inputs).map((name) => [name, explicit[name] ?? null]));
   const optional = new Set(Object.entries(sub.inputs).filter(([, def]) => def.default !== undefined || !def.required).map(([name]) => name));
-  wireStep(step, raw, steps, ancestors, playbookInputs, err, optional, declared);
+  wireStep(step, raw, steps, ancestors, playbookInputs, err, optional, declared, after);
 }
 
 /**
@@ -643,12 +725,22 @@ function expandBlocks(
   const info: Playbook["blocks"] = {};
   const sinks = new Map<string, string[]>();
   const roots = new Map<string, string[]>();
+  // A nested playbook's own after-tasks are ignored: only the outermost playbook's run.
+  const mainOf = (sub: Playbook) => sub.steps.filter((step) => !step.afterTask);
+  const isAfter = new Set(steps.filter((step) => step.afterTask && blocks.has(step.id)).map((step) => step.id));
   for (const [blockId, sub] of blocks) {
-    const needed = new Set(sub.steps.flatMap((step) => step.needs));
-    sinks.set(blockId, sub.steps.filter((step) => !needed.has(step.id)).map((step) => `${blockId}.${step.id}`));
-    roots.set(blockId, sub.steps.filter((step) => step.needs.length === 0).map((step) => `${blockId}.${step.id}`));
-    info[blockId] = { title: sub.title, playbook: sub.id, ...(sub.concurrency !== undefined ? { concurrency: sub.concurrency } : {}) };
-    for (const [prefix, nested] of Object.entries(sub.blocks)) info[`${blockId}.${prefix}`] = nested;
+    const subSteps = mainOf(sub);
+    const needed = new Set(subSteps.flatMap((step) => step.needs));
+    sinks.set(blockId, subSteps.filter((step) => !needed.has(step.id)).map((step) => `${blockId}.${step.id}`));
+    roots.set(blockId, subSteps.filter((step) => step.needs.length === 0).map((step) => `${blockId}.${step.id}`));
+    // After-tasks hold no concurrency slot: a sub-playbook used as one has its `concurrency` ignored.
+    const limit = !isAfter.has(blockId) && sub.concurrency !== undefined ? { concurrency: sub.concurrency } : {};
+    info[blockId] = { title: sub.title, playbook: sub.id, ...limit };
+    for (const [prefix, nested] of Object.entries(sub.blocks)) {
+      if (!subSteps.some((step) => step.id.startsWith(`${prefix}.`))) continue;
+      const { concurrency, ...rest } = nested;
+      info[`${blockId}.${prefix}`] = isAfter.has(blockId) || concurrency === undefined ? rest : { ...rest, concurrency };
+    }
   }
   const mapNeeds = (needs: string[]) => needs.flatMap((need) => sinks.get(need) ?? [need]);
   const outer = (template: string): string =>
@@ -688,7 +780,7 @@ function expandBlocks(
       result.push({ ...step, needs: mapNeeds(step.needs), inputs, on });
       continue;
     }
-    for (const innerStep of sub.steps) {
+    for (const innerStep of mainOf(sub)) {
       const on = Object.fromEntries(
         Object.entries(innerStep.on).map(([outcome, transition]) =>
           [outcome, transition.kind === "goto" || transition.kind === "ask" ? { ...transition, target: `${step.id}.${transition.target}` } : transition],
@@ -708,6 +800,7 @@ function expandBlocks(
         needs: innerStep.needs.length === 0 ? mapNeeds(step.needs) : innerStep.needs.map((need) => `${step.id}.${need}`),
         inputs,
         on,
+        ...(step.afterTask ? { afterTask: step.afterTask } : {}),
       });
     }
   }
@@ -732,7 +825,7 @@ function resolveOutputSource(
   if (explicit !== undefined) {
     for (const ref of templateRefs(explicit)) {
       const source = parseSourceRef(ref);
-      if (!source) return { error: `"{{ ${ref} }}" must be playbook.inputs.<name> or steps.<id>.outputs.<name>` };
+      if (!source || source.kind === "run" || source.kind === "output") return { error: `"{{ ${ref} }}" must be playbook.inputs.<name> or steps.<id>.outputs.<name>` };
       if (source.kind === "playbook" && !inputs[source.name]) return { error: `playbook input "${source.name}" is not declared` };
       if (source.kind === "step" && !byId.get(source.step)?.outputs[source.output]) {
         return { error: `step "${source.step}" has no output "${source.output}"` };
@@ -741,7 +834,7 @@ function resolveOutputSource(
     const single = singleRef(explicit);
     if (single) {
       const source = parseSourceRef(single)!;
-      const fromType = source.kind === "playbook" ? inputs[source.name]!.type : byId.get(source.step)!.outputs[source.output]!.type;
+      const fromType = source.kind === "playbook" ? inputs[source.name]!.type : source.kind === "step" ? byId.get(source.step)!.outputs[source.output]!.type : "string";
       if (!typeCompatible(fromType, type)) return { error: `type ${fromType} does not fit ${type}` };
     }
     return { source: explicit, auto: false, label: single ?? "template" };

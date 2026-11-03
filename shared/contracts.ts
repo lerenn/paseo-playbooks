@@ -88,6 +88,13 @@ export const archiveRunRpc = defineRpc({
   output: z.object({ archivedAt: z.string() }),
 });
 
+/** Starts a manual after-task of a finished run; its manager is woken to run it. */
+export const startAfterTaskRpc = defineRpc({
+  name: "after.start",
+  input: z.object({ runId: z.string(), taskId: z.string() }),
+  output: z.object({ status: z.string() }),
+});
+
 export const retryStepRpc = defineRpc({
   name: "steps.retry",
   input: z.object({ runId: z.string(), stepId: z.string() }),

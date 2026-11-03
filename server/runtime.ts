@@ -4,7 +4,7 @@ import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 /** The daemon API handed to plugin handlers (typed via the SDK, so the build needs no @getpaseo/client). */
 type PaseoApi = PluginHandlerContext["paseo"];
 import type { Playbook, Run, Step, VarValue } from "../shared/types";
-import { isTerminal } from "../shared/types";
+import { isActive, isStepLive, isTerminal } from "../shared/types";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "./defaults";
 import * as engine from "./engine";
 import { checkoutSnapshot, currentRef, snapshotDiff } from "./git";
@@ -105,7 +105,7 @@ export class Runtime {
   /** After a (re)start: find step agents that stopped, re-arm timeouts, flush wake-ups. */
   private async reconcile(): Promise<void> {
     for (const run of this.store.list()) {
-      if (isTerminal(run.status)) continue;
+      if (!isActive(run)) continue;
       const manager = await this.api().agents.ref(run.managerAgentId).refresh().catch(() => null);
       if (!manager || manager.agent.archivedAt) {
         await this.failRun(run.id, "manager lost");
@@ -134,7 +134,7 @@ export class Runtime {
   }
 
   activeRunOfManager(agentId: string): Run | undefined {
-    return this.runsOfManager(agentId).find((run) => !isTerminal(run.status));
+    return this.runsOfManager(agentId).find((run) => isActive(run));
   }
 
   private stepRunOf(agentId: string): { run: Run; stepId: string } | null {
@@ -223,7 +223,7 @@ export class Runtime {
     if (!manager.workspaceId) throw new UserError("this agent has no workspace");
     const workspace = await this.api().workspaces.ref(manager.workspaceId).refresh();
     if (!workspace) throw new UserError("workspace not found");
-    const active = this.store.list().find((run) => run.workspaceId === workspace.id && !isTerminal(run.status));
+    const active = this.store.list().find((run) => run.workspaceId === workspace.id && isActive(run));
     if (active) throw new UserError(`this workspace already has an active run (${active.id}); one active run per workspace`);
     const workspaceDir = workspace.workspaceDirectory ?? manager.cwd;
     const reservation = this.reservations.get(workspace.id);
@@ -357,6 +357,7 @@ export class Runtime {
   async archiveRun(runId: string): Promise<string> {
     return this.store.mutate(runId, (run) => {
       if (!isTerminal(run.status)) throw new UserError(`run ${runId} is ${run.status}: cancel it before archiving`);
+      if (isActive(run)) throw new UserError(`run ${runId} is wrapping up (after-tasks running): wait or cancel them before archiving`);
       run.archivedAt ??= nowIso();
       return run.archivedAt;
     });
@@ -367,7 +368,12 @@ export class Runtime {
     await this.applyEffects(runId, effects);
     await this.admitQueued(runId);
     if (notifyManager) {
-      await this.enqueue(runId, [`The run was canceled from the panel: ${reason}. Tell the human and stop.`]);
+      const status = this.store.get(runId)!.status;
+      await this.enqueue(runId, [
+        status === "canceled"
+          ? `The run was canceled from the panel: ${reason}. Tell the human and stop.`
+          : `The after-tasks were canceled from the panel: ${reason}. The run stays ${status}. Tell the human and stop.`,
+      ]);
       await this.deliver(runId);
     }
     return this.store.get(runId)!;
@@ -386,7 +392,7 @@ export class Runtime {
     const state = run.steps[stepId];
     const attempt = state?.attempts.at(-1);
     if (!state || !attempt) throw new UserError(`step "${stepId}" has no attempt to nudge`);
-    if (isTerminal(run.status)) throw new UserError(`run ${run.id} is ${run.status}`);
+    if (!isStepLive(run, stepId)) throw new UserError(`step "${stepId}" can no longer change: run ${run.id} is ${run.status}`);
     if (state.status === "reported") {
       // The agent works again: its next turn end reports again.
       await this.store.mutate(runId, (current) => {
@@ -401,6 +407,20 @@ export class Runtime {
       throw new UserError(`step "${stepId}" is ${state.status}; only a running or reported step can be nudged`);
     }
     await this.api().agents.ref(attempt.agentId).send(message, { activeTurnBehavior: "steer" });
+  }
+
+  /** A human starts a manual after-task from the panel: its manager is woken to run it. */
+  async startAfterTask(runId: string, taskId: string): Promise<Run> {
+    const run = this.store.get(runId);
+    if (!run) throw new UserError(`unknown run "${runId}"`);
+    const manager = await this.api().agents.ref(run.managerAgentId).refresh().catch(() => null);
+    if (!manager || manager.agent.archivedAt) throw new UserError("this run's Playbook Manager no longer exists");
+    const busy = this.store.list().find((other) => other.id !== run.id && other.workspaceId === run.workspaceId && isActive(other));
+    if (busy) throw new UserError(`this workspace has another active run (${busy.id}); wait for it to end`);
+    const effects = await this.store.mutate(runId, (current) => engine.startAfterTask(current, taskId, nowIso()));
+    await this.enqueue(runId, [`A human started the after-task "${taskId}" from the panel.`, ...effects.notes]);
+    await this.deliver(runId);
+    return this.store.get(runId)!;
   }
 
   async askManagerToRetry(runId: string, stepId: string): Promise<void> {
@@ -481,7 +501,7 @@ export class Runtime {
 
   async onWorkspaceArchived(workspaceId: string): Promise<void> {
     for (const run of this.store.list().filter((candidate) => candidate.workspaceId === workspaceId)) {
-      if (!isTerminal(run.status)) await this.cancelRun(run.id, "worktree archived", false).catch(() => undefined);
+      if (isActive(run)) await this.cancelRun(run.id, "worktree archived", false).catch(() => undefined);
       await this.store.delete(run.id);
     }
     this.reservations.delete(workspaceId);
@@ -618,7 +638,7 @@ export class Runtime {
     }
     if (input.agentId) return this.startWithAgent(workspace.id, input.agentId, playbook, resolved.inputs);
     if (input.sameWorkspace) {
-      const busy = this.store.list().find((run) => run.workspaceId === workspace.id && !isTerminal(run.status));
+      const busy = this.store.list().find((run) => run.workspaceId === workspace.id && isActive(run));
       if (busy) throw new UserError(`this workspace already has an active run (${busy.id}); use "Start in a new workspace"`);
       // The new agent creates the run itself with start_playbook, which takes this reserved id.
       const runId = `run_${shortId()}`;

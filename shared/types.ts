@@ -83,6 +83,8 @@ export const StepSchema = z.object({
   on: z.record(z.string(), TransitionSchema),
   /** Gate steps: the choices offered, in order (empty = the default Approve / Reject). */
   choices: z.array(GateChoiceSchema).default([]),
+  /** Set on the steps of an after-task: the task's id. Unset = a step of the main graph. */
+  afterTask: z.string().optional(),
 });
 export type Step = z.infer<typeof StepSchema>;
 
@@ -91,6 +93,19 @@ export const PlaybookOutputSchema = VarDefSchema.extend({
   auto: z.boolean(),
   label: z.string(),
 });
+
+export const AfterTriggerSchema = z.enum(["auto", "manual"]);
+
+/** A task run once the main graph has ended: it never changes the run's status. */
+export const AfterTaskSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  /** auto: starts when the run completes or fails. manual: a human starts it from the panel. */
+  trigger: AfterTriggerSchema,
+  /** Its steps in `Playbook.steps` (one for an agent or gate task, the expanded steps of a sub-playbook). */
+  steps: z.array(z.string()),
+});
+export type AfterTask = z.infer<typeof AfterTaskSchema>;
 
 export const PlaybookSchema = z.object({
   id: z.string(),
@@ -110,6 +125,8 @@ export const PlaybookSchema = z.object({
   blocks: z
     .record(z.string(), z.object({ title: z.string(), playbook: z.string(), concurrency: z.number().int().positive().optional() }))
     .default({}),
+  /** After-tasks, in file order. Their steps are in `steps`, marked with `afterTask`. */
+  after: z.array(AfterTaskSchema).default([]),
 });
 export type Playbook = z.infer<typeof PlaybookSchema>;
 
@@ -210,6 +227,18 @@ export type Gate = z.infer<typeof GateSchema>;
 export const RunStatusSchema = z.enum(["running", "waiting_gate", "completed", "failed", "canceled"]);
 export type RunStatus = z.infer<typeof RunStatusSchema>;
 
+export const AfterTaskStatusSchema = z.enum(["pending", "running", "completed", "failed", "canceled"]);
+export type AfterTaskStatus = z.infer<typeof AfterTaskStatusSchema>;
+
+export const RunAfterTaskSchema = z.object({
+  status: AfterTaskStatusSchema,
+  startedAt: z.string().nullable(),
+  endedAt: z.string().nullable(),
+  /** Why it failed or was canceled. */
+  detail: z.string().nullable(),
+});
+export type RunAfterTask = z.infer<typeof RunAfterTaskSchema>;
+
 export const HistoryEventSchema = z.object({
   seq: z.number().int(),
   at: z.string(),
@@ -240,6 +269,8 @@ export const RunSchema = z.object({
   loops: z.record(z.string(), z.number().int()),
   loopAllowance: z.record(z.string(), z.number().int()),
   gates: z.array(GateSchema),
+  /** State of each after-task, by id. Runs created before after-tasks have none. */
+  after: z.record(z.string(), RunAfterTaskSchema).default({}),
   inbox: z.array(z.string()),
   history: z.array(HistoryEventSchema),
   seq: z.number().int(),
@@ -250,4 +281,24 @@ export const TERMINAL_RUN_STATUSES: readonly RunStatus[] = ["completed", "failed
 
 export function isTerminal(status: RunStatus): boolean {
   return TERMINAL_RUN_STATUSES.includes(status);
+}
+
+/** After-tasks of the run that are running now ("wrapping up"). */
+export function runningAfterTasks(run: Run): string[] {
+  return Object.entries(run.after).filter(([, task]) => task.status === "running").map(([id]) => id);
+}
+
+/**
+ * Whether the run still has work going on: its main graph, or an after-task once it ended.
+ * Use `isTerminal(run.status)` for the run's result, this for "can it still change".
+ */
+export function isActive(run: Run): boolean {
+  return !isTerminal(run.status) || runningAfterTasks(run).length > 0;
+}
+
+/** Whether a step can still move: a main step while the run is not finished, an after-step while its task runs. */
+export function isStepLive(run: Run, stepId: string): boolean {
+  const step = run.playbook.steps.find((candidate) => candidate.id === stepId);
+  if (!step) return false;
+  return step.afterTask ? run.after[step.afterTask]?.status === "running" : !isTerminal(run.status);
 }

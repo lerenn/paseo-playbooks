@@ -6,7 +6,8 @@ Playbooks are YAML files in each repository, under `.paseo/plugins/playbooks/` o
 `.paseo/playbooks/`, with shared roles in `roles/<id>/` (settings and a Markdown system
 prompt) and optional agent defaults in `defaults/main.yaml`. Steps form a graph through `needs`: steps that are ready
 together run in parallel, loops are explicit `goto` steps back with a limit, and inputs
-and outputs are typed and matched by name.
+and outputs are typed and matched by name. After-tasks (`after:`, a retro for example) run
+once the run has completed or failed, or when a human starts them, without changing its result.
 
 The plugin owns the rules: it validates playbooks, refuses steps or transitions that a
 playbook does not allow, keeps each run's state on the daemon so runs survive a restart,

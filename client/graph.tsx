@@ -1,10 +1,12 @@
-import { openExternalUrl, useAgent } from "@getpaseo/plugin/client";
-import { Icon, ScrollView } from "@getpaseo/plugin/client/ui";
+import { openExternalUrl, useAgent, useRpc } from "@getpaseo/plugin/client";
+import { Icon, ScrollView, useToast } from "@getpaseo/plugin/client/ui";
+import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AccessibilityInfo, Animated, Pressable, Text, View } from "react-native";
-import { GateActions } from "./sheet";
+import { Button, GateActions } from "./sheet";
+import { startAfterTaskRpc } from "../shared/contracts";
 import { END, layerOf, layoutGraph, START, withTerminals } from "../shared/graph";
-import type { Playbook, Run, Step } from "../shared/types";
+import { isTerminal, type AfterTask, type Playbook, type Run, type Step } from "../shared/types";
 import { agentBackground, gateBackground, stepLabel, nodeColor, nodeIcon, nodeStateLabel, type NodeState, type Theme } from "./theme";
 
 /** Nodes grow with the panel between these widths; below the minimum the graph scrolls sideways. */
@@ -30,9 +32,9 @@ interface LoopEdge {
 }
 
 /** For steps that can also loop back: the outcomes that continue forward, shown on the forward edge. */
-function forwardLabels(playbook: Playbook): Map<string, string> {
+function forwardLabels(steps: readonly Step[]): Map<string, string> {
   const labels = new Map<string, string>();
-  for (const step of playbook.steps) {
+  for (const step of steps) {
     if (!Object.values(step.on).some((transition) => transition.kind === "goto")) continue;
     const forward = step.outcomes.filter((outcome) => (step.on[outcome]?.kind ?? "complete") === "complete");
     if (forward.length > 0) labels.set(step.id, forward.join(" / "));
@@ -40,8 +42,8 @@ function forwardLabels(playbook: Playbook): Map<string, string> {
   return labels;
 }
 
-function loopEdges(playbook: Playbook, run: Run | null): LoopEdge[] {
-  return playbook.steps.flatMap((step) =>
+function loopEdges(steps: readonly Step[], run: Run | null): LoopEdge[] {
+  return steps.flatMap((step) =>
     Object.entries(step.on).flatMap(([outcome, transition]) =>
       transition.kind === "goto" || (transition.kind === "ask" && transition.target !== step.id)
         ? [{ from: step.id, to: transition.target, outcome, count: run?.loops[`${step.id}->${transition.target}`] ?? 0, max: transition.maxLoops }]
@@ -78,16 +80,32 @@ export function useReduceMotion(): boolean {
   return reduce;
 }
 
-/** Layered top-down DAG built from plain views: nodes in rows, org-chart connectors between rows. */
+/** The main graph between Start and End, then the after-tasks below it, each in its own frame. */
 export function Graph(props: GraphProps) {
-  const { playbook, run, theme } = props;
+  const [available, setAvailable] = useState(0);
+  const main = useMemo(() => props.playbook.steps.filter((step) => !step.afterTask), [props.playbook]);
+  return (
+    <View onLayout={(event) => setAvailable(event.nativeEvent.layout.width)}>
+      <Dag {...props} steps={main} terminals available={available} />
+      {props.playbook.after.length > 0 ? <AfterTasks {...props} available={available} /> : null}
+    </View>
+  );
+}
+
+/** Layered top-down DAG built from plain views: nodes in rows, org-chart connectors between rows. */
+function Dag(props: GraphProps & { steps: Step[]; terminals: boolean; available: number }) {
+  const { playbook, run, theme, steps, available } = props;
   // Start and End are laid out like steps: Start above the roots, End below every step nothing needs.
-  const nodes = useMemo(() => withTerminals(playbook.steps), [playbook]);
+  const nodes = useMemo(() => (props.terminals ? withTerminals(steps) : steps), [steps, props.terminals]);
   const layout = useMemo(() => layoutGraph(nodes), [nodes]);
   const layers = useMemo(() => layerOf(nodes), [nodes]);
-  const [available, setAvailable] = useState(0);
-  const loops = useMemo(() => loopEdges(playbook, run), [playbook, run]);
-  const forward = useMemo(() => forwardLabels(playbook), [playbook]);
+  const loops = useMemo(() => loopEdges(steps, run), [steps, run]);
+  const forward = useMemo(() => forwardLabels(steps), [steps]);
+  // An after-task's own frame already holds its sub-playbook: no second frame for it.
+  const blocks = useMemo(
+    () => Object.fromEntries(Object.entries(playbook.blocks).filter(([prefix]) => !playbook.after.some((task) => task.id === prefix))),
+    [playbook],
+  );
   /** Room on each side for the loop lanes (both sides, so the graph stays centred). */
   const gutter = loops.length > 0 ? 6 + loops.length * LANE_GAP : 0;
   const columns = Math.max(1, ...layout.layers.map((row) => row.length));
@@ -105,7 +123,7 @@ export function Graph(props: GraphProps) {
     }
     return result;
   }, [layout, width, SLOT]);
-  const byId = useMemo(() => new Map(playbook.steps.map((step) => [step.id, step])), [playbook]);
+  const byId = useMemo(() => new Map(steps.map((step) => [step.id, step])), [steps]);
   /** Steps with a pending decision: their node widens to the graph's width, alone in its row, to hold the choices. */
   const deciding = new Set(run ? run.gates.filter((gate) => gate.status === "pending").map((gate) => gate.stepId) : []);
   /** Actual width of each node, so loop lines meet its edge. */
@@ -113,16 +131,15 @@ export function Graph(props: GraphProps) {
     const row = layout.layers.find((candidate) => candidate.includes(id));
     return deciding.has(id) && row?.length === 1 ? Math.max(nodeWidth, width - GAP) : nodeWidth;
   };
-  const running = new Set(run ? playbook.steps.filter((step) => run.steps[step.id]?.status === "running").map((step) => step.id) : []);
+  const running = new Set(run ? steps.filter((step) => run.steps[step.id]?.status === "running").map((step) => step.id) : []);
 
   return (
-    <View onLayout={(event) => setAvailable(event.nativeEvent.layout.width)}>
     <ScrollView horizontal style={{ flexGrow: 0 }} contentContainerStyle={{ minWidth: "100%", justifyContent: "center" }}>
       <View style={{ width: width + 2 * gutter, paddingHorizontal: gutter, paddingTop: 4, paddingBottom: 16 }}>
         <BlockFrames
           theme={theme}
-          blocks={playbook.blocks}
-          stepIds={playbook.steps.map((step) => step.id)}
+          blocks={blocks}
+          stepIds={steps.map((step) => step.id)}
           layers={layers}
           layerTops={layerTops}
           heights={heights}
@@ -190,6 +207,95 @@ export function Graph(props: GraphProps) {
         ))}
       </View>
     </ScrollView>
+  );
+}
+
+/** Below End: what runs once the run has ended. It never changes the run's result. */
+function AfterTasks(props: GraphProps & { available: number }) {
+  const { playbook, theme } = props;
+  const rule = <View style={{ flex: 1, height: 1, backgroundColor: theme.colors.border }} />;
+  return (
+    <View style={{ gap: 8, paddingBottom: 8 }}>
+      <View accessibilityRole="header" style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+        {rule}
+        <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11, fontWeight: "600" }}>After the run</Text>
+        {rule}
+      </View>
+      <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11, textAlign: "center" }}>
+        Runs once the run has ended. Its result does not change the run's.
+      </Text>
+      {playbook.after.map((task) => (
+        <AfterTaskFrame key={task.id} {...props} task={task} />
+      ))}
+    </View>
+  );
+}
+
+const FRAME_PAD = 8;
+
+function AfterTaskFrame(props: GraphProps & { available: number; task: AfterTask }) {
+  const { playbook, run, theme, task } = props;
+  const start = useRpc(startAfterTaskRpc);
+  const toast = useToast();
+  const queryClient = useQueryClient();
+  const [busy, setBusy] = useState(false);
+  const steps = useMemo(() => playbook.steps.filter((step) => step.afterTask === task.id), [playbook, task.id]);
+  const state = run?.after[task.id];
+  const status = state?.status ?? "pending";
+  const color =
+    !run || status === "pending"
+      ? theme.colors.foregroundMuted
+      : status === "running"
+        ? theme.colors.accent
+        : status === "completed"
+          ? theme.colors.statusSuccess
+          : theme.colors.statusDanger;
+  const ended = run !== null && isTerminal(run.status);
+  const label = !run
+    ? task.trigger === "auto"
+      ? "starts when the run completes or fails"
+      : "a human starts it once the run has ended"
+    : status === "pending"
+      ? ended
+        ? "not started"
+        : task.trigger === "auto"
+          ? "starts when the run ends"
+          : "can be started once the run ends"
+      : status === "running"
+        ? "wrapping up"
+        : `${status}${state?.detail ? `: ${state.detail}` : ""}`;
+  const canStart = ended && task.trigger === "manual" && status === "pending";
+  return (
+    <View style={{ borderRadius: 12, borderWidth: 1, borderColor: status === "running" ? color : theme.colors.border, backgroundColor: theme.colors.surface0, padding: FRAME_PAD, gap: 6 }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+        <Icon name={status === "running" ? "Loader" : status === "completed" ? "Check" : status === "failed" || status === "canceled" ? "X" : "Hourglass"} size={13} color={color} />
+        <View style={{ flex: 1 }}>
+          <Text numberOfLines={1} style={{ color: theme.colors.foreground, fontSize: 12, fontWeight: "600" }}>
+            {task.title}
+            <Text style={{ color: theme.colors.foregroundMuted, fontWeight: "400" }}> · {task.trigger}</Text>
+          </Text>
+          <Text numberOfLines={2} style={{ color, fontSize: 11 }}>
+            {label}
+          </Text>
+        </View>
+        {canStart ? (
+          <Button
+            theme={theme}
+            kind="primary"
+            label={busy ? "Starting…" : "Start"}
+            disabled={busy}
+            accessibilityLabel={`Start the after-task ${task.title}`}
+            onPress={() => {
+              setBusy(true);
+              void start({ runId: run!.id, taskId: task.id })
+                .then(() => queryClient.invalidateQueries({ queryKey: ["playbooks"] }))
+                .catch((error: unknown) => toast.error(error instanceof Error ? error.message : String(error)))
+                .finally(() => setBusy(false));
+            }}
+          />
+        ) : null}
+      </View>
+      {steps.length > 0 ? <Dag {...props} steps={steps} terminals={false} available={Math.max(0, props.available - 2 * FRAME_PAD - 2)} /> : null}
     </View>
   );
 }

@@ -5,7 +5,7 @@ import { useState, type ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
 import { decideGateRpc, nudgeStepRpc, retryStepRpc } from "../shared/contracts";
 import { ASK_CHOICES, destinationOf, gateChoices, gateText, linkify, LOOP_LIMIT_CHOICES } from "../shared/gates";
-import { isTerminal, type Gate, type GateChoice, type Playbook, type Run } from "../shared/types";
+import { isStepLive, type Gate, type GateChoice, type Playbook, type Run } from "../shared/types";
 import { stepLabel, type Theme } from "./theme";
 
 export function Button(props: { theme: Theme; label: string; onPress(): void; kind?: "primary" | "danger" | "plain"; disabled?: boolean; accessibilityLabel?: string }) {
@@ -219,7 +219,7 @@ export function StepSheet(props: {
   const retry = useRpc(retryStepRpc);
   const toast = useToast();
   const [message, setMessage] = useState("");
-  const active = run !== null && !isTerminal(run.status);
+  const active = run !== null && isStepLive(run, stepId);
   const canNudge = active && (state?.status === "running" || state?.status === "reported");
   const canRetry = active && state?.status === "reported" && (latest?.report?.outcome === "failure" || latest?.report === null);
 
