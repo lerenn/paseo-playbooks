@@ -332,11 +332,6 @@ function RunBar(props: { theme: Theme; run: Run; hostLabel: string }) {
   return (
     <View style={{ gap: 6 }}>
       {run.failure ? <Text style={{ color: theme.colors.statusDanger, fontSize: 12 }}>{run.failure}</Text> : null}
-      {run.status === "completed" && run.playbook.next.length > 0 ? (
-        <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>
-          Next offered to the manager: {run.playbook.next.map((next) => next.playbook).join(", ")}
-        </Text>
-      ) : null}
     </View>
   );
 }

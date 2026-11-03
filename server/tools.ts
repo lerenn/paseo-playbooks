@@ -59,7 +59,6 @@ export function runSummary(run: Run) {
     ),
     gates: run.gates,
     loops: run.loops,
-    next: run.status === "completed" ? run.playbook.next : [],
   };
 }
 
@@ -75,7 +74,6 @@ function describeEntry(entry: PlaybookEntry) {
     inputs: pb.inputs,
     outputs: Object.fromEntries(Object.entries(pb.outputs).map(([name, def]) => [name, { type: def.type, from: def.label }])),
     concurrency: pb.concurrency ?? null,
-    next: pb.next.map((next) => next.playbook),
     steps: pb.steps.map((step) => ({
       id: step.id,
       kind: step.kind,
@@ -158,7 +156,7 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
           const gates = ready.filter((id) => engine.stepDef(run, id).kind === "gate");
           const text =
             run.status === "completed"
-              ? `Run ${run.id} completed. Outputs: ${JSON.stringify(run.outputs)}.${run.playbook.next.length ? ` Chain available: ${run.playbook.next.map((n) => n.playbook).join(", ")}.` : ""}`
+              ? `Run ${run.id} completed. Outputs: ${JSON.stringify(run.outputs)}.`
               : run.status === "failed"
                 ? `Run ${run.id} failed: ${run.failure}.`
                 : run.status === "waiting_gate"

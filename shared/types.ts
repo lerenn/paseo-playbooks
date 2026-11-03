@@ -92,13 +92,6 @@ export const PlaybookOutputSchema = VarDefSchema.extend({
   label: z.string(),
 });
 
-export const NextSchema = z.object({
-  playbook: z.string(),
-  on: z.literal("completed"),
-  /** Explicit mappings (templates over `outputs.<name>` and `inputs.<name>`); others auto-match. */
-  inputs: z.record(z.string(), z.string()),
-});
-
 export const PlaybookSchema = z.object({
   id: z.string(),
   title: z.string(),
@@ -106,7 +99,6 @@ export const PlaybookSchema = z.object({
   file: z.string(),
   inputs: z.record(z.string(), VarDefSchema),
   outputs: z.record(z.string(), PlaybookOutputSchema),
-  next: z.array(NextSchema),
   concurrency: z.number().int().positive().optional(),
   steps: z.array(StepSchema),
   roles: z.record(z.string(), RoleSchema),

@@ -176,25 +176,18 @@ steps:
     expect(entry.playbook!.title).toBe("Odd");
   });
 
-  it("validates next chains", async () => {
+  it("refuses the removed next key", async () => {
     const dir = await workspace({
       "first.yaml": `
-outputs: { pr_url: {} }
 next: [{ playbook: second }]
 steps:
-  - { id: a, role: reviewer, outputs: { pr_url: {} } }
+  - { id: a, role: reviewer }
 `,
-      "second.yaml": `
-inputs:
-  pr_url: { required: true }
-  version: { required: true }
-steps:
-  - { id: b, role: reviewer, inputs: [pr_url] }
-`,
+      "second.yaml": "steps:\n  - { id: b, role: reviewer }\n",
     });
-    const entries = (await loadPlaybooks(dir)).entries;
-    const first = entries.find((entry) => entry.id === "first")!;
-    expect(first.errors.join("\n")).toMatch(/required input "version" has no matching output/);
+    const first = (await loadPlaybooks(dir)).entries.find((entry) => entry.id === "first")!;
+    expect(first.playbook).toBeNull();
+    expect(first.errors.join("\n")).toMatch(/`next` was removed/);
   });
 
   it("also loads .paseo/playbooks/, with its own roles", async () => {

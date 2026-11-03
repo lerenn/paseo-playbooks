@@ -23,8 +23,6 @@ describe("skills/paseo-playbooks/SKILL.md", () => {
     await mkdir(root, { recursive: true });
     await cp(path.join(ROOT, "examples", ".paseo", "plugins", "playbooks", "roles"), path.join(root, "roles"), { recursive: true });
     await writeFile(path.join(root, "pr.yaml"), example!);
-    // The example chains to "release"; give it a minimal one.
-    await writeFile(path.join(root, "release.yaml"), "steps:\n  - { id: deploy, role: implementer }\n");
     const result = await loadPlaybooks(workspace);
     const pr = result.entries.find((entry) => entry.id === "pr")!;
     expect(pr.errors).toEqual([]);

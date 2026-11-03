@@ -83,9 +83,6 @@ outputs:                                   # the run's result
   pr_url: { type: string }                 # no value: auto-matched from a step output named pr_url
   pr_number: { type: number, value: "{{ steps.implement.outputs.pr_number }}" }
 
-next:                                      # optional chaining; the manager decides
-  - playbook: release
-
 steps:
   - id: investigate
     role: investigator
@@ -179,8 +176,7 @@ steps:
   first step (the sub-playbook must have exactly one).
 - `prompt`, `outputs`, `outcomes`, `timeout`, `agent`, `choices` and `on` do not apply to
   a playbook step. A playbook that includes itself (directly or not) is an error.
-- The sub-playbook's `next` and manager settings are ignored; its gates stay gates of the
-  run.
+- The sub-playbook's manager settings are ignored; its gates stay gates of the run.
 - The sub-playbook's `concurrency` applies to the block. Its slots are shared by every run
   in the project (also top-level runs of that playbook). A run takes a slot when the block's
   first steps become ready and keeps it until all the block's steps complete (also while a
@@ -225,7 +221,8 @@ outputs. `ask` is not available on gate steps.
 - two steps that can run at the same time (neither needs the other) must not both be able
   to edit files: make one role `readonly: true` or order them with `needs`
 - prompts use only `inputs`, `run.id` and `attempt`; inputs only reference ancestors
-- `next` targets exist and their required inputs are covered
+- no `next` key: chaining was removed; to run a playbook after another, write a parent
+  playbook that includes both as sub-playbook steps
 
 ## YAML pitfall
 

@@ -83,16 +83,8 @@ const RawPlaybookSchema = z.object({
     agent: AgentSettingsSchema.optional(),
     inputs: z.record(z.string(), RawVarDefSchema.nullable()).optional(),
     outputs: z.record(z.string(), RawOutputSchema.nullable()).optional(),
-    next: z
-      .array(
-        z
-          .object({
-            playbook: z.string(),
-            on: z.literal("completed").default("completed"),
-            inputs: z.record(z.string(), z.string()).optional(),
-          }),
-      )
-      .optional(),
+    /** Removed: playbooks compose only as sub-playbook steps. Kept here to refuse it clearly. */
+    next: z.unknown().optional(),
     concurrency: z.number().int().positive().optional(),
     steps: z.array(RawStepSchema).min(1),
   });
@@ -217,8 +209,6 @@ export interface LoadResult {
   entries: PlaybookEntry[];
 }
 
-type RawNext = Array<{ playbook: string; inputs: Record<string, string> }>;
-
 /** True when the workspace has at least one playbook file in any playbook folder. */
 export async function hasPlaybooks(workspaceDir: string): Promise<boolean> {
   for (const relDir of PLAYBOOKS_DIRS) {
@@ -248,7 +238,6 @@ async function listFolder(root: string): Promise<string[] | null> {
 export async function loadPlaybooks(workspaceDir: string): Promise<LoadResult> {
   const roots: string[] = [];
   const entries: PlaybookEntry[] = [];
-  const rawNext = new Map<PlaybookEntry, RawNext>();
   for (const relDir of PLAYBOOKS_DIRS) {
     const root = path.join(workspaceDir, relDir);
     const names = await listFolder(root);
@@ -278,13 +267,12 @@ export async function loadPlaybooks(workspaceDir: string): Promise<LoadResult> {
     };
     for (const name of files) {
       const id = name.replace(/\.ya?ml$/, "");
-      const { entry, next } = await folder.load(id, []);
+      const { entry } = await folder.load(id, []);
       if (defaultsErrors.length > 0) {
         entry.errors.unshift(...defaultsErrors);
         entry.playbook = null;
       }
       entries.push(entry);
-      rawNext.set(entry, next);
     }
   }
   for (const entry of entries) {
@@ -293,7 +281,6 @@ export async function loadPlaybooks(workspaceDir: string): Promise<LoadResult> {
     entry.errors.push(`${entry.file}: playbook id "${entry.id}" is also defined in ${clashes.map((other) => other.file).join(", ")}; rename one`);
     entry.playbook = null;
   }
-  linkNext(entries, rawNext);
   return { roots, exists: roots.length > 0, entries };
 }
 
@@ -308,14 +295,14 @@ interface Folder {
   load: (id: string, stack: string[]) => Promise<Loaded>;
 }
 
-type Loaded = { entry: PlaybookEntry; next: Array<{ playbook: string; inputs: Record<string, string> }> };
+type Loaded = { entry: PlaybookEntry };
 
 async function loadPlaybook(folder: Folder, name: string, file: string, id: string, stack: string[]): Promise<Loaded> {
   const { root, defaults, role } = folder;
   const entry: PlaybookEntry = { id, file, title: id, errors: [], playbook: null };
   const fail = (errors: string[]) => {
     entry.errors.push(...errors);
-    return { entry, next: [] };
+    return { entry };
   };
   if (!ID.test(id)) return fail([`${file}: playbook file names use lowercase letters, digits, - and _`]);
   const raw = await readYaml(path.join(root, name), file);
@@ -326,6 +313,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
   entry.title = pb.title ?? id;
   const errors: string[] = [];
   const err = (message: string) => errors.push(`${file}: ${message}`);
+  if (pb.next !== undefined) err("`next` was removed; include the other playbook as a sub-playbook step (`playbook: <id>`) instead");
 
   // Playbook inputs.
   const inputs: Record<string, VarDef> = {};
@@ -528,17 +516,13 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     file,
     inputs,
     outputs,
-    next: [],
     steps: finalSteps,
     roles,
     manager,
     blocks: blockInfo,
   };
   if (pb.concurrency !== undefined) entry.playbook.concurrency = pb.concurrency;
-  return {
-    entry,
-    next: (pb.next ?? []).map((next) => ({ playbook: next.playbook, inputs: next.inputs ?? {} })),
-  };
+  return { entry };
 }
 
 const PROMPT_REFS = /^(inputs\.[A-Za-z_][\w-]*|run\.id|attempt)$/;
@@ -771,29 +755,3 @@ function resolveOutputSource(
   return { error: "no step output or playbook input has this name; set `value`" };
 }
 
-/** Validates `next` entries once every playbook in the folder is loaded. */
-function linkNext(entries: PlaybookEntry[], rawNext: Map<PlaybookEntry, RawNext>): void {
-  const byId = new Map(entries.filter((entry) => entry.playbook).map((entry) => [entry.id, entry]));
-  for (const entry of entries) {
-    if (!entry.playbook) continue;
-    for (const next of rawNext.get(entry) ?? []) {
-      const target = byId.get(next.playbook)?.playbook;
-      if (!target) {
-        entry.errors.push(`${entry.file}: next: playbook "${next.playbook}" not found or invalid`);
-        continue;
-      }
-      for (const [name, def] of Object.entries(target.inputs)) {
-        if (next.inputs[name] !== undefined) continue;
-        if (entry.playbook.outputs[name] || entry.playbook.inputs[name]) continue;
-        if (def.required && def.default === undefined) {
-          entry.errors.push(`${entry.file}: next "${next.playbook}": required input "${name}" has no matching output; map it in next.inputs`);
-        }
-      }
-      for (const name of Object.keys(next.inputs)) {
-        if (!target.inputs[name]) entry.errors.push(`${entry.file}: next "${next.playbook}": unknown input "${name}"`);
-      }
-      entry.playbook.next.push({ playbook: next.playbook, on: "completed", inputs: next.inputs });
-    }
-    if (entry.errors.length > 0) entry.playbook = null;
-  }
-}

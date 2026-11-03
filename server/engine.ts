@@ -380,9 +380,6 @@ function completeRun(run: Run, now: string, fx: Effects): void {
   finish(run, "completed", "", now, fx);
   const shown = Object.entries(run.outputs).map(([name, value]) => `${name}=${value}`).join(", ");
   if (shown) fx.notes.push(`Outputs: ${shown}.`);
-  for (const next of run.playbook.next) {
-    fx.notes.push(`Chain available: playbook "${next.playbook}" may follow. Decide whether to start it with start_playbook (resolve its inputs with get_run).`);
-  }
 }
 
 function markCompleted(run: Run, stepId: string, now: string, fx: Effects): void {

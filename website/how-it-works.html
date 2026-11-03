@@ -29,7 +29,7 @@
 <li><strong>Wake-up.</strong> When a step agent's turn ends, the plugin checks readonly roles with git, then queues a message for the manager. Wake-ups are sent only while the manager is idle, merged into one prompt. The plugin does not cancel the manager's turn: it sends wake-ups as steer messages and relies on Paseo's busy tracking to know when the manager is idle.</li>
 <li><strong>Decide.</strong> The manager reads the report and calls <code>complete_step</code>. The plugin applies the transition and returns what is ready next, a gate to open, or the end of the run.</li>
 <li><strong>Gate.</strong> The manager opens ready gates with <code>request_gate</code> and ends its turn. You decide in the panel; the manager is woken with your decision.</li>
-<li><strong>End.</strong> The run completes, fails or is canceled. Its outputs appear in the expandable End pill in the graph, and the manager may start a chained playbook.</li>
+<li><strong>End.</strong> The run completes, fails or is canceled. Its outputs appear in the expandable End pill in the graph.</li>
 </ol>
 
 <h2>Tools</h2>
