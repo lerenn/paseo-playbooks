@@ -144,6 +144,74 @@ steps:
     ]);
   });
 
+  it("requires an on entry for every outcome but the first and failure, on agent steps and gates", async () => {
+    const dir = await workspace({
+      "bad.yaml": `
+steps:
+  - id: x
+    role: reviewer
+    outcomes: [success, failure, abort]
+  - id: approve
+    needs: [x]
+    gate: Ship it?
+    choices:
+      ship: {}
+      hold: {}
+      failure: {}
+`,
+      "ok.yaml": `
+steps:
+  - id: x
+    role: reviewer
+    outcomes: [done, failure]
+  - id: approve
+    needs: [x]
+    gate: Ship it?
+  - id: pick
+    needs: [approve]
+    gate: Which?
+    choices:
+      ship: {}
+      hold: {}
+    on:
+      hold: fail
+`,
+    });
+    const entries = new Map((await loadPlaybooks(dir)).entries.map((entry) => [entry.id, entry]));
+    const errors = entries.get("bad")!.errors.join("\n");
+    expect(errors).toContain('step "x": outcome "abort" needs an `on` entry (complete, end, fail, goto or ask)');
+    expect(errors).toContain('step "approve": choice "hold" needs an `on` entry (complete, end, fail or goto)');
+    // On a gate, a choice named failure is not special.
+    expect(errors).toContain('step "approve": choice "failure" needs an `on` entry');
+    expect(errors).not.toContain('"ship"');
+    expect(errors).not.toContain('"failure" needs an `on` entry (complete, end, fail, goto or ask)');
+    // A gate without choices keeps Approve / Reject; rejected fails by default.
+    expect(entries.get("ok")!.errors).toEqual([]);
+  });
+
+  it("says which template form to use in inputs and in prompts", async () => {
+    const dir = await workspace({
+      "bad.yaml": `
+inputs:
+  request: {}
+steps:
+  - id: a
+    role: reviewer
+    outputs: { plan: {} }
+    inputs:
+      req: "{{ inputs.request }}"
+  - id: b
+    role: reviewer
+    needs: [a]
+    prompt: "Do {{ playbook.inputs.request }} with {{ steps.a.outputs.plan }}"
+`,
+    });
+    const errors = (await loadPlaybooks(dir)).entries[0]!.errors.join("\n");
+    expect(errors).toContain('in `inputs` write "{{ playbook.inputs.request }}"');
+    expect(errors).toMatch(/prompt uses "\{\{ playbook\.inputs\.request \}\}".*declare the input in the step's `inputs`, e\.g\. "request".*write "\{\{ inputs\.request \}\}"/);
+    expect(errors).toMatch(/prompt uses "\{\{ steps\.a\.outputs\.plan \}\}".*e\.g\. plan: "\{\{ steps\.a\.outputs\.plan \}\}".*write "\{\{ inputs\.plan \}\}"/);
+  });
+
   it("refuses choices on agent steps", async () => {
     const dir = await workspace({
       "bad.yaml": "steps:\n  - id: investigate\n    role: investigator\n    choices:\n      ok: {}\n",

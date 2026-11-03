@@ -1,6 +1,6 @@
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { destinationOf, gateText, linkify } from "../shared/gates";
+import { destinationOf, gateText, linkify, outcomeTransition } from "../shared/gates";
 import { loadPlaybooks } from "./loader";
 
 describe("destinationOf", () => {
@@ -12,6 +12,19 @@ describe("destinationOf", () => {
     expect(destinationOf(playbook, gate, "rejected")).toEqual({ kind: "goto", targets: ["pr.investigate"] });
     const qa = playbook.steps.find((step) => step.id === "release.qa")!;
     expect(destinationOf(playbook, qa, "success")).toEqual({ kind: "end", targets: [] });
+  });
+});
+
+describe("outcomeTransition", () => {
+  it("default Reject fails without an on entry; custom choices use their declared on", async () => {
+    const result = await loadPlaybooks(path.resolve(__dirname, "..", "examples"));
+    const playbook = result.entries.find((entry) => entry.id === "capability")!.playbook!;
+    const gate = playbook.steps.find((step) => step.id === "approve")!;
+    expect(outcomeTransition(gate, "approved")).toEqual({ kind: "complete" });
+    expect(outcomeTransition(gate, "rejected")).toEqual({ kind: "goto", target: "pr.investigate" });
+    const plain = { ...gate, choices: [], outcomes: ["approved", "rejected"], on: {} };
+    expect(outcomeTransition(plain, "rejected")).toEqual({ kind: "fail" });
+    expect(destinationOf(playbook, plain, "rejected")).toEqual({ kind: "fail", targets: [] });
   });
 });
 

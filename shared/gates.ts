@@ -29,7 +29,11 @@ export interface Destination {
   targets: string[];
 }
 
-/** The transition an outcome takes: its `on` entry, else the first outcome continues and the others fail. */
+/**
+ * The transition an outcome takes: its `on` entry, else the first outcome continues. The
+ * validator requires an `on` entry for every other choice, except the default gate's
+ * `rejected` (and loop-limit rejects), which fail the run: the fallback below.
+ */
 export function outcomeTransition(step: Step, outcome: string) {
   return step.on[outcome] ?? (outcome === step.outcomes[0] ? ({ kind: "complete" } as const) : ({ kind: "fail" } as const));
 }

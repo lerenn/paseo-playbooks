@@ -133,19 +133,34 @@ steps:
 | `inputs` | List of names (auto-matched) or map of name → source (`"{{ playbook.inputs.x }}"`, `"{{ steps.<id>.outputs.y }}"`) or `~`. |
 | `outputs` | Typed values the step must return with any outcome except `failure` (a failure report skips output validation). All are required then. |
 | `prompt` | Template; may use only `{{ inputs.<name> }}`, `{{ run.id }}`, `{{ attempt }}`. |
-| `outcomes` | Default `[success, failure]`. The first one completes the step by default. |
-| `on` | Per outcome: `complete`, `end`, `fail`, `{ goto: <earlier step>, max_loops: N }`, or `{ ask: "<text>", goto: <step>, max_loops: N }` (agent steps; see Loops). Every outcome other than the first and `failure` needs an entry. |
+| `outcomes` | Default `[success, failure]`. See "Outcomes" below. |
+| `on` | Per outcome: `complete`, `end`, `fail`, `{ goto: <earlier step>, max_loops: N }`, or `{ ask: "<text>", goto: <step>, max_loops: N }` (agent steps; see Loops). |
 | `retries` | Extra attempts after `failure`. |
 | `timeout` | `30m`, `2h`… Expiry counts as a failure. |
 | `agent` | Step-level agent settings. |
 | `choices` | Gates only: the buttons, in order. Each key is an outcome, with `label`, `comment: none \| optional \| required` and `color: primary \| neutral \| success \| warning \| danger` (theme colours; default primary for the first, neutral for the others). Without `choices`, the default Reject is `danger`. |
 
 A gate's outcomes are the keys of its `choices` (default: `approved` with label Approve, and
-`rejected` with label Reject and an optional comment). The first choice completes the gate
-by default; any other choice fails the run unless `on` sends it elsewhere. The panel shows
+`rejected` with label Reject and an optional comment). The panel shows
 one full-width button per choice with where it leads (→ End, → End Release inside a block,
 → Implement, → Fail run). A choice with `comment: optional` or `required` opens a text box with Send; the comment goes
 to the manager and, on a `goto`, to the target step as feedback.
+
+### Outcomes
+
+One rule for agent steps and gates:
+
+- The first outcome (a gate's first choice) completes the step by default.
+- `failure` (agent steps only) retries while `retries` remain, then fails the run.
+- **Every other outcome needs an `on` entry**, or validation fails:
+  ``step "x": outcome "abort" needs an `on` entry (complete, end, fail, goto or ask)``.
+- Exception: a gate without `choices` keeps the default Approve / Reject, and `rejected`
+  fails the run without an `on` entry. A gate that declares `choices` (even `approved` /
+  `rejected`) must give every choice but the first an `on` entry.
+
+`end` ends the playbook it is written in: the run at top level, the block when the
+playbook is nested as a sub-playbook, the task inside an after-task. `fail` always fails
+the whole run (inside an after-task, the task only).
 
 ### Sub-playbooks
 
@@ -174,7 +189,7 @@ steps:
   so later steps can use them by name or as `{{ steps.pr.outputs.pr_url }}`.
 - Loops inside the sub-playbook stay inside. A `goto` to the block restarts it from its
   first step (the sub-playbook must have exactly one).
-- `end` inside the sub-playbook ends the block, not the run: the step completes, the
+- `end` ends the playbook it is written in, so inside a sub-playbook it ends the block, not the run: the step completes, the
   block's other unfinished steps become `skipped` (running ones are interrupted), and the
   steps that need the block go on. In nested blocks it ends only the innermost one. The
   block's outputs are what its completed steps produced. `fail` still fails the whole run.
@@ -198,7 +213,9 @@ Each one is an agent step (`role` + `prompt`), a gate, or a sub-playbook (`playb
 ```yaml
 after:
   - id: retro
-    playbook: retro      # its run_id input matches {{ run.id }} by name
+    playbook: retro
+    inputs:
+      run_id: "{{ run.id }}"   # run values are always mapped explicitly
   - id: notify
     role: reviewer
     trigger: manual      # a Start button on the finished run (default: auto)
@@ -211,13 +228,14 @@ after:
   change the run's status (fixed when the main graph ends).
 - `auto` tasks start when the run completes or fails, not when it is canceled. `manual`
   tasks start from the panel on a finished run, in any end state, once.
-- No `needs`. Inside an after-task, `end` completes the task, and `fail`, exhausted retries
+- No `needs`. Inside an after-task, `end` completes the task (it ends the playbook it is written in), and `fail`, exhausted retries
   or a rejected gate fail the task only (in a sub-playbook, a nested block's `end` still
   ends only that block).
 - Inputs may also use `{{ run.id }}`, `{{ run.status }}`, `{{ run.failure }}`,
   `{{ run.outputs.<name> }}` (the run's outputs, partial if it failed) and any main step's
-  outputs. By name, an input matches the playbook's outputs, then `run_id`, `run_status`,
-  `run_failure`, then the playbook's inputs. Prompts may use `run.status` and `run.failure`.
+  outputs. By name, an input matches the playbook's outputs, then the playbook's inputs,
+  as elsewhere. Run values never match by name: write `run_id: "{{ run.id }}"`. Prompts
+  may use `run.status` and `run.failure`.
 - A sub-playbook's own `after:` is ignored when it is nested; a sub-playbook used as an
   after-task has its `concurrency` ignored.
 - Canceling the run while after-tasks run cancels them; the run's status stays.
@@ -228,6 +246,10 @@ after:
 
 Types: `string`, `number`, `boolean`, `enum` (with `values: [...]`); each may have
 `required`, `default`, `description`.
+
+Two namespaces: in a step's `inputs:` map, sources are `{{ playbook.inputs.x }}` and
+`{{ steps.<id>.outputs.y }}`; in a `prompt`, you only read the step's own inputs as
+`{{ inputs.x }}`. To use a value in a prompt, declare it as an input first.
 
 An input without a source takes the same-named output of an **ancestor** step (a step it
 needs, directly or not), else the playbook input with that name. If several ancestors

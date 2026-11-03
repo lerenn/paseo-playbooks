@@ -35,7 +35,8 @@ parent and child.
   Archiving the worktree or losing the manager does the same.
 - Details settled while implementing: an input of an after-task matches by name the
   playbook's outputs, then `run_id` / `run_status` / `run_failure`, then the playbook's
-  inputs; `{{ run.outputs.<name> }}` and main steps' outputs can be mapped explicitly. A
+  inputs (the `run_*` by-name match is superseded by
+  `2026-11-03-explicit-outcomes-and-run-refs.md`: run values are mapped explicitly); `{{ run.outputs.<name> }}` and main steps' outputs can be mapped explicitly. A
   manual task runs once. Auto tasks of a canceled run (or one whose manager was lost) are
   marked canceled, never started. In a sub-playbook used as an after-task, `end` at its top
   level completes the task and a nested block's `end` ends only that block

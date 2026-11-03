@@ -430,9 +430,13 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
             ? { kind: "goto", target: transition.goto, maxLoops: transition.max_loops }
             : { kind: "goto", target: transition.goto };
     }
-    if (!isGate) {
-      const extra = outcomes.slice(1).filter((outcome) => outcome !== "failure" && !on[outcome]);
-      for (const outcome of extra) err(`${where}: outcome "${outcome}" needs an \`on\` entry`);
+    // One rule for agent steps and gates: the first outcome completes by default, `failure`
+    // (agent steps) retries then fails, every other outcome needs an explicit `on` entry.
+    // A gate without `choices` keeps the default Approve / Reject, where `rejected` fails.
+    if (!isGate || choices.length > 0) {
+      const extra = outcomes.slice(1).filter((outcome) => (isGate || outcome !== "failure") && !on[outcome]);
+      const kinds = isGate ? "complete, end, fail or goto" : "complete, end, fail, goto or ask";
+      for (const outcome of extra) err(`${where}: ${isGate ? "choice" : "outcome"} "${outcome}" needs an \`on\` entry (${kinds})`);
     }
     const outputs: Record<string, VarDef> = {};
     for (const [name, rawDef] of Object.entries(rawStep.outputs ?? {})) {
@@ -566,8 +570,21 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
 }
 
 const PROMPT_REFS = /^(inputs\.[A-Za-z_][\w-]*|run\.id|run\.status|run\.failure|attempt)$/;
-/** Run fields an after-task input auto-matches by name. */
-const RUN_FIELDS: Record<string, "id" | "status" | "failure"> = { run_id: "id", run_status: "status", run_failure: "failure" };
+
+/** The run field to suggest when an after-task input has no source. */
+function runExample(name: string): string {
+  const field = /^run_(id|status|failure)$/.exec(name);
+  return field ? `run.${field[1]}` : "run.id";
+}
+
+/** For a prompt that uses a source form (`playbook.inputs.x`, `steps.s.outputs.y`), how to write it. */
+function promptHint(ref: string): string {
+  const source = parseSourceRef(ref);
+  if (!source || source.kind === "run") return "";
+  const name = source.kind === "step" ? source.output : source.name;
+  const how = source.kind === "playbook" ? `"${name}" (it matches the playbook input by name)` : `${name}: "{{ ${ref} }}"`;
+  return `; that is the \`inputs\` form: declare the input in the step's \`inputs\`, e.g. ${how}, and write "{{ inputs.${name} }}" in the prompt`;
+}
 
 /** What an after-task's steps may also read: the main steps' outputs and the run's outputs. */
 interface AfterContext {
@@ -622,8 +639,14 @@ function wireStep(
       for (const ref of refs) {
         const source = parseSourceRef(ref);
         if (!source || (!after && (source.kind === "run" || source.kind === "output"))) {
+          const promptForm = /^inputs\.([A-Za-z_][\w-]*)$/.exec(ref);
+          const hint = promptForm
+            ? `; "{{ inputs.<name> }}" is the prompt form, in \`inputs\` write "{{ playbook.inputs.${promptForm[1]} }}" (or ~ to match by name)`
+            : source
+              ? "; run.* sources are only for after-tasks"
+              : "";
           err(
-            `${where}: inputs.${name}: "{{ ${ref} }}" must be playbook.inputs.<name> or steps.<id>.outputs.<name>${after ? ", run.id, run.status, run.failure or run.outputs.<name>" : ""}`,
+            `${where}: inputs.${name}: "{{ ${ref} }}" must be playbook.inputs.<name> or steps.<id>.outputs.<name>${after ? ", run.id, run.status, run.failure or run.outputs.<name>" : ""}${hint}`,
           );
           ok = false;
         } else if (source.kind === "playbook" && !playbookInputs[source.name]) {
@@ -666,18 +689,16 @@ function wireStep(
       step.inputs[name] = wiring(`{{ steps.${source}.outputs.${name} }}`, true, `${source}.${name}`, byId.get(source)!.outputs[name]!.type);
     } else if (after?.outputs[name]) {
       step.inputs[name] = wiring(`{{ run.outputs.${name} }}`, true, `run.outputs.${name}`, after.outputs[name]!.type);
-    } else if (after && RUN_FIELDS[name]) {
-      step.inputs[name] = wiring(`{{ run.${RUN_FIELDS[name]} }}`, true, `run.${RUN_FIELDS[name]}`, "string");
     } else if (playbookInputs[name]) {
       step.inputs[name] = wiring(`{{ playbook.inputs.${name} }}`, true, `playbook.${name}`, playbookInputs[name]!.type);
     } else if (!optional.has(name)) {
       err(
-        `${where}: input "${name}" has no source: no earlier step outputs it and the playbook has no such input${after ? " or output (after-tasks also get run_id, run_status and run_failure)" : ""}`,
+        `${where}: input "${name}" has no source: no earlier step outputs it and the playbook has no such input${after ? ` or output; map it, e.g. ${name}: "{{ ${runExample(name)} }}"` : ""}`,
       );
     }
   }
   for (const ref of templateRefs(step.prompt)) {
-    if (!PROMPT_REFS.test(ref)) err(`${where}: prompt uses "{{ ${ref} }}"; prompts may only use inputs.<name>, run.id, attempt${after ? ", run.status and run.failure" : ""}`);
+    if (!PROMPT_REFS.test(ref)) err(`${where}: prompt uses "{{ ${ref} }}"; prompts may only use inputs.<name>, run.id, attempt${after ? ", run.status and run.failure" : ""}${promptHint(ref)}`);
     else if (!after && (ref === "run.status" || ref === "run.failure")) {
       err(`${where}: prompt uses "{{ ${ref} }}", which only after-tasks can use (the run is still running in its own steps)`);
     }

@@ -66,6 +66,9 @@ steps:
 after:
   - id: retro
     playbook: retro
+    inputs:
+      run_id: "{{ run.id }}"
+      run_status: "{{ run.status }}"
   - id: notify
     role: reviewer
     trigger: manual
@@ -118,7 +121,7 @@ describe("after-tasks: loader", () => {
     expect(byId.get("investigate")!.afterTask).toBeUndefined();
     expect(byId.get("retro.reflect")).toMatchObject({ afterTask: "retro", needs: [] });
     expect(byId.get("retro.propose")).toMatchObject({ afterTask: "retro", needs: ["retro.reflect"] });
-    // The retro's inputs match the run's fields by name.
+    // The retro's run inputs are mapped explicitly.
     expect(byId.get("retro.reflect")!.inputs.run_id!.source).toBe("{{ run.id }}");
     expect(byId.get("retro.reflect")!.inputs.run_status!.source).toBe("{{ run.status }}");
     // Playbook outputs auto-match before playbook inputs; main step outputs can be mapped.
@@ -275,6 +278,19 @@ describe("after-tasks: engine", () => {
     decideGate(run, "check", { decision: "rejected", comment: "meh", by: null, via: "panel", now: now() });
     expect(run.status).toBe("completed");
     expect(run.after.check!.status).toBe("failed");
+  });
+
+  it("does not match run_id, run_status or run_failure by name; says how to map them", async () => {
+    const entries = await load({
+      "retro.yaml": RETRO,
+      "m.yaml": "steps:\n  - id: x\n    role: reviewer\nafter:\n  - id: retro\n    playbook: retro\n  - id: note\n    role: reviewer\n    inputs: [run_failure]\n",
+    });
+    const errors = (entries.get("m") as { errors: string[] }).errors.join("\n");
+    expect(errors).toContain('after "retro": input "run_id" has no source');
+    expect(errors).toContain('map it, e.g. run_id: "{{ run.id }}"');
+    expect(errors).toContain('map it, e.g. run_failure: "{{ run.failure }}"');
+    // run_status is optional in the retro: unmapped, it stays empty instead of matching by name.
+    expect(errors).not.toContain("run_status");
   });
 
   it("end in an after-task's sub-playbook: at its top level ends the task; in a nested block ends only that block", async () => {

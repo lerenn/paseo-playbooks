@@ -1,5 +1,10 @@
 # paseo-playbooks
 
+> [!WARNING]
+> Until v1.0, any minor release may change the playbook YAML format in breaking ways. Pin the
+> plugin to a release tag (`paseo plugin install https://github.com/lerenn/paseo-playbooks.git --ref v0.7.0`,
+> then `paseo plugin update paseo-playbooks --ref <tag>`) and read the release notes before upgrading.
+
 Paseo plugin that makes an agent pick a playbook and run each step as a subagent, through
 to the human gates. See [OVERVIEW.md](OVERVIEW.md) for what it does and
 [docs/adrs/2026-11-02-design.md](docs/adrs/2026-11-02-design.md) for the design.
