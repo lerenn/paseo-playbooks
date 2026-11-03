@@ -1,4 +1,4 @@
-# paseo-playbooks
+# Paseo Playbooks
 
 > [!WARNING]
 > Until v1.0, any minor release may change the playbook YAML format in breaking ways. Pin the
