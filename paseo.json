@@ -1,0 +1,7 @@
+{
+  "worktree": {
+    "setup": [
+      "base=$(git rev-parse HEAD); if [ \"$base\" = \"$(git rev-parse -q --verify refs/heads/main)\" ] || [ \"$base\" = \"$(git rev-parse -q --verify refs/remotes/origin/main)\" ]; then if git fetch origin main; then git merge --ff-only origin/main && echo \"Worktree fast-forwarded to latest origin/main\"; else echo \"Could not fetch origin/main; keeping $base\"; fi; fi"
+    ]
+  }
+}
