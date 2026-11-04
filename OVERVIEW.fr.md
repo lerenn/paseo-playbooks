@@ -32,7 +32,7 @@ exécution peut être mise en pause, reprise ou annulée, et une exécution term
 relancée depuis n'importe quelle étape dont les dépendances sont terminées.
 
 Des exemples de playbooks, prêts à copier dans `.paseo/plugins/playbooks/`, sont sur la
-[page d'exemples](https://louisfradin.com/paseo-playbooks/examples.html) et dans le dépôt :
+[page d'exemples](https://playbooks.paseo.lerenn.dev/examples.html) et dans le dépôt :
 un workflow de pull request (investiguer, implémenter, ouvrir la PR et la surveiller jusqu'à
 ce qu'elle soit au vert), une livraison sur un environnement de développement avec recette,
 un playbook de fonctionnalité qui enchaîne les deux en passant par une validation humaine,

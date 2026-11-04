@@ -157,7 +157,7 @@ function useAgentEvents(workspaceId: string, onChange: () => void): void {
 }
 
 /** Where "Get started" sends people when a workspace has no playbooks. */
-export const GETTING_STARTED_URL = "https://lerenn.github.io/paseo-playbooks/getting-started.html";
+export const GETTING_STARTED_URL = "https://playbooks.paseo.lerenn.dev/getting-started.html";
 
 function EmptyState(props: { theme: Theme; compact: boolean }) {
   const { theme } = props;

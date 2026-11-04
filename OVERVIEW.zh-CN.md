@@ -6,7 +6,7 @@ Playbook 是每个仓库自己的 YAML 文件，位于 `.paseo/plugins/playbooks
 
 Playbooks 面板位于工作区右侧边栏，把每个 playbook 显示为一张图。运行过程中，节点实时显示状态，正在运行的步骤会闪烁，点击节点即可打开该步骤的对话。关卡显示 Approve 和 Reject 按钮。Start 会打开一个根据 playbook 输入生成的表单，并以工作区中最近使用的智能体作为 manager、在其当前分支上运行 playbook。Start 旁边的箭头提供 "Start on a new agent"（在同一工作区新建一个 manager 智能体）和 "Start in a new workspace"（在新分支上创建 worktree 并在其中启动 manager）。在面板中可以暂停、恢复或取消运行，已结束的运行可以从任何依赖已完成的步骤重新开始。
 
-示例 playbook 可以直接复制到 `.paseo/plugins/playbooks/`，见[示例页面](https://louisfradin.com/paseo-playbooks/examples.html)和仓库：一个 pull request 工作流（调研、实现、创建 PR 并持续跟进直到检查通过），一个带 QA 的开发环境发布流程，一个通过人工审批把两者串起来的功能交付 playbook，以及本仓库对自身运行的文档检查，包含并行评审和改写循环。
+示例 playbook 可以直接复制到 `.paseo/plugins/playbooks/`，见[示例页面](https://playbooks.paseo.lerenn.dev/examples.html)和仓库：一个 pull request 工作流（调研、实现、创建 PR 并持续跟进直到检查通过），一个带 QA 的开发环境发布流程，一个通过人工审批把两者串起来的功能交付 playbook，以及本仓库对自身运行的文档检查，包含并行评审和改写循环。
 
 智能体模式：playbook 可以使用任何模式，包括 `bypassPermissions`，这样运行 shell 命令的步骤可以无人值守地执行。只运行来自可信仓库的 playbook。
 

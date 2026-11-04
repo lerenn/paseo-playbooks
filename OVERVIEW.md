@@ -26,7 +26,7 @@ manager there. Runs can be paused, resumed or canceled from the panel, and a fin
 can be restarted from any step whose needs completed.
 
 Example playbooks, ready to copy into `.paseo/plugins/playbooks/`, are on the
-[examples page](https://louisfradin.com/paseo-playbooks/examples.html) and in the
+[examples page](https://playbooks.paseo.lerenn.dev/examples.html) and in the
 repository: a pull-request workflow (investigate, implement, open the PR and babysit it
 until it is green), a release to a development environment with QA, a capability playbook
 that chains both through a human gate, and the documentation check this repository runs on
