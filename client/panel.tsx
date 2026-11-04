@@ -222,7 +222,13 @@ function PlaybookCard(props: {
   const { card, theme } = props;
   const queryClient = useQueryClient();
   const active = card.runs.find((run) => isActive(run));
-  const [expanded, setExpanded] = useState(false);
+  // Untouched (null), a card is open while it has an active run: opening a conversation in the
+  // middle of a run shows it. Once the run ends the card stays open, and a press decides from then on.
+  const [toggled, setExpanded] = useState<boolean | null>(null);
+  const expanded = toggled ?? Boolean(active);
+  useEffect(() => {
+    if (active && toggled === null) setExpanded(true);
+  }, [active, toggled]);
   const [selected, setSelected] = useState<string | "definition" | null>(null);
   const [sheet, setSheet] = useState<string | null>(null);
   const [highlighted, setHighlighted] = useState<string | null>(null);
@@ -241,7 +247,7 @@ function PlaybookCard(props: {
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={`${expanded ? "Collapse" : "Expand"} ${title}`}
-          onPress={() => setExpanded((value) => !value)}
+          onPress={() => setExpanded(!expanded)}
           style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: 6 }}
         >
           <Icon name={expanded ? "ChevronDown" : "ChevronRight"} size={14} color={theme.colors.foregroundMuted} />
