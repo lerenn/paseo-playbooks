@@ -1,6 +1,6 @@
 # Hidden playbooks
 
-Status: Accepted
+Status: Superseded by 2026-11-04-hidden-playbooks-section.md (panel listing only)
 
 ## Context
 

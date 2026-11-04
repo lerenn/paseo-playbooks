@@ -43,18 +43,39 @@ export function PlaybooksPanel(props: PluginWorkspacePanelProps) {
     if (!readRuns.includes(runId)) setReadRuns([...readRuns, runId].slice(-200));
   };
 
-  const cards = useMemo<Card[]>(() => {
+  const { cards, hiddenCards } = useMemo(() => {
     const entries = playbooks.data?.entries ?? [];
     const allRuns = runs.data?.runs ?? [];
-    // Hidden playbooks (sub-playbooks or after-tasks only) get a card only once they have a run.
-    const listed = entries.filter((entry) => !entry.hidden);
-    const ids = [...new Set([...listed.map((entry) => entry.id), ...allRuns.map((run) => run.playbook.id)])];
-    return ids.map((id) => ({
+    const toCard = (id: string): Card => ({
       id,
       entry: entries.find((entry) => entry.id === id) ?? null,
       runs: allRuns.filter((run) => run.playbook.id === id),
-    }));
+    });
+    // Hidden playbooks (sub-playbooks or after-tasks only) go in the collapsed section at the
+    // bottom, unless they have runs (a run may wait on a gate) or errors (so they are seen).
+    const tucked = (entry: PlaybookEntry) =>
+      entry.hidden && entry.errors.length === 0 && !allRuns.some((run) => run.playbook.id === entry.id);
+    const listed = entries.filter((entry) => !tucked(entry));
+    const ids = [...new Set([...listed.map((entry) => entry.id), ...allRuns.map((run) => run.playbook.id)])];
+    return { cards: ids.map(toCard), hiddenCards: entries.filter(tucked).map((entry) => toCard(entry.id)) };
   }, [playbooks.data, runs.data]);
+  const [showHidden, setShowHidden] = useTabState(props.tab, z.boolean(), false);
+  const renderCard = (card: Card, zIndex: number) => (
+    <PlaybookCard
+      key={card.id}
+      zIndex={zIndex}
+      card={card}
+      compact={layout.compact}
+      theme={theme}
+      workspaceId={workspaceId}
+      hostLabel={props.host.label}
+      onOpenAgent={(agentId) => navigation?.openAgent({ agentId })}
+      onOpenWorkspace={(id) => navigation?.openWorkspace({ workspaceId: id })}
+      readRuns={readRuns}
+      onRead={markRead}
+    />
+  );
+  const total = cards.length + hiddenCards.length;
 
   const pad = layout.compact ? 12 : 16;
   return (
@@ -70,28 +91,35 @@ export function PlaybooksPanel(props: PluginWorkspacePanelProps) {
           <Icon name="RefreshCw" size={16} color={theme.colors.foregroundMuted} />
         </Pressable>
       </View>
-      {playbooks.data && cards.length === 0 ? (
+      {playbooks.data && total === 0 ? (
         <EmptyState theme={theme} compact={layout.compact} />
       ) : (
         <ScrollView contentContainerStyle={{ paddingHorizontal: pad, paddingBottom: pad, gap: 12 }}>
           {playbooks.isLoading ? <Text style={{ color: theme.colors.foregroundMuted }}>Loading…</Text> : null}
           {playbooks.error ? <Text style={{ color: theme.colors.statusDanger }}>{(playbooks.error as Error).message}</Text> : null}
-          {cards.map((card, index) => (
-            <PlaybookCard
-              key={card.id}
-              // Earlier cards stack above later ones, so a card's dropdown menus are not covered by the cards below it.
-              zIndex={cards.length - index}
-              card={card}
-              compact={layout.compact}
-              theme={theme}
-              workspaceId={workspaceId}
-              hostLabel={props.host.label}
-              onOpenAgent={(agentId) => navigation?.openAgent({ agentId })}
-              onOpenWorkspace={(id) => navigation?.openWorkspace({ workspaceId: id })}
-              readRuns={readRuns}
-              onRead={markRead}
-            />
-          ))}
+          {/* Earlier cards stack above later ones, so a card's dropdown menus are not covered by the cards below it. */}
+          {cards.map((card, index) => renderCard(card, total - index))}
+          {hiddenCards.length > 0 ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ expanded: showHidden }}
+              accessibilityLabel={`${showHidden ? "Collapse" : "Expand"} hidden playbooks, ${hiddenCards.length}`}
+              accessibilityHint="Playbooks marked hidden: meant as sub-playbooks or after-tasks"
+              onPress={() => setShowHidden(!showHidden)}
+              style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 4 }}
+            >
+              <View style={{ flex: 1, height: 1, backgroundColor: theme.colors.border }} />
+              <Icon name={showHidden ? "ChevronDown" : "ChevronRight"} size={14} color={theme.colors.foregroundMuted} />
+              <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12, fontWeight: "600" }}>Hidden playbooks ({hiddenCards.length})</Text>
+              <View style={{ flex: 1, height: 1, backgroundColor: theme.colors.border }} />
+            </Pressable>
+          ) : null}
+          {showHidden && hiddenCards.length > 0 ? (
+            <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11, marginTop: -6 }}>
+              Meant as sub-playbooks or after-tasks; they can still be started on their own.
+            </Text>
+          ) : null}
+          {showHidden ? hiddenCards.map((card, index) => renderCard(card, hiddenCards.length - index)) : null}
         </ScrollView>
       )}
     </View>
