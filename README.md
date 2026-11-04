@@ -5,8 +5,8 @@
 > plugin to a release tag (`paseo plugin install https://github.com/lerenn/paseo-playbooks.git --ref v0.7.0`,
 > then `paseo plugin update paseo-playbooks --ref <tag>`) and read the release notes before upgrading.
 
-Paseo plugin that makes an agent pick a playbook and run each step as a subagent, through
-to the human gates. See [OVERVIEW.md](OVERVIEW.md) for what it does and
+Paseo plugin for multi-agent workflows: write a playbook in YAML, and a manager agent runs
+each step as a subagent, in parallel or in loops, through to the human approval gates. See [OVERVIEW.md](OVERVIEW.md) for what it does and
 [docs/adrs/2026-11-02-design.md](docs/adrs/2026-11-02-design.md) for the design.
 
 ![The Playbooks panel showing a running Docs check playbook as a graph](assets/panel.png)

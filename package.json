@@ -1,10 +1,10 @@
 {
   "name": "paseo-playbooks",
   "private": true,
-  "version": "0.12.0",
+  "version": "0.12.1",
   "files": [
     "paseo-plugin.json",
-    "OVERVIEW.md",
+    "OVERVIEW*.md",
     "index.client.tsx",
     "index.server.ts",
     "client/",
@@ -32,6 +32,6 @@
   "dependencies": {
     "yaml": "^2.9.1"
   },
-  "description": "Paseo plugin: a Playbook Manager agent runs multi-step YAML playbooks with subagents, up to human gates.",
+  "description": "Paseo plugin: Automate multi-agent workflows with YAML playbooks: a manager agent orchestrates a pipeline of subagent steps, in parallel or in loops, up to human approval gates.",
   "license": "MIT"
 }

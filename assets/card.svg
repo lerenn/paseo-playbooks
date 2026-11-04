@@ -1,0 +1,28 @@
+<!-- Card thumbnail for the paseo.sh listing. Render it from assets/ with resvg (npx @resvg/resvg-js-cli, fit width 1600) to card.png -->
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1600" height="1000" viewBox="0 0 1600 1000">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#232833"/><stop offset="1" stop-color="#14171d"/>
+    </linearGradient>
+    <clipPath id="frame"><rect x="790" y="120" width="760" height="760" rx="28"/></clipPath>
+  </defs>
+  <rect width="1600" height="1000" fill="url(#bg)"/>
+  <image x="90" y="150" width="140" height="140" xlink:href="icon.png"/>
+  <g font-family="Liberation Sans" fill="#ffffff">
+    <text x="90" y="420" font-size="92" font-weight="bold">Multi-agent</text>
+    <text x="90" y="525" font-size="92" font-weight="bold">workflows</text>
+    <text x="90" y="630" font-size="92" font-weight="bold" fill="#7fa6f5">for Paseo</text>
+    <g font-size="38" fill="#b7bfcc">
+      <text x="94" y="745">YAML playbooks, subagent steps,</text>
+      <text x="94" y="797">parallel branches, loops and</text>
+      <text x="94" y="849">human approval gates.</text>
+    </g>
+  </g>
+  <g clip-path="url(#frame)">
+    <rect x="790" y="120" width="760" height="760" fill="#31343d"/>
+    <svg x="790" y="120" width="760" height="760" viewBox="500 200 1120 1120" preserveAspectRatio="xMidYMid slice">
+      <image width="2060" height="1406" xlink:href="panel.png"/>
+    </svg>
+  </g>
+  <rect x="790" y="120" width="760" height="760" rx="28" fill="none" stroke="#4a5060" stroke-width="3"/>
+</svg>

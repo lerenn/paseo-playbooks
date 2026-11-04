@@ -1,8 +1,17 @@
 {
   "id": "paseo-playbooks",
   "name": "Playbooks",
-  "description": "A Playbook Manager agent runs multi-step YAML playbooks with subagents, up to human gates.",
+  "description": "Automate multi-agent workflows with YAML playbooks: a manager agent orchestrates a pipeline of subagent steps, in parallel or in loops, up to human approval gates.",
+  "icon": "assets/icon.png",
+  "translations": {
+    "fr": {
+      "description": "Automatisez des workflows multi-agents avec des playbooks YAML : un agent manager orchestre un pipeline d'étapes confiées à des sous-agents, en parallèle ou en boucle, jusqu'aux validations humaines."
+    },
+    "zh-CN": {
+      "description": "用 YAML playbook 自动化多智能体工作流：由一个 manager 智能体编排由子智能体执行的步骤流水线，支持并行和循环，并在人工审批关卡处暂停。"
+    }
+  },
   "requirements": { "paseo": ">=0.14.0" },
   "build": [["npm", "ci", "--omit=dev"]],
-  "media": ["assets/panel.png", "assets/app.png", "assets/diagram.png"]
+  "media": ["assets/card.png", "assets/panel.png", "assets/app.png", "assets/diagram.png"]
 }
