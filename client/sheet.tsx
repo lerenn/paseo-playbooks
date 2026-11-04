@@ -3,9 +3,9 @@ import { Icon, Markdown, Modal, TextInput, useToast } from "@getpaseo/plugin/cli
 import { useQueryClient } from "@tanstack/react-query";
 import { useState, type ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
-import { decideGateRpc, nudgeStepRpc, retryStepRpc } from "../shared/contracts";
+import { decideGateRpc, nudgeStepRpc, restartRunRpc, retryStepRpc } from "../shared/contracts";
 import { ASK_CHOICES, destinationOf, gateChoices, gateText, linkify, LOOP_LIMIT_CHOICES } from "../shared/gates";
-import { isPaused, isStepLive, type Gate, type GateChoice, type Playbook, type Run } from "../shared/types";
+import { isPaused, isStepLive, restartBlocker, type Gate, type GateChoice, type Playbook, type Run } from "../shared/types";
 import { stepLabel, type Theme } from "./theme";
 
 export function Button(props: { theme: Theme; label: string; onPress(): void; kind?: "primary" | "danger" | "plain"; disabled?: boolean; accessibilityLabel?: string }) {
@@ -198,6 +198,57 @@ export function GateActions(props: { theme: Theme; run: Run; gate: Gate; hostLab
   );
 }
 
+/** "Restart from here" on a finished run: the step and what follows run again, with the same manager. */
+function RestartRun(props: { theme: Theme; run: Run; stepId: string; hostLabel: string; onDone(): void }) {
+  const { theme, run, stepId } = props;
+  const restart = useRpc(restartRunRpc);
+  const queryClient = useQueryClient();
+  const toast = useToast();
+  const [comment, setComment] = useState("");
+  const [busy, setBusy] = useState(false);
+  const ran = Object.entries(run.after).filter(([, task]) => task.status === "completed" || task.status === "failed").map(([id]) => id);
+  return (
+    <View style={{ gap: 8 }}>
+      <Line theme={theme} muted>
+        Reopens this {run.status} run: "{stepLabel(stepId)}" and every step after it run again, with the same manager. Completed steps before it keep their outputs.
+      </Line>
+      {ran.length > 0 ? (
+        <Line theme={theme}>
+          ⚠ After-tasks already ran ({ran.join(", ")}). They run again when the restarted run ends.
+        </Line>
+      ) : null}
+      <TextInput
+        accessibilityLabel="Note for the restarted step (optional)"
+        placeholder="Note for the step (optional)"
+        placeholderTextColor={theme.colors.foregroundMuted}
+        value={comment}
+        onChangeText={setComment}
+        multiline
+        style={{ minHeight: 36, borderRadius: 8, borderWidth: 1, borderColor: theme.colors.border, padding: 8, color: theme.colors.foreground, backgroundColor: theme.colors.surface2 }}
+      />
+      <View style={{ flexDirection: "row" }}>
+        <Button
+          theme={theme}
+          kind="primary"
+          label={busy ? "Restarting…" : "Restart run from here"}
+          disabled={busy}
+          onPress={() => {
+            setBusy(true);
+            void restart({ runId: run.id, stepId, hostLabel: props.hostLabel, ...(comment.trim() ? { comment } : {}) })
+              .then(async () => {
+                await queryClient.invalidateQueries({ queryKey: ["playbooks"] });
+                toast.show("Run restarted", { variant: "success" });
+                props.onDone();
+              })
+              .catch((error: unknown) => toast.error(error instanceof Error ? error.message : String(error)))
+              .finally(() => setBusy(false));
+          }}
+        />
+      </View>
+    </View>
+  );
+}
+
 export function StepSheet(props: {
   theme: Theme;
   playbook: Playbook;
@@ -221,6 +272,7 @@ export function StepSheet(props: {
   const [message, setMessage] = useState("");
   const active = run !== null && isStepLive(run, stepId);
   const canNudge = active && (state?.status === "running" || state?.status === "reported");
+  const canRestart = run !== null && restartBlocker(run, stepId) === null;
   // Retry goes through the manager, which a paused run does not wake.
   const canRetry = active && !isPaused(run) && state?.status === "reported" && (latest?.report?.outcome === "failure" || latest?.report === null);
 
@@ -339,6 +391,11 @@ export function StepSheet(props: {
                 />
               ) : null}
             </View>
+          </Section>
+        ) : null}
+        {canRestart ? (
+          <Section theme={theme} title="Restart run from here">
+            <RestartRun theme={theme} run={run!} stepId={stepId} hostLabel={props.hostLabel} onDone={props.onClose} />
           </Section>
         ) : null}
         {role ? (

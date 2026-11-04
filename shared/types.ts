@@ -305,6 +305,23 @@ export function isPaused(run: Run): boolean {
   return run.pausedAt !== null && isActive(run);
 }
 
+/**
+ * Why a finished run cannot be restarted from this step, or null when it can: the run has
+ * ended (canceled or failed, or completed) with no after-task running, is not archived, and
+ * the step is a main step whose needs are all done (so its inputs exist).
+ */
+export function restartBlocker(run: Run, stepId: string): string | null {
+  const step = run.playbook.steps.find((candidate) => candidate.id === stepId);
+  if (!step) return `unknown step "${stepId}"`;
+  if (!isTerminal(run.status)) return `run ${run.id} is ${run.status}; only a finished run can be restarted`;
+  if (runningAfterTasks(run).length > 0) return `run ${run.id} is wrapping up (after-tasks running); wait or cancel them first`;
+  if (run.archivedAt) return `run ${run.id} is archived`;
+  if (step.afterTask) return `"${stepId}" belongs to the after-task "${step.afterTask}"; restart from a step of the main graph`;
+  const missing = step.needs.filter((need) => !isStepDone(run.steps[need]?.status ?? "pending"));
+  if (missing.length > 0) return `"${stepId}" needs ${missing.join(", ")}, which did not complete; restart from an earlier step`;
+  return null;
+}
+
 /** Whether a step can still move: a main step while the run is not finished, an after-step while its task runs. */
 export function isStepLive(run: Run, stepId: string): boolean {
   const step = run.playbook.steps.find((candidate) => candidate.id === stepId);

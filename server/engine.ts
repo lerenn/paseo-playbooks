@@ -6,7 +6,7 @@ import { descendantsOf } from "../shared/graph";
 import { blockEntrySteps, blockStepIds, holdsBlock, innermostBlock } from "../shared/slots";
 import { ASK_CHOICES, gateChoices, LOOP_LIMIT_CHOICES, outcomeTransition } from "../shared/gates";
 import type { AfterTask, Attempt, Gate, Playbook, Run, RunStep, Step, Transition, VarValue } from "../shared/types";
-import { isActive, isPaused, isStepDone, isStepLive, isTerminal, runningAfterTasks } from "../shared/types";
+import { isActive, isPaused, isStepDone, isStepLive, isTerminal, restartBlocker, runningAfterTasks } from "../shared/types";
 import { coerceValue, formatValue, renderTemplate, resolveValue } from "../shared/vars";
 
 export class EngineError extends Error {}
@@ -843,6 +843,45 @@ export function cancelRun(run: Run, reason: string, now: string): Effects {
   const running = runningAfterTasks(run);
   if (running.length === 0) throw new EngineError(`run ${run.id} is ${run.status}`);
   for (const taskId of running) finishTask(run, taskId, "canceled", reason, now, fx);
+  return fx;
+}
+
+/**
+ * A human reopens a finished run from a step (see `restartBlocker`). The step and everything
+ * downstream of it go back to pending, and so does every other main step that had not
+ * finished (a parallel branch cut short by the cancel); completed steps elsewhere keep their
+ * outputs. The run is running again, with no result, and its after-tasks are pending again
+ * (they run once more when it ends). Loop counts are kept, so loop limits still apply.
+ */
+export function restartRun(run: Run, stepId: string, input: { comment: string | null; by: string | null; now: string }): Effects {
+  const blocker = restartBlocker(run, stepId);
+  if (blocker) throw new EngineError(blocker);
+  const fx = effects();
+  const { now } = input;
+  const reset = new Set([stepId, ...descendantsOf(run.playbook.steps.filter((step) => !step.afterTask), stepId)]);
+  for (const step of run.playbook.steps) {
+    if (step.afterTask) continue;
+    const state = run.steps[step.id]!;
+    if (!reset.has(step.id) && isStepDone(state.status)) continue;
+    state.status = "pending";
+    state.outputs = {};
+    state.completedSeq = null;
+    state.queuedAt = null;
+  }
+  run.steps[stepId]!.feedback = input.comment?.trim() ? `Restarted from this step by a human: ${input.comment.trim()}` : null;
+  for (const task of run.playbook.after) {
+    run.after[task.id] = { status: "pending", startedAt: null, endedAt: null, detail: null };
+  }
+  const previous = run.status;
+  run.status = "running";
+  run.failure = null;
+  run.outputs = null;
+  run.pausedAt = null;
+  log(run, now, "run_restarted", stepId, `was ${previous}${input.by ? `, by ${input.by}` : ""}${input.comment?.trim() ? `: ${input.comment.trim()}` : ""}`);
+  const { ready, queued } = refreshReady(run, now);
+  fx.notes.push(`The run (was ${previous}) restarted from "${stepId}". Ready: ${ready.join(", ") || "none"}.`);
+  if (queued.length > 0) fx.notes.push(queueNote(run, queued));
+  updateStatus(run);
   return fx;
 }
 

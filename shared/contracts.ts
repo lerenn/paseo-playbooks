@@ -120,3 +120,10 @@ export const nudgeStepRpc = defineRpc({
   input: z.object({ runId: z.string(), stepId: z.string(), message: z.string().min(1) }),
   output: z.object({ sent: z.boolean() }),
 });
+
+/** Reopens a finished run from a step: the step and what follows run again, with the same manager. */
+export const restartRunRpc = defineRpc({
+  name: "runs.restart",
+  input: z.object({ runId: z.string(), stepId: z.string(), comment: z.string().optional(), hostLabel: z.string() }),
+  output: z.object({ status: z.string() }),
+});

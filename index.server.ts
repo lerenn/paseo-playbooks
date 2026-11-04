@@ -14,6 +14,7 @@ import {
   listRuns,
   listWorkspaceAgents,
   nudgeStepRpc,
+  restartRunRpc,
   retryStepRpc,
   startAfterTaskRpc,
   startRun,
@@ -123,6 +124,9 @@ export default function contribute(server: PluginServerContext) {
     const run = await runtime.startAfterTask(runId, taskId);
     return { status: run.after[taskId]?.status ?? "pending" };
   });
+  handle(restartRunRpc, async ({ runId, stepId, comment, hostLabel }) => ({
+    status: (await runtime.restartRun(runId, stepId, comment?.trim() || null, hostLabel)).status,
+  }));
   handle(retryStepRpc, async ({ runId, stepId }) => {
     await runtime.askManagerToRetry(runId, stepId);
     return { queued: true };

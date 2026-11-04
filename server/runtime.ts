@@ -4,14 +4,14 @@ import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 /** The daemon API handed to plugin handlers (typed via the SDK, so the build needs no @getpaseo/client). */
 type PaseoApi = PluginHandlerContext["paseo"];
 import type { Playbook, Run, Step, VarValue } from "../shared/types";
-import { isActive, isPaused, isStepLive, isTerminal } from "../shared/types";
+import { isActive, isPaused, isStepLive, isTerminal, restartBlocker } from "../shared/types";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "./defaults";
 import * as engine from "./engine";
 import { checkoutSnapshot, currentRef, snapshotDiff } from "./git";
 import { loadPlaybooks } from "./loader";
 import { managerKickoff, managerTakeover, stepSystemPrompt } from "./prompts";
 import type { RunStore } from "./store";
-import { planAdmissions, slotHolders } from "../shared/slots";
+import { holdsBlock, planAdmissions, slotHolders } from "../shared/slots";
 
 export class UserError extends Error {}
 
@@ -468,6 +468,47 @@ export class Runtime {
     if (busy) throw new UserError(`this workspace has another active run (${busy.id}); wait for it to end`);
     const effects = await this.store.mutate(runId, (current) => engine.startAfterTask(current, taskId, nowIso()));
     await this.enqueue(runId, [`A human started the after-task "${taskId}" from the panel.`, ...effects.notes]);
+    await this.deliver(runId);
+    return this.store.get(runId)!;
+  }
+
+  /**
+   * A human reopens a finished run from a step, from the panel. Same manager, same
+   * workspace; refused when the workspace has another active run or a concurrency slot the
+   * restarted run would hold is taken.
+   */
+  async restartRun(runId: string, stepId: string, comment: string | null, by: string | null): Promise<Run> {
+    const run = this.store.get(runId);
+    if (!run) throw new UserError(`unknown run "${runId}"`);
+    const blocker = restartBlocker(run, stepId);
+    if (blocker) throw new UserError(blocker);
+    const manager = await this.api().agents.ref(run.managerAgentId).refresh().catch(() => null);
+    if (!manager || manager.agent.archivedAt) throw new UserError("this run's Playbook Manager no longer exists; start a new run");
+    const busy = this.store.list().find((other) => other.id !== run.id && other.workspaceId === run.workspaceId && isActive(other));
+    if (busy) throw new UserError(`this workspace has another active run (${busy.id}); one active run per workspace`);
+    // Dry run: the restarted run must fit in the concurrency slots it would hold.
+    const trial = structuredClone(run);
+    engine.restartRun(trial, stepId, { comment, by, now: nowIso() });
+    const runs = [...this.store.list().filter((other) => other.id !== run.id), trial];
+    const limits: Array<[string, number]> = [];
+    if (trial.playbook.concurrency !== undefined) limits.push([trial.playbook.id, trial.playbook.concurrency]);
+    for (const [prefix, block] of Object.entries(trial.playbook.blocks)) {
+      if (block.concurrency !== undefined && holdsBlock(trial, prefix)) limits.push([block.playbook, block.concurrency]);
+    }
+    for (const [playbookId, limit] of limits) {
+      const holders = slotHolders(runs, run.projectId, playbookId);
+      if (holders.length > limit) {
+        throw new UserError(`"${playbookId}" allows ${limit} active run(s) in this project; held by: ${holders.filter((id) => !id.startsWith(run.id)).join(", ")}. Try again once one ends.`);
+      }
+    }
+    const effects = await this.store.mutate(runId, (current) => engine.restartRun(current, stepId, { comment, by, now: nowIso() }));
+    await this.admitQueued(runId);
+    const ready = engine.readySteps(this.store.get(runId)!);
+    await this.enqueue(runId, [
+      `A human${by ? ` (${by})` : ""} restarted the run from "${stepId}" via the panel${comment ? `: "${comment}"` : ""}.`,
+      ...effects.notes,
+      `Completed steps before it keep their outputs (get_run shows them). Carry on as usual: start ${ready.length === 1 ? "the ready step" : "the ready steps"} with start_step (or request_gate for a gate).`,
+    ]);
     await this.deliver(runId);
     return this.store.get(runId)!;
   }
