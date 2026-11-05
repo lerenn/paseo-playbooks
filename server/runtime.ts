@@ -11,7 +11,7 @@ import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "./defaults";
 import * as engine from "./engine";
 import { checkoutSnapshot, currentRef, snapshotDiff } from "./git";
 import { loadPlaybooks } from "./loader";
-import { managerKickoff, managerTakeover, reportReminder, silenceReminder, stepSystemPrompt } from "./prompts";
+import { managerAfterRestart, managerKickoff, managerTakeover, reportReminder, resumeAfterRestart, silenceReminder, stepSystemPrompt } from "./prompts";
 import type { RunStore } from "./store";
 import { holdsBlock, planAdmissions, slotHolders } from "../shared/slots";
 
@@ -190,7 +190,10 @@ export class Runtime {
     for (const id of [...this.scripts.keys()]) this.stopScript(id);
   }
 
-  /** After a (re)start: find step agents that stopped, re-arm timeouts, flush wake-ups. */
+  /**
+   * After a (re)start: re-arm timeouts, ask step agents whose turn the restart cut to carry on,
+   * treat the ones that cannot as lost, wake idle managers of stalled runs, flush wake-ups.
+   */
   private async reconcile(): Promise<void> {
     for (const run of this.store.list()) {
       if (!isActive(run)) continue;
@@ -214,12 +217,46 @@ export class Runtime {
           this.armTimeout(run, stepId);
           continue;
         }
+        // The restart cut its turn: carry on in the same conversation rather than start over.
+        if (agent && !agent.agent.archivedAt && !attempt.report && (await this.resumeStep(run.id, stepId, attempt.agentId))) continue;
         await this.onStepTurnEnded(run.id, attempt.agentId, "lost");
       }
       await this.settleScripts(run.id);
+      await this.wakeStalledManager(run.id);
       await this.deliver(run.id);
     }
     await this.admitQueued();
+  }
+
+  /** Asks a step agent whose turn a daemon restart cut to carry on. Returns false if it could not be sent. */
+  private async resumeStep(runId: string, stepId: string, agentId: string): Promise<boolean> {
+    try {
+      await this.api().agents.ref(agentId).send(resumeAfterRestart(stepId));
+    } catch (error) {
+      console.error(`[playbooks] could not resume step "${stepId}" of ${runId}:`, errorText(error));
+      return false;
+    }
+    await this.store.mutate(runId, (current) => engine.markResumed(current, stepId, nowIso()));
+    this.armTimeout(this.store.get(runId)!, stepId);
+    return true;
+  }
+
+  /**
+   * A manager whose turn a daemon restart cut may have already read its last wake-up, so nothing
+   * would wake it again. When its run waits on it (steps ready or reported, none running, no gate
+   * open, no wake-up already queued) and it is idle, queue a note telling it to carry on.
+   */
+  private async wakeStalledManager(runId: string): Promise<void> {
+    const run = this.store.get(runId);
+    if (!run || !isActive(run) || isPaused(run) || run.inbox.length > 0 || this.busyManagers.has(run.managerAgentId)) return;
+    const steps = Object.entries(run.steps);
+    if (steps.some(([, state]) => state.status === "running")) return;
+    if (run.gates.some((gate) => gate.status === "pending")) return;
+    const withStatus = (status: string) => steps.filter(([, state]) => state.status === status).map(([id]) => id);
+    const ready = withStatus("ready");
+    const reported = withStatus("reported");
+    if (ready.length === 0 && reported.length === 0) return;
+    await this.enqueue(runId, [managerAfterRestart(ready, reported)]);
   }
 
   // ---------------------------------------------------------------- lookups

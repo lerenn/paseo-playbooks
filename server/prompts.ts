@@ -111,3 +111,19 @@ export function silenceReminder(stepId: string, silentMin: number, timeoutInMin:
   const why = timeoutInMin !== null ? `The timeout of step "${stepId}" fires in about ${timeoutInMin} min` : `Step "${stepId}" has shown no activity for ${silentMin} min`;
   return `[playbooks] ${why}. If your work is done, call report_step_result now. If you are still waiting for something, say in one line what you are waiting for, then carry on.`;
 }
+
+/** Sent to a step agent whose turn a daemon restart cut, so it carries on in the same conversation. */
+export function resumeAfterRestart(stepId: string): string {
+  return `[playbooks] The Paseo daemon restarted and cut your turn on step "${stepId}". Carry on from where you stopped: check what you had already done (the worktree, your last commands) before redoing anything. When the work is done, call report_step_result.`;
+}
+
+/** Sent to the idle manager of a run that has work waiting for it after a daemon restart. */
+export function managerAfterRestart(ready: string[], reported: string[]): string {
+  return [
+    "The Paseo daemon restarted and may have cut your last turn. Call get_run to see where the run is, then carry on.",
+    ready.length > 0 ? `Ready to start: ${ready.join(", ")}.` : "",
+    reported.length > 0 ? `Waiting for complete_step: ${reported.join(", ")}.` : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+}

@@ -96,8 +96,12 @@ submission) with that tag.
 - Reloading the plugin (`paseo plugin reload`) removes the playbook tools from agents that
   are already running. They get the tools back when their session restarts.
 - If the daemon restarts before a busy agent's queued kickoff is delivered, the kickoff is
-  lost (the queue is kept in memory only). The run stays active but nothing drives it.
-  Cancel it from the panel and start again.
+  lost (the queue is kept in memory only). After the restart the agent gets a short "carry
+  on" note, but never got the manager instructions. If it does not pick the run up, cancel
+  the run from the panel and start again.
+- After a daemon restart, recovery starts at the plugin's first event (the app connecting, an
+  agent opening a session), not when the daemon starts. A step's timeout keeps counting while
+  the daemon is down.
 - Plain Start picks the workspace's most recently used agent (the one you last sent a
   message to, skipping agents that already manage a run), because the panel cannot see
   which tab has focus. To pick a specific agent, send it a message first, or use "Start on

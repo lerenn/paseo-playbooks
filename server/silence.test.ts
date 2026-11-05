@@ -86,7 +86,8 @@ describe("a running step that goes silent", () => {
   it("is not reminded once its turn has ended; the turn-end hook handles it", async () => {
     const { runtime, sent } = await setup({ startedAgo: 40 * MIN, activity: null, stepStatus: "idle" });
     await runtime.checkSilence("run_x", "release", "step-1");
-    expect(sent.filter((entry) => entry.agentId === "step-1")).toEqual([]);
+    // Attaching reconciles as after a restart, which asks the idle agent to carry on; no silence reminder follows.
+    expect(sent.filter((entry) => entry.agentId === "step-1" && !/daemon restarted/.test(entry.text))).toEqual([]);
   });
 
   it("is reminded shortly before its timeout, even while active", async () => {

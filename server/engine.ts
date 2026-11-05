@@ -1080,6 +1080,11 @@ export function markReadonlyViolation(run: Run, stepId: string, detail: string, 
 }
 
 /** Hands the run to another manager agent (its previous one was archived with its parent). */
+/** A daemon restart cut the step's turn; the plugin asked the same agent to carry on. */
+export function markResumed(run: Run, stepId: string, now: string): void {
+  log(run, now, "step_resumed", stepId, "resumed in its conversation after a daemon restart");
+}
+
 export function replaceManager(run: Run, managerAgentId: string, reason: string, now: string): void {
   const previous = run.managerAgentId;
   run.managerAgentId = managerAgentId;
