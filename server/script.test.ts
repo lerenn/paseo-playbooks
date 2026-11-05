@@ -145,6 +145,8 @@ steps:
     const { loaded, store, runtime, sent } = await setup(playbook, { "fail.sh": "#!/bin/sh\necho 'gh: not logged in' >&2\nexit 3\n" });
     const run = await runtime.startPlaybook({ id: "m", workspaceId: "ws", cwd: "/" }, "wait", {}, loaded.playbook!);
     await until(() => store.get(run.id)!.status === "failed");
+    // The manager is told just after the run fails, asynchronously.
+    await until(() => sent.some((entry) => entry.agentId === "m"));
     const state = store.get(run.id)!.steps.check!;
     expect(state.attempts).toHaveLength(2);
     expect(state.attempts[1]!.report).toMatchObject({ outcome: "failure", summary: expect.stringMatching(/exit 3: gh: not logged in/) });
