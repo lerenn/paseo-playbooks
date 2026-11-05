@@ -395,7 +395,7 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
             <SectionTitle theme={theme} icon="CircleDot" iconColor={theme.colors.statusWarning} title="Needs you" count={needs.length} />
             <View style={{ borderRadius: 10, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface1, overflow: "hidden" }}>
               {needs.map(({ run, gate }, index) => (
-                <NeedsYouRow key={gate.id} theme={theme} run={run} gate={gate} first={index === 0} workspace={names.get(run.workspaceId) ?? run.workspaceId} hostLabel={props.host.label} compact={layout.compact} />
+                <NeedsYouRow key={gate.id} theme={theme} run={run} gate={gate} first={index === 0} workspace={names.get(run.workspaceId) ?? run.workspaceId} hostLabel={props.host.label} compact={layout.compact} onOpenWorkspace={onOpenWorkspace} onOpenAgent={onOpenAgent} />
               ))}
             </View>
           </View>
@@ -494,7 +494,17 @@ function SectionTitle(props: { theme: Theme; title: string; count: number; icon?
 }
 
 /** A pending gate: what it asks, where it is, and Review, which opens the gate's choices in place. */
-function NeedsYouRow(props: { theme: Theme; run: Run; gate: Gate; first: boolean; workspace: string; hostLabel: string; compact: boolean }) {
+function NeedsYouRow(props: {
+  theme: Theme;
+  run: Run;
+  gate: Gate;
+  first: boolean;
+  workspace: string;
+  hostLabel: string;
+  compact: boolean;
+  onOpenWorkspace?: (workspaceId: string) => void;
+  onOpenAgent?: (agentId: string) => void;
+}) {
   const { theme, run, gate } = props;
   const [open, setOpen] = useState(false);
   const refresh = useStoreRefresh();
@@ -527,6 +537,7 @@ function NeedsYouRow(props: { theme: Theme; run: Run; gate: Gate; first: boolean
         >
           <Text style={{ color: open ? theme.colors.foreground : theme.colors.accentForeground, fontSize: 12, fontWeight: "600" }}>{open ? "Close" : "Review"}</Text>
         </Pressable>
+        <RunActions theme={theme} run={run} workspace={props.workspace} compact={props.compact} onOpenAgent={props.onOpenAgent} onOpenWorkspace={props.onOpenWorkspace} />
       </View>
       {open ? (
         <View style={{ paddingHorizontal: 12, paddingBottom: 12, paddingLeft: props.compact ? 12 : 116, maxWidth: 760 }}>
@@ -770,17 +781,21 @@ function RunRow(props: {
     </Pressable>
   );
   const actions = (
-    <View style={{ width: compact ? undefined : 64, flexDirection: "row", justifyContent: "flex-end", gap: 10 }}>
-      {props.onOpenAgent ? (
-        <IconButton theme={theme} icon="Bot" label={`Open the Playbook Manager of run ${shortId(run)}`} onPress={() => {
-            opened();
-            props.onOpenAgent!(run.managerAgentId);
-          }} />
-      ) : null}
-      {props.onOpenWorkspace ? (
-        <IconButton theme={theme} icon="SquareArrowOutUpRight" label={`Open workspace ${props.workspace}`} onPress={openWorkspace!} />
-      ) : null}
-    </View>
+    <RunActions
+      theme={theme}
+      run={run}
+      workspace={props.workspace}
+      compact={compact}
+      onOpenAgent={
+        props.onOpenAgent
+          ? (agentId) => {
+              opened();
+              props.onOpenAgent!(agentId);
+            }
+          : undefined
+      }
+      onOpenWorkspace={openWorkspace ? () => openWorkspace() : undefined}
+    />
   );
   return (
     <View style={{ borderTopWidth: props.first ? 0 : 1, borderTopColor: theme.colors.border, paddingHorizontal: 12, paddingVertical: 10, gap: 8 }}>
@@ -800,6 +815,28 @@ function RunRow(props: {
           {actions}
         </View>
       )}
+    </View>
+  );
+}
+
+/** Open the run's Playbook Manager and its workspace: the right-hand buttons of a run or Needs you row. */
+function RunActions(props: {
+  theme: Theme;
+  run: Run;
+  workspace: string;
+  compact: boolean;
+  onOpenAgent?: (agentId: string) => void;
+  onOpenWorkspace?: (workspaceId: string) => void;
+}) {
+  const { theme, run } = props;
+  return (
+    <View style={{ width: props.compact ? undefined : 64, flexDirection: "row", justifyContent: "flex-end", gap: 10 }}>
+      {props.onOpenAgent ? (
+        <IconButton theme={theme} icon="Bot" label={`Open the Playbook Manager of run ${shortId(run)}`} onPress={() => props.onOpenAgent!(run.managerAgentId)} />
+      ) : null}
+      {props.onOpenWorkspace ? (
+        <IconButton theme={theme} icon="SquareArrowOutUpRight" label={`Open workspace ${props.workspace}`} onPress={() => props.onOpenWorkspace!(run.workspaceId)} />
+      ) : null}
     </View>
   );
 }
