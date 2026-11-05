@@ -7,6 +7,7 @@ import { markRunSeenRpc } from "../shared/contracts";
 import { gateText } from "../shared/gates";
 import { isActive, isPaused, type Gate, type Run, type Step } from "../shared/types";
 import { useReduceMotion } from "./graph";
+import { LABEL_WIDTH, labelLayout, ROW_HEIGHT } from "./layout";
 import { useOverview, type OverviewStore } from "./overview-store";
 import { GateActions } from "./sheet";
 import { stepLabel, withAlpha, type Theme } from "./theme";
@@ -548,8 +549,6 @@ function NeedsYouRow(props: {
   );
 }
 
-/** Width of a step label above the line; the line is inset by half of it so end labels fit. */
-const LABEL_WIDTH = 96;
 const TITLE_WIDTH = "38%";
 
 type SortKey = "updated" | "started" | "status" | "progress";
@@ -714,17 +713,35 @@ function at(index: number, total: number): `${number}%` {
 
 function StepLabels(props: { theme: Theme; columns: string[] }) {
   const { theme, columns } = props;
+  const [width, setWidth] = useState(0);
+  const { rows, labelWidth } = labelLayout(width, columns);
   return (
-    <View style={{ flex: 1, height: 16, marginHorizontal: LABEL_WIDTH / 2 }}>
-      {columns.map((label, index) => (
-        <Text
-          key={`${label}-${index}`}
-          numberOfLines={1}
-          style={{ position: "absolute", left: at(index, columns.length), width: LABEL_WIDTH, marginLeft: -LABEL_WIDTH / 2, textAlign: "center", color: theme.colors.foregroundMuted, fontSize: 11 }}
-        >
-          {label}
-        </Text>
-      ))}
+    <View
+      onLayout={(event) => setWidth(event.nativeEvent.layout.width)}
+      style={{ flex: 1, height: ROW_HEIGHT * rows + 1, marginHorizontal: LABEL_WIDTH / 2 }}
+    >
+      {/* Measured first: nothing is drawn until the width is known, so labels never flash overlapped. */}
+      {width > 0
+        ? columns.map((label, index) => (
+            <Text
+              key={`${label}-${index}`}
+              numberOfLines={1}
+              accessibilityLabel={label}
+              style={{
+                position: "absolute",
+                left: at(index, columns.length),
+                top: rows === 2 && index % 2 === 1 ? ROW_HEIGHT : 0,
+                width: labelWidth,
+                marginLeft: -labelWidth / 2,
+                textAlign: "center",
+                color: theme.colors.foregroundMuted,
+                fontSize: 11,
+              }}
+            >
+              {label}
+            </Text>
+          ))
+        : null}
     </View>
   );
 }
