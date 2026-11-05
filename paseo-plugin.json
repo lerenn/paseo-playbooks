@@ -13,5 +13,5 @@
   },
   "requirements": { "paseo": ">=0.14.0" },
   "build": [["npm", "ci", "--omit=dev"]],
-  "media": ["assets/card.png", "assets/panel.png", "assets/app.png", "assets/diagram.png"]
+  "media": ["assets/card.png", "assets/playbooks-screen.png", "assets/panel.png", "assets/app.png"]
 }
