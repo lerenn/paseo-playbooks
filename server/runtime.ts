@@ -878,7 +878,7 @@ export class Runtime {
     const lines = [
       `${who}${comment ? `: "${comment}"` : ""}.`,
       ...effects.notes,
-      `Completed steps before it keep their outputs (get_run shows them). Carry on as usual: start ${ready.length === 1 ? "the ready step" : "the ready steps"} with start_step (or request_gate for a gate).`,
+      `Completed steps before it keep their outputs (get_run with view "full" shows them). Carry on as usual: start ${ready.length === 1 ? "the ready step" : "the ready steps"} with start_step (or request_gate for a gate).`,
     ];
     if (takeOver) {
       // The caller reads the ready steps in the tool result; nothing to wake.
@@ -930,12 +930,12 @@ export class Runtime {
     // Steps archived before their manager already ended; their wake-up may have gone to the old manager.
     const reported = withStatus("reported");
     const note = [
-      `[playbooks] ${current.id} · The previous manager (agent ${previous}) was archived because the agent that created it (${parentId}) was archived. You take the run over from where it is: completed steps keep their outputs (get_run shows them).`,
+      `[playbooks] ${current.id} · The previous manager (agent ${previous}) was archived because the agent that created it (${parentId}) was archived. You take the run over from where it is: completed steps keep their outputs (get_run with view "full" shows them).`,
       running.length > 0
         ? `Steps that were running had their agents archived too: ${running.join(", ")}. When they show as ended (lost), call complete_step with "failure" to start them again (a lost attempt does not count as a retry), unless their report or the worktree shows the work is done.`
         : "",
       reported.length > 0
-        ? `Steps waiting for complete_step: ${reported.join(", ")}. Read them with get_run; a step that ended (lost) without a report had its agent archived: complete it with "failure" to start it again, unless the work is done.`
+        ? `Steps waiting for complete_step: ${reported.join(", ")}. Read them with get_run (view "full" for their reports); a step that ended (lost) without a report had its agent archived: complete it with "failure" to start it again, unless the work is done.`
         : "",
       current.status === "waiting_gate" ? "A gate is waiting for a human decision: ask them again (see get_run)." : "",
     ].filter(Boolean);

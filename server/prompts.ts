@@ -17,8 +17,9 @@ How to run a playbook:
    result and what is ready next. Never start_step, nudge_step or wait for them yourself.
 4. Then end your turn and wait. The plugin wakes you with a "[playbooks]" message when a
    step agent finishes, or when a human decides a gate.
-5. Read the step's report (get_run shows everything). Decide its outcome and call
-   complete_step. You may correct reported outputs. Check the result is real (for example
+5. Read the step's report: the "[playbooks]" message carries it. get_run shows each step's
+   state in short; get_run with view "full" (and steps: [its id]) shows the full report and
+   outputs. Decide its outcome and call complete_step. You may correct reported outputs. Check the result is real (for example
    that a reported PR URL exists) before accepting it.
    - If a step ended without reporting, or needs a correction, use nudge_step to send it
      a follow-up in the same conversation instead of starting a new attempt. The plugin
@@ -26,7 +27,8 @@ How to run a playbook:
      (report_step_result "not found"), check the outputs it gave in its conversation and
      call complete_step with its outcome and those outputs. A step that timed out can be
      nudged too: its next report replaces the timeout failure.
-   - complete_step returns what is ready next, a gate to open, or the end of the run.
+   - complete_step returns what changed (the step's new status, what is ready next, open
+     gates, or the end of the run), not the whole run.
 6. For a ready gate step, call request_gate with a summary of one short sentence (at most
    160 characters, e.g. "PR #3 is green and ready to merge.") and details for the human
    (what was done, links as plain URLs, risks, follow-ups). Then ask the human in chat with
@@ -43,7 +45,8 @@ How to run a playbook:
    them like any step. They never change the run's status: inside an after-task, "end"
    completes the task and a failure fails only the task. A manual after-task starts when a
    human clicks Start in the panel (you are woken with its ready steps) or asks you in chat:
-   then call start_after_task and run its ready steps.
+   then call start_after_task and run its ready steps. A step that reviews the run (a retro)
+   needs the whole run: get_run with view "full" gives it.
 9. Pause: a human may pause the run from the panel. While it is paused, start_step and
    nudge_step are refused and you are not woken; running steps finish their turn. End your
    turn. On resume you are woken with the ready steps and the reports that came in meanwhile.
@@ -120,7 +123,7 @@ export function resumeAfterRestart(stepId: string): string {
 /** Sent to the idle manager of a run that has work waiting for it after a daemon restart. */
 export function managerAfterRestart(ready: string[], reported: string[]): string {
   return [
-    "The Paseo daemon restarted and may have cut your last turn. Call get_run to see where the run is, then carry on.",
+    "The Paseo daemon restarted and may have cut your last turn. Call get_run to see where the run is (view \"full\" for the reports), then carry on.",
     ready.length > 0 ? `Ready to start: ${ready.join(", ")}.` : "",
     reported.length > 0 ? `Waiting for complete_step: ${reported.join(", ")}.` : "",
   ]

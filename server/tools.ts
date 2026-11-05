@@ -22,8 +22,97 @@ async function guard(fn: () => Promise<AgentToolResult>): Promise<AgentToolResul
   }
 }
 
-/** Compact run view for the manager. */
-export function runSummary(run: Run) {
+/** Characters of a step summary the compact view keeps. */
+export const COMPACT_SUMMARY_MAX = 300;
+
+function clip(text: string | null, max = COMPACT_SUMMARY_MAX): string | null {
+  return text !== null && text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
+/** The step ids a view covers: all of them, or the requested ones (refused if unknown). */
+function viewSteps(run: Run, only?: string[]): string[] {
+  const all = run.playbook.steps.map((step) => step.id);
+  if (!only || only.length === 0) return all;
+  const unknown = only.filter((id) => !all.includes(id));
+  if (unknown.length) throw new UserError(`unknown step(s) ${unknown.join(", ")} in run ${run.id} (steps: ${all.join(", ")})`);
+  return all.filter((id) => only.includes(id));
+}
+
+function runningSteps(run: Run): string[] {
+  return Object.entries(run.steps)
+    .filter(([, state]) => state.status === "running")
+    .map(([id]) => id);
+}
+
+/** A gate without its details, its comment clipped like a step summary. */
+function compactGate(gate: Run["gates"][number]) {
+  return { id: gate.id, kind: gate.kind, stepId: gate.stepId, status: gate.status, summary: gate.summary, comment: clip(gate.comment), decidedBy: gate.decidedBy };
+}
+
+function afterStatus(run: Run) {
+  return run.playbook.after.map((task) => ({ id: task.id, trigger: task.trigger, status: run.after[task.id]?.status ?? "pending", detail: run.after[task.id]?.detail ?? null }));
+}
+
+/** What a mutating manager tool changed: the step it acted on and what comes next. get_run shows the rest. */
+export function runChange(run: Run, stepId?: string) {
+  const state = stepId ? run.steps[stepId] : undefined;
+  return {
+    runId: run.id,
+    status: run.status,
+    failure: run.failure,
+    active: isActive(run),
+    paused: isPaused(run),
+    ...(state ? { step: { id: stepId, status: state.status, outcome: state.attempts.at(-1)?.outcome ?? null, attempts: state.attempts.length } } : {}),
+    ready: engine.readySteps(run),
+    queued: engine.queuedSteps(run),
+    running: runningSteps(run),
+    gates: run.gates.filter((gate) => gate.status === "pending").map(compactGate),
+    ...(isTerminal(run.status) ? { outputs: run.outputs } : {}),
+    after: afterStatus(run),
+  };
+}
+
+/** The default get_run view: one short line of state per step, no reports, outputs or inputs. */
+export function runCompact(run: Run, only?: string[]) {
+  return {
+    runId: run.id,
+    playbook: run.playbook.id,
+    status: run.status,
+    failure: run.failure,
+    active: isActive(run),
+    paused: isPaused(run),
+    branch: run.branch,
+    outputs: run.outputs,
+    ready: engine.readySteps(run),
+    queued: engine.queuedSteps(run),
+    running: runningSteps(run),
+    steps: Object.fromEntries(
+      viewSteps(run, only).map((id) => {
+        const step = engine.stepDef(run, id);
+        const state = run.steps[id]!;
+        const attempt = state.attempts.at(-1);
+        return [
+          id,
+          {
+            kind: step.kind,
+            ...(step.afterTask ? { afterTask: step.afterTask } : {}),
+            status: state.status,
+            outcome: attempt?.outcome ?? attempt?.report?.outcome ?? null,
+            attempts: state.attempts.length,
+            turnEnd: attempt?.turnEnd ?? null,
+            summary: clip(state.summary ?? attempt?.report?.summary ?? null),
+          },
+        ];
+      }),
+    ),
+    gates: run.gates.map(compactGate),
+    loops: run.loops,
+    after: afterStatus(run),
+  };
+}
+
+/** The full get_run view: every step's definition, latest report, outputs and summary, with the gates in full. */
+export function runFull(run: Run, only?: string[]) {
   return {
     runId: run.id,
     playbook: run.playbook.id,
@@ -39,8 +128,9 @@ export function runSummary(run: Run) {
     ready: engine.readySteps(run),
     queued: engine.queuedSteps(run),
     steps: Object.fromEntries(
-      run.playbook.steps.map((step) => {
-        const state = run.steps[step.id]!;
+      viewSteps(run, only).map((id) => {
+        const step = engine.stepDef(run, id);
+        const state = run.steps[id]!;
         const attempt = state.attempts.at(-1);
         return [
           step.id,
@@ -141,7 +231,7 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
           const run = await runtime.startPlaybook(agent, playbook, inputs);
           return ok(
             `Run ${run.id} started on branch ${run.branch ?? "(unknown)"}. Ready: ${engine.readySteps(run).join(", ") || "none"}. Start them with start_step.${engine.queuedSteps(run).length ? ` Queued for a free concurrency slot of another run: ${engine.queuedSteps(run).join(", ")}; you are woken when they are ready.` : ""}`,
-            runSummary(run),
+            runChange(run),
           );
         }),
     }),
@@ -189,7 +279,7 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
                   ? `A gate is waiting for a human decision. End your turn.`
                   : `Ready: ${ready.join(", ") || (queued.length ? "none" : "none (waiting for running steps)")}.${queued.length ? ` Queued for a free concurrency slot of another run: ${queued.join(", ")}; end your turn, you are woken when they are ready.` : ""}${gates.length ? ` Gate(s) to open with request_gate: ${gates.join(", ")}.` : ""}`;
           const paused = isPaused(run) ? " The run is paused by a human: do not start steps; end your turn, you are woken on resume." : "";
-          return ok(text + paused, runSummary(run));
+          return ok(text + paused, runChange(run, stepId));
         }),
     }),
     defineAgentTool({
@@ -234,7 +324,7 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
           });
           const run = (await runtime.ownedRun(agent.id, runId))!;
           const prefix = result.alreadyDecided ? `Already decided: ${result.gate.status} via ${result.gate.decidedVia}.` : `Recorded ${decision}.`;
-          return ok(`${prefix} Run is ${run.status}.${afterText(run)} Ready: ${engine.readySteps(run).join(", ") || "none"}.${engine.queuedSteps(run).length ? ` Queued for a free concurrency slot: ${engine.queuedSteps(run).join(", ")}.` : ""}`, runSummary(run));
+          return ok(`${prefix} Run is ${run.status}.${afterText(run)} Ready: ${engine.readySteps(run).join(", ") || "none"}.${engine.queuedSteps(run).length ? ` Queued for a free concurrency slot: ${engine.queuedSteps(run).join(", ")}.` : ""}`, runChange(run, result.gate.stepId));
         }),
     }),
     defineAgentTool({
@@ -250,13 +340,18 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
     }),
     defineAgentTool({
       name: "get_run",
-      description: "Show a run's state: steps, reports, outputs, gates, loops. Without runId, your active (or latest) run.",
-      input: z.object({ runId: IdArg.optional() }),
-      execute: ({ runId }, { agent }) =>
+      description:
+        'Show a run\'s state. Without runId, your active (or latest) run. view "compact" (default): per step its status, outcome, attempts, turn end and the start of its summary, plus gates, loops and after-tasks. view "full": every step\'s definition, full report, outputs and summary, the run inputs and the gates in full (e.g. for a retro brief). steps limits either view to those steps.',
+      input: z.object({
+        runId: IdArg.optional(),
+        view: z.enum(["compact", "full"]).default("compact").describe('"compact" (default) or "full" (reports, outputs, inputs, gate details)'),
+        steps: z.array(z.string()).optional().describe("Only these step ids (default: all)"),
+      }),
+      execute: ({ runId, view, steps }, { agent }) =>
         guard(async () => {
           const run = runtime.ownedRun(agent.id, runId);
           await runtime.clearInbox(run.id);
-          const summary = runSummary(run);
+          const summary = view === "full" ? runFull(run, steps) : runCompact(run, steps);
           return ok(JSON.stringify(summary, null, 2), summary);
         }),
     }),
@@ -336,7 +431,7 @@ export function runTools(runtime: Runtime): AgentToolDefinition[] {
           const run = await runtime.cancelRun(target.id, reason, isManager ? null : `by agent ${agent.id}`);
           return ok(
             isTerminal(run.status) && run.status !== "canceled" ? `After-tasks of run ${run.id} canceled; the run stays ${run.status}.` : `Run ${run.id} canceled.`,
-            isManager ? runSummary(run) : runListing(run),
+            isManager ? runChange(run) : runListing(run),
           );
         }),
     }),
@@ -353,8 +448,8 @@ export function runTools(runtime: Runtime): AgentToolDefinition[] {
           const run = await runtime.startAfterTask(runId, taskId, agent.id);
           if (run.managerAgentId === agent.id) {
             return ok(
-              `After-task "${taskId}" of run ${run.id} started. Start its ready steps (${engine.readySteps(run).join(", ") || "none"}) with start_step (or request_gate for a gate).`,
-              runSummary(run),
+              `After-task "${taskId}" of run ${run.id} started. Start its ready steps (${engine.readySteps(run).join(", ") || "none"}) with start_step (or request_gate for a gate). For a retro brief, get_run with view "full" gives the whole run.`,
+              runChange(run),
             );
           }
           return ok(`After-task "${taskId}" of run ${run.id} started. Its manager (agent ${run.managerAgentId}) was woken and runs it.`, runListing(run));
@@ -382,11 +477,11 @@ export function runTools(runtime: Runtime): AgentToolDefinition[] {
           const { run, newManager } = await runtime.restartRun(runId, stepId, note?.trim() || null, agent.id, "agent", takeOver ? { id: agent.id, workspaceId: agent.workspaceId } : undefined);
           const isManager = run.managerAgentId === agent.id;
           const next = isManager
-            ? `You manage it${newManager ? " now (get_run shows the completed steps and their outputs)" : ""}: start the ready steps (${engine.readySteps(run).join(", ") || "none"}) with start_step.`
+            ? `You manage it${newManager ? " now (get_run with view \"full\" shows the completed steps' reports and outputs)" : ""}: start the ready steps (${engine.readySteps(run).join(", ") || "none"}) with start_step.`
             : newManager
               ? `Its previous manager was archived: a new Playbook Manager (agent ${run.managerAgentId}) took it over and starts the ready steps.`
               : `Its manager (agent ${run.managerAgentId}) was woken and starts the ready steps.`;
-          return ok(`Run ${run.id} restarted from "${stepId}". ${next}`, isManager ? runSummary(run) : runListing(run));
+          return ok(`Run ${run.id} restarted from "${stepId}". ${next}`, isManager ? runChange(run, stepId) : runListing(run));
         }),
     }),
   ];

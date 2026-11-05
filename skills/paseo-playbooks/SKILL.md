@@ -331,6 +331,11 @@ after:
 - Canceling the run while after-tasks run cancels them; the run's status stays.
 - The "may both edit files" rule applies between after-tasks, not between an after-task and
   a main step.
+- Step agents cannot call `get_run`. A retro step that reviews the whole run gets it from
+  the manager: tell the manager (in the playbook `description`) to put `get_run` with
+  `view: "full"` in the step's brief. The default `get_run` view is compact (per step: status,
+  outcome, attempts, turn end and the first 300 characters of the summary), without reports
+  or outputs.
 
 ### Variables
 
@@ -452,7 +457,8 @@ steps that completed:
 3. `restart_run` with `runId`, `stepId` and a `note` saying what changed since it stopped.
    That step and everything after it run again; earlier steps keep their outputs.
    - `takeOver: true` makes you the run's manager (you must be an agent of the run's
-     workspace). Then run it as a manager: `get_run`, then `start_step` the ready steps.
+     workspace). Then run it as a manager: `get_run` (`view: "full"` for the earlier steps' reports and
+     outputs), then `start_step` the ready steps.
    - Without it, the run's manager is woken, or a new Playbook Manager is created in the
      run's workspace if the old one was archived.
 
