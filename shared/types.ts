@@ -284,6 +284,8 @@ export const RunSchema = z.object({
   updatedAt: z.string(),
   /** Set when the run is archived from the panel: hidden there, its state and agents kept. */
   archivedAt: z.string().nullable().default(null),
+  /** Set when a human first opens the finished run from the Playbooks screen: done runs turn from green to grey. */
+  seenAt: z.string().nullable().default(null),
   /** Set while a human has paused the run: no step starts and the manager is not woken until resume. */
   pausedAt: z.string().nullable().default(null),
   steps: z.record(z.string(), RunStepSchema),

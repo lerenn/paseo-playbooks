@@ -110,6 +110,7 @@ export function newRun(input: NewRunInput): Run {
     createdAt: input.now,
     updatedAt: input.now,
     archivedAt: null,
+    seenAt: null,
     pausedAt: null,
     steps: Object.fromEntries(
       input.playbook.steps.map((step) => [
@@ -888,6 +889,7 @@ export function restartRun(run: Run, stepId: string, input: { comment: string | 
   run.outputs = null;
   run.pausedAt = null;
   run.archivedAt = null;
+  run.seenAt = null;
   log(run, now, "run_restarted", stepId, `was ${previous}${input.by ? `, by ${input.by}` : ""}${input.comment?.trim() ? `: ${input.comment.trim()}` : ""}`);
   const { ready, queued } = refreshReady(run, now);
   fx.notes.push(`The run (was ${previous}) restarted from "${stepId}". Ready: ${ready.join(", ") || "none"}.`);

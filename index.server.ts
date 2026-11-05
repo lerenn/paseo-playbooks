@@ -15,6 +15,7 @@ import {
   listPlaybooks,
   listRuns,
   listWorkspaceAgents,
+  markRunSeenRpc,
   nudgeStepRpc,
   restartRunRpc,
   retryStepRpc,
@@ -24,7 +25,6 @@ import {
 import { hasPlaybooks, loadPlaybooks } from "./server/loader";
 import { Runtime, STEP_LABEL, UserError } from "./server/runtime";
 import { defaultRunsDir, RunStore } from "./server/store";
-import { isActive } from "./shared/types";
 import { managerTools, runTools, stepTool, validateTool } from "./server/tools";
 
 export default function contribute(server: PluginServerContext) {
@@ -114,9 +114,8 @@ export default function contribute(server: PluginServerContext) {
       .map((run) => run.workspaceId);
     return { withPlaybooks, waiting: [...new Set(waiting)] };
   });
-  handle(overviewStateRpc, async ({ includeDone }) => ({
-    runs: store.list().filter((run) => !run.archivedAt && (includeDone || isActive(run))),
-  }));
+  handle(overviewStateRpc, async () => ({ runs: store.list().filter((run) => !run.archivedAt) }));
+  handle(markRunSeenRpc, async ({ runId }) => ({ seenAt: await runtime.markSeen(runId) }));
   handle(needsYouRpc, async () => ({
     count: store.list().reduce((count, run) => count + (run.archivedAt ? 0 : run.gates.filter((gate) => gate.status === "pending").length), 0),
   }));

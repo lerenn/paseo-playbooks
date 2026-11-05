@@ -385,6 +385,14 @@ export class Runtime {
     });
   }
 
+  /** Marks a finished run as seen by a human; an active run stays unseen (it can still change). */
+  async markSeen(runId: string): Promise<string | null> {
+    return this.store.mutate(runId, (run) => {
+      if (!isActive(run)) run.seenAt ??= nowIso();
+      return run.seenAt;
+    });
+  }
+
   /** `by` (e.g. "from the panel") tells the manager who canceled; null when the manager did it or is gone. */
   async cancelRun(runId: string, reason: string, by: string | null): Promise<Run> {
     const effects = await this.store.mutate(runId, (current) => engine.cancelRun(current, reason, nowIso()));

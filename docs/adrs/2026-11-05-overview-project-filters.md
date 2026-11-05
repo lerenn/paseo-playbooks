@@ -1,6 +1,6 @@
 # Project and workspace filters on the Playbooks screen, from runs only
 
-Status: Accepted. Supersedes the chips of `2026-11-05-sidebar-screen.md`.
+Status: Superseded by `2026-11-05-overview-status-and-seen.md` (which runs feed the chips). Supersedes the chips of `2026-11-05-sidebar-screen.md`.
 
 ## Context
 

@@ -1,11 +1,12 @@
 import { usePaseo, useRpc, type PluginScreenProps, type PluginSidebarItemProps } from "@getpaseo/plugin/client";
 import { Icon, ScrollView, SidebarRow } from "@getpaseo/plugin/client/ui";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
-import { Pressable, Text, View } from "react-native";
-import { needsYouRpc, overviewStateRpc } from "../shared/contracts";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Animated, Easing, Pressable, Text, View } from "react-native";
+import { markRunSeenRpc, needsYouRpc, overviewStateRpc } from "../shared/contracts";
 import { gateText } from "../shared/gates";
 import { isActive, isPaused, type Gate, type Run, type Step } from "../shared/types";
+import { useReduceMotion } from "./graph";
 import { GateActions } from "./sheet";
 import { stepLabel, withAlpha, type Theme } from "./theme";
 
@@ -141,7 +142,11 @@ function gateKindLabel(gate: Gate): string {
   return gate.kind === "ask" ? "Answer" : gate.kind === "loop_limit" ? "Loop limit" : "Decide";
 }
 
-type Tone = "waiting" | "running" | "paused" | "done" | "failed" | "idle";
+/**
+ * What a run is doing, as a colour: blue working, yellow waiting (a decision or a free slot),
+ * green done and not opened yet, grey done and opened (or paused), red failed or canceled.
+ */
+type Tone = "running" | "waiting" | "paused" | "done" | "seen" | "failed";
 
 function toneColor(theme: Theme, tone: Tone): string {
   switch (tone) {
@@ -158,16 +163,44 @@ function toneColor(theme: Theme, tone: Tone): string {
   }
 }
 
+function toneIcon(tone: Tone): string {
+  switch (tone) {
+    case "running":
+      return "LoaderCircle";
+    case "waiting":
+      return "CircleDot";
+    case "paused":
+      return "CirclePause";
+    case "failed":
+      return "CircleX";
+    default:
+      return "CircleCheck";
+  }
+}
+
+/** Something is still happening: the icon and the ring move. */
+function isMoving(tone: Tone): boolean {
+  return tone === "running" || tone === "waiting";
+}
+
 const LIVE = new Set(["running", "waiting", "reported", "queued", "ready", "failed"]);
+
+/** A completed run a human has not opened yet from the screen. */
+function isUnseenDone(run: Run): boolean {
+  return run.status === "completed" && !isActive(run) && !run.seenAt;
+}
 
 /**
  * Where a run stands on its line: the column of its furthest live step (Done once completed),
- * the columns of every live step, and the tone of the mark.
+ * the columns of every live step, and its tone.
  */
 function progress(run: Run): { position: number; marks: number[]; tone: Tone; status: string } {
   const steps = mainSteps(run);
   const done = steps.length;
-  if (run.status === "completed") return { position: done, marks: [done], tone: "done", status: isActive(run) ? "Done, wrapping up" : "Done" };
+  if (run.status === "completed") {
+    if (isActive(run)) return { position: done, marks: [done], tone: "running", status: "Done, wrapping up" };
+    return { position: done, marks: [done], tone: run.seenAt ? "seen" : "done", status: "Done" };
+  }
   const live = steps.flatMap((step, index) => (LIVE.has(run.steps[step.id]?.status ?? "pending") ? [index] : []));
   const completed = steps.flatMap((step, index) => (run.steps[step.id]?.status === "completed" ? [index] : []));
   const marks = live.length > 0 ? live : [Math.min(done, (completed.at(-1) ?? -1) + 1)];
@@ -176,12 +209,62 @@ function progress(run: Run): { position: number; marks: number[]; tone: Tone; st
   if (run.status === "failed" || run.status === "canceled") return { position, marks, tone: "failed", status: `${run.status === "failed" ? "Failed" : "Canceled"} at ${at}` };
   if (isPaused(run)) return { position, marks, tone: "paused", status: `Paused at ${at}` };
   const gates = pendingGates(run);
-  if (gates.length > 0) {
-    const where = gates.map((gate) => stepLabel(gate.stepId)).join(", ");
-    return { position, marks, tone: "waiting", status: `Ready for you: ${where}` };
-  }
-  const running = steps.filter((step) => run.steps[step.id]?.status === "running").map((step) => stepLabel(step.id));
-  return { position, marks, tone: "running", status: running.length > 0 ? `Working: ${running.join(", ")}` : `Manager is working` };
+  if (gates.length > 0) return { position, marks, tone: "waiting", status: `Ready for you: ${gates.map((gate) => stepLabel(gate.stepId)).join(", ")}` };
+  const named = (status: string) => steps.filter((step) => run.steps[step.id]?.status === status).map((step) => stepLabel(step.id));
+  const running = named("running");
+  if (running.length > 0) return { position, marks, tone: "running", status: `Working: ${running.join(", ")}` };
+  const queued = named("queued");
+  if (queued.length > 0) return { position, marks, tone: "waiting", status: `Waiting for a free slot: ${queued.join(", ")}` };
+  return { position, marks, tone: "running", status: "Manager is working" };
+}
+
+/** 1 → 0.3 → 1, forever, while `active` (and motion is allowed); 1 otherwise. */
+function usePulse(active: boolean): Animated.Value {
+  const reduceMotion = useReduceMotion();
+  const value = useRef(new Animated.Value(1)).current;
+  useEffect(() => {
+    if (!active || reduceMotion) {
+      value.setValue(1);
+      return;
+    }
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(value, { toValue: 0.3, duration: 800, useNativeDriver: false }),
+        Animated.timing(value, { toValue: 1, duration: 800, useNativeDriver: false }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [active, reduceMotion, value]);
+  return value;
+}
+
+/** A status icon that spins while the run works and pulses while it waits. */
+function ToneIcon(props: { tone: Tone; color: string; size?: number }) {
+  const { tone } = props;
+  const reduceMotion = useReduceMotion();
+  const spinning = tone === "running" && !reduceMotion;
+  const spin = useRef(new Animated.Value(0)).current;
+  const pulse = usePulse(tone === "waiting");
+  useEffect(() => {
+    if (!spinning) {
+      spin.setValue(0);
+      return;
+    }
+    const loop = Animated.loop(Animated.timing(spin, { toValue: 1, duration: 1100, easing: Easing.linear, useNativeDriver: false }));
+    loop.start();
+    return () => loop.stop();
+  }, [spinning, spin]);
+  return (
+    <Animated.View
+      style={{
+        opacity: tone === "waiting" ? pulse.interpolate({ inputRange: [0.3, 1], outputRange: [0.45, 1] }) : 1,
+        transform: [{ rotate: spin.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "360deg"] }) }],
+      }}
+    >
+      <Icon name={toneIcon(tone)} size={props.size ?? 13} color={props.color} />
+    </Animated.View>
+  );
 }
 
 // ---------------------------------------------------------------- screen
@@ -194,8 +277,8 @@ export function PlaybooksScreen(props: PluginScreenProps) {
   const [workspaceFilter, setWorkspaceFilter] = useState<string | null>(null);
   const [showDone, setShowDone] = useState(false);
   const overview = useQuery({
-    queryKey: ["playbooks", "overview", showDone],
-    queryFn: () => state({ includeDone: showDone }),
+    queryKey: ["playbooks", "overview"],
+    queryFn: () => state({}),
     refetchInterval: SCREEN_POLL_MS,
     refetchOnWindowFocus: "always",
   });
@@ -205,13 +288,17 @@ export function PlaybooksScreen(props: PluginScreenProps) {
   const names = useMemo(() => new Map(workspaces.map((workspace) => [workspace.id, workspace.label])), [workspaces]);
   const allRuns = overview.data?.runs ?? [];
   const projectOf = (run: Run) => byId.get(run.workspaceId)?.projectId ?? run.projectId;
-  // Two levels of chips, built from the runs on screen only: a project or workspace without one is not listed.
+  // Two levels of chips, from every run not archived (working, waiting, failed or done): a project
+  // or workspace without one is not listed.
   const projects = chipsOf(allRuns, projectOf, (run) => byId.get(run.workspaceId)?.projectLabel ?? run.projectId);
   const project = projectFilter && projects.some((chip) => chip.id === projectFilter) ? projectFilter : null;
   const inProject = allRuns.filter((run) => !project || projectOf(run) === project);
   const workspaceChips = project ? chipsOf(inProject, (run) => run.workspaceId, (run) => names.get(run.workspaceId) ?? run.workspaceId) : [];
   const scope = workspaceFilter && workspaceChips.some((chip) => chip.id === workspaceFilter) ? workspaceFilter : null;
-  const runs = inProject.filter((run) => !scope || run.workspaceId === scope).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  // Done runs already opened are listed with Show done; everything else (working, waiting, failed, done and not opened) always.
+  const runs = inProject
+    .filter((run) => (!scope || run.workspaceId === scope) && (showDone || run.status !== "completed" || isActive(run) || isUnseenDone(run)))
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 
   const needs = runs.flatMap((run) => pendingGates(run).map((gate) => ({ run, gate })));
   const groups = useMemo(() => {
@@ -223,7 +310,8 @@ export function PlaybooksScreen(props: PluginScreenProps) {
     needsYou: needs.length,
     working: runs.filter((run) => isActive(run) && !isPaused(run) && pendingGates(run).length === 0).length,
     paused: runs.filter((run) => isPaused(run)).length,
-    done: runs.filter((run) => run.status === "completed").length,
+    done: runs.filter((run) => run.status === "completed" && !isActive(run)).length,
+    failed: runs.filter((run) => run.status === "failed" || run.status === "canceled").length,
   };
 
   const pad = layout.compact ? 12 : 22;
@@ -240,7 +328,13 @@ export function PlaybooksScreen(props: PluginScreenProps) {
             <Text style={{ color: theme.colors.statusWarning }}>{counts.needsYou}</Text> {counts.needsYou === 1 ? "needs" : "need"} you ·{" "}
             <Text style={{ color: theme.colors.accent }}>{counts.working}</Text> working
             {counts.paused > 0 ? ` · ${counts.paused} paused` : ""}
-            {showDone ? (
+            {counts.failed > 0 ? (
+              <>
+                {" · "}
+                <Text style={{ color: theme.colors.statusDanger }}>{counts.failed}</Text> failed
+              </>
+            ) : null}
+            {counts.done > 0 ? (
               <>
                 {" · "}
                 <Text style={{ color: theme.colors.statusSuccess }}>{counts.done}</Text> done
@@ -331,7 +425,7 @@ export function PlaybooksScreen(props: PluginScreenProps) {
           <View style={{ alignItems: "center", gap: 8, paddingVertical: 32 }}>
             <Icon name="Workflow" size={28} color={theme.colors.foregroundMuted} />
             <Text style={{ color: theme.colors.foregroundMuted, fontSize: 13, textAlign: "center" }}>
-              {showDone ? "No runs yet." : "No active runs. Start one from a workspace's Playbooks panel."}
+              {showDone ? "No runs yet." : "Nothing new. Show done lists the runs you have opened."}
             </Text>
           </View>
         ) : null}
@@ -415,7 +509,7 @@ function NeedsYouRow(props: { theme: Theme; run: Run; gate: Gate; first: boolean
       <View style={{ flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 12, paddingVertical: 10 }}>
         {props.compact ? null : (
           <View style={{ width: 92, flexDirection: "row", alignItems: "center", gap: 6 }}>
-            <Icon name="CircleDot" size={13} color={warning} />
+            <ToneIcon tone="waiting" color={warning} />
             <Text style={{ color: warning, fontSize: 12, fontWeight: "600" }}>{gateKindLabel(gate)}</Text>
           </View>
         )}
@@ -534,28 +628,54 @@ function RunRow(props: {
   const state = progress(run);
   const color = toneColor(theme, state.tone);
   const columns = [...mainSteps(run).map((step) => stepLabel(step.id)), "Done"];
+  const markSeen = useRpc(markRunSeenRpc);
+  const queryClient = useQueryClient();
+  /** Opening a finished run from here marks it seen: a green done run turns grey. */
+  const opened = () => {
+    if (isActive(run) || run.seenAt) return;
+    void markSeen({ runId: run.id })
+      .then(() => queryClient.invalidateQueries({ queryKey: ["playbooks", "overview"] }))
+      .catch((error: unknown) => console.error("[playbooks] mark seen failed", error));
+  };
+  const openWorkspace = props.onOpenWorkspace
+    ? () => {
+        opened();
+        props.onOpenWorkspace!(run.workspaceId);
+      }
+    : undefined;
   const title = (
-    <View style={{ width: compact ? undefined : TITLE_WIDTH, flex: compact ? 1 : undefined, flexDirection: "row", gap: 8, paddingRight: 12 }}>
+    <Pressable
+      accessibilityRole={openWorkspace ? "button" : undefined}
+      accessibilityLabel={`${runTitle(run)}, ${state.status}${state.tone === "done" ? ", not opened yet" : ""}`}
+      accessibilityHint={openWorkspace ? `Opens workspace ${props.workspace}` : undefined}
+      disabled={!openWorkspace}
+      onPress={openWorkspace}
+      style={{ width: compact ? undefined : TITLE_WIDTH, flex: compact ? 1 : undefined, flexDirection: "row", gap: 8, paddingRight: 12 }}
+    >
       <View style={{ paddingTop: 2 }}>
-        <Icon name={state.tone === "done" ? "CircleCheck" : state.tone === "failed" ? "CircleX" : state.tone === "paused" ? "CirclePause" : state.tone === "running" ? "LoaderCircle" : "CircleDot"} size={13} color={color} />
+        <ToneIcon tone={state.tone} color={color} />
       </View>
       <View style={{ flex: 1, gap: 2 }}>
         <Text numberOfLines={1} style={{ color: theme.colors.foreground, fontSize: 13, fontWeight: "500" }}>
           {runTitle(run)}
         </Text>
         <Text numberOfLines={1} style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>
-          {shortId(run)} · {state.status} · {ago(run.updatedAt)} · {props.workspace}
+          {shortId(run)} · <Text style={{ color: state.tone === "seen" || state.tone === "paused" ? theme.colors.foregroundMuted : color }}>{state.status}</Text> ·{" "}
+          {ago(run.updatedAt)} · {props.workspace}
         </Text>
       </View>
-    </View>
+    </Pressable>
   );
   const actions = (
     <View style={{ width: compact ? undefined : 64, flexDirection: "row", justifyContent: "flex-end", gap: 10 }}>
       {props.onOpenAgent ? (
-        <IconButton theme={theme} icon="Bot" label={`Open the Playbook Manager of run ${shortId(run)}`} onPress={() => props.onOpenAgent!(run.managerAgentId)} />
+        <IconButton theme={theme} icon="Bot" label={`Open the Playbook Manager of run ${shortId(run)}`} onPress={() => {
+            opened();
+            props.onOpenAgent!(run.managerAgentId);
+          }} />
       ) : null}
       {props.onOpenWorkspace ? (
-        <IconButton theme={theme} icon="SquareArrowOutUpRight" label={`Open workspace ${props.workspace}`} onPress={() => props.onOpenWorkspace!(run.workspaceId)} />
+        <IconButton theme={theme} icon="SquareArrowOutUpRight" label={`Open workspace ${props.workspace}`} onPress={openWorkspace!} />
       ) : null}
     </View>
   );
@@ -568,12 +688,12 @@ function RunRow(props: {
             {actions}
           </View>
           <StepLabels theme={theme} columns={columns} />
-          <ProgressLine theme={theme} total={columns.length} position={state.position} marks={state.marks} color={color} />
+          <ProgressLine theme={theme} total={columns.length} position={state.position} marks={state.marks} color={color} moving={isMoving(state.tone)} />
         </>
       ) : (
         <View style={{ flexDirection: "row", alignItems: "center" }}>
           {title}
-          <ProgressLine theme={theme} total={columns.length} position={state.position} marks={state.marks} color={color} />
+          <ProgressLine theme={theme} total={columns.length} position={state.position} marks={state.marks} color={color} moving={isMoving(state.tone)} />
           {actions}
         </View>
       )}
@@ -593,20 +713,21 @@ const RING = 12;
 const TICK = 5;
 
 /**
- * A track with a tick per column, filled up to the run's position, and a ring on each live step
- * in the run's tone (several when parallel steps run at once).
+ * A track with a tick per column, filled in the run's colour up to its position, and a ring on
+ * each live step (several when parallel steps run at once) that pulses while the run moves.
  */
-function ProgressLine(props: { theme: Theme; total: number; position: number; marks: number[]; color: string }) {
+function ProgressLine(props: { theme: Theme; total: number; position: number; marks: number[]; color: string; moving: boolean }) {
   const { theme, total, position, marks, color } = props;
-  const filled = theme.colors.foregroundMuted;
+  const filled = withAlpha(color, 0.75) ?? color;
+  const pulse = usePulse(props.moving);
   return (
     <View
       accessibilityRole="progressbar"
       accessibilityValue={{ min: 0, max: total - 1, now: position }}
-      style={{ flex: 1, height: RING + 4, marginHorizontal: LABEL_WIDTH / 2, justifyContent: "center" }}
+      style={{ flex: 1, height: RING + 8, marginHorizontal: LABEL_WIDTH / 2, justifyContent: "center" }}
     >
       <View style={{ position: "absolute", left: 0, right: 0, height: 1, backgroundColor: theme.colors.border }} />
-      <View style={{ position: "absolute", left: 0, width: at(position, total), height: 1, backgroundColor: filled }} />
+      <View style={{ position: "absolute", left: 0, width: at(position, total), height: 1.5, backgroundColor: filled }} />
       {Array.from({ length: total }, (_, index) =>
         marks.includes(index) ? null : (
           <View
@@ -626,26 +747,36 @@ function ProgressLine(props: { theme: Theme; total: number; position: number; ma
         ),
       )}
       {marks.map((index) => (
-        <View
-          key={`mark-${index}`}
-          style={{
-            position: "absolute",
-            left: at(index, total),
-            marginLeft: -RING / 2,
-            width: RING,
-            height: RING,
-            borderRadius: RING / 2,
-            borderWidth: 1.5,
-            borderColor: color,
-            backgroundColor: withAlpha(color, 0.18) ?? theme.colors.surface1,
-            alignItems: "center",
-            justifyContent: "center",
-          }}
-        >
-          <View style={{ width: 4, height: 4, borderRadius: 2, backgroundColor: color }} />
+        <View key={`mark-${index}`} style={{ position: "absolute", left: at(index, total), marginLeft: -RING / 2, width: RING, height: RING }}>
+          {props.moving ? (
+            <Animated.View
+              style={{
+                position: "absolute",
+                width: RING,
+                height: RING,
+                borderRadius: RING / 2,
+                backgroundColor: color,
+                opacity: pulse.interpolate({ inputRange: [0.3, 1], outputRange: [0.35, 0] }),
+                transform: [{ scale: pulse.interpolate({ inputRange: [0.3, 1], outputRange: [1.9, 1] }) }],
+              }}
+            />
+          ) : null}
+          <View
+            style={{
+              width: RING,
+              height: RING,
+              borderRadius: RING / 2,
+              borderWidth: 1.5,
+              borderColor: color,
+              backgroundColor: withAlpha(color, 0.18) ?? theme.colors.surface1,
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <View style={{ width: 4, height: 4, borderRadius: 2, backgroundColor: color }} />
+          </View>
         </View>
       ))}
     </View>
   );
 }
-

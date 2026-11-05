@@ -157,9 +157,11 @@ describe("restart a finished run from a step", () => {
     expect(restartBlocker(run, "retro")).toMatch(/after-task/);
     expect(restartBlocker(run, "docs")).toBeNull();
     run.archivedAt = now();
+    run.seenAt = now();
     expect(restartBlocker(run, "docs")).toBeNull();
     restartRun(run, "docs", { comment: null, by: null, now: now() });
     expect(run.archivedAt).toBeNull();
+    expect(run.seenAt).toBeNull();
   });
 });
 
@@ -225,6 +227,16 @@ describe("Runtime.restartRun", () => {
     expect(sent[0]!.text).toMatch(/You are now the Playbook Manager of run run_r/);
     expect(sent[0]!.text).toMatch(/Agent agent-x restarted the run from "implement": "API fixed"/);
     expect(runtime.ownedRun("mgr-1", "run_r").id).toBe("run_r");
+  });
+
+  it("marks a finished run seen once, and leaves an active run unseen", async () => {
+    const { store, runtime } = await stored(false);
+    const seenAt = await runtime.markSeen("run_r");
+    expect(seenAt).not.toBeNull();
+    expect(await runtime.markSeen("run_r")).toBe(seenAt);
+    await runtime.restartRun("run_r", "implement", null, "laptop");
+    expect(store.get("run_r")!.seenAt).toBeNull();
+    expect(await runtime.markSeen("run_r")).toBeNull();
   });
 
   it("keeps a manager that still exists and wakes it", async () => {

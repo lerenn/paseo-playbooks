@@ -128,11 +128,18 @@ export const restartRunRpc = defineRpc({
   output: z.object({ status: z.string() }),
 });
 
-/** For the Playbooks screen: the runs of every workspace on this host (not archived): active ones, and finished ones too with `includeDone`. */
+/** For the Playbooks screen: the runs of every workspace on this host that are not archived, whatever their status. */
 export const overviewStateRpc = defineRpc({
   name: "overview.state",
-  input: z.object({ includeDone: z.boolean().default(false) }),
+  input: z.object({}),
   output: z.object({ runs: z.array(RunSchema) }),
+});
+
+/** Marks a finished run as seen (opened from the Playbooks screen). */
+export const markRunSeenRpc = defineRpc({
+  name: "runs.seen",
+  input: z.object({ runId: z.string() }),
+  output: z.object({ seenAt: z.string().nullable() }),
 });
 
 /** For the sidebar badge: how many gates wait for a human on this host. */
