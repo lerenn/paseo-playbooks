@@ -114,8 +114,7 @@ export default function contribute(server: PluginServerContext) {
       .map((run) => run.workspaceId);
     return { withPlaybooks, waiting: [...new Set(waiting)] };
   });
-  handle(overviewStateRpc, async ({ workspaceIds, includeDone }, context) => ({
-    withPlaybooks: await withPlaybooksOf(workspaceIds, context.paseo),
+  handle(overviewStateRpc, async ({ includeDone }) => ({
     runs: store.list().filter((run) => !run.archivedAt && (includeDone || isActive(run))),
   }));
   handle(needsYouRpc, async () => ({

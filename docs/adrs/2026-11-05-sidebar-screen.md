@@ -1,6 +1,6 @@
 # A Playbooks entry in the sidebar, with an all-workspaces screen
 
-Status: Accepted. Extends `2026-11-02-header-button.md` and supersedes its "the panel remains
+Status: Superseded by `2026-11-05-overview-project-filters.md` (the chips only). Extends `2026-11-02-header-button.md` and supersedes its "the panel remains
 the only place to act on a run" for gate decisions.
 
 ## Context

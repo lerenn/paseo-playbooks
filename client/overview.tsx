@@ -63,6 +63,8 @@ function Badge(props: { theme: Theme; count: number; label?: string }) {
 interface WorkspaceInfo {
   id: string;
   label: string;
+  projectId: string;
+  projectLabel: string;
 }
 
 /** The host's workspaces, kept current by an owned list subscription. */
@@ -71,7 +73,12 @@ function useWorkspaces(): WorkspaceInfo[] {
   const [workspaces, setWorkspaces] = useState<Map<string, WorkspaceInfo>>(new Map());
   useEffect(() => {
     const lifetime = new AbortController();
-    const info = (workspace: { id: string; title?: string | null; name: string }): WorkspaceInfo => ({ id: workspace.id, label: workspace.title || workspace.name });
+    const info = (workspace: { id: string; title?: string | null; name: string; projectId: string; projectDisplayName: string }): WorkspaceInfo => ({
+      id: workspace.id,
+      label: workspace.title || workspace.name,
+      projectId: workspace.projectId,
+      projectLabel: workspace.projectDisplayName,
+    });
     void paseo.workspaces
       .list({ subscribe: {} })
       .then(({ subscription }) => {
@@ -183,29 +190,28 @@ export function PlaybooksScreen(props: PluginScreenProps) {
   const { theme, layout, navigation } = props;
   const workspaces = useWorkspaces();
   const state = useRpc(overviewStateRpc);
-  const [filter, setFilter] = useState<string | null>(null);
+  const [projectFilter, setProjectFilter] = useState<string | null>(null);
+  const [workspaceFilter, setWorkspaceFilter] = useState<string | null>(null);
   const [showDone, setShowDone] = useState(false);
-  const workspaceIds = useMemo(() => workspaces.map((workspace) => workspace.id).sort(), [workspaces]);
   const overview = useQuery({
-    queryKey: ["playbooks", "overview", workspaceIds, showDone],
-    queryFn: () => state({ workspaceIds, includeDone: showDone }),
+    queryKey: ["playbooks", "overview", showDone],
+    queryFn: () => state({ includeDone: showDone }),
     refetchInterval: SCREEN_POLL_MS,
     refetchOnWindowFocus: "always",
-    enabled: workspaceIds.length > 0,
   });
   const queryClient = useQueryClient();
 
+  const byId = useMemo(() => new Map(workspaces.map((workspace) => [workspace.id, workspace])), [workspaces]);
   const names = useMemo(() => new Map(workspaces.map((workspace) => [workspace.id, workspace.label])), [workspaces]);
   const allRuns = overview.data?.runs ?? [];
-  // A chip per workspace with playbooks, or with runs (a run's playbooks may have been removed since).
-  const chips = useMemo(() => {
-    const ids = [...new Set([...(overview.data?.withPlaybooks ?? []), ...allRuns.map((run) => run.workspaceId)])].filter((id) => names.has(id));
-    return ids
-      .map((id) => ({ id, label: names.get(id)!, needsYou: allRuns.filter((run) => run.workspaceId === id).reduce((count, run) => count + pendingGates(run).length, 0) }))
-      .sort((a, b) => a.label.localeCompare(b.label));
-  }, [overview.data, allRuns, names]);
-  const scope = filter && chips.some((chip) => chip.id === filter) ? filter : null;
-  const runs = allRuns.filter((run) => !scope || run.workspaceId === scope).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const projectOf = (run: Run) => byId.get(run.workspaceId)?.projectId ?? run.projectId;
+  // Two levels of chips, built from the runs on screen only: a project or workspace without one is not listed.
+  const projects = chipsOf(allRuns, projectOf, (run) => byId.get(run.workspaceId)?.projectLabel ?? run.projectId);
+  const project = projectFilter && projects.some((chip) => chip.id === projectFilter) ? projectFilter : null;
+  const inProject = allRuns.filter((run) => !project || projectOf(run) === project);
+  const workspaceChips = project ? chipsOf(inProject, (run) => run.workspaceId, (run) => names.get(run.workspaceId) ?? run.workspaceId) : [];
+  const scope = workspaceFilter && workspaceChips.some((chip) => chip.id === workspaceFilter) ? workspaceFilter : null;
+  const runs = inProject.filter((run) => !scope || run.workspaceId === scope).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 
   const needs = runs.flatMap((run) => pendingGates(run).map((gate) => ({ run, gate })));
   const groups = useMemo(() => {
@@ -251,16 +257,52 @@ export function PlaybooksScreen(props: PluginScreenProps) {
           </Pressable>
         </View>
 
-        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-          <Chip theme={theme} label="All workspaces" selected={!scope} onPress={() => setFilter(null)} />
-          {chips.map((chip) => (
-            <Chip key={chip.id} theme={theme} label={chip.label} count={chip.needsYou} selected={scope === chip.id} onPress={() => setFilter(scope === chip.id ? null : chip.id)} />
-          ))}
-          <Chip theme={theme} label="Show done" icon={showDone ? "Check" : undefined} selected={showDone} onPress={() => setShowDone(!showDone)} />
+        <View style={{ gap: 8 }}>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+            <Chip
+              theme={theme}
+              label="All projects"
+              selected={!project}
+              onPress={() => {
+                setProjectFilter(null);
+                setWorkspaceFilter(null);
+              }}
+            />
+            {projects.map((chip) => (
+              <Chip
+                key={chip.id}
+                theme={theme}
+                label={chip.label}
+                count={chip.needsYou}
+                selected={project === chip.id}
+                onPress={() => {
+                  setProjectFilter(project === chip.id ? null : chip.id);
+                  setWorkspaceFilter(null);
+                }}
+              />
+            ))}
+            <Chip theme={theme} label="Show done" icon={showDone ? "Check" : undefined} selected={showDone} onPress={() => setShowDone(!showDone)} />
+          </View>
+          {project && workspaceChips.length > 0 ? (
+            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, paddingLeft: 12, borderLeftWidth: 2, borderLeftColor: theme.colors.border }}>
+              <Chip theme={theme} small label="All workspaces" selected={!scope} onPress={() => setWorkspaceFilter(null)} />
+              {workspaceChips.map((chip) => (
+                <Chip
+                  key={chip.id}
+                  theme={theme}
+                  small
+                  label={chip.label}
+                  count={chip.needsYou}
+                  selected={scope === chip.id}
+                  onPress={() => setWorkspaceFilter(scope === chip.id ? null : chip.id)}
+                />
+              ))}
+            </View>
+          ) : null}
         </View>
 
         {overview.error ? <Text style={{ color: theme.colors.statusDanger }}>{(overview.error as Error).message}</Text> : null}
-        {overview.isLoading || workspaceIds.length === 0 ? <Text style={{ color: theme.colors.foregroundMuted }}>Loading…</Text> : null}
+        {overview.isLoading ? <Text style={{ color: theme.colors.foregroundMuted }}>Loading…</Text> : null}
 
         {needs.length > 0 ? (
           <View style={{ gap: 8 }}>
@@ -298,7 +340,25 @@ export function PlaybooksScreen(props: PluginScreenProps) {
   );
 }
 
-function Chip(props: { theme: Theme; label: string; selected: boolean; onPress(): void; count?: number; icon?: string }) {
+interface ChipInfo {
+  id: string;
+  label: string;
+  needsYou: number;
+}
+
+/** One chip per distinct key among these runs, with the gates pending in its runs, sorted by label. */
+function chipsOf(runs: Run[], key: (run: Run) => string, label: (run: Run) => string): ChipInfo[] {
+  const chips = new Map<string, ChipInfo>();
+  for (const run of runs) {
+    const id = key(run);
+    const chip = chips.get(id) ?? { id, label: label(run), needsYou: 0 };
+    chip.needsYou += pendingGates(run).length;
+    chips.set(id, chip);
+  }
+  return [...chips.values()].sort((a, b) => a.label.localeCompare(b.label));
+}
+
+function Chip(props: { theme: Theme; label: string; selected: boolean; onPress(): void; count?: number; icon?: string; small?: boolean }) {
   const { theme, selected } = props;
   return (
     <Pressable
@@ -314,8 +374,8 @@ function Chip(props: { theme: Theme; label: string; selected: boolean; onPress()
         borderWidth: 1,
         borderColor: selected ? theme.colors.foregroundMuted : theme.colors.border,
         backgroundColor: selected ? theme.colors.surface2 : theme.colors.surface1,
-        paddingHorizontal: 11,
-        paddingVertical: 5,
+        paddingHorizontal: props.small ? 9 : 11,
+        paddingVertical: props.small ? 3 : 5,
       }}
     >
       {props.icon ? <Icon name={props.icon} size={12} color={theme.colors.foreground} /> : null}
