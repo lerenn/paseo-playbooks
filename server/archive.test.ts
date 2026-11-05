@@ -81,10 +81,42 @@ describe("step agents the run no longer needs", () => {
     expect(run.steps.b!.status).toBe("ready");
   });
 
+  it("are archived when the step fails the run", async () => {
+    const { store, runtime, archived } = await setup();
+    const first = await attempt(runtime, "failure");
+    const second = await attempt(runtime, "failure");
+    expect(store.get("run_x")!.status).toBe("failed");
+    expect(archived).toEqual([first, second]);
+
+    // Paseo's archive hook for an ended step's agent changes nothing.
+    await runtime.onAgentArchived(second, "m");
+    expect(store.get("run_x")!.status).toBe("failed");
+  });
+
+  it("are archived, not only stopped, when the run is canceled", async () => {
+    const { store, runtime, archived } = await setup();
+    const { agentId } = await runtime.startStep("m", "run_x", "a", "");
+    await runtime.cancelRun("run_x", "no longer needed", null);
+    expect(archived).toEqual([agentId]);
+
+    await runtime.onAgentArchived(agentId, "m");
+    const run = store.get("run_x")!;
+    expect(run.status).toBe("canceled");
+    expect(run.steps.a!.status).toBe("failed");
+  });
+
   it("are kept with archive_agents: false", async () => {
     const { runtime, archived } = await setup("    archive_agents: false\n");
     await attempt(runtime, "failure");
     await attempt(runtime, "success");
+    expect(archived).toEqual([]);
+  });
+
+  it("are kept with archive_agents: false when the run fails", async () => {
+    const { store, runtime, archived } = await setup("    archive_agents: false\n");
+    await attempt(runtime, "failure");
+    await attempt(runtime, "failure");
+    expect(store.get("run_x")!.status).toBe("failed");
     expect(archived).toEqual([]);
   });
 });

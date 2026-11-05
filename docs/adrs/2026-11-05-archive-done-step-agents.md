@@ -1,6 +1,6 @@
 # Archive step agents once the run no longer needs them
 
-Status: Accepted
+Status: Superseded by [2026-11-05-archive-ended-step-agents](2026-11-05-archive-ended-step-agents.md) (agents of unfinished steps)
 
 ## Context
 

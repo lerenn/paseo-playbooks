@@ -457,6 +457,7 @@ function finish(run: Run, status: "completed" | "failed" | "canceled", detail: s
     state.status = "failed";
     log(run, now, "step_canceled", stepId, detail);
   }
+  archiveEnded(run, run.playbook.steps.map((step) => step.id), fx);
   for (const gate of run.gates) {
     if (gate.status === "pending") {
       gate.status = "rejected";
@@ -555,6 +556,7 @@ function finishTask(run: Run, taskId: string, status: "completed" | "failed" | "
     state.status = "failed";
     log(run, now, "step_canceled", stepId, detail || `after-task ${status}`);
   }
+  archiveEnded(run, task.steps, fx);
   for (const gate of run.gates) {
     if (gate.status === "pending" && task.steps.includes(gate.stepId)) {
       gate.status = "rejected";
@@ -602,6 +604,17 @@ function setCompleted(run: Run, stepId: string, now: string, fx: Effects): void 
 function archiveDone(run: Run, stepId: string, fx: Effects): void {
   if (stepDef(run, stepId).archiveAgents === false) return;
   fx.archiveAgents.push(...run.steps[stepId]!.attempts.map((attempt) => attempt.agentId).filter((agentId) => !isScriptAttempt(agentId)));
+}
+
+/**
+ * The flow these steps belong to ended (completed, failed or canceled): the agents of the
+ * ones that did not complete (failed, canceled, or left reported or pending) are no longer
+ * needed either. Completed steps archived theirs when they completed.
+ */
+function archiveEnded(run: Run, stepIds: readonly string[], fx: Effects): void {
+  for (const stepId of stepIds) {
+    if (run.steps[stepId]!.status !== "completed") archiveDone(run, stepId, fx);
+  }
 }
 
 /** After a step finished: ends its flow (the run, or its after-task) when all of it is done, else makes the next steps ready. */

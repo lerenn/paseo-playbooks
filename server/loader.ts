@@ -95,7 +95,7 @@ const RawStepSchema = z.object({
     timeout: z.string().optional(),
     /** Agent steps: remind the agent after this long without activity (`30m`), or `off`. */
     silence: z.string().optional(),
-    /** Agent steps: archive the step's agents once it completes, and each attempt's once the next starts. Default true. */
+    /** Agent steps: archive the step's agents once it completes or its flow ends, and each attempt's once the next starts. Default true. */
     archive_agents: z.boolean().optional(),
     agent: AgentSettingsSchema.optional(),
     on: z.record(z.string(), RawTransitionSchema).optional(),

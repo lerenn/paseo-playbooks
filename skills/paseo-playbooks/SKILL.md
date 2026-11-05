@@ -145,7 +145,7 @@ steps:
 | `retries` | Extra attempts after `failure`. |
 | `timeout` | `30m`, `2h`…, or a template of the step's inputs (`"{{ inputs.release_timeout }}"`), rendered when each attempt starts; an empty value falls back to the default timeout, a value that is not a duration fails the start (or the run's start, when it only depends on the run's inputs). Expiry counts as a failure. The agent is reminded shortly before. If its work turns out done, `nudge_step` it: its next report replaces the timeout failure. |
 | `silence` | Agent steps: after this long without agent activity (default `30m`, or `off`), the plugin asks the agent once to report or say what it is waiting for, and tells the manager. |
-| `archive_agents` | Agent steps: when the step completes, its agents are archived, and an attempt's agent is archived when the next attempt starts (default `true`). `false` keeps them, e.g. to debug. |
+| `archive_agents` | Agent steps: when the step completes, or its run or after-task ends, its agents are archived, and an attempt's agent is archived when the next attempt starts (default `true`). `false` keeps them, e.g. to debug. |
 | `poll` | Script steps only: rerun the script this often (`30s`, `1m`) while it exits with 75. |
 | `agent` | Step-level agent settings. |
 | `choices` | Gates only: the buttons, in order. Each key is an outcome, with `label`, `comment: none \| optional \| required` and `color: primary \| neutral \| success \| warning \| danger` (theme colours; default primary for the first, neutral for the others). Without `choices`, the default Reject is `danger`. |
