@@ -39,6 +39,8 @@ steps:
       rejected: { goto: fix }
 ```
 
+![L'exemple sous forme de graphe : correction, puis relecture et tests en parallèle, puis une validation avant merge, avec des retours vers la correction](https://raw.githubusercontent.com/lerenn/paseo-playbooks/v0.17.1/assets/example-flow.png)
+
 ## Fonctionnalités
 
 - **Workflows versionnés** : les playbooks, les rôles partagés et les réglages par défaut

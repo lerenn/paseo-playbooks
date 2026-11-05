@@ -2,3 +2,4 @@ node_modules/
 
 # Local playbooks for this repo (not committed)
 /.paseo/playbooks/
+assets/example-flow.raw.png

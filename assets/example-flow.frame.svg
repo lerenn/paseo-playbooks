@@ -1,0 +1,5 @@
+<!-- Frames the Mermaid render (example-flow.raw.png) with padding and rounded corners. -->
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1664" height="404">
+  <rect width="1664" height="404" rx="36" fill="#1B1F27"/>
+  <image x="48" y="48" width="1568" height="308" xlink:href="example-flow.raw.png"/>
+</svg>

@@ -37,6 +37,8 @@ steps:
       rejected: { goto: fix }
 ```
 
+![The example as a graph: fix, then review and test in parallel, then a merge gate, with loops back to fix](https://raw.githubusercontent.com/lerenn/paseo-playbooks/v0.17.1/assets/example-flow.png)
+
 ## Features
 
 - **Workflows as code**: playbooks, shared roles and agent defaults live in

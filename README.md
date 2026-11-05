@@ -9,6 +9,28 @@ Paseo plugin for multi-agent workflows: write a playbook in YAML, and a manager 
 each step as a subagent, in parallel or in loops, through to the human approval gates. See [OVERVIEW.md](OVERVIEW.md) for what it does and
 [docs/adrs/2026-11-02-design.md](docs/adrs/2026-11-02-design.md) for the design.
 
+The example playbook from the overview (fix, then review and test in parallel, then a human
+gate), as a graph. The source is [assets/example-flow.mmd](assets/example-flow.mmd):
+
+```mermaid
+flowchart LR
+  start([issue]) --> fix("<b>Fix</b><br/>developer")
+  fix --> review("<b>Review</b><br/>reviewer, read-only")
+  fix --> test("<b>Test</b><br/>tester, read-only")
+  review -- ok --> approve{"<b>Merge?</b>"}
+  test --> approve
+  review -. "changes_requested, max 2" .-> fix
+  approve -. rejected .-> fix
+  approve -- approved --> done([done])
+
+  classDef step fill:#2F6BF2,stroke:#2F6BF2,color:#FFFFFF
+  classDef gate fill:#FFFFFF,stroke:#2F6BF2,stroke-width:3px,color:#2F6BF2
+  classDef endpoint fill:none,stroke:#8A94A6,color:#8A94A6
+  class fix,review,test step
+  class approve gate
+  class start,done endpoint
+```
+
 ![The Playbooks panel showing a running Docs check playbook as a graph](assets/panel.png)
 
 The panel next to the Playbook Manager's conversation, while a step runs:

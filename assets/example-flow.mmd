@@ -1,0 +1,18 @@
+%% Diagram of the example playbook in OVERVIEW*.md (assets/example-flow.png).
+%% Render from assets/ in two steps: (1) npx @mermaid-js/mermaid-cli -i example-flow.mmd -o example-flow.raw.png -c example-flow.config.json -b "#1B1F27" -s 2, (2) frame it: npx @resvg/resvg-js-cli --fit-width 1664 example-flow.frame.svg example-flow.png
+flowchart LR
+  start([issue]) --> fix("<b>Fix</b><br/>developer")
+  fix --> review("<b>Review</b><br/>reviewer, read-only")
+  fix --> test("<b>Test</b><br/>tester, read-only")
+  review -- ok --> approve{"<b>Merge?</b>"}
+  test --> approve
+  review -. "changes_requested, max 2" .-> fix
+  approve -. rejected .-> fix
+  approve -- approved --> done([done])
+
+  classDef step fill:#2F6BF2,stroke:#2F6BF2,color:#FFFFFF
+  classDef gate fill:#FFFFFF,stroke:#2F6BF2,stroke-width:3px,color:#2F6BF2
+  classDef endpoint fill:none,stroke:#8A94A6,color:#8A94A6
+  class fix,review,test step
+  class approve gate
+  class start,done endpoint

@@ -35,6 +35,8 @@ steps:
       rejected: { goto: fix }
 ```
 
+![示例流程图：先修复，再并行评审和测试，然后是合并审批，可回到修复步骤](https://raw.githubusercontent.com/lerenn/paseo-playbooks/v0.17.1/assets/example-flow.png)
+
 ## 功能
 
 - **工作流即代码**：playbook、共享角色和智能体默认配置都放在 `.paseo/plugins/playbooks/` 中。参见[格式参考](https://playbooks.paseo.lerenn.dev/reference.html)。
