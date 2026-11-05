@@ -1,4 +1,4 @@
-import { usePaseo, useRpc, type PluginScreenProps, type PluginSidebarItemProps } from "@getpaseo/plugin/client";
+import { usePaseo, useRpc, type PluginIconProps, type PluginScreenProps, type PluginSidebarItemProps } from "@getpaseo/plugin/client";
 import { Icon, ScrollView, SidebarRow } from "@getpaseo/plugin/client/ui";
 import { useQueryClient } from "@tanstack/react-query";
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
@@ -25,26 +25,62 @@ function useStoreRefresh(): () => void {
 
 // ---------------------------------------------------------------- sidebar row
 
-/** "Playbooks" in the sidebar, with the number of gates waiting for a human as an accent badge. */
+/**
+ * "Playbooks" in the sidebar, with the number of gates waiting for a human as an accent badge on
+ * its icon. Not in `trailing`: the host renders that slot beside the row's pressable, outside its
+ * focus ring and hover.
+ */
 export function PlaybooksSidebarItem(props: PluginSidebarItemProps & { store: OverviewStore }) {
   const { theme } = props;
   const { count } = useOverview(props.store);
+  const icon = useMemo(() => (count > 0 ? badgedIcon(theme, count) : "Workflow"), [theme, count]);
   return (
     <SidebarRow
-      icon="Workflow"
+      icon={icon}
       label="Playbooks"
       active={props.currentScreen?.screenId === SCREEN_ID}
       onPress={() => props.openScreen({ screenId: SCREEN_ID })}
-      trailing={count > 0 ? <Badge theme={theme} count={count} label={`${count} ${count === 1 ? "needs" : "need"} you`} /> : undefined}
     />
   );
 }
 
-function Badge(props: { theme: Theme; count: number; label?: string }) {
+/** The Playbooks icon with the waiting count in an accent bubble on its corner. */
+function badgedIcon(theme: Theme, count: number) {
+  return function BadgedIcon(props: PluginIconProps) {
+    const bubble = Math.max(12, Math.round(props.size * 0.8));
+    return (
+      <View style={{ width: props.size, height: props.size }}>
+        <Icon name="Workflow" size={props.size} color={props.color} />
+        <View
+          accessibilityLabel={`${count} ${count === 1 ? "needs" : "need"} you`}
+          style={{
+            position: "absolute",
+            top: -bubble / 2,
+            right: -bubble / 2,
+            minWidth: bubble,
+            height: bubble,
+            paddingHorizontal: 2,
+            borderRadius: bubble / 2,
+            alignItems: "center",
+            justifyContent: "center",
+            backgroundColor: theme.colors.accent,
+            borderWidth: 1,
+            borderColor: theme.colors.surface0,
+          }}
+        >
+          <Text style={{ color: theme.colors.accentForeground, fontSize: Math.round(bubble * 0.62), lineHeight: bubble - 2, fontWeight: "700" }}>
+            {count > 99 ? "99+" : count}
+          </Text>
+        </View>
+      </View>
+    );
+  };
+}
+
+function Badge(props: { theme: Theme; count: number }) {
   const { theme } = props;
   return (
     <View
-      accessibilityLabel={props.label}
       style={{ minWidth: 18, height: 18, paddingHorizontal: 5, borderRadius: 9, alignItems: "center", justifyContent: "center", backgroundColor: theme.colors.accent }}
     >
       <Text style={{ color: theme.colors.accentForeground, fontSize: 11, fontWeight: "700" }}>{props.count > 99 ? "99+" : props.count}</Text>
