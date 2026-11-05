@@ -43,6 +43,8 @@ const RawOutputSchema = RawVarDefSchema.extend({ value: z.string().optional() })
 
 const RawTransitionSchema = z.union([
   z.enum(["complete", "end", "fail"]),
+  /** `end` with one of the playbook's `outcomes`: what a sub-playbook reports to its parent step's `on`. */
+  z.object({ end: z.string() }),
   /**
    * Ask a human (gate with a required comment), then go back to `goto` (default: this step) with
    * the answer. `choices` gives the gate several buttons, each with its own `goto` (default: the
@@ -130,6 +132,8 @@ const RawPlaybookSchema = z.object({
     /** Removed: playbooks compose only as sub-playbook steps. Kept here to refuse it clearly. */
     next: z.unknown().optional(),
     concurrency: z.number().int().positive().optional(),
+    /** How the playbook can end, for a parent that uses it as a sub-playbook. The first is a normal finish. */
+    outcomes: z.array(z.string()).min(1).optional(),
     steps: z.array(RawStepSchema).min(1),
     /** Tasks run once the main graph ends (completed or failed); they never change the run's status. */
     after: z.array(RawAfterSchema).optional(),
@@ -392,6 +396,19 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     checkVarDef(`${file}: inputs.${name}`, inputs[name]!, errors);
   }
 
+  // Playbook outcomes: the first is a normal finish, `{ end: <outcome> }` picks another.
+  const playbookOutcomes = pb.outcomes ?? ["success"];
+  for (const outcome of playbookOutcomes) if (!ID.test(outcome)) err(`outcomes.${outcome}: invalid name (lowercase letters, digits, - and _)`);
+  if (new Set(playbookOutcomes).size !== playbookOutcomes.length) err("outcomes: duplicate outcome");
+  /** An `end` transition: a plain `end`, or `{ end: <outcome> }` with one of the playbook's outcomes. */
+  const endTransition = (where: string, outcome: string | undefined): Transition => {
+    if (outcome === undefined) return { kind: "end" };
+    if (!playbookOutcomes.includes(outcome)) {
+      err(`${where}: end: "${outcome}" is not an outcome of this playbook (${playbookOutcomes.join(", ")}); declare it in the playbook's \`outcomes\``);
+    }
+    return { kind: "end", outcome };
+  };
+
   // Main steps, then after-tasks as steps of their own (no needs), marked with their task id.
   type RawStep = z.infer<typeof RawStepSchema>;
   const rawAll: Array<{ raw: RawStep; task: string | undefined }> = [
@@ -430,7 +447,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     }
     if (!isScript && rawStep.poll !== undefined) err(`${where}: \`poll\` only applies to a script step`);
     if (isBlock) {
-      for (const field of ["prompt", "outputs", "outcomes", "timeout", "silence", "agent", "choices", "on"] as const) {
+      for (const field of ["prompt", "outputs", "outcomes", "timeout", "silence", "agent", "choices"] as const) {
         if (rawStep[field] !== undefined) err(`${where}: \`${field}\` does not apply to a playbook step (the sub-playbook defines it)`);
       }
       if (rawStep.short_title !== undefined) err(`${where}: \`short_title\` does not apply to a playbook step (its steps are the columns)`);
@@ -446,6 +463,25 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
         if (!sub) err(`${where}: playbook "${subId}" is invalid: ${loaded.entry.errors[0] ?? "see that file"}`);
       }
       if (sub) blocks.set(rawStep.id, sub);
+      // `on` maps the sub-playbook's outcomes; the first one (a normal finish) continues by default.
+      const on: Record<string, Transition> = {};
+      if (task && rawStep.on !== undefined) err(`${where}: \`on\` does not apply to an after-task (it ends on its own, whatever the outcome)`);
+      else if (sub) {
+        for (const [outcome, transition] of Object.entries(rawStep.on ?? {})) {
+          if (!sub.outcomes.includes(outcome)) {
+            err(`${where}: on.${outcome}: not an outcome of playbook "${subId}" (${sub.outcomes.join(", ")})`);
+          } else if (typeof transition === "string") {
+            on[outcome] = { kind: transition };
+          } else if ("end" in transition) {
+            on[outcome] = endTransition(`${where}: on.${outcome}`, transition.end);
+          } else {
+            err(`${where}: on.${outcome}: a playbook step's outcome leads to complete, end or fail (\`goto\` and \`ask\` apply to agent steps and gates)`);
+          }
+        }
+        for (const outcome of sub.outcomes.slice(1)) {
+          if (!on[outcome] && !task) err(`${where}: outcome "${outcome}" of playbook "${subId}" needs an \`on\` entry (complete, end or fail)`);
+        }
+      }
       steps.push({
         id: rawStep.id,
         kind: "agent",
@@ -453,10 +489,10 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
         prompt: "",
         inputs: {},
         outputs: Object.fromEntries(Object.entries(sub?.outputs ?? {}).map(([name, def]) => [name, { type: def.type, ...(def.values ? { values: def.values } : {}) }])),
-        outcomes: ["success"],
+        outcomes: sub?.outcomes ?? ["success"],
         retries: 0,
         agent: {},
-        on: {},
+        on,
         choices: [],
         ...(rawStep.title !== undefined ? { title: rawStep.title } : {}),
         ...afterTask,
@@ -521,6 +557,10 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
         };
         continue;
       }
+      if (typeof transition === "object" && "end" in transition) {
+        on[outcome] = endTransition(`${where}: on.${outcome}`, transition.end);
+        continue;
+      }
       on[outcome] =
         typeof transition === "string"
           ? { kind: transition }
@@ -543,7 +583,9 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
       checkVarDef(`${file}: ${where}: outputs.${name}`, outputs[name]!, errors);
     }
     let timeoutMs = defaultTimeout;
-    if (rawStep.timeout !== undefined) {
+    // A templated timeout is rendered with the step's inputs at each attempt (refs checked in wireStep).
+    const timeoutTemplate = rawStep.timeout !== undefined && templateRefs(rawStep.timeout).length > 0 ? rawStep.timeout : undefined;
+    if (rawStep.timeout !== undefined && timeoutTemplate === undefined) {
       timeoutMs = parseDuration(rawStep.timeout) ?? undefined;
       if (timeoutMs === undefined) err(`${where}: timeout: expected a duration such as 30m or 2h`);
     }
@@ -574,6 +616,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     if (script !== undefined) step.script = script;
     if (pollMs !== undefined) step.pollMs = pollMs;
     if (timeoutMs !== undefined && !isGate) step.timeoutMs = timeoutMs;
+    if (timeoutTemplate !== undefined && !isGate) step.timeout = timeoutTemplate;
     if (silenceMs !== undefined && !isGate && !isScript) step.silenceMs = silenceMs;
     steps.push(step);
   }
@@ -671,6 +714,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     steps: finalSteps,
     roles,
     manager,
+    outcomes: playbookOutcomes,
     blocks: blockInfo,
     after: (pb.after ?? []).map((raw) => ({
       id: raw.id,
@@ -820,6 +864,11 @@ function wireStep(
       err(`${where}: prompt uses "{{ ${ref} }}" but the step declares no such input`);
     }
   }
+  for (const ref of templateRefs(step.timeout ?? "")) {
+    const name = /^inputs\.([A-Za-z_][\w-]*)$/.exec(ref)?.[1];
+    if (name === undefined) err(`${where}: timeout uses "{{ ${ref} }}"; a timeout may only use inputs.<name> (a declared input of the step)`);
+    else if (!(name in declared)) err(`${where}: timeout uses "{{ ${ref} }}" but the step declares no such input`);
+  }
 }
 
 /** Wires a playbook step: its inputs are the sub-playbook's inputs, by name or mapped explicitly. */
@@ -871,7 +920,10 @@ function expandBlocks(
     roots.set(blockId, subSteps.filter((step) => step.needs.length === 0).map((step) => `${blockId}.${step.id}`));
     // After-tasks hold no concurrency slot: a sub-playbook used as one has its `concurrency` ignored.
     const limit = !isAfter.has(blockId) && sub.concurrency !== undefined ? { concurrency: sub.concurrency } : {};
-    info[blockId] = { title: titles.get(blockId) ?? sub.title, playbook: sub.id, ...limit };
+    const on = steps.find((step) => step.id === blockId)!.on;
+    const routes = Object.keys(on).length > 0 ? { on } : {};
+    const outcomes = sub.outcomes.length > 1 ? { outcomes: sub.outcomes } : {};
+    info[blockId] = { title: titles.get(blockId) ?? sub.title, playbook: sub.id, ...outcomes, ...routes, ...limit };
     for (const [prefix, nested] of Object.entries(sub.blocks)) {
       if (!subSteps.some((step) => step.id.startsWith(`${prefix}.`))) continue;
       const { concurrency, ...rest } = nested;

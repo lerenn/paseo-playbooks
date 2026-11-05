@@ -7,7 +7,7 @@ import { blockEntrySteps, blockStepIds, holdsBlock, innermostBlock } from "../sh
 import { askChoices, askHumanText, askTransitionOf, choicesOfGate, outcomeTransition } from "../shared/gates";
 import type { AfterTask, Attempt, Gate, Playbook, Run, RunStep, Step, Transition, VarValue } from "../shared/types";
 import { isActive, isPaused, isStepDone, isStepLive, isTerminal, restartBlocker, runningAfterTasks } from "../shared/types";
-import { coerceValue, formatValue, renderTemplate, resolveValue } from "../shared/vars";
+import { coerceValue, formatValue, parseDuration, renderTemplate, replaceRefs, resolveValue, templateRefs } from "../shared/vars";
 
 export class EngineError extends Error {}
 
@@ -128,6 +128,14 @@ export function newRun(input: NewRunInput): Run {
     history: [],
     seq: 0,
   };
+  // A templated timeout that only depends on the run's inputs is checked now, not at its step.
+  for (const step of input.playbook.steps) {
+    if (step.timeout === undefined) continue;
+    const used = templateRefs(step.timeout).map((ref) => step.inputs[ref.slice("inputs.".length)]?.source ?? "");
+    if (used.some((source) => templateRefs(source).some((ref) => !ref.startsWith("playbook.inputs.")))) continue;
+    const resolved = resolveTimeout(step, stepInputs(run, step));
+    if (!resolved.ok) throw new EngineError(resolved.error);
+  }
   log(run, input.now, "run_started", null, `playbook ${input.playbook.id}`);
   refreshReady(run, input.now);
   return run;
@@ -235,6 +243,27 @@ export function stepInputs(run: Run, step: Step): Record<string, { value: VarVal
   );
 }
 
+/**
+ * A step's timeout for an attempt starting now. A templated `timeout` renders with the step's
+ * input values; an empty value falls back to the step's `timeoutMs` (the defaults' timeout).
+ */
+export function resolveTimeout(
+  step: Step,
+  values: Record<string, { value: VarValue | undefined }>,
+): { ok: true; timeoutMs: number | undefined } | { ok: false; error: string } {
+  if (step.timeout === undefined) return { ok: true, timeoutMs: step.timeoutMs };
+  let empty = false;
+  const text = replaceRefs(step.timeout, (ref) => {
+    const value = values[ref.slice("inputs.".length)]?.value;
+    if (value === undefined || value === "") empty = true;
+    return value === undefined ? "" : String(value);
+  });
+  if (empty) return { ok: true, timeoutMs: step.timeoutMs };
+  const timeoutMs = parseDuration(text);
+  if (timeoutMs === null) return { ok: false, error: `step "${step.id}": timeout "${step.timeout}" gave "${text}", expected a duration such as 30m or 2h` };
+  return { ok: true, timeoutMs };
+}
+
 export interface StartedStep {
   attempt: Attempt;
   /** First prompt for the step agent: rendered step prompt, inputs, feedback and brief. */
@@ -258,6 +287,8 @@ export function startAttempt(
     throw new EngineError(`step "${stepId}" is ${state.status}, not ready (ready now: ${readySteps(run).join(", ") || "none"})`);
   }
   const values = stepInputs(run, step);
+  const timeout = resolveTimeout(step, values);
+  if (!timeout.ok) throw new EngineError(timeout.error);
   const n = state.attempts.length + 1;
   const attempt: Attempt = {
     n,
@@ -274,6 +305,7 @@ export function startAttempt(
     reminded: false,
     silenceReminded: false,
     reopenedAt: null,
+    timeoutMs: timeout.timeoutMs ?? null,
     checks: 0,
     nextCheckAt: null,
   };
@@ -552,10 +584,19 @@ export function startAfterTask(run: Run, taskId: string, now: string): Effects {
 }
 
 function markCompleted(run: Run, stepId: string, now: string, fx: Effects): void {
+  setCompleted(run, stepId, now);
+  advance(run, stepId, now, fx);
+}
+
+function setCompleted(run: Run, stepId: string, now: string): void {
   const state = run.steps[stepId]!;
   state.status = "completed";
   state.completedSeq = run.seq + 1;
   log(run, now, "step_completed", stepId, state.attempts.at(-1)?.outcome ?? "approved");
+}
+
+/** After a step finished: ends its flow (the run, or its after-task) when all of it is done, else makes the next steps ready. */
+function advance(run: Run, stepId: string, now: string, fx: Effects): void {
   const task = stepDef(run, stepId).afterTask;
   const flow = run.playbook.steps.filter((step) => step.afterTask === task);
   if (flow.every((step) => isStepDone(run.steps[step.id]!.status))) {
@@ -573,21 +614,35 @@ function markCompleted(run: Run, stepId: string, now: string, fx: Effects): void
  * ends only the innermost block: the step completes, the block's other unfinished steps are
  * skipped (running agents canceled, pending gates closed), and the parent goes on with the
  * steps that need the block. The block's outputs are whatever its completed steps produced.
+ * With an `outcome` other than the block's first, the parent step's `on` decides instead:
+ * `end` ends the block around it (or the run) in turn, `fail` fails the run.
  */
-function endFrom(run: Run, stepId: string, now: string, fx: Effects): void {
+function endFrom(run: Run, stepId: string, outcome: string | undefined, now: string, fx: Effects): void {
   const step = stepDef(run, stepId);
-  const block = innermostBlock(run.playbook, stepId);
-  // An after-task that is a sub-playbook is a block too: an `end` at its top level ends the task.
-  const prefix = block === step.afterTask ? null : block;
+  const prefix = scopeOf(run, step, stepId);
   if (prefix === null) {
     run.steps[stepId]!.status = "completed";
+    if (outcome) log(run, now, "run_outcome", stepId, outcome);
     endFlow(run, step, "completed", "", now, fx);
     return;
   }
+  setCompleted(run, stepId, now);
+  endBlock(run, step, prefix, outcome, `"${stepId}"`, now, fx);
+}
+
+/** The block an `end` from `id` (a step, or a block's prefix) ends; null = its whole flow (the run, or its after-task). */
+function scopeOf(run: Run, step: Step, id: string): string | null {
+  const block = innermostBlock(run.playbook, id);
+  // An after-task that is a sub-playbook is a block too: an `end` at its top level ends the task.
+  return block === step.afterTask ? null : block;
+}
+
+/** Skips the block's unfinished steps, then follows the block's outcome through its parent step's `on`. */
+function endBlock(run: Run, step: Step, prefix: string, outcome: string | undefined, by: string, now: string, fx: Effects): void {
   const skipped: string[] = [];
   for (const id of blockStepIds(run.playbook, prefix)) {
     const state = run.steps[id]!;
-    if (id === stepId || isStepDone(state.status)) continue;
+    if (isStepDone(state.status)) continue;
     if (state.status === "running") {
       const attempt = state.attempts.at(-1);
       if (attempt) {
@@ -600,7 +655,7 @@ function endFrom(run: Run, stepId: string, now: string, fx: Effects): void {
     state.queuedAt = null;
     state.completedSeq = null;
     skipped.push(id);
-    log(run, now, "step_skipped", id, `block "${prefix}" ended by "${stepId}"`);
+    log(run, now, "step_skipped", id, `block "${prefix}" ended by ${by}`);
   }
   for (const gate of run.gates) {
     if (gate.status === "pending" && skipped.includes(gate.stepId)) {
@@ -609,8 +664,27 @@ function endFrom(run: Run, stepId: string, now: string, fx: Effects): void {
       gate.decidedAt = now;
     }
   }
-  fx.notes.push(`"${stepId}" ended block "${prefix}"${skipped.length ? `; skipped: ${skipped.join(", ")}` : ""}.`);
-  markCompleted(run, stepId, now, fx);
+  const block = run.playbook.blocks[prefix];
+  const routed = outcome !== undefined && outcome !== block?.outcomes?.[0];
+  fx.notes.push(`${by} ended block "${prefix}"${routed ? ` with "${outcome}"` : ""}${skipped.length ? `; skipped: ${skipped.join(", ")}` : ""}.`);
+  const transition = routed ? block?.on?.[outcome!] : undefined;
+  if (transition?.kind === "end") {
+    log(run, now, "block_outcome", null, `${prefix}: ${outcome} → end`);
+    const parent = scopeOf(run, step, prefix);
+    if (parent !== null) {
+      endBlock(run, step, parent, transition.outcome, `block "${prefix}" (${outcome})`, now, fx);
+      return;
+    }
+    if (transition.outcome) log(run, now, "run_outcome", null, transition.outcome);
+    endFlow(run, step, "completed", "", now, fx);
+    return;
+  }
+  if (transition?.kind === "fail") {
+    log(run, now, "block_outcome", null, `${prefix}: ${outcome} → fail`);
+    endFlow(run, step, "failed", `block "${prefix}" ended with "${outcome}"`, now, fx);
+    return;
+  }
+  advance(run, step.id, now, fx);
 }
 
 function performGoto(run: Run, source: string, target: string, feedback: string, now: string, fx: Effects): void {
@@ -740,7 +814,7 @@ export function completeStep(
       markCompleted(run, stepId, input.now, fx);
       break;
     case "end":
-      endFrom(run, stepId, input.now, fx);
+      endFrom(run, stepId, transition.outcome, input.now, fx);
       break;
     case "fail":
       state.status = "failed";
@@ -865,7 +939,7 @@ export function decideGate(run: Run, ref: string, decision: GateDecision): { gat
       markCompleted(run, gate.stepId, decision.now, fx);
       break;
     case "end":
-      endFrom(run, gate.stepId, decision.now, fx);
+      endFrom(run, gate.stepId, transition.outcome, decision.now, fx);
       break;
     case "goto":
       gotoOrLimit(run, step, transition.target, transition.maxLoops, decision.comment ?? "", decision.now, fx);

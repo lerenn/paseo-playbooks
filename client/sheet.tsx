@@ -5,7 +5,7 @@ import { useState, type ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
 import { decideGateRpc, nudgeStepRpc, restartRunRpc, retryStepRpc } from "../shared/contracts";
 import { askChoices, askTransitionOf, choicesOfGate, destinationOf, gateText, linkify } from "../shared/gates";
-import { isPaused, isStepLive, restartBlocker, type Gate, type GateChoice, type Playbook, type Run } from "../shared/types";
+import { attemptTimeoutMs, isPaused, isStepLive, restartBlocker, type Gate, type GateChoice, type Playbook, type Run } from "../shared/types";
 import { stepTitle, stepTitleOf, type Theme } from "./theme";
 
 /** A poll interval as people say it: 30 s, 1 min, 2 h. */
@@ -289,6 +289,10 @@ export function StepSheet(props: {
   // Retry goes through the manager, which a paused run does not wake.
   const canRetry = active && !isPaused(run) && state?.status === "reported" && (latest?.report?.outcome === "failure" || latest?.report === null);
 
+  // The latest attempt's timeout (a templated one resolved at its start), else the step's.
+  const timeoutMs = latest ? attemptTimeoutMs(step, latest) : step.timeout ? undefined : step.timeoutMs;
+  const timeoutText = timeoutMs ? ` · timeout ${Math.round(timeoutMs / 60000)} min` : step.timeout ? ` · timeout ${step.timeout}` : "";
+
   return (
     <Modal title={`${stepTitle(step)}${role ? ` · ${role.title}` : step.kind === "gate" ? " · Gate" : step.kind === "script" ? " · Script" : ""}`} open onOpenChange={(open) => !open && props.onClose()}>
       <Modal.Content>
@@ -297,7 +301,7 @@ export function StepSheet(props: {
           <Section theme={theme} title="Agent">
             <Line theme={theme} muted>
               {[step.agent.provider, step.agent.model, step.agent.mode, step.agent.thinking].filter(Boolean).join(" · ") || "manager's provider and model"}
-              {step.timeoutMs ? ` · timeout ${Math.round(step.timeoutMs / 60000)} min` : ""}
+              {timeoutText}
               {step.retries ? ` · retries ${step.retries}` : ""}
             </Line>
           </Section>
@@ -307,7 +311,7 @@ export function StepSheet(props: {
             <Line theme={theme} muted>
               {step.script}
               {step.pollMs ? ` · every ${formatInterval(step.pollMs)} until done` : " · runs once"}
-              {step.timeoutMs ? ` · timeout ${Math.round(step.timeoutMs / 60000)} min` : ""}
+              {timeoutText}
               {step.retries ? ` · retries ${step.retries}` : ""}
             </Line>
             {latest ? (

@@ -140,9 +140,9 @@ steps:
 | `outputs` | Typed values the step must return with any outcome except `failure` (a failure report skips output validation). All are required then. |
 | `prompt` | Template; may use only `{{ inputs.<name> }}`, `{{ run.id }}`, `{{ attempt }}`. |
 | `outcomes` | Default `[success, failure]`. See "Outcomes" below. |
-| `on` | Per outcome: `complete`, `end`, `fail`, `{ goto: <earlier step>, max_loops: N }`, or `{ ask: "<text>", goto: <step>, max_loops: N, choices: {...} }` (agent steps; see Loops). |
+| `on` | Per outcome: `complete`, `end`, `{ end: <playbook outcome> }`, `fail`, `{ goto: <earlier step>, max_loops: N }`, or `{ ask: "<text>", goto: <step>, max_loops: N, choices: {...} }` (agent steps; see Loops). |
 | `retries` | Extra attempts after `failure`. |
-| `timeout` | `30m`, `2h`… Expiry counts as a failure. The agent is reminded shortly before. If its work turns out done, `nudge_step` it: its next report replaces the timeout failure. |
+| `timeout` | `30m`, `2h`…, or a template of the step's inputs (`"{{ inputs.release_timeout }}"`), rendered when each attempt starts; an empty value falls back to the default timeout, a value that is not a duration fails the start (or the run's start, when it only depends on the run's inputs). Expiry counts as a failure. The agent is reminded shortly before. If its work turns out done, `nudge_step` it: its next report replaces the timeout failure. |
 | `silence` | Agent steps: after this long without agent activity (default `30m`, or `off`), the plugin asks the agent once to report or say what it is waiting for, and tells the manager. |
 | `poll` | Script steps only: rerun the script this often (`30s`, `1m`) while it exits with 75. |
 | `agent` | Step-level agent settings. |
@@ -167,8 +167,10 @@ One rule for agent steps and gates:
   `rejected`) must give every choice but the first an `on` entry.
 
 `end` ends the playbook it is written in: the run at top level, the block when the
-playbook is nested as a sub-playbook, the task inside an after-task. `fail` always fails
-the whole run (inside an after-task, the task only).
+playbook is nested as a sub-playbook, the task inside an after-task. `{ end: <outcome> }`
+does the same, and also says how the playbook ended, for its parent (one of the playbook's
+`outcomes`; see Sub-playbooks). `fail` always fails the whole run (inside an after-task, the
+task only).
 
 ### Script steps
 
@@ -248,8 +250,39 @@ steps:
   steps that need the block go on. In nested blocks it ends only the innermost one. The
   block's outputs are what its completed steps produced. `fail` still fails the whole run.
   A `goto` to the block runs it again.
-- `prompt`, `outputs`, `outcomes`, `timeout`, `silence`, `agent`, `choices` and `on` do not
-  apply to a playbook step. A playbook that includes itself (directly or not) is an error.
+- A sub-playbook can tell its parent how it ended. It declares a top-level `outcomes` list
+  (default `[success]`; the first is a normal finish: all steps done, or a plain `end`), and
+  a step ends it with another one through `{ end: <outcome> }`. The playbook step in the
+  parent maps each other outcome in its `on`, as for any step: `complete` (go on with the
+  steps that need the block), `end` or `{ end: <outcome> }` (end the playbook the step is
+  written in: the run, or the block around it, which passes the outcome up in turn), or
+  `fail`. Every outcome but the first needs an `on` entry. Run alone, such a playbook just
+  completes.
+
+  ```yaml
+  # env_release.yaml (hidden: true): one environment
+  outcomes: [success, no_deploy]
+  steps:
+    - id: release
+      role: env_releaser
+      inputs: [env, release_timeout]
+      outcomes: [success, no_deploy, failure]
+      on: { no_deploy: { end: no_deploy } }   # nothing to deploy: end this block, say why
+      timeout: "{{ inputs.release_timeout }}"
+  # release.yaml
+  steps:
+    - id: dev
+      playbook: env_release
+      inputs: { env: dev, release_timeout: 5h }
+      on: { no_deploy: end }                    # skip stg, the prd gate and prd
+    - id: stg
+      playbook: env_release
+      needs: [dev]
+      inputs: { env: stg, release_timeout: 4h }
+      on: { no_deploy: end }
+  ```
+- `prompt`, `outputs`, `outcomes`, `timeout`, `silence`, `agent` and `choices` do not
+  apply to a playbook step (its `on` takes only `complete`, `end` and `fail`, and not on an after-task). A playbook that includes itself (directly or not) is an error.
 - The sub-playbook's manager settings are ignored; its gates stay gates of the run.
 - The sub-playbook's `concurrency` applies to the block. Its slots are shared by every run
   in the project (also top-level runs of that playbook). A run takes a slot when the block's

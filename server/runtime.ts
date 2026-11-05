@@ -6,7 +6,7 @@ import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 /** The daemon API handed to plugin handlers (typed via the SDK, so the build needs no @getpaseo/client). */
 type PaseoApi = PluginHandlerContext["paseo"];
 import type { Attempt, Playbook, Run, Step, VarValue } from "../shared/types";
-import { SCRIPT_NOT_YET, isActive, isPaused, isScriptAttempt, isStepLive, isTerminal, restartBlocker, scriptAttemptId } from "../shared/types";
+import { SCRIPT_NOT_YET, attemptTimeoutMs, isActive, isPaused, isScriptAttempt, isStepLive, isTerminal, restartBlocker, scriptAttemptId } from "../shared/types";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "./defaults";
 import * as engine from "./engine";
 import { checkoutSnapshot, currentRef, snapshotDiff } from "./git";
@@ -146,7 +146,8 @@ function silenceDue(step: Step, attempt: Attempt, activeAt: number): number | nu
   const silenceMs = step.silenceMs ?? DEFAULT_SILENCE_MS;
   const candidates: number[] = [];
   if (silenceMs > 0) candidates.push(activeAt + silenceMs);
-  if (step.timeoutMs) candidates.push(Date.parse(attempt.reopenedAt ?? attempt.startedAt) + step.timeoutMs - timeoutLead(step.timeoutMs));
+  const timeoutMs = attemptTimeoutMs(step, attempt);
+  if (timeoutMs) candidates.push(Date.parse(attempt.reopenedAt ?? attempt.startedAt) + timeoutMs - timeoutLead(timeoutMs));
   return candidates.length > 0 ? Math.min(...candidates) : null;
 }
 
@@ -1022,9 +1023,10 @@ export class Runtime {
     if (!attempt) return;
     this.clearTimeout(attempt.agentId);
     this.armWatch(run, stepId, Date.parse(attempt.reopenedAt ?? attempt.startedAt));
-    if (!step.timeoutMs) return;
-    const due = Date.parse(attempt.reopenedAt ?? attempt.startedAt) + step.timeoutMs - Date.now();
-    const timer = setTimeout(() => void this.onTimeout(run.id, stepId, attempt.agentId, step.timeoutMs!), Math.max(0, due));
+    const timeoutMs = attemptTimeoutMs(step, attempt);
+    if (!timeoutMs) return;
+    const due = Date.parse(attempt.reopenedAt ?? attempt.startedAt) + timeoutMs - Date.now();
+    const timer = setTimeout(() => void this.onTimeout(run.id, stepId, attempt.agentId, timeoutMs), Math.max(0, due));
     (timer as unknown as { unref?: () => void }).unref?.();
     this.timers.set(attempt.agentId, timer);
   }
@@ -1077,11 +1079,12 @@ export class Runtime {
       this.armWatch(run, stepId, activeAt, now + 60_000);
       return;
     }
-    const deadline = step.timeoutMs ? windowStart + step.timeoutMs : null;
+    const timeoutMs = attemptTimeoutMs(step, attempt);
+    const deadline = timeoutMs ? windowStart + timeoutMs : null;
     // Past its timeout: the timeout ends the step.
     if (deadline !== null && now >= deadline) return;
     const silentMin = Math.round((now - activeAt) / 60_000);
-    const leftMin = deadline !== null && deadline - now <= timeoutLead(step.timeoutMs!) ? Math.max(1, Math.round((deadline - now) / 60_000)) : null;
+    const leftMin = deadline !== null && deadline - now <= timeoutLead(timeoutMs!) ? Math.max(1, Math.round((deadline - now) / 60_000)) : null;
     const marked = await this.store.mutate(runId, (current) => {
       const last = current.steps[stepId]!.attempts.at(-1)!;
       if (last.agentId !== agentId || last.silenceReminded || current.steps[stepId]!.status !== "running") return false;

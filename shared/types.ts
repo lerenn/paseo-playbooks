@@ -41,7 +41,11 @@ export type AskChoice = z.infer<typeof AskChoiceSchema>;
 
 export const TransitionSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("complete") }),
-  z.object({ kind: z.literal("end") }),
+  /**
+   * Ends the playbook the step is written in. `outcome` (one of the playbook's `outcomes`) is
+   * what a sub-playbook block reports to its parent step's `on`; unset = the first outcome.
+   */
+  z.object({ kind: z.literal("end"), outcome: z.string().optional() }),
   z.object({ kind: z.literal("fail") }),
   z.object({ kind: z.literal("goto"), target: z.string(), maxLoops: z.number().int().positive().optional() }),
   /**
@@ -100,6 +104,11 @@ export const StepSchema = z.object({
   outcomes: z.array(z.string()),
   retries: z.number().int().min(0),
   timeoutMs: z.number().int().positive().optional(),
+  /**
+   * A templated `timeout` ("{{ inputs.release_timeout }}"), rendered with the step's inputs when
+   * an attempt starts. `timeoutMs` is then the fallback (the defaults' timeout) for an empty value.
+   */
+  timeout: z.string().optional(),
   /** Agent steps: remind the agent after this long without activity. 0 = never; unset = the plugin default. */
   silenceMs: z.number().int().min(0).optional(),
   /** Resolved agent settings (step > role > playbook > defaults). Provider/model may stay unset. */
@@ -139,6 +148,11 @@ export const PlaybookSchema = z.object({
   inputs: z.record(z.string(), VarDefSchema),
   outputs: z.record(z.string(), PlaybookOutputSchema),
   concurrency: z.number().int().positive().optional(),
+  /**
+   * How the playbook can end, as seen by a parent that uses it as a sub-playbook. The first is
+   * a normal finish (all steps done, or a plain `end`); `{ end: <outcome> }` picks another.
+   */
+  outcomes: z.array(z.string()).default(["success"]),
   steps: z.array(StepSchema),
   roles: z.record(z.string(), RoleSchema),
   manager: AgentSettingsSchema,
@@ -147,7 +161,18 @@ export const PlaybookSchema = z.object({
    * nested): their steps are named "<prefix>.<step>". Used to draw a frame around them.
    */
   blocks: z
-    .record(z.string(), z.object({ title: z.string(), playbook: z.string(), concurrency: z.number().int().positive().optional() }))
+    .record(
+      z.string(),
+      z.object({
+        title: z.string(),
+        playbook: z.string(),
+        concurrency: z.number().int().positive().optional(),
+        /** The sub-playbook's outcomes (first = a normal finish). Unset on runs from before block outcomes. */
+        outcomes: z.array(z.string()).optional(),
+        /** The playbook step's `on`: where each other outcome of the block leads (complete, end or fail). */
+        on: z.record(z.string(), TransitionSchema).optional(),
+      }),
+    )
     .default({}),
   /** After-tasks, in file order. Their steps are in `steps`, marked with `afterTask`. */
   after: z.array(AfterTaskSchema).default([]),
@@ -217,6 +242,8 @@ export const AttemptSchema = z.object({
   silenceReminded: z.boolean().default(false),
   /** When nudge_step reopened the attempt after it ended; its timeout and silence count from here. */
   reopenedAt: z.string().nullable().default(null),
+  /** The timeout of this attempt (a templated `timeout` resolved at its start); null = the step's `timeoutMs`. */
+  timeoutMs: z.number().int().positive().nullable().default(null),
   /** Script steps: how many times the script has run in this attempt. */
   checks: z.number().int().min(0).default(0),
   /** Script steps: when the next check runs, while the script says "not yet". */
@@ -370,6 +397,11 @@ export function restartBlocker(run: Run, stepId: string): string | null {
   const missing = step.needs.filter((need) => !isStepDone(run.steps[need]?.status ?? "pending"));
   if (missing.length > 0) return `"${stepId}" needs ${missing.join(", ")}, which did not complete; restart from an earlier step`;
   return null;
+}
+
+/** A step attempt's timeout: resolved at its start, else the step's (attempts from before templated timeouts). */
+export function attemptTimeoutMs(step: Step, attempt: Attempt): number | undefined {
+  return attempt.timeoutMs ?? step.timeoutMs;
 }
 
 /** Whether a step can still move: a main step while the run is not finished, an after-step while its task runs. */
