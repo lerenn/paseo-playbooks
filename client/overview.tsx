@@ -421,9 +421,11 @@ export function PlaybooksScreen(props: PluginScreenProps) {
           </View>
         ) : null}
 
-        {groups.map((group) => (
+        {/* Earlier groups stack above later ones, so a group's sort menu is not covered by the groups below it. */}
+        {groups.map((group, index) => (
           <PlaybookGroup
             key={group.id}
+            zIndex={groups.length - index}
             theme={theme}
             compact={layout.compact}
             runs={group.runs}
@@ -557,8 +559,107 @@ function NeedsYouRow(props: { theme: Theme; run: Run; gate: Gate; first: boolean
 const LABEL_WIDTH = 96;
 const TITLE_WIDTH = "38%";
 
+type SortKey = "updated" | "started" | "status" | "progress";
+
+const SORTS: ReadonlyArray<{ key: SortKey; label: string; hint: string }> = [
+  { key: "updated", label: "Last update", hint: "Most recent activity first" },
+  { key: "started", label: "Started", hint: "Newest run first" },
+  { key: "status", label: "Status", hint: "Waiting, working, failed, done, paused, seen" },
+  { key: "progress", label: "Progress", hint: "Furthest along first" },
+];
+
+/** Order of tones under "Status": what needs a look first. */
+const TONE_RANK: Record<Tone, number> = { waiting: 0, running: 1, failed: 2, done: 3, paused: 4, seen: 5 };
+
+/** Runs in the chosen order; ties go to the most recent activity. */
+function sortRuns(runs: Run[], key: SortKey): Run[] {
+  const byUpdate = (a: Run, b: Run) => b.updatedAt.localeCompare(a.updatedAt);
+  const facts = new Map(runs.map((run) => [run.id, progress(run)]));
+  const compare = (a: Run, b: Run): number => {
+    switch (key) {
+      case "started":
+        return b.createdAt.localeCompare(a.createdAt);
+      case "status":
+        return TONE_RANK[facts.get(a.id)!.tone] - TONE_RANK[facts.get(b.id)!.tone];
+      case "progress": {
+        // Share of the line covered, so runs of an edited playbook with more or fewer steps compare fairly.
+        const share = (run: Run) => facts.get(run.id)!.position / Math.max(1, mainSteps(run).length);
+        return share(b) - share(a);
+      }
+      default:
+        return 0;
+    }
+  };
+  return [...runs].sort((a, b) => compare(a, b) || byUpdate(a, b));
+}
+
+/** "Runs" with the sort of this playbook's rows: a button that opens the choices below it. */
+function SortHeading(props: { theme: Theme; value: SortKey; onChange(key: SortKey): void }) {
+  const { theme, value } = props;
+  const [open, setOpen] = useState(false);
+  const [hover, setHover] = useState<SortKey | null>(null);
+  const current = SORTS.find((sort) => sort.key === value)!;
+  return (
+    <View style={{ flexDirection: "row", alignItems: "center", gap: 8, zIndex: 10 }}>
+      <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11, fontWeight: "600", textTransform: "uppercase", letterSpacing: 0.4 }}>Runs</Text>
+      <View>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Sort runs: ${current.label}`}
+          accessibilityState={{ expanded: open }}
+          onPress={() => setOpen(!open)}
+          style={{ flexDirection: "row", alignItems: "center", gap: 3, borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2, backgroundColor: open ? theme.colors.surface2 : "transparent" }}
+        >
+          <Icon name="ArrowDownUp" size={11} color={theme.colors.foregroundMuted} />
+          <Text style={{ color: theme.colors.foreground, fontSize: 11 }}>{current.label}</Text>
+          <Icon name={open ? "ChevronUp" : "ChevronDown"} size={11} color={theme.colors.foregroundMuted} />
+        </Pressable>
+        {open ? (
+          <View
+            accessibilityRole="menu"
+            style={{
+              position: "absolute",
+              top: 24,
+              left: 0,
+              minWidth: 220,
+              padding: 4,
+              borderRadius: 10,
+              borderWidth: 1,
+              borderColor: theme.colors.border,
+              backgroundColor: theme.colors.surface2,
+              elevation: 6,
+            }}
+          >
+            {SORTS.map((sort) => (
+              <Pressable
+                key={sort.key}
+                accessibilityRole="menuitem"
+                accessibilityState={{ selected: sort.key === value }}
+                onPress={() => {
+                  setOpen(false);
+                  props.onChange(sort.key);
+                }}
+                onHoverIn={() => setHover(sort.key)}
+                onHoverOut={() => setHover((key) => (key === sort.key ? null : key))}
+                style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 10, paddingVertical: 7, borderRadius: 6, backgroundColor: hover === sort.key ? theme.colors.surface1 : "transparent" }}
+              >
+                <View style={{ width: 13 }}>{sort.key === value ? <Icon name="Check" size={13} color={theme.colors.accent} /> : null}</View>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ color: theme.colors.foreground, fontSize: 13 }}>{sort.label}</Text>
+                  <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>{sort.hint}</Text>
+                </View>
+              </Pressable>
+            ))}
+          </View>
+        ) : null}
+      </View>
+    </View>
+  );
+}
+
 /** The runs of one playbook: column labels for its steps, then one row with a progression line per run. */
 function PlaybookGroup(props: {
+  zIndex: number;
   theme: Theme;
   compact: boolean;
   runs: Run[];
@@ -566,13 +667,16 @@ function PlaybookGroup(props: {
   onOpenWorkspace?: (workspaceId: string) => void;
   onOpenAgent?: (agentId: string) => void;
 }) {
-  const { theme, runs, compact } = props;
-  // The newest run's definition gives the columns; older runs of an edited playbook keep their own steps.
-  const playbook = runs[0]!.playbook;
-  const columns = [...mainSteps(runs[0]!).map((step) => stepLabel(step.id)), "Done"];
+  const { theme, compact } = props;
+  const [sort, setSort] = useState<SortKey>("updated");
+  // The most recently updated run's definition gives the columns (runs come in that order);
+  // older runs of an edited playbook keep their own steps.
+  const playbook = props.runs[0]!.playbook;
+  const columns = [...mainSteps(props.runs[0]!).map((step) => stepLabel(step.id)), "Done"];
+  const runs = useMemo(() => sortRuns(props.runs, sort), [props.runs, sort]);
   const working = runs.filter((run) => isActive(run) && !isPaused(run) && pendingGates(run).length === 0).length;
   return (
-    <View style={{ gap: 8 }}>
+    <View style={{ gap: 8, zIndex: props.zIndex }}>
       <SectionTitle
         theme={theme}
         title={playbook.title}
@@ -581,14 +685,19 @@ function PlaybookGroup(props: {
         extra={working > 0 ? `${working} working` : undefined}
         extraColor={theme.colors.accent}
       />
-      <View style={{ borderRadius: 10, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface1, overflow: "hidden" }}>
-        {compact ? null : (
-          <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 12, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: theme.colors.border }}>
-            <View style={{ width: TITLE_WIDTH }} />
-            <StepLabels theme={theme} columns={columns} />
-            <View style={{ width: 64 }} />
+      {/* No overflow clipping: the sort menu opens over the rows below. */}
+      <View style={{ borderRadius: 10, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface1 }}>
+        <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 12, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: theme.colors.border, zIndex: 10 }}>
+          <View style={{ width: compact ? undefined : TITLE_WIDTH, flex: compact ? 1 : undefined }}>
+            <SortHeading theme={theme} value={sort} onChange={setSort} />
           </View>
-        )}
+          {compact ? null : (
+            <>
+              <StepLabels theme={theme} columns={columns} />
+              <View style={{ width: 64 }} />
+            </>
+          )}
+        </View>
         {runs.map((run, index) => (
           <RunRow
             key={run.id}
