@@ -1,4 +1,4 @@
-import { openExternalUrl, usePaseo, useRpc, useTabState, type PluginWorkspacePanelProps } from "@getpaseo/plugin/client";
+import { openExternalUrl, useRpc, useTabState, type PluginWorkspacePanelProps } from "@getpaseo/plugin/client";
 import { z } from "zod";
 import { Icon, ScrollView, useToast } from "@getpaseo/plugin/client/ui";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Animated, Pressable, Text, View } from "react-native";
 import { archiveRunRpc, cancelRunRpc, listPlaybooks, listRuns, pauseRunRpc, resumeRunRpc } from "../shared/contracts";
 import { isActive, isPaused, isTerminal, type Playbook, type PlaybookEntry, type Run } from "../shared/types";
+import { useAgentEvents } from "./events";
 import { Graph, useReduceMotion } from "./graph";
 import { Button, StepSheet } from "./sheet";
 import { StartForm, type StartTarget } from "./start-form";
@@ -124,64 +125,6 @@ export function PlaybooksPanel(props: PluginWorkspacePanelProps) {
       )}
     </View>
   );
-}
-
-/**
- * Calls `onChange` (batched over 400 ms) when an agent of this workspace changes: a step agent
- * created or finishing, the manager starting or ending a turn. Run state changes with those
- * events, and the plugin SDK has no way to push its own events to the panel.
- */
-function useAgentEvents(workspaceId: string, onChange: () => void): void {
-  const paseo = usePaseo();
-  const latest = useRef(onChange);
-  latest.current = onChange;
-  useEffect(() => {
-    const lifetime = new AbortController();
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const ours = new Set<string>();
-    const changed = () => {
-      if (timer) return;
-      timer = setTimeout(() => {
-        timer = null;
-        latest.current();
-      }, 400);
-    };
-    void paseo.agents
-      .list({ subscribe: {} })
-      .then(({ subscription }) => {
-        if (lifetime.signal.aborted) return void subscription.release();
-        const stop = subscription.subscribe({
-          snapshot: ({ entries }) => {
-            ours.clear();
-            for (const { agent } of entries) if (agent.workspaceId === workspaceId) ours.add(agent.id);
-            changed();
-          },
-          update: (message) => {
-            if (message.type !== "agent_update") return;
-            const update = message.payload;
-            if (update.kind === "upsert") {
-              if (update.agent.workspaceId !== workspaceId) return;
-              ours.add(update.agent.id);
-              changed();
-            } else if (ours.delete(update.agentId)) {
-              changed();
-            }
-          },
-        });
-        lifetime.signal.addEventListener("abort", () => {
-          stop();
-          void subscription.release();
-        });
-        return undefined;
-      })
-      .catch((error) => {
-        if (!lifetime.signal.aborted) console.error("[playbooks] agent events failed", error);
-      });
-    return () => {
-      lifetime.abort();
-      if (timer) clearTimeout(timer);
-    };
-  }, [paseo, workspaceId]);
 }
 
 /** Where "Get started" sends people when a workspace has no playbooks. */

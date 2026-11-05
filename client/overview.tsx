@@ -1,20 +1,26 @@
 import { usePaseo, useRpc, type PluginScreenProps, type PluginSidebarItemProps } from "@getpaseo/plugin/client";
 import { Icon, ScrollView, SidebarRow } from "@getpaseo/plugin/client/ui";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Animated, Easing, Pressable, Text, View } from "react-native";
 import { markRunSeenRpc, needsYouRpc, overviewStateRpc } from "../shared/contracts";
 import { gateText } from "../shared/gates";
 import { isActive, isPaused, type Gate, type Run, type Step } from "../shared/types";
+import { useAgentEvents } from "./events";
 import { useReduceMotion } from "./graph";
 import { GateActions } from "./sheet";
 import { stepLabel, withAlpha, type Theme } from "./theme";
 
 /** Id of the Playbooks screen, opened from the sidebar row. */
 export const SCREEN_ID = "playbooks";
-/** How often the sidebar badge and the screen refresh. */
-const BADGE_POLL_MS = 10_000;
-const SCREEN_POLL_MS = 5_000;
+/**
+ * The badge and the screen refresh on agent events (batched over EVENTS_BATCH_MS across all
+ * workspaces): a gate answered in chat, a step starting or ending. The slow polls only catch
+ * changes with no agent activity (a step timeout firing on the daemon).
+ */
+const EVENTS_BATCH_MS = 1_000;
+const BADGE_POLL_MS = 15_000;
+const SCREEN_POLL_MS = 15_000;
 
 // ---------------------------------------------------------------- sidebar row
 
@@ -23,19 +29,24 @@ export function PlaybooksSidebarItem(props: PluginSidebarItemProps) {
   const { theme } = props;
   const needsYou = useRpc(needsYouRpc);
   const [count, setCount] = useState(0);
-  useEffect(() => {
-    let alive = true;
-    const refresh = () =>
+  const alive = useRef(true);
+  const refresh = useCallback(
+    () =>
       void needsYou({})
-        .then((result) => alive && setCount(result.count))
-        .catch((error: unknown) => console.error("[playbooks] needs-you count failed", error));
+        .then((result) => alive.current && setCount(result.count))
+        .catch((error: unknown) => console.error("[playbooks] needs-you count failed", error)),
+    [needsYou],
+  );
+  useEffect(() => {
+    alive.current = true;
     refresh();
     const timer = setInterval(refresh, BADGE_POLL_MS);
     return () => {
-      alive = false;
+      alive.current = false;
       clearInterval(timer);
     };
-  }, [needsYou]);
+  }, [refresh]);
+  useAgentEvents(null, refresh, EVENTS_BATCH_MS);
   return (
     <SidebarRow
       icon="Workflow"
@@ -283,6 +294,7 @@ export function PlaybooksScreen(props: PluginScreenProps) {
     refetchOnWindowFocus: "always",
   });
   const queryClient = useQueryClient();
+  useAgentEvents(null, () => void queryClient.invalidateQueries({ queryKey: ["playbooks", "overview"] }), EVENTS_BATCH_MS);
 
   const byId = useMemo(() => new Map(workspaces.map((workspace) => [workspace.id, workspace])), [workspaces]);
   const names = useMemo(() => new Map(workspaces.map((workspace) => [workspace.id, workspace.label])), [workspaces]);
