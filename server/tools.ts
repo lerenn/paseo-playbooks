@@ -239,7 +239,7 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
     }),
     defineAgentTool({
       name: "nudge_step",
-      description: "Send a follow-up message to a step's current agent (same conversation, no new attempt), e.g. when it ended without reporting.",
+      description: "Send a follow-up message to a step's current agent (same conversation, no new attempt), e.g. when it ended without reporting. On a step that timed out, its next report replaces the timeout failure.",
       input: z.object({ runId: IdArg, stepId: z.string(), message: z.string() }),
       execute: ({ runId, stepId, message }, { agent }) =>
         guard(async () => {

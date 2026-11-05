@@ -91,6 +91,8 @@ const RawStepSchema = z.object({
     outcomes: z.array(z.string()).min(1).optional(),
     retries: z.number().int().min(0).default(0),
     timeout: z.string().optional(),
+    /** Agent steps: remind the agent after this long without activity (`30m`), or `off`. */
+    silence: z.string().optional(),
     agent: AgentSettingsSchema.optional(),
     on: z.record(z.string(), RawTransitionSchema).optional(),
     /** Gates only: the buttons, in order. Keys are the outcomes; the first one continues by default. */
@@ -143,6 +145,7 @@ const RawDefaultsSchema = z.object({
     agent: AgentSettingsSchema.optional(),
     manager: AgentSettingsSchema.optional(),
     timeout: z.string().optional(),
+    silence: z.string().optional(),
   });
 type RawDefaults = z.infer<typeof RawDefaultsSchema>;
 
@@ -229,6 +232,11 @@ async function loadRole(root: string, relDir: string, id: string): Promise<RoleL
   };
 }
 
+/** A `silence` value: a duration, or `off` (0). */
+function parseSilence(text: string): number | null {
+  return text.trim() === "off" ? 0 : parseDuration(text);
+}
+
 async function loadDefaults(root: string, relDir: string): Promise<{ defaults: RawDefaults; errors: string[] }> {
   const file = path.join(root, "defaults", "main.yaml");
   const rel = `${relDir}/defaults/main.yaml`;
@@ -240,6 +248,9 @@ async function loadDefaults(root: string, relDir: string): Promise<{ defaults: R
   const errors: string[] = [];
   if (parsed.data.timeout && parseDuration(parsed.data.timeout) === null) {
     errors.push(`${rel}: timeout: expected a duration such as 30m or 2h`);
+  }
+  if (parsed.data.silence && parseSilence(parsed.data.silence) === null) {
+    errors.push(`${rel}: silence: expected a duration such as 30m, or off`);
   }
   return { defaults: parsed.data, errors };
 }
@@ -403,6 +414,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
   const steps: Step[] = [];
   const blocks = new Map<string, Playbook>();
   const defaultTimeout = defaults.timeout ? parseDuration(defaults.timeout) ?? undefined : undefined;
+  const defaultSilence = defaults.silence ? parseSilence(defaults.silence) ?? undefined : undefined;
   for (const { raw: rawStep, task } of rawAll) {
     const where = task ? `after "${rawStep.id}"` : `step "${rawStep.id}"`;
     const afterTask = task ? { afterTask: task } : {};
@@ -418,7 +430,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     }
     if (!isScript && rawStep.poll !== undefined) err(`${where}: \`poll\` only applies to a script step`);
     if (isBlock) {
-      for (const field of ["prompt", "outputs", "outcomes", "timeout", "agent", "choices", "on"] as const) {
+      for (const field of ["prompt", "outputs", "outcomes", "timeout", "silence", "agent", "choices", "on"] as const) {
         if (rawStep[field] !== undefined) err(`${where}: \`${field}\` does not apply to a playbook step (the sub-playbook defines it)`);
       }
       if (rawStep.short_title !== undefined) err(`${where}: \`short_title\` does not apply to a playbook step (its steps are the columns)`);
@@ -452,7 +464,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
       continue;
     }
     if (isGate) {
-      for (const field of ["prompt", "inputs", "outputs", "outcomes", "timeout", "agent"] as const) {
+      for (const field of ["prompt", "inputs", "outputs", "outcomes", "timeout", "silence", "agent"] as const) {
         if (rawStep[field] !== undefined) err(`${where}: \`${field}\` does not apply to a gate`);
       }
     }
@@ -460,7 +472,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     let script: string | undefined;
     let pollMs: number | undefined;
     if (isScript) {
-      for (const field of ["prompt", "agent"] as const) {
+      for (const field of ["prompt", "silence", "agent"] as const) {
         if (rawStep[field] !== undefined) err(`${where}: \`${field}\` does not apply to a script step`);
       }
       const checked = await checkScript(root, rawStep.script!);
@@ -535,6 +547,11 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
       timeoutMs = parseDuration(rawStep.timeout) ?? undefined;
       if (timeoutMs === undefined) err(`${where}: timeout: expected a duration such as 30m or 2h`);
     }
+    let silenceMs = defaultSilence;
+    if (rawStep.silence !== undefined) {
+      silenceMs = parseSilence(rawStep.silence) ?? undefined;
+      if (silenceMs === undefined) err(`${where}: silence: expected a duration such as 30m, or off`);
+    }
     const stepRole = rawStep.role ? roles[rawStep.role] : undefined;
     const step: Step = {
       id: rawStep.id,
@@ -557,6 +574,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     if (script !== undefined) step.script = script;
     if (pollMs !== undefined) step.pollMs = pollMs;
     if (timeoutMs !== undefined && !isGate) step.timeoutMs = timeoutMs;
+    if (silenceMs !== undefined && !isGate && !isScript) step.silenceMs = silenceMs;
     steps.push(step);
   }
 

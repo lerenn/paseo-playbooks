@@ -5,13 +5,13 @@ import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 
 /** The daemon API handed to plugin handlers (typed via the SDK, so the build needs no @getpaseo/client). */
 type PaseoApi = PluginHandlerContext["paseo"];
-import type { Playbook, Run, Step, VarValue } from "../shared/types";
+import type { Attempt, Playbook, Run, Step, VarValue } from "../shared/types";
 import { SCRIPT_NOT_YET, isActive, isPaused, isScriptAttempt, isStepLive, isTerminal, restartBlocker, scriptAttemptId } from "../shared/types";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "./defaults";
 import * as engine from "./engine";
 import { checkoutSnapshot, currentRef, snapshotDiff } from "./git";
 import { loadPlaybooks } from "./loader";
-import { managerKickoff, managerTakeover, reportReminder, stepSystemPrompt } from "./prompts";
+import { managerKickoff, managerTakeover, reportReminder, silenceReminder, stepSystemPrompt } from "./prompts";
 import type { RunStore } from "./store";
 import { holdsBlock, planAdmissions, slotHolders } from "../shared/slots";
 
@@ -133,11 +133,30 @@ function lastAssistantText(entries: ReadonlyArray<{ item: { type: string; text?:
   return null;
 }
 
+/** Remind a step agent after this long without activity, unless its step sets `silence`. */
+export const DEFAULT_SILENCE_MS = 30 * 60_000;
+
+/** How long before a step's timeout its agent gets the silence reminder: a tenth of it, at most 5 min. */
+function timeoutLead(timeoutMs: number): number {
+  return Math.min(5 * 60_000, Math.floor(timeoutMs / 10));
+}
+
+/** When a running agent attempt is due its silence reminder, given its last activity; null when never. */
+function silenceDue(step: Step, attempt: Attempt, activeAt: number): number | null {
+  const silenceMs = step.silenceMs ?? DEFAULT_SILENCE_MS;
+  const candidates: number[] = [];
+  if (silenceMs > 0) candidates.push(activeAt + silenceMs);
+  if (step.timeoutMs) candidates.push(Date.parse(attempt.reopenedAt ?? attempt.startedAt) + step.timeoutMs - timeoutLead(step.timeoutMs));
+  return candidates.length > 0 ? Math.min(...candidates) : null;
+}
+
 export class Runtime {
   private paseo: PaseoApi | null = null;
   private reconciled: Promise<void> | null = null;
   private readonly busyManagers = new Set<string>();
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Silence checks of running agent steps, by agent id. */
+  private readonly watches = new Map<string, ReturnType<typeof setTimeout>>();
   /** Start reserves a run id and playbook snapshot for the worktree it creates. */
   private readonly reservations = new Map<string, Reservation>();
   /** Runs started from the panel for a busy agent: agent id → run id, delivered when its turn ends. */
@@ -164,8 +183,9 @@ export class Runtime {
   }
 
   dispose(): void {
-    for (const timer of this.timers.values()) clearTimeout(timer);
+    for (const timer of [...this.timers.values(), ...this.watches.values()]) clearTimeout(timer);
     this.timers.clear();
+    this.watches.clear();
     for (const id of [...this.scripts.keys()]) this.stopScript(id);
   }
 
@@ -716,14 +736,8 @@ export class Runtime {
     if (isScriptAttempt(attempt.agentId)) throw new UserError(`step "${stepId}" is a script step: there is no agent to nudge`);
     if (!isStepLive(run, stepId)) throw new UserError(`step "${stepId}" can no longer change: run ${run.id} is ${run.status}`);
     if (state.status === "reported") {
-      // The agent works again: its next turn end reports again.
-      await this.store.mutate(runId, (current) => {
-        const currentState = current.steps[stepId]!;
-        currentState.status = "running";
-        const last = currentState.attempts.at(-1)!;
-        last.endedAt = null;
-        last.turnEnd = null;
-      });
+      // The agent works again: its next turn end reports again (after a timeout, its report replaces the timeout failure).
+      await this.store.mutate(runId, (current) => engine.reopenAttempt(current, stepId, nowIso()));
       this.armTimeout(this.store.get(runId)!, stepId);
     } else if (state.status !== "running") {
       throw new UserError(`step "${stepId}" is ${state.status}; only a running or reported step can be nudged`);
@@ -913,7 +927,7 @@ export class Runtime {
     const report = this.store.get(runId)!.steps[ended.stepId]!.attempts.at(-1)!.report;
     const head = `step "${ended.stepId}" attempt ${ended.attempt.n}`;
     const line = report
-      ? `${head} reported ${report.outcome}: ${report.summary}${Object.keys(report.outputs).length ? ` Outputs: ${JSON.stringify(report.outputs)}.` : ""}`
+      ? `${head} reported ${report.outcome}: ${report.summary}${Object.keys(report.outputs).length ? ` Outputs: ${JSON.stringify(report.outputs)}.` : ""}${turnEnd === "timeout" ? " If its work is in fact done, nudge_step it to report: its report replaces the timeout failure. Or call complete_step with the outputs from its conversation." : ""}`
       : ended.attempt.reminded
         ? `${head} ended (${turnEnd}) without reporting, even after the plugin asked it to.${lastMessage ? ` Last message: ${lastMessage.slice(0, 1500)}` : ""} If it is still waiting on something, nudge_step it later. If it could not report (e.g. report_step_result "not found"), check the outputs it gave in its conversation and call complete_step with them.`
         : `${head} ended (${turnEnd}) without reporting.${lastMessage ? ` Last message: ${lastMessage.slice(0, 1500)}` : ""} Use nudge_step to ask it to report, or complete_step.`;
@@ -994,20 +1008,98 @@ export class Runtime {
   }
 
   private clearTimeout(agentId: string): void {
-    const timer = this.timers.get(agentId);
-    if (timer) clearTimeout(timer);
-    this.timers.delete(agentId);
+    for (const timers of [this.timers, this.watches]) {
+      const timer = timers.get(agentId);
+      if (timer) clearTimeout(timer);
+      timers.delete(agentId);
+    }
   }
 
+  /** Arms the step's timeout and, for an agent step, its silence check. */
   private armTimeout(run: Run, stepId: string): void {
     const step = engine.stepDef(run, stepId);
     const attempt = run.steps[stepId]!.attempts.at(-1);
-    if (!step.timeoutMs || !attempt) return;
+    if (!attempt) return;
     this.clearTimeout(attempt.agentId);
-    const due = Date.parse(attempt.startedAt) + step.timeoutMs - Date.now();
+    this.armWatch(run, stepId, Date.parse(attempt.reopenedAt ?? attempt.startedAt));
+    if (!step.timeoutMs) return;
+    const due = Date.parse(attempt.reopenedAt ?? attempt.startedAt) + step.timeoutMs - Date.now();
     const timer = setTimeout(() => void this.onTimeout(run.id, stepId, attempt.agentId, step.timeoutMs!), Math.max(0, due));
     (timer as unknown as { unref?: () => void }).unref?.();
     this.timers.set(attempt.agentId, timer);
+  }
+
+  /**
+   * Schedules the silence check of a running agent step: when it has shown no activity for
+   * its `silence` (since `activeAt`), or shortly before its timeout, whichever comes first,
+   * and not before `notBefore`.
+   */
+  private armWatch(run: Run, stepId: string, activeAt: number, notBefore = 0): void {
+    const step = engine.stepDef(run, stepId);
+    const attempt = run.steps[stepId]!.attempts.at(-1);
+    if (!attempt || isScriptAttempt(attempt.agentId) || attempt.silenceReminded || run.steps[stepId]!.status !== "running") return;
+    const due = silenceDue(step, attempt, activeAt);
+    if (due === null) return;
+    const existing = this.watches.get(attempt.agentId);
+    if (existing) clearTimeout(existing);
+    const timer = setTimeout(() => void this.checkSilence(run.id, stepId, attempt.agentId), Math.max(0, due - Date.now(), notBefore - Date.now()));
+    (timer as unknown as { unref?: () => void }).unref?.();
+    this.watches.set(attempt.agentId, timer);
+  }
+
+  /**
+   * A running step agent went silent, or its timeout is close: ask it once, in its turn, to
+   * report or say what it is waiting for, and tell the manager. Otherwise check again later.
+   */
+  async checkSilence(runId: string, stepId: string, agentId: string): Promise<void> {
+    this.watches.delete(agentId);
+    const run = this.store.get(runId);
+    const attempt = run?.steps[stepId]?.attempts.at(-1);
+    if (!run || attempt?.agentId !== agentId || attempt.silenceReminded || run.steps[stepId]!.status !== "running") return;
+    const step = engine.stepDef(run, stepId);
+    const snapshot = await this.api().agents.ref(agentId).refresh().catch(() => null);
+    // An agent that is not running has ended its turn: the turn-end hook handles it.
+    if (!snapshot || snapshot.agent.status !== "running") return;
+    const now = Date.now();
+    const windowStart = Date.parse(attempt.reopenedAt ?? attempt.startedAt);
+    // The newest timeline entry (a message, a tool call) is the agent's last activity.
+    const page = await this.api().agents.ref(agentId).timeline.refetch({ direction: "tail", limit: 1 }).catch(() => null);
+    const lastActivity = Date.parse((page?.entries.at(-1) as { timestamp?: string } | undefined)?.timestamp ?? "");
+    const activeAt = Math.max(windowStart, Number.isNaN(lastActivity) ? windowStart : lastActivity);
+    const due = silenceDue(step, attempt, activeAt);
+    if (due === null) return;
+    if (due > now) {
+      this.armWatch(run, stepId, activeAt);
+      return;
+    }
+    // A paused run sends nothing: look again in a minute.
+    if (isPaused(run)) {
+      this.armWatch(run, stepId, activeAt, now + 60_000);
+      return;
+    }
+    const deadline = step.timeoutMs ? windowStart + step.timeoutMs : null;
+    // Past its timeout: the timeout ends the step.
+    if (deadline !== null && now >= deadline) return;
+    const silentMin = Math.round((now - activeAt) / 60_000);
+    const leftMin = deadline !== null && deadline - now <= timeoutLead(step.timeoutMs!) ? Math.max(1, Math.round((deadline - now) / 60_000)) : null;
+    const marked = await this.store.mutate(runId, (current) => {
+      const last = current.steps[stepId]!.attempts.at(-1)!;
+      if (last.agentId !== agentId || last.silenceReminded || current.steps[stepId]!.status !== "running") return false;
+      last.silenceReminded = true;
+      return true;
+    });
+    if (!marked) return;
+    try {
+      await this.api().agents.ref(agentId).send(silenceReminder(stepId, silentMin, leftMin), { activeTurnBehavior: "steer" });
+    } catch (error) {
+      console.error(`[playbooks] could not remind silent step "${stepId}" of ${runId}:`, errorText(error));
+      return;
+    }
+    const why = leftMin !== null ? `its timeout fires in about ${leftMin} min` : `it has shown no activity for ${silentMin} min`;
+    await this.enqueue(runId, [
+      `step "${stepId}" attempt ${attempt.n} is still running and ${why}. The plugin asked it to report, or say what it is waiting for. Nothing to do now: you are woken when its turn ends.`,
+    ]);
+    await this.deliver(runId);
   }
 
   private async onTimeout(runId: string, stepId: string, agentId: string, timeoutMs: number): Promise<void> {

@@ -100,6 +100,8 @@ export const StepSchema = z.object({
   outcomes: z.array(z.string()),
   retries: z.number().int().min(0),
   timeoutMs: z.number().int().positive().optional(),
+  /** Agent steps: remind the agent after this long without activity. 0 = never; unset = the plugin default. */
+  silenceMs: z.number().int().min(0).optional(),
   /** Resolved agent settings (step > role > playbook > defaults). Provider/model may stay unset. */
   agent: AgentSettingsSchema,
   on: z.record(z.string(), TransitionSchema),
@@ -211,6 +213,10 @@ export const AttemptSchema = z.object({
   readonlySnapshot: z.string().nullable(),
   /** True once the plugin asked the agent to report after a turn ended without a report. */
   reminded: z.boolean().default(false),
+  /** True once the plugin asked a silent (or nearly timed-out) running agent to report or say what it waits for. */
+  silenceReminded: z.boolean().default(false),
+  /** When nudge_step reopened the attempt after it ended; its timeout and silence count from here. */
+  reopenedAt: z.string().nullable().default(null),
   /** Script steps: how many times the script has run in this attempt. */
   checks: z.number().int().min(0).default(0),
   /** Script steps: when the next check runs, while the script says "not yet". */

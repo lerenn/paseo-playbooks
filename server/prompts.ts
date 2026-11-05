@@ -24,7 +24,8 @@ How to run a playbook:
      a follow-up in the same conversation instead of starting a new attempt. The plugin
      already asks a step once to report before waking you. If a step could not report
      (report_step_result "not found"), check the outputs it gave in its conversation and
-     call complete_step with its outcome and those outputs.
+     call complete_step with its outcome and those outputs. A step that timed out can be
+     nudged too: its next report replaces the timeout failure.
    - complete_step returns what is ready next, a gate to open, or the end of the run.
 6. For a ready gate step, call request_gate with a summary of one short sentence (at most
    160 characters, e.g. "PR #3 is green and ready to merge.") and details for the human
@@ -103,4 +104,10 @@ other agents.`;
 /** Sent to a step agent whose turn ended without a report; the new prompt also restores its plugin tools. */
 export function reportReminder(stepId: string): string {
   return `[playbooks] Your turn ended without a report for step "${stepId}". If your work is done, call report_step_result now; it is available again even if it was "not found" before. If you are still waiting for something, say what and end your turn.`;
+}
+
+/** Sent into a running step agent's turn when it went silent or its timeout is close. */
+export function silenceReminder(stepId: string, silentMin: number, timeoutInMin: number | null): string {
+  const why = timeoutInMin !== null ? `The timeout of step "${stepId}" fires in about ${timeoutInMin} min` : `Step "${stepId}" has shown no activity for ${silentMin} min`;
+  return `[playbooks] ${why}. If your work is done, call report_step_result now. If you are still waiting for something, say in one line what you are waiting for, then carry on.`;
 }

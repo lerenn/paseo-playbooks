@@ -175,7 +175,8 @@ function fakePaseo(agents: Record<string, { archivedAt: string | null; status?: 
       sent.push({ agentId, text });
     },
     reload: async () => null,
-    timeline: { refetch: async () => ({ entries: [] }) },
+    // Recently active: no silence reminder in these tests.
+    timeline: { refetch: async () => ({ entries: [{ item: { type: "user_message" }, timestamp: new Date().toISOString() }] }) },
   });
   const paseo = {
     agents: { ref },

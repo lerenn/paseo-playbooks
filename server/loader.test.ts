@@ -271,6 +271,25 @@ steps:
     expect(pb.blocks.pr!.title).toBe("Pull request");
   });
 
+  it("reads silence on steps and in defaults, with off; refuses it where there is no agent", async () => {
+    const steps = "steps:\n  - id: a\n    role: investigator\n    prompt: go\n  - id: b\n    role: investigator\n    prompt: go\n    silence: off\n  - id: c\n    role: investigator\n    prompt: go\n    silence: 10m\n";
+    const dir = await workspace({ "defaults/main.yaml": "silence: 45m\n", "pr.yaml": steps });
+    const playbook = (await loadPlaybooks(dir)).entries.find((entry) => entry.id === "pr")!.playbook!;
+    expect(playbook.steps.map((step) => step.silenceMs)).toEqual([2_700_000, 0, 600_000]);
+
+    const plain = await workspace({ "pr.yaml": "steps:\n  - id: a\n    role: investigator\n    prompt: go\n" });
+    expect((await loadPlaybooks(plain)).entries[0]!.playbook!.steps[0]!.silenceMs).toBeUndefined();
+
+    const bad = await workspace({
+      "defaults/main.yaml": "silence: soon\n",
+      "pr.yaml": "steps:\n  - id: a\n    role: investigator\n    prompt: go\n    silence: 0m\n  - id: ok\n    gate: Go?\n    silence: 5m\n    needs: [a]\n",
+    });
+    const errors = (await loadPlaybooks(bad)).entries.flatMap((entry) => entry.errors).join("\n");
+    expect(errors).toMatch(/defaults\/main.yaml: silence: expected a duration such as 30m, or off/);
+    expect(errors).toMatch(/step "a": silence: expected a duration such as 30m, or off/);
+    expect(errors).toMatch(/step "ok": `silence` does not apply to a gate/);
+  });
+
   it("refuses short_title on a playbook step", async () => {
     const dir = await workspace({
       "outer.yaml": "steps:\n  - { id: pr, playbook: inner, short_title: PR }\n",

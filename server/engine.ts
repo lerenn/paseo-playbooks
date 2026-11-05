@@ -272,6 +272,8 @@ export function startAttempt(
     turnEnd: null,
     readonlySnapshot: input.readonlySnapshot,
     reminded: false,
+    silenceReminded: false,
+    reopenedAt: null,
     checks: 0,
     nextCheckAt: null,
   };
@@ -375,6 +377,30 @@ export function endTurn(
   state.status = "reported";
   log(run, input.now, "step_turn_ended", found.stepId, input.turnEnd);
   return found;
+}
+
+/**
+ * nudge_step on a reported step: the agent works again and its next turn end reports again.
+ * A timed-out attempt drops the plugin's timeout failure, so the agent's next report_step_result
+ * replaces it; its timeout counts again from now.
+ */
+export function reopenAttempt(run: Run, stepId: string, now: string): Attempt {
+  assertLive(run, stepId);
+  const state = runStep(run, stepId);
+  const attempt = state.attempts.at(-1);
+  if (state.status !== "reported" || !attempt) throw new EngineError(`step "${stepId}" is ${state.status}; only a reported step can be reopened`);
+  const timedOut = attempt.turnEnd === "timeout";
+  if (timedOut) {
+    attempt.report = null;
+    attempt.lastMessage = null;
+  }
+  state.status = "running";
+  attempt.endedAt = null;
+  attempt.turnEnd = null;
+  attempt.reopenedAt = now;
+  attempt.silenceReminded = false;
+  log(run, now, "step_reopened", stepId, timedOut ? `attempt ${attempt.n}, after its timeout` : `attempt ${attempt.n}`);
+  return attempt;
 }
 
 function defaultTransition(step: Step, outcome: string) {
