@@ -1,52 +1,33 @@
 import { usePaseo, useRpc, type PluginScreenProps, type PluginSidebarItemProps } from "@getpaseo/plugin/client";
 import { Icon, ScrollView, SidebarRow } from "@getpaseo/plugin/client/ui";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { Animated, Easing, Pressable, Text, View } from "react-native";
-import { markRunSeenRpc, needsYouRpc, overviewStateRpc } from "../shared/contracts";
+import { markRunSeenRpc } from "../shared/contracts";
 import { gateText } from "../shared/gates";
 import { isActive, isPaused, type Gate, type Run, type Step } from "../shared/types";
-import { useAgentEvents } from "./events";
 import { useReduceMotion } from "./graph";
+import { useOverview, type OverviewStore } from "./overview-store";
 import { GateActions } from "./sheet";
 import { stepLabel, withAlpha, type Theme } from "./theme";
 
 /** Id of the Playbooks screen, opened from the sidebar row. */
 export const SCREEN_ID = "playbooks";
-/**
- * The badge and the screen refresh on agent events (batched over EVENTS_BATCH_MS across all
- * workspaces): a gate answered in chat, a step starting or ending. The slow polls only catch
- * changes with no agent activity (a step timeout firing on the daemon).
- */
-const EVENTS_BATCH_MS = 1_000;
-const BADGE_POLL_MS = 15_000;
-const SCREEN_POLL_MS = 15_000;
+
+/** The screen's store, for the rows that refresh it after an action (deciding a gate, marking a run seen). */
+const StoreContext = createContext<OverviewStore | null>(null);
+
+function useStoreRefresh(): () => void {
+  const store = useContext(StoreContext);
+  return () => store?.refresh();
+}
 
 // ---------------------------------------------------------------- sidebar row
 
 /** "Playbooks" in the sidebar, with the number of gates waiting for a human as an accent badge. */
-export function PlaybooksSidebarItem(props: PluginSidebarItemProps) {
+export function PlaybooksSidebarItem(props: PluginSidebarItemProps & { store: OverviewStore }) {
   const { theme } = props;
-  const needsYou = useRpc(needsYouRpc);
-  const [count, setCount] = useState(0);
-  const alive = useRef(true);
-  const refresh = useCallback(
-    () =>
-      void needsYou({})
-        .then((result) => alive.current && setCount(result.count))
-        .catch((error: unknown) => console.error("[playbooks] needs-you count failed", error)),
-    [needsYou],
-  );
-  useEffect(() => {
-    alive.current = true;
-    refresh();
-    const timer = setInterval(refresh, BADGE_POLL_MS);
-    return () => {
-      alive.current = false;
-      clearInterval(timer);
-    };
-  }, [refresh]);
-  useAgentEvents(null, refresh, EVENTS_BATCH_MS);
+  const { count } = useOverview(props.store);
   return (
     <SidebarRow
       icon="Workflow"
@@ -280,25 +261,20 @@ function ToneIcon(props: { tone: Tone; color: string; size?: number }) {
 
 // ---------------------------------------------------------------- screen
 
-export function PlaybooksScreen(props: PluginScreenProps) {
-  const { theme, layout, navigation } = props;
+export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStore }) {
+  const { theme, layout, navigation, store } = props;
   const workspaces = useWorkspaces();
-  const state = useRpc(overviewStateRpc);
   const [projectFilter, setProjectFilter] = useState<string | null>(null);
   const [workspaceFilter, setWorkspaceFilter] = useState<string | null>(null);
   const [showDone, setShowDone] = useState(false);
-  const overview = useQuery({
-    queryKey: ["playbooks", "overview"],
-    queryFn: () => state({}),
-    refetchInterval: SCREEN_POLL_MS,
-    refetchOnWindowFocus: "always",
-  });
+  // The sidebar badge and this screen share one store: one agent subscription, one request per change.
+  const overview = useOverview(store);
+  useEffect(() => store.watchRuns(), [store]);
   const queryClient = useQueryClient();
-  useAgentEvents(null, () => void queryClient.invalidateQueries({ queryKey: ["playbooks", "overview"] }), EVENTS_BATCH_MS);
 
   const byId = useMemo(() => new Map(workspaces.map((workspace) => [workspace.id, workspace])), [workspaces]);
   const names = useMemo(() => new Map(workspaces.map((workspace) => [workspace.id, workspace.label])), [workspaces]);
-  const allRuns = overview.data?.runs ?? [];
+  const allRuns = overview.runs ?? [];
   const projectOf = (run: Run) => byId.get(run.workspaceId)?.projectId ?? run.projectId;
   // Two levels of chips, from every run not archived (working, waiting, failed or done): a project
   // or workspace without one is not listed.
@@ -330,6 +306,7 @@ export function PlaybooksScreen(props: PluginScreenProps) {
   const onOpenWorkspace = navigation ? (workspaceId: string) => navigation.openWorkspace({ workspaceId }) : undefined;
   const onOpenAgent = navigation ? (agentId: string) => navigation.openAgent({ agentId }) : undefined;
   return (
+    <StoreContext.Provider value={store}>
     <View style={{ flex: 1, backgroundColor: theme.colors.surface0 }}>
       <ScrollView contentContainerStyle={{ padding: pad, gap: 18 }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
@@ -357,7 +334,10 @@ export function PlaybooksScreen(props: PluginScreenProps) {
             accessibilityRole="button"
             accessibilityLabel="Refresh playbooks"
             hitSlop={8}
-            onPress={() => void queryClient.invalidateQueries({ queryKey: ["playbooks"] })}
+            onPress={() => {
+              store.refresh();
+              void queryClient.invalidateQueries({ queryKey: ["playbooks"] });
+            }}
           >
             <Icon name="RefreshCw" size={16} color={theme.colors.foregroundMuted} />
           </Pressable>
@@ -407,8 +387,8 @@ export function PlaybooksScreen(props: PluginScreenProps) {
           ) : null}
         </View>
 
-        {overview.error ? <Text style={{ color: theme.colors.statusDanger }}>{(overview.error as Error).message}</Text> : null}
-        {overview.isLoading ? <Text style={{ color: theme.colors.foregroundMuted }}>Loading…</Text> : null}
+        {overview.error ? <Text style={{ color: theme.colors.statusDanger }}>{overview.error}</Text> : null}
+        {overview.runs === null && !overview.error ? <Text style={{ color: theme.colors.foregroundMuted }}>Loading…</Text> : null}
 
         {needs.length > 0 ? (
           <View style={{ gap: 8 }}>
@@ -435,7 +415,7 @@ export function PlaybooksScreen(props: PluginScreenProps) {
           />
         ))}
 
-        {overview.data && groups.length === 0 ? (
+        {overview.runs && groups.length === 0 ? (
           <View style={{ alignItems: "center", gap: 8, paddingVertical: 32 }}>
             <Icon name="Workflow" size={28} color={theme.colors.foregroundMuted} />
             <Text style={{ color: theme.colors.foregroundMuted, fontSize: 13, textAlign: "center" }}>
@@ -445,6 +425,7 @@ export function PlaybooksScreen(props: PluginScreenProps) {
         ) : null}
       </ScrollView>
     </View>
+    </StoreContext.Provider>
   );
 }
 
@@ -516,6 +497,7 @@ function SectionTitle(props: { theme: Theme; title: string; count: number; icon?
 function NeedsYouRow(props: { theme: Theme; run: Run; gate: Gate; first: boolean; workspace: string; hostLabel: string; compact: boolean }) {
   const { theme, run, gate } = props;
   const [open, setOpen] = useState(false);
+  const refresh = useStoreRefresh();
   const warning = theme.colors.statusWarning;
   const summary = gateText(gate).summary.split("\n")[0] || `${stepLabel(gate.stepId)} is waiting`;
   return (
@@ -548,7 +530,7 @@ function NeedsYouRow(props: { theme: Theme; run: Run; gate: Gate; first: boolean
       </View>
       {open ? (
         <View style={{ paddingHorizontal: 12, paddingBottom: 12, paddingLeft: props.compact ? 12 : 116, maxWidth: 760 }}>
-          <GateActions theme={theme} run={run} gate={gate} hostLabel={props.hostLabel} />
+          <GateActions theme={theme} run={run} gate={gate} hostLabel={props.hostLabel} onDecided={refresh} />
         </View>
       ) : null}
     </View>
@@ -750,12 +732,12 @@ function RunRow(props: {
   const color = toneColor(theme, state.tone);
   const columns = [...mainSteps(run).map((step) => stepLabel(step.id)), "Done"];
   const markSeen = useRpc(markRunSeenRpc);
-  const queryClient = useQueryClient();
+  const refresh = useStoreRefresh();
   /** Opening a finished run from here marks it seen: a green done run turns grey. */
   const opened = () => {
     if (isActive(run) || run.seenAt) return;
     void markSeen({ runId: run.id })
-      .then(() => queryClient.invalidateQueries({ queryKey: ["playbooks", "overview"] }))
+      .then(refresh)
       .catch((error: unknown) => console.error("[playbooks] mark seen failed", error));
   };
   const openWorkspace = props.onOpenWorkspace

@@ -1,6 +1,6 @@
 # Playbooks screen and sidebar badge: refresh on agent events
 
-Status: Accepted. Supersedes the polling intervals of `2026-11-05-sidebar-screen.md`; applies
+Status: Superseded by `2026-11-05-overview-shared-store.md`. Superseded the polling intervals of `2026-11-05-sidebar-screen.md`; applies
 `2026-11-02-panel-refresh-on-agent-events.md` to the screen and the badge.
 
 ## Context

@@ -97,7 +97,7 @@ function destinationLabel(run: Run, gate: Gate, choiceId: string): string {
 }
 
 /** A pending gate: its summary, collapsed details, and one full-width button per choice. Choices that take a comment open a text box with Send. */
-export function GateActions(props: { theme: Theme; run: Run; gate: Gate; hostLabel: string }) {
+export function GateActions(props: { theme: Theme; run: Run; gate: Gate; hostLabel: string; onDecided?: () => void }) {
   const { theme, run, gate } = props;
   const decide = useRpc(decideGateRpc);
   const queryClient = useQueryClient();
@@ -115,6 +115,7 @@ export function GateActions(props: { theme: Theme; run: Run; gate: Gate; hostLab
       toast.show(result.alreadyDecided ? `Already decided: ${result.decision}` : `${choice.label}: sent`, { variant: "success" });
       setOpen(null);
       setComment("");
+      props.onDecided?.();
       await queryClient.invalidateQueries({ queryKey: ["playbooks"] });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : String(error));
