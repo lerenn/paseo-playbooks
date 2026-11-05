@@ -45,6 +45,8 @@ steps:
   `.paseo/plugins/playbooks/`. See the [format reference](https://playbooks.paseo.lerenn.dev/reference.html).
 - **Parallel steps and loops**: steps form a graph through `needs`, and loops go back with
   `goto` and a limit. After-tasks, such as a retro, run once the run ends.
+- **Script steps**: deterministic work, such as waiting for a PR to merge or a deploy to
+  finish, runs as a script from the playbook's `scripts/` folder, with no agent.
 - **Human gates**: approve, reject or pick a choice from the panel or in chat.
 - **Rules enforced by the plugin**: it validates playbooks, refuses transitions a playbook
   does not allow, checks read-only roles with git, and keeps run state across daemon
@@ -72,4 +74,5 @@ steps:
   manual after-tasks, from any chat. See the [tools](https://playbooks.paseo.lerenn.dev/how-it-works.html).
 - Requires Paseo 0.14 or later. Run state is kept in
   `$PASEO_HOME/plugin-data/paseo-playbooks/runs/` until the run's worktree is archived.
-  Server code runs `git` in workspace folders.
+  Server code runs `git` in workspace folders, and runs script steps (executables from
+  the playbook's `scripts/` folder) in the run's worktree.

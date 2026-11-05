@@ -49,6 +49,9 @@ steps:
 - **Étapes en parallèle et boucles** : les étapes forment un graphe via `needs`, et les
   boucles reviennent en arrière avec `goto` et une limite. Les after-tasks, comme une
   rétrospective, s'exécutent à la fin de l'exécution.
+- **Étapes script** : le travail déterministe, comme attendre qu'une PR soit mergée ou
+  qu'un déploiement se termine, tourne comme un script du dossier `scripts/` du playbook,
+  sans agent.
 - **Validations humaines** : approuvez, rejetez ou choisissez une option depuis le panneau
   ou dans la conversation.
 - **Règles appliquées par le plugin** : il valide les playbooks, refuse les transitions
@@ -82,4 +85,6 @@ steps:
   conversation. Voir [les outils](https://playbooks.paseo.lerenn.dev/how-it-works.html).
 - Nécessite Paseo 0.14 ou plus récent. L'état des exécutions est conservé dans
   `$PASEO_HOME/plugin-data/paseo-playbooks/runs/` jusqu'à l'archivage du worktree de
-  l'exécution. Le code serveur exécute `git` dans les dossiers des workspaces.
+  l'exécution. Le code serveur exécute `git` dans les dossiers des workspaces, et lance les
+  étapes script (des exécutables du dossier `scripts/` du playbook) dans le worktree de
+  l'exécution.

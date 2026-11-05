@@ -41,6 +41,7 @@ steps:
 
 - **工作流即代码**：playbook、共享角色和智能体默认配置都放在 `.paseo/plugins/playbooks/` 中。参见[格式参考](https://playbooks.paseo.lerenn.dev/reference.html)。
 - **并行步骤和循环**：步骤通过 `needs` 组成一张图，循环通过带次数上限的 `goto` 回跳。收尾任务（例如复盘）在运行结束后执行。
+- **脚本步骤**：确定性的工作（例如等待 PR 合并或部署完成）以 playbook 的 `scripts/` 目录中的脚本运行，无需智能体。
 - **人工审批**：在面板或对话中批准、拒绝或选择一个选项。
 - **由插件执行规则**：插件校验 playbook，拒绝 playbook 不允许的流转，通过 git 检查只读角色，并在 daemon 重启后保留运行状态。参见[工作原理](https://playbooks.paseo.lerenn.dev/how-it-works.html)。
 - **实时流程图**：工作区侧边栏中的 Playbooks 面板实时显示每次运行。可以在面板中启动、暂停、恢复或取消运行，或从某个步骤重新开始。
@@ -56,4 +57,4 @@ steps:
 
 - 步骤可以使用任何智能体模式，包括 `bypassPermissions`。只运行来自可信仓库的 playbook。
 - 除步骤智能体外，所有智能体都可以在任何对话中列出、取消、重新开始或接管运行，并启动手动收尾任务。参见[工具](https://playbooks.paseo.lerenn.dev/how-it-works.html)。
-- 需要 Paseo 0.14 或更高版本。运行状态保存在 `$PASEO_HOME/plugin-data/paseo-playbooks/runs/`，直到运行所在的 worktree 被归档。服务端代码会在工作区目录中运行 `git`。
+- 需要 Paseo 0.14 或更高版本。运行状态保存在 `$PASEO_HOME/plugin-data/paseo-playbooks/runs/`，直到运行所在的 worktree 被归档。服务端代码会在工作区目录中运行 `git`，并在运行所在的 worktree 中执行脚本步骤（playbook 的 `scripts/` 目录中的可执行文件）。
