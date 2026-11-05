@@ -4,6 +4,8 @@ Playbooks 把多智能体工作流写成仓库里的一个 YAML 文件。由一�
 
 `.paseo/plugins/playbooks/fix.yaml`：先修复，再并行评审和测试，需要修改时回到修复步骤，结束前请人工确认。角色只需在 `roles/<id>/` 中定义一次。
 
+![示例流程图：先修复，再并行评审和测试，然后是合并审批，可回到修复步骤](https://raw.githubusercontent.com/lerenn/paseo-playbooks/v0.17.1/assets/example-flow.png)
+
 ```yaml
 title: Fix a bug
 inputs:
@@ -34,8 +36,6 @@ steps:
     on:
       rejected: { goto: fix }
 ```
-
-![示例流程图：先修复，再并行评审和测试，然后是合并审批，可回到修复步骤](https://raw.githubusercontent.com/lerenn/paseo-playbooks/v0.17.1/assets/example-flow.png)
 
 ## 功能
 

@@ -8,6 +8,8 @@ validations humaines (gates) pour vous laisser décider.
 en arrière si des changements sont demandés, et demander à un humain avant de finir. Les
 rôles sont définis une fois dans `roles/<id>/`.
 
+![L'exemple sous forme de graphe : correction, puis relecture et tests en parallèle, puis une validation avant merge, avec des retours vers la correction](https://raw.githubusercontent.com/lerenn/paseo-playbooks/v0.17.1/assets/example-flow.png)
+
 ```yaml
 title: Fix a bug
 inputs:
@@ -38,8 +40,6 @@ steps:
     on:
       rejected: { goto: fix }
 ```
-
-![L'exemple sous forme de graphe : correction, puis relecture et tests en parallèle, puis une validation avant merge, avec des retours vers la correction](https://raw.githubusercontent.com/lerenn/paseo-playbooks/v0.17.1/assets/example-flow.png)
 
 ## Fonctionnalités
 
