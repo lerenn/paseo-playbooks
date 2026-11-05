@@ -51,6 +51,9 @@ steps:
   restarts. See [how it works](https://playbooks.paseo.lerenn.dev/how-it-works.html).
 - **Live graph**: the Playbooks panel in the workspace sidebar shows each run as it goes.
   From it you can start, pause, resume or cancel a run, or restart it from a step.
+- **Every run on one screen**: a Playbooks entry in Paseo's left sidebar, badged with the
+  gates waiting for you, lists the runs of all workspaces by playbook, each with its
+  progress across the steps. Decide a gate from there without opening the workspace.
 
 ## Get started
 

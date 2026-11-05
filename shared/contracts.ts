@@ -127,3 +127,20 @@ export const restartRunRpc = defineRpc({
   input: z.object({ runId: z.string(), stepId: z.string(), comment: z.string().optional(), hostLabel: z.string() }),
   output: z.object({ status: z.string() }),
 });
+
+/**
+ * For the Playbooks screen: which of these workspaces have playbooks, and the runs of every
+ * workspace on this host (not archived): active ones, and finished ones too with `includeDone`.
+ */
+export const overviewStateRpc = defineRpc({
+  name: "overview.state",
+  input: z.object({ workspaceIds: z.array(z.string()), includeDone: z.boolean().default(false) }),
+  output: z.object({ withPlaybooks: z.array(z.string()), runs: z.array(RunSchema) }),
+});
+
+/** For the sidebar badge: how many gates wait for a human on this host. */
+export const needsYouRpc = defineRpc({
+  name: "overview.needs-you",
+  input: z.object({}),
+  output: z.object({ count: z.number().int() }),
+});

@@ -58,6 +58,10 @@ steps:
 - **Graphe en direct** : le panneau Playbooks, dans la barre latérale du workspace, montre
   chaque exécution au fil de l'eau. Depuis ce panneau, vous pouvez lancer, mettre en pause,
   reprendre ou annuler une exécution, ou la relancer depuis une étape.
+- **Toutes les exécutions sur un écran** : une entrée Playbooks dans la barre latérale gauche
+  de Paseo, avec en badge le nombre de validations qui vous attendent, liste les exécutions de
+  tous les workspaces par playbook, chacune avec sa progression d'étape en étape. Vous pouvez
+  y trancher une validation sans ouvrir le workspace.
 
 ## Pour commencer
 

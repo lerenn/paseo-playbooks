@@ -10,6 +10,8 @@ import {
   resumeRunRpc,
   decideGateRpc,
   headerStateRpc,
+  needsYouRpc,
+  overviewStateRpc,
   listPlaybooks,
   listRuns,
   listWorkspaceAgents,
@@ -22,6 +24,7 @@ import {
 import { hasPlaybooks, loadPlaybooks } from "./server/loader";
 import { Runtime, STEP_LABEL, UserError } from "./server/runtime";
 import { defaultRunsDir, RunStore } from "./server/store";
+import { isActive } from "./shared/types";
 import { managerTools, runTools, stepTool, validateTool } from "./server/tools";
 
 export default function contribute(server: PluginServerContext) {
@@ -93,19 +96,31 @@ export default function contribute(server: PluginServerContext) {
   handle(listRuns, async ({ workspaceId }) => ({ runs: store.list().filter((run) => run.workspaceId === workspaceId && !run.archivedAt) }));
   handle(archiveRunRpc, async ({ runId }) => ({ archivedAt: await runtime.archiveRun(runId) }));
   handle(startRun, (input) => runtime.startFromPanel(input));
-  handle(headerStateRpc, async ({ workspaceIds }, context) => {
+  /** The workspaces among these whose directory has playbooks. */
+  const withPlaybooksOf = async (workspaceIds: string[], paseo: PaseoApi) => {
     const withPlaybooks: string[] = [];
     for (const workspaceId of workspaceIds) {
-      const workspace = await context.paseo.workspaces.ref(workspaceId).refresh().catch(() => null);
+      const workspace = await paseo.workspaces.ref(workspaceId).refresh().catch(() => null);
       const dir = workspace?.workspaceDirectory ?? workspace?.projectRootPath;
       if (dir && (await hasPlaybooks(dir))) withPlaybooks.push(workspaceId);
     }
+    return withPlaybooks;
+  };
+  handle(headerStateRpc, async ({ workspaceIds }, context) => {
+    const withPlaybooks = await withPlaybooksOf(workspaceIds, context.paseo);
     const waiting = store
       .list()
       .filter((run) => !run.archivedAt && run.gates.some((gate) => gate.status === "pending") && workspaceIds.includes(run.workspaceId))
       .map((run) => run.workspaceId);
     return { withPlaybooks, waiting: [...new Set(waiting)] };
   });
+  handle(overviewStateRpc, async ({ workspaceIds, includeDone }, context) => ({
+    withPlaybooks: await withPlaybooksOf(workspaceIds, context.paseo),
+    runs: store.list().filter((run) => !run.archivedAt && (includeDone || isActive(run))),
+  }));
+  handle(needsYouRpc, async () => ({
+    count: store.list().reduce((count, run) => count + (run.archivedAt ? 0 : run.gates.filter((gate) => gate.status === "pending").length), 0),
+  }));
   handle(listWorkspaceAgents, async ({ workspaceId }) => ({ agents: await runtime.workspaceAgents(workspaceId) }));
   handle(decideGateRpc, async ({ runId, gateId, decision, comment, hostLabel }) => {
     const result = await runtime.decideGate(runId, gateId, {

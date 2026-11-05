@@ -46,7 +46,7 @@ How the Playbook Manager drives steps, human gates and nested playbooks:
 | Path | Contents |
 | --- | --- |
 | `index.server.ts`, `server/` | Daemon side: YAML loader and validator, run engine, run store, agent tools, hooks, RPC handlers |
-| `index.client.tsx`, `client/` | The Playbooks panel (graph, node sheet, Start form) |
+| `index.client.tsx`, `client/` | The Playbooks panel (graph, node sheet, Start form), header button, and the sidebar entry with its all-workspaces screen |
 | `shared/` | Zod types, RPC contracts, graph and template helpers |
 | `examples/.paseo/plugins/playbooks/` | Example playbooks (PR, Release to dev, and Capability, which combines them as sub-playbooks) and their roles (not loaded by the plugin) |
 | `skills/paseo-playbooks/SKILL.md` | Agent skill for writing playbooks; copy or symlink it into a repo's `.agents/skills/` or `.claude/skills/` |
