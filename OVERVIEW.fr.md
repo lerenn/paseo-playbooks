@@ -1,59 +1,79 @@
-Playbooks transforme un workflow multi-agents en un fichier YAML que vous gardez dans votre
-dépôt : investiguer, implémenter, relire, corriger, livrer, avec une validation humaine là où
-vous en voulez une. Un agent Paseo, le Playbook Manager, exécute le playbook : chaque étape
-tourne comme un sous-agent dans le même worktree, et l'exécution s'arrête aux points de
-validation humaine (gates), que vous approuvez ou rejetez dans Paseo.
+Playbooks transforme un workflow multi-agents en un fichier YAML dans votre dépôt. Un agent
+manager l'exécute étape par étape, chaque étape confiée à un sous-agent, et s'arrête aux
+validations humaines (gates) pour vous laisser décider.
 
-Les playbooks sont des fichiers YAML propres à chaque dépôt, sous `.paseo/plugins/playbooks/`
-ou `.paseo/playbooks/`, avec des rôles partagés dans `roles/<id>/` (réglages et un prompt
-système en Markdown) et des valeurs par défaut pour les agents, facultatives, dans
-`defaults/main.yaml`. Les étapes forment un graphe via `needs` : les étapes prêtes en même
-temps tournent en parallèle, les boucles sont des retours explicites `goto` avec une limite,
-et les entrées et sorties sont typées et associées par nom. Les after-tasks (`after:`, une
-rétrospective par exemple) s'exécutent une fois l'exécution terminée ou échouée, ou quand un
-humain les lance, sans changer son résultat.
+## Exemple
 
-Le plugin fait respecter les règles : il valide les playbooks, refuse les étapes ou
-transitions qu'un playbook n'autorise pas, conserve l'état de chaque exécution sur le daemon
-pour qu'elle survive à un redémarrage, réveille le manager quand une étape se termine, et
-impose les rôles en lecture seule par une vérification git. Le manager ne prend que les
-décisions qui demandent du jugement : briefer les étapes, lire les résultats et choisir les
-issues.
+`.paseo/plugins/playbooks/fix.yaml` : corriger, puis relire et tester en parallèle, revenir
+en arrière si des changements sont demandés, et demander à un humain avant de finir. Les
+rôles sont définis une fois dans `roles/<id>/`.
 
-Le panneau Playbooks, dans la barre latérale droite d'un workspace, affiche chaque playbook
-sous forme de graphe. Pendant une exécution, les nœuds montrent leur statut en direct,
-l'étape en cours pulse, et un clic sur un nœud ouvre la conversation de cette étape. Les
-gates affichent les boutons Approve et Reject. Start ouvre un formulaire construit à partir
-des entrées du playbook et lance le playbook avec l'agent le plus récent du workspace comme
-manager, sur sa branche courante. La flèche à côté de Start propose "Start on a new agent",
-qui lance un nouvel agent manager dans le même workspace, et "Start in a new workspace", qui
-crée un worktree sur une nouvelle branche et y lance un manager. Depuis le panneau, une
-exécution peut être mise en pause, reprise ou annulée, et une exécution terminée peut être
-relancée depuis n'importe quelle étape dont les dépendances sont terminées.
+```yaml
+title: Fix a bug
+inputs:
+  issue: { type: string, required: true }
 
-Des exemples de playbooks, prêts à copier dans `.paseo/plugins/playbooks/`, sont sur la
-[page d'exemples](https://playbooks.paseo.lerenn.dev/examples.html) et dans le dépôt :
-un workflow de pull request (investiguer, implémenter, ouvrir la PR et la surveiller jusqu'à
-ce qu'elle soit au vert), une livraison sur un environnement de développement avec recette,
-un playbook de fonctionnalité qui enchaîne les deux en passant par une validation humaine,
-et la vérification de documentation que ce dépôt exécute sur lui-même, avec des relecteurs
-en parallèle et une boucle de réécriture.
+steps:
+  - id: fix
+    role: developer
+    inputs: [issue]
+    prompt: "Fix {{ inputs.issue }} and add a test."
 
-Modes d'agent : les playbooks peuvent utiliser n'importe quel mode, `bypassPermissions`
-compris, pour que les étapes qui lancent des commandes shell tournent sans surveillance. Ne
-lancez que des playbooks de dépôts en lesquels vous avez confiance.
+  - id: review                # review et test tournent en parallèle :
+    role: reviewer            # leurs rôles sont en lecture seule
+    needs: [fix]
+    outcomes: [ok, changes_requested]
+    prompt: Review the fix.
+    on:
+      changes_requested: { goto: fix, max_loops: 2 }
 
-Les agents reçoivent des outils du plugin : tous les agents sauf ceux des étapes reçoivent
-`validate_playbooks`, `list_runs`, `cancel_run`, `start_after_task` et `restart_run` (pour
-arrêter une exécution, lancer une tâche de fin manuelle comme une rétro, ou reprendre une exécution terminée, échouée ou annulée depuis l'étape atteinte, depuis
-n'importe quelle conversation, avec `takeOver` pour la piloter soi-même) ;
-les agents d'un workspace qui contient des playbooks reçoivent les outils du manager ; les
-agents des étapes reçoivent `report_step_result`. Le dépôt fournit aussi un skill pour
-agents, `skills/paseo-playbooks/SKILL.md`, qui leur apprend à écrire des playbooks.
+  - id: test
+    role: tester
+    needs: [fix]
+    prompt: Run the test suite.
 
-Si le manager d'une exécution en cours est archivé avec l'agent qui l'a créé (un
-coordinateur, par exemple), un nouveau Playbook Manager reprend l'exécution au lieu qu'elle échoue.
+  - id: approve               # validation humaine : Approve ou Reject
+    needs: [review, test]
+    gate: Merge this fix?
+    on:
+      rejected: { goto: fix }
+```
 
-Nécessite Paseo 0.14 ou plus récent. L'état des exécutions est stocké dans
-`$PASEO_HOME/plugin-data/paseo-playbooks/runs/` et supprimé quand le worktree de l'exécution
-est archivé. Le code serveur exécute `git` dans les dossiers des workspaces.
+## Fonctionnalités
+
+- **Workflows versionnés** : les playbooks, les rôles partagés et les réglages par défaut
+  des agents vivent dans `.paseo/plugins/playbooks/`. Voir la
+  [référence du format](https://playbooks.paseo.lerenn.dev/reference.html).
+- **Étapes en parallèle et boucles** : les étapes forment un graphe via `needs`, et les
+  boucles reviennent en arrière avec `goto` et une limite. Les after-tasks, comme une
+  rétrospective, s'exécutent à la fin de l'exécution.
+- **Validations humaines** : approuvez, rejetez ou choisissez une option depuis le panneau
+  ou dans la conversation.
+- **Règles appliquées par le plugin** : il valide les playbooks, refuse les transitions
+  qu'un playbook n'autorise pas, vérifie les rôles en lecture seule avec git et conserve
+  l'état des exécutions malgré les redémarrages du daemon. Voir
+  [le fonctionnement](https://playbooks.paseo.lerenn.dev/how-it-works.html).
+- **Graphe en direct** : le panneau Playbooks, dans la barre latérale du workspace, montre
+  chaque exécution au fil de l'eau. Depuis ce panneau, vous pouvez lancer, mettre en pause,
+  reprendre ou annuler une exécution, ou la relancer depuis une étape.
+
+## Pour commencer
+
+- [Prise en main](https://playbooks.paseo.lerenn.dev/getting-started.html) : écrire,
+  valider et lancer un premier playbook.
+- [Exemples](https://playbooks.paseo.lerenn.dev/examples.html) : un workflow de pull
+  request, une livraison avec recette, un playbook qui enchaîne les deux via une validation
+  humaine, et une vérification de documentation.
+- [Skill pour agents](https://github.com/lerenn/paseo-playbooks/blob/main/skills/paseo-playbooks/SKILL.md) :
+  apprend à vos agents à écrire des playbooks.
+
+## Bon à savoir
+
+- Les étapes peuvent utiliser n'importe quel mode d'agent, `bypassPermissions` compris. Ne
+  lancez que des playbooks de dépôts en lesquels vous avez confiance.
+- Tous les agents, sauf ceux des étapes, peuvent lister, annuler, relancer ou reprendre
+  des exécutions, et lancer des after-tasks manuelles, depuis n'importe quelle
+  conversation. Voir [les outils](https://playbooks.paseo.lerenn.dev/how-it-works.html).
+- Nécessite Paseo 0.14 ou plus récent. L'état des exécutions est conservé dans
+  `$PASEO_HOME/plugin-data/paseo-playbooks/runs/` jusqu'à l'archivage du worktree de
+  l'exécution. Le code serveur exécute `git` dans les dossiers des workspaces.
