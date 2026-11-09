@@ -2,6 +2,7 @@ import { defineAgentTool, type AgentToolDefinition, type AgentToolResult } from 
 import { askHumanText, choicesOfGate, GATE_SUMMARY_MAX } from "../shared/gates";
 import { z } from "zod";
 import type { PlaybookEntry, Run } from "../shared/types";
+import { repairReport } from "./malformed";
 import { isActive, isAgentlessAttempt, isPaused, isPipeline, isTerminal, restartBlocker, runningAfterTasks, VarValueSchema } from "../shared/types";
 import * as engine from "./engine";
 import { hasPlaybooks, loadPlaybooks } from "./loader";
@@ -587,13 +588,16 @@ export function stepTool(runtime: Runtime): AgentToolDefinition {
     description: "Report this playbook step's result. Call exactly once, as your last action. Refused (with the reason) if outputs are missing or mistyped.",
     input: z.object({
       outcome: z.string().describe("One of the outcomes listed in your instructions"),
-      summary: z.string().describe("What you did and found"),
+      // Optional in the schema so a call that lost it gets a specific error rather than a generic one.
+      summary: z.string().optional().describe("What you did and found (required)"),
       outputs: z.record(z.string(), VarValueSchema).default({}).describe("Declared outputs by name"),
     }),
-    execute: (report, { agent }) =>
+    execute: (input, { agent }) =>
       guard(async () => {
-        const stepId = await runtime.report(agent.id, report);
-        return ok(`Report for "${stepId}" recorded. Stop here: end your turn.`);
+        const repaired = repairReport(input, runtime.outcomesOf(agent.id));
+        if (!repaired.report) throw new UserError(repaired.error!);
+        const stepId = await runtime.report(agent.id, repaired.report, repaired.note);
+        return ok(`Report for "${stepId}" recorded${repaired.note ? ` (${repaired.note})` : ""}. Stop here: end your turn.`);
       }),
   });
 }

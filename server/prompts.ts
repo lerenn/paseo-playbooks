@@ -237,3 +237,8 @@ ${jobs ? `Jobs on this train:\n${jobs}` : "This train carries no job."}
 
 Ready now: ${ready.join(", ") || "none"}. Start them with start_step.`;
 }
+
+/** Sent to the agent that created a run's manager when the manager was archived and the run failed. */
+export function managerLostNotice(run: { id: string; playbook: Playbook; failure: string | null }, reached: string[], restartable: string[], cause: string): string {
+  return `[playbooks] Run ${run.id} (${run.playbook.title}) failed: ${run.failure ?? "manager lost"}. Step${reached.length === 1 ? "" : "s"} reached: ${reached.join(", ") || "none running"}. ${cause}. Restart it with restart_run({ runId: "${run.id}", stepId: "${reached[0] ?? restartable[0] ?? ""}" }) (restartableFrom: ${restartable.join(", ") || "none"}); if its workspace is gone or busy, add workspaceId. Completed steps keep their outputs.`;
+}
