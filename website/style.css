@@ -243,3 +243,5 @@ footer.site .inner { max-width: var(--max); margin: 0 auto; padding: 1.25rem; }
   .toc ul { columns: 1; }
   main { padding-top: 1.5rem; }
 }
+
+.pre { display: inline-block; margin: 0.75rem 0 0; padding: 0.3rem 0.7rem; border-left: 3px solid var(--warning); background: var(--card, transparent); font-size: 0.9rem; color: var(--muted-foreground); }

@@ -65,6 +65,7 @@ steps:
 
 ## Good to know
 
+- Pre-1.0: any minor release may change the playbook format in breaking ways. Pin a release tag and read the release notes before upgrading.
 - Steps may run in any agent mode, `bypassPermissions` included. Only start playbooks from
   repositories you trust.
 - Every agent except step agents can list, cancel, restart or take over runs, and start

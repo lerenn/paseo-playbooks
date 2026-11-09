@@ -28,3 +28,11 @@ dead-ended on "No runs yet." as well.
 - The plugin's server now writes into the user's repository, but only on an explicit, confirmed
   action, and only into an empty playbooks folder.
 - The bundled example must be kept loadable: `server/starter.test.ts` loads it with the real loader.
+
+## Pre-1.0 notice
+
+A small yellow warning icon sits at the left of the header row of the workspace panel and of the
+Playbooks screen. Its text opens on hover, keyboard focus or press (so it works on touch), and says
+that any minor release may break the playbook format until v1.0. It cannot be dismissed. The same
+notice is in "Good to know" of the three overviews and on the website home page. It is not in the
+manifest description, which drives search.

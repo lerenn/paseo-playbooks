@@ -8,6 +8,7 @@ import { archiveRunRpc, cancelRunRpc, createExampleRpc, listPlaybooks, listRuns,
 import { isActive, isPaused, isPipeline, isTerminal, type Playbook, type PlaybookEntry, type Run } from "../shared/types";
 import { useAgentEvents } from "./events";
 import { Graph, useReduceMotion } from "./graph";
+import { PreReleaseFlag } from "./pre-release";
 import { Button, StepSheet } from "./sheet";
 import { StartForm, type StartTarget } from "./start-form";
 import { dotGroups, isRead, runTone, splitTabs, type DotGroup, type RunTone } from "./run-tabs";
@@ -85,7 +86,8 @@ export function PlaybooksPanel(props: PluginWorkspacePanelProps) {
   return (
     <View style={{ flex: 1, backgroundColor: theme.colors.surface0 }}>
       {/* No heading: the tab already says "Playbooks". */}
-      <View style={{ flexDirection: "row", justifyContent: "flex-end", paddingHorizontal: pad, paddingVertical: 8 }}>
+      <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingHorizontal: pad, paddingVertical: 8, zIndex: 50 }}>
+        <PreReleaseFlag theme={theme} />
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Refresh playbooks"

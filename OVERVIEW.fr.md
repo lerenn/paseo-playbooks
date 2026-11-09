@@ -75,6 +75,7 @@ steps:
 
 ## Bon à savoir
 
+- Avant la 1.0 : toute version mineure peut modifier le format des playbooks de façon incompatible. Épinglez une version et lisez les notes de version avant de mettre à jour.
 - Les étapes peuvent utiliser n'importe quel mode d'agent, `bypassPermissions` compris. Ne
   lancez que des playbooks de dépôts en lesquels vous avez confiance.
 - Tous les agents, sauf ceux des étapes, peuvent lister, annuler, relancer ou reprendre

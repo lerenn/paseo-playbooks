@@ -10,6 +10,7 @@ import { useReduceMotion } from "./graph";
 import { LABEL_WIDTH, labelLayout, ROW_HEIGHT } from "./layout";
 import { useOverview, type OverviewStore } from "./overview-store";
 import { GETTING_STARTED_URL } from "./panel";
+import { PreReleaseFlag } from "./pre-release";
 import { Button, GateActions } from "./sheet";
 import { openJobsLabel, Stations, trainName } from "./stations";
 import { stepShortTitle, stepTitle, stepTitleOf, withAlpha, type Theme } from "./theme";
@@ -352,7 +353,8 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
     <StoreContext.Provider value={store}>
     <View style={{ flex: 1, backgroundColor: theme.colors.surface0 }}>
       <ScrollView contentContainerStyle={{ padding: pad, gap: 18 }}>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 10, flexWrap: "wrap", zIndex: 50 }}>
+          <PreReleaseFlag theme={theme} />
           <Text accessibilityRole="header" style={{ color: theme.colors.foreground, fontSize: 20, fontWeight: "700" }}>
             Playbooks
           </Text>
