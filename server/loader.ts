@@ -332,6 +332,8 @@ const RawDefaultsSchema = z.object({
     manager: RawAgentSchema.extend({ compact: ManagerCompactSchema.optional() }).optional(),
     workspace: RawWorkspaceSchema.optional(),
     isolation: RawIsolationSchema.optional(),
+    /** Reload agent sessions that hold the tools of an older plugin generation once idle. Default true. */
+    reload_stale_sessions: z.boolean().optional(),
     timeout: z.string().optional(),
     /** Defaults for agent steps, in the shape of a step's `role:` block. */
     role: z
@@ -552,6 +554,19 @@ export interface LoadResult {
 }
 
 /** True when the workspace has at least one playbook file in any playbook folder. */
+/** `reload_stale_sessions` of the workspace's `defaults/main.yaml` (the first playbooks folder that has one); true when unset. */
+export async function reloadStaleSessionsSetting(workspaceDir: string): Promise<boolean> {
+  for (const relDir of PLAYBOOKS_DIRS) {
+    const file = path.join(workspaceDir, relDir, "defaults", "main.yaml");
+    if ((await readText(file)) === null) continue;
+    const raw = await readYaml(file, `${relDir}/defaults/main.yaml`);
+    if ("error" in raw) return true;
+    const parsed = RawDefaultsSchema.safeParse(raw.value);
+    return parsed.success ? (parsed.data.reload_stale_sessions ?? true) : true;
+  }
+  return true;
+}
+
 export async function hasPlaybooks(workspaceDir: string): Promise<boolean> {
   for (const relDir of PLAYBOOKS_DIRS) {
     try {

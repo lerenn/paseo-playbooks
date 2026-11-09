@@ -63,6 +63,7 @@ export default function contribute(server: PluginServerContext) {
     // manager) open sessions that land in this hook, and waiting would deadlock until the RPC timeout.
     await ready;
     void runtime.attach(context.paseo);
+    await runtime.sessions.noteOpened(request.agentId);
     if (request.labels[STEP_LABEL]) return { ...request, tools: [...request.tools, tools.step] };
     if (request.labels[GATE_LABEL]) return { ...request, tools: [...request.tools, tools.gate] };
     const manages = runtime.runsOfManager(request.agentId).length > 0 || request.labels["playbooks/manager"] === "true";
