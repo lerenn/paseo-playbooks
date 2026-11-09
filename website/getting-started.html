@@ -25,7 +25,7 @@
 </ul>
 <div class="note warn">Plugins are trusted, unsandboxed code. The plugin's server code runs on the daemon machine and runs <code>git</code> in workspace folders.</div>
 
-<h2>1. Install the plugin</h2>
+<h2 id="install">1. Install the plugin</h2>
 <pre><code>paseo plugin install https://github.com/lerenn/paseo-playbooks.git --ref v0.7.0</code></pre>
 <div class="note warn">Until v1.0, any minor release may change the playbook format in breaking ways. Pin a release tag as above, upgrade with <code>paseo plugin update paseo-playbooks --ref &lt;tag&gt;</code>, and read the release notes first.</div>
 <p>To develop it, install from a local checkout instead (not from a Paseo worktree, which can be archived), then reload after each change:</p>
@@ -36,6 +36,7 @@ paseo plugin reload paseo-playbooks</code></pre>
 <p>Check that <code>paseo plugin ls</code> shows <code>paseo-playbooks</code> as <code>running</code>.</p>
 
 <h2>2. Write a first playbook</h2>
+<div class="note">In a workspace with no playbook, the Playbooks panel offers <strong>Create an example playbook</strong>. After you confirm, it writes the files below for you (except <code>defaults/main.yaml</code>, which is optional).</div>
 <p>Create <code>.paseo/plugins/playbooks/</code> (or the shorter <code>.paseo/playbooks/</code>) in your repository:</p>
 <pre><code>.paseo/plugins/playbooks/
 ├── defaults/

@@ -4,10 +4,11 @@ import { Icon, ScrollView, useToast } from "@getpaseo/plugin/client/ui";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Animated, Pressable, Text, View } from "react-native";
-import { archiveRunRpc, cancelRunRpc, listPlaybooks, listRuns, pauseRunRpc, resumeRunRpc } from "../shared/contracts";
+import { archiveRunRpc, cancelRunRpc, createExampleRpc, listPlaybooks, listRuns, pauseRunRpc, resumeRunRpc } from "../shared/contracts";
 import { isActive, isPaused, isPipeline, isTerminal, type Playbook, type PlaybookEntry, type Run } from "../shared/types";
 import { useAgentEvents } from "./events";
 import { Graph, useReduceMotion } from "./graph";
+import { PreReleaseFlag } from "./pre-release";
 import { Button, StepSheet } from "./sheet";
 import { StartForm, type StartTarget } from "./start-form";
 import { dotGroups, isRead, runTone, splitTabs, type DotGroup, type RunTone } from "./run-tabs";
@@ -85,7 +86,8 @@ export function PlaybooksPanel(props: PluginWorkspacePanelProps) {
   return (
     <View style={{ flex: 1, backgroundColor: theme.colors.surface0 }}>
       {/* No heading: the tab already says "Playbooks". */}
-      <View style={{ flexDirection: "row", justifyContent: "flex-end", paddingHorizontal: pad, paddingVertical: 8 }}>
+      <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingHorizontal: pad, paddingVertical: 8, zIndex: 50 }}>
+        <PreReleaseFlag theme={theme} />
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Refresh playbooks"
@@ -96,7 +98,7 @@ export function PlaybooksPanel(props: PluginWorkspacePanelProps) {
         </Pressable>
       </View>
       {playbooks.data && total === 0 ? (
-        <EmptyState theme={theme} compact={layout.compact} />
+        <EmptyState theme={theme} compact={layout.compact} workspaceId={workspaceId} />
       ) : (
         <ScrollView contentContainerStyle={{ paddingHorizontal: pad, paddingBottom: pad, gap: 12 }}>
           {playbooks.isLoading ? <Text style={{ color: theme.colors.foregroundMuted }}>Loading…</Text> : null}
@@ -133,19 +135,54 @@ export function PlaybooksPanel(props: PluginWorkspacePanelProps) {
 /** Where "Get started" sends people when a workspace has no playbooks. */
 export const GETTING_STARTED_URL = "https://playbooks.paseo.lerenn.dev/getting-started.html";
 
-function EmptyState(props: { theme: Theme; compact: boolean }) {
+/** Where the example playbook is written; shown to the user before they confirm. */
+const EXAMPLE_DIR = ".paseo/plugins/playbooks/";
+
+function EmptyState(props: { theme: Theme; compact: boolean; workspaceId: string }) {
   const { theme } = props;
   const toast = useToast();
+  const queryClient = useQueryClient();
+  const createExample = useRpc(createExampleRpc);
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
   const open = () =>
     void openExternalUrl(GETTING_STARTED_URL).catch((error: unknown) => toast.error(error instanceof Error ? error.message : String(error)));
+  const create = async () => {
+    setBusy(true);
+    try {
+      await createExample({ workspaceId: props.workspaceId });
+      await queryClient.invalidateQueries({ queryKey: ["playbooks"] });
+      toast.show("Example playbook created. Press Start on its card.", { variant: "success" });
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error));
+      setConfirming(false);
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
     <View style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: props.compact ? 16 : 24, gap: 12 }}>
       <Icon name="Workflow" size={32} color={theme.colors.foregroundMuted} />
       <Text style={{ color: theme.colors.foreground, fontSize: 15, fontWeight: "600", textAlign: "center" }}>No playbooks in this workspace</Text>
-      <Text style={{ color: theme.colors.foregroundMuted, fontSize: 13, textAlign: "center", maxWidth: 320 }}>
-        Add playbooks to .paseo/plugins/playbooks/ or .paseo/playbooks/, then refresh.
-      </Text>
-      <Button theme={theme} kind="primary" label="How to use playbooks ↗" onPress={open} accessibilityLabel="Open the getting started guide in your browser" />
+      {confirming ? (
+        <>
+          <Text style={{ color: theme.colors.foregroundMuted, fontSize: 13, textAlign: "center", maxWidth: 320 }}>
+            This adds hello.yaml and a writer role under {EXAMPLE_DIR} in this workspace. Nothing existing is overwritten.
+          </Text>
+          <View style={{ flexDirection: "row", gap: 8 }}>
+            <Button theme={theme} kind="primary" label={busy ? "Creating…" : "Create files"} disabled={busy} onPress={() => void create()} />
+            <Button theme={theme} label="Cancel" disabled={busy} onPress={() => setConfirming(false)} />
+          </View>
+        </>
+      ) : (
+        <>
+          <Text style={{ color: theme.colors.foregroundMuted, fontSize: 13, textAlign: "center", maxWidth: 320 }}>
+            Start from a small example that writes a note and waits for your approval, or add your own to {EXAMPLE_DIR} or .paseo/playbooks/ and refresh.
+          </Text>
+          <Button theme={theme} kind="primary" label="Create an example playbook" onPress={() => setConfirming(true)} />
+          <Button theme={theme} label="Read the guide ↗" onPress={open} accessibilityLabel="Open the getting started guide in your browser" />
+        </>
+      )}
     </View>
   );
 }
