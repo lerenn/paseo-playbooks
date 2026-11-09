@@ -8,3 +8,4 @@ agent:
 manager:
   tier: worker
   mode: default
+  compact: { above_tokens: 150000 }   # /compact the manager when idle and over this many tokens

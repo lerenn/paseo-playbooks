@@ -52,6 +52,7 @@ agent:                 # defaults for every step
   mode: bypassPermissions
 manager:               # settings of the manager agent when Start creates a new one
   mode: default
+  compact: { above_tokens: 150000 }  # when to /compact the manager: never | on_step | on_gate_decided | { above_tokens: N } (default shown)
 timeout: 1h            # default step timeout (optional)
 role:                  # defaults for agent steps, in the shape of a step's `role:` block
   silence: 30m         # remind a step agent after this long without activity (default 30m; off to disable)
@@ -114,7 +115,7 @@ title: Pull request
 description: Investigate, implement, open a PR and babysit it until it is green.
 agent: { model: claude-opus-5-5 }          # optional playbook-wide settings
 concurrency: 1                             # optional: max active runs (or held blocks) in the project
-manager: { prompt: Check the PR exists before accepting implement. }  # optional: added to the manager's instructions
+manager: { prompt: Check the PR exists before accepting implement., compact: on_step }  # optional: prompt is added to the manager's instructions; compact overrides the default
 workspace: { archive: on_end }             # optional: overrides defaults/main.yaml's workspace block
 hidden: false                              # optional: true moves it to the panel's collapsed "Hidden playbooks" section (for one meant as a sub-playbook or after-task; it can still be started from there or by start_playbook)
 

@@ -10,6 +10,7 @@ import type {
   GateChoice,
   GateDecider,
   AgentSettings,
+  ManagerCompact,
   InputWiring,
   Playbook,
   PlaybookEntry,
@@ -22,7 +23,7 @@ import type {
   VarValue,
   When,
 } from "../shared/types";
-import { AgentSettingsSchema, VarTypeSchema, VarValueSchema } from "../shared/types";
+import { AgentSettingsSchema, DEFAULT_MANAGER_COMPACT, ManagerCompactSchema, VarTypeSchema, VarValueSchema } from "../shared/types";
 import { coerceValue, parseDuration, replaceRefs, singleRef, templateRefs, typeCompatible } from "../shared/vars";
 
 /** Folders searched for playbooks, relative to the workspace. Each folder is self-contained. */
@@ -262,6 +263,8 @@ const RawPlaybookSchema = z.object({
       .object({
         /** Instructions added after the manager's protocol. */
         prompt: z.string().optional(),
+        /** When the plugin compacts the manager's context. */
+        compact: ManagerCompactSchema.optional(),
       })
       .strict()
       .optional(),
@@ -302,7 +305,7 @@ const RawDefaultsSchema = z.object({
     /** Named agent settings roles, steps and playbooks reference with `agent: { tier: <name> }`. */
     tiers: z.record(z.string(), RawTierSchema).optional(),
     agent: RawAgentSchema.optional(),
-    manager: RawAgentSchema.optional(),
+    manager: RawAgentSchema.extend({ compact: ManagerCompactSchema.optional() }).optional(),
     workspace: RawWorkspaceSchema.optional(),
     timeout: z.string().optional(),
     /** Defaults for agent steps, in the shape of a step's `role:` block. */
@@ -319,7 +322,7 @@ const RawDefaultsSchema = z.object({
     silence: z.unknown().optional(),
     archive_agents: z.unknown().optional(),
   });
-type RawDefaults = z.infer<typeof RawDefaultsSchema>;
+type RawDefaults = z.infer<typeof RawDefaultsSchema> & { managerCompact?: ManagerCompact };
 
 function formatZodError(file: string, error: z.ZodError): string[] {
   return error.issues.map((issue) => {
@@ -459,7 +462,11 @@ async function loadDefaults(root: string, relDir: string): Promise<{ defaults: R
   const fail = (message: string) => errors.push(`${rel}: ${message}`);
   const defaults: RawDefaults = { ...parsed.data, tiers };
   if (parsed.data.agent) defaults.agent = resolveAgent(parsed.data.agent, tiers, "agent", fail);
-  if (parsed.data.manager) defaults.manager = resolveAgent(parsed.data.manager, tiers, "manager", fail);
+  if (parsed.data.manager) {
+    const { compact, ...settings } = parsed.data.manager;
+    defaults.manager = resolveAgent(settings, tiers, "manager", fail);
+    if (compact !== undefined) defaults.managerCompact = compact;
+  }
   if (parsed.data.timeout && parseDuration(parsed.data.timeout) === null) {
     errors.push(`${rel}: timeout: expected a duration such as 30m or 2h`);
   }
@@ -1237,6 +1244,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     steps: finalSteps,
     roles,
     manager,
+    managerCompact: pb.manager?.compact ?? defaults.managerCompact ?? DEFAULT_MANAGER_COMPACT,
     managerInstructions: managerInstructions(folder.managerText, id, pb.manager?.prompt, [...blocks.values()]),
     outcomes: playbookOutcomes,
     workspace: {
