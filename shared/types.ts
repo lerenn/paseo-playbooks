@@ -333,6 +333,8 @@ export const AttemptSchema = z.object({
   nextCheckAt: z.string().nullable().default(null),
   /** Hand-off steps: the job this attempt handed off, and the singleton run that holds it. */
   job: z.object({ runId: z.string(), jobId: z.string() }).nullable().default(null),
+  /** Hand-off steps: the job passed every station, so a failure here is never retried (its work shipped). */
+  noRetry: z.boolean().default(false),
 });
 export type Attempt = z.infer<typeof AttemptSchema>;
 

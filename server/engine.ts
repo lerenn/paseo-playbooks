@@ -413,6 +413,7 @@ export function startAttempt(
     checks: 0,
     nextCheckAt: null,
     job: null,
+    noRetry: false,
   };
   const context = {
     inputs: Object.fromEntries(Object.entries(values).map(([name, entry]) => [name, entry.value])),
@@ -567,7 +568,7 @@ export function reopenAttempt(run: Run, stepId: string, now: string): Attempt {
   return attempt;
 }
 
-function defaultTransition(step: Step, outcome: string) {
+export function defaultTransition(step: Step, outcome: string) {
   if (step.on[outcome]) return step.on[outcome]!;
   if (step.kind === "gate") return outcomeTransition(step, outcome);
   if (outcome === "failure") return { kind: "retry" } as const;
@@ -1002,7 +1003,7 @@ function followOutcome(run: Run, step: Step, outcome: string, summary: string, n
       break;
     case "retry": {
       const counted = state.attempts.filter((a) => a.turnEnd !== "lost").length;
-      if (counted <= step.retries) {
+      if (counted <= step.retries && !state.attempts.at(-1)!.noRetry) {
         state.status = "ready";
         state.feedback = summary ? `Previous attempt failed: ${summary}` : null;
         fx.notes.push(`"${step.id}" failed; retry ${counted}/${step.retries} allowed. Ready: ${readySteps(run).join(", ")}.`);
@@ -1358,7 +1359,7 @@ export function jobsText(run: Run): string {
   return jobs.length === 0 ? "" : toYaml(jobs).trimEnd();
 }
 
-function stationsOf(pipeline: Run) {
+export function stationsOf(pipeline: Run) {
   return pipeline.playbook.singleton?.stations ?? [];
 }
 
@@ -1479,6 +1480,10 @@ export function settleJob(
   if (input.outcome !== undefined && !outcomes.includes(input.outcome)) {
     throw new EngineError(`outcome "${input.outcome}" is not an outcome of "${pipeline.playbook.id}"; use one of: ${outcomes.join(", ")}, or none to only set outputs`);
   }
+  const services = job.inputs.services;
+  if (input.outcome === "no_deploy" && services !== undefined && String(services).trim() !== "" && String(services).trim().toLowerCase() !== "none") {
+    throw new EngineError(`job ${jobId} cannot be settled no_deploy: its services are "${services}", and no_deploy is only for a job whose services is none. Send the step back, or settle it without an outcome to keep it riding`);
+  }
   const checked = checkJobOutputs(pipeline.playbook, { ...(input.outcome === outcomes[0] ? job.outputs : {}), ...input.outputs }, input.outcome === outcomes[0]);
   if (!checked.ok) throw new EngineError(`cannot settle job ${jobId}: ${checked.errors.join("; ")}`);
   if (input.outcome === undefined) {
@@ -1525,6 +1530,26 @@ export function parseJobResults(text: string): JobResult[] {
   });
 }
 
+/**
+ * The jobs that would leave the pipeline without a required output if this train completed now:
+ * open jobs that, with this train, have passed every station. `pipeline` is a copy with the
+ * step's settle entries applied. Returns problems, one per job and output.
+ */
+export function jobsMissingOutputs(pipeline: Run, train: Run): string[] {
+  const stationId = train.train!.station;
+  const problems: string[] = [];
+  for (const job of pipeline.jobs) {
+    if (job.status !== "open" || !job.riding.some((entry) => entry.runId === train.id)) continue;
+    const others = job.riding.some((entry) => entry.runId !== train.id);
+    const passed = new Set([...job.passed, stationId]);
+    if (others || job.waiting.length > 0 || !stationsOf(pipeline).every((candidate) => passed.has(candidate.id))) continue;
+    const copy = train.jobs.find((candidate) => candidate.id === job.id);
+    const checked = checkJobOutputs(pipeline.playbook, { ...(copy?.outputs ?? {}), ...job.outputs }, true);
+    if (!checked.ok) for (const error of checked.errors) problems.push(`job ${job.id}: ${error}`);
+  }
+  return problems;
+}
+
 /** True when this outcome completes the step (complete, end or goto): its outputs then count. */
 export function completesStep(step: Step, outcome: string): boolean {
   const kind = defaultTransition(step, outcome).kind;
@@ -1554,7 +1579,7 @@ export function trainEnded(pipeline: Run, train: Run, now: string): Job[] {
       if (job.waiting.length === 0 && job.riding.length === 0 && stationsOf(pipeline).every((candidate) => job.passed.includes(candidate.id))) {
         const checked = checkJobOutputs(pipeline.playbook, job.outputs, true);
         if (checked.ok) endJob(pipeline, job, "settled", pipeline.playbook.outcomes[0]!, `passed every station`, checked.outputs, now);
-        else endJob(pipeline, job, "failed", null, `left the pipeline without its outputs: ${checked.errors.join("; ")}`, {}, now);
+        else endJob(pipeline, job, "failed", null, `passed every station but left the pipeline without its outputs: ${checked.errors.join("; ")}. Its work shipped: do not hand it off again`, {}, now);
         ended.push(job);
       }
       continue;
@@ -1614,10 +1639,11 @@ export function mirrorJob(train: Run, job: Job): void {
  * The result of a hand-off reaches its step: recorded as the attempt's report, and the step
  * moves to reported (the runtime then completes it, or waits while the run is paused).
  */
-export function receiveJobResult(run: Run, stepId: string, attemptId: string, result: { outcome: string; summary: string; outputs: Record<string, unknown> }, now: string): boolean {
+export function receiveJobResult(run: Run, stepId: string, attemptId: string, result: { outcome: string; summary: string; outputs: Record<string, unknown> }, now: string, noRetry = false): boolean {
   const state = run.steps[stepId];
   const attempt = state?.attempts.at(-1);
   if (!state || attempt?.agentId !== attemptId || state.status !== "running") return false;
+  attempt.noRetry = noRetry;
   try {
     recordReport(run, attemptId, result, now);
   } catch (error) {
