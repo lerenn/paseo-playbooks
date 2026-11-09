@@ -112,7 +112,7 @@ description: Investigate, implement, open a PR and babysit it until it is green.
 agent: { model: claude-opus-5-5 }          # optional playbook-wide settings
 concurrency: 1                             # optional: max active runs (or held blocks) in the project
 manager: { prompt: Check the PR exists before accepting implement. }  # optional: added to the manager's instructions
-hidden: false                              # optional: true moves it to the panel's collapsed "Hidden playbooks" section (sub-playbook / after-task only)
+hidden: false                              # optional: true moves it to the panel's collapsed "Hidden playbooks" section (for one meant as a sub-playbook or after-task; it can still be started from there or by start_playbook)
 
 inputs:                                    # the Start form; the manager fills them from chat
   request: { type: string, required: true, description: What to change }
@@ -647,7 +647,7 @@ error.
 - no cycles in `needs`; no unknown steps, roles, inputs or outputs
 - two steps that can run at the same time (neither needs the other) must not both be able
   to edit files: make one role `readonly: true` or order them with `needs`
-- prompts use only `inputs`, `run.id`, `run.jobs` and `attempt` (after-tasks also `run.status` and
+- prompts use only `inputs`, `run.id`, `run.jobs`, `attempt` and `loop` (after-tasks also `run.status` and
   `run.failure`); inputs only reference ancestors (after-tasks also main steps and `run.*`)
 - after-tasks have no `needs`, and only after-tasks have `trigger`
 - a `script` names an existing, executable file of `scripts/`; `poll` goes in the `script:` block

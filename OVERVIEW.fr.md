@@ -8,7 +8,7 @@ validations humaines (gates) pour vous laisser décider.
 en arrière si des changements sont demandés, et demander à un humain avant de finir. Les
 rôles sont définis une fois dans `roles/<id>/`.
 
-![L'exemple sous forme de graphe : correction, puis relecture et tests en parallèle, puis une validation avant merge, avec des retours vers la correction](https://raw.githubusercontent.com/lerenn/paseo-playbooks/v0.17.1/assets/example-flow.png)
+![L'exemple sous forme de graphe : correction, puis relecture et tests en parallèle, puis une validation avant merge, avec des retours vers la correction](https://raw.githubusercontent.com/lerenn/paseo-playbooks/main/assets/example-flow.png)
 
 ```yaml
 title: Fix a bug
@@ -68,7 +68,7 @@ steps:
 - [Prise en main](https://playbooks.paseo.lerenn.dev/getting-started.html) : écrire,
   valider et lancer un premier playbook.
 - [Exemples](https://playbooks.paseo.lerenn.dev/examples.html) : un workflow de pull
-  request, une livraison avec recette, un playbook qui enchaîne les deux via une validation
+  request, une livraison avec recette, un playbook qui combine les deux via une validation
   humaine, et une vérification de documentation.
 - [Skill pour agents](https://github.com/lerenn/paseo-playbooks/blob/main/skills/paseo-playbooks/SKILL.md) :
   apprend à vos agents à écrire des playbooks.
