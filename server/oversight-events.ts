@@ -49,6 +49,18 @@ export const OVERSIGHT_TYPES: EventTypeDef[] = [
     line: (event) => `- gate.stale: still open after ${event.payload.ageMinutes} min: ${gateBody(event)} Tools: list_gates { olderThanMinutes: 0 }, get_run { runId: "${event.runId}" }.`,
   },
   {
+    type: "gate.escalated",
+    description: "A gate held by the manager or a role decider was handed to a human: its reason, and who held it before.",
+    payload: z.object({ ...gateFields, heldBefore: z.enum(["manager", "role"]), heldBeforeRole: z.string().nullable(), reason: z.string(), escalatedAt: z.string().nullable(), waitingForHuman: z.literal(true) }),
+    line: (event) => {
+      const p = event.payload as unknown as GateListing & { heldBefore: string; heldBeforeRole: string | null; reason: string };
+      const before = p.heldBefore === "role" ? `role ${p.heldBeforeRole}` : "the manager";
+      const choices = p.choices.map((choice) => `${choice.id}${choice.comment === "required" ? " (needs a comment)" : ""}`).join(" | ");
+      const label = p.kind === "ask" ? "ask" : p.kind === "loop_limit" ? "loop-limit gate" : "gate";
+      return `- gate.escalated: ${before} left the ${label} at step ${p.stepId} of ${runName(p)} in ${p.workspaceDir} to a human: ${p.reason} Question: ${p.question} Choices: ${choices}. Now waiting for a human. Tools: list_gates { runId: "${event.runId}" }, get_run { runId: "${event.runId}", view: "full" }.`;
+    },
+  },
+  {
     type: "gate.decided",
     description: "A gate was decided: who, via panel, chat, manager or role, and the comment.",
     payload: z.object({ ...runFields, gateId: z.string(), stepId: z.string(), kind: z.enum(["gate", "ask", "loop_limit"]), deciderBy: z.enum(["human", "manager", "role"]), decision: z.string(), decidedBy: z.string().nullable(), decidedVia: z.string().nullable(), comment: z.string().nullable() }),
@@ -99,6 +111,7 @@ function actorsOf(run: Run, gate: Gate): string[] {
 export class OversightProducer {
   private readonly known = new Map<string, true>();
   private readonly failures = new Set<string>();
+  private readonly escalatedSeen = new Set<string>();
   private readonly staleDone = new Set<string>();
   private seeded = false;
 
@@ -107,6 +120,7 @@ export class OversightProducer {
   async scan(runs: Run[], now: number): Promise<void> {
     if (!this.seeded) {
       for (const event of (await this.bus.recent({ types: ["gate.stale"], limit: 10_000 })).events) this.staleDone.add(`${event.payload.runId}/${event.payload.gateId}/${event.payload.thresholdMinutes}`);
+      for (const event of (await this.bus.recent({ types: ["gate.escalated"], limit: 10_000 })).events) this.escalatedSeen.add(`${event.payload.runId}/${event.payload.gateId}`);
     }
     const seeding = !this.seeded;
     this.seeded = true;
@@ -124,6 +138,7 @@ export class OversightProducer {
             this.known.set(key, true);
             if (!seeding) await this.bus.emit("gate.opened", gatePayload(listing), { runId: run.id, source: SOURCE });
           }
+          await this.escalation(run, gate, key, listing);
           for (const threshold of thresholds) {
             const mark = `${key}/${threshold}`;
             if (this.staleDone.has(mark) || (listing.ageMinutes ?? 0) < threshold) continue;
@@ -132,6 +147,8 @@ export class OversightProducer {
           }
         } else if (this.known.has(key)) {
           this.known.delete(key);
+          await this.escalation(run, gate, key, gateListing(run, gate, now));
+          this.escalatedSeen.delete(key);
           const holder = gateListing(run, gate, now);
           await this.bus.emit(
             "gate.decided",
@@ -149,5 +166,21 @@ export class OversightProducer {
       }
     }
     for (const key of [...this.known.keys()]) if (!open.has(key)) this.known.delete(key);
+    for (const key of [...this.escalatedSeen]) if (!open.has(key) && !this.known.has(key)) this.escalatedSeen.delete(key);
+  }
+
+  /** Emits gate.escalated once per gate (remembered through the log across restarts): when a manager or role decider handed it to a human, a restart that lost the decider included. */
+  private async escalation(run: Run, gate: Gate, key: string, listing: GateListing): Promise<void> {
+    if (gate.escalated === null || this.escalatedSeen.has(key)) return;
+    this.escalatedSeen.add(key);
+    // Gates escalated before this version recorded when: not announced now.
+    if (gate.escalatedAt === null) return;
+    const by = gate.decider.by === "role" ? "role" : "manager";
+    const actors = by === "role" ? (gate.deciderAgentId ? [gate.deciderAgentId] : []) : [run.managerAgentId];
+    await this.bus.emit(
+      "gate.escalated",
+      { ...gatePayload(listing), heldBefore: by, heldBeforeRole: by === "role" ? gate.decider.role ?? null : null, reason: gate.escalated, escalatedAt: gate.escalatedAt ?? null, waitingForHuman: true },
+      { runId: run.id, source: SOURCE, actors },
+    );
   }
 }

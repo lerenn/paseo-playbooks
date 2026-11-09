@@ -936,8 +936,8 @@ function gotoOrLimit(run: Run, step: Step, target: string, maxLoops: number | un
 }
 
 /** A new gate's decider fields: a human unless the playbook names a manager or role decider. */
-function openDecider(decider: GateDecider | undefined): Pick<Gate, "decider" | "deciderAgentId" | "escalated"> {
-  return { decider: decider ?? { by: "human" }, deciderAgentId: null, escalated: null };
+function openDecider(decider: GateDecider | undefined): Pick<Gate, "decider" | "deciderAgentId" | "escalated" | "escalatedAt"> {
+  return { decider: decider ?? { by: "human" }, deciderAgentId: null, escalated: null, escalatedAt: null };
 }
 
 /** An `ask` transition: the step waits while a human answers, then goes back to the target with the answer. */
@@ -1115,6 +1115,7 @@ export function escalateGate(run: Run, ref: string, reason: string, now: string)
   const gate = findGate(run, ref);
   if (!gate || gate.status !== "pending" || gate.escalated !== null) return false;
   gate.escalated = reason.trim() || "no reason given";
+  gate.escalatedAt = now;
   const note = `Left to a human by ${deciderText(gate.decider)}: ${gate.escalated}`;
   gate.details = [gate.details, note].filter(Boolean).join("\n\n");
   gate.message = [gate.message, note].filter(Boolean).join("\n\n");

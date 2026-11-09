@@ -3,27 +3,33 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { Runtime } from "./runtime";
+import { listAttention } from "./overseer";
 import { RunStore } from "./store";
 
 const EXAMPLES = path.resolve(__dirname, "..", "examples");
 const temps: string[] = [];
 const runtimes: Runtime[] = [];
 afterEach(async () => {
+  faults.failCreate = false;
+  faults.gone.clear();
   await Promise.all(runtimes.splice(0).map((runtime) => runtime.dispose()));
   await Promise.all(temps.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
+
+const faults = { failCreate: false, gone: new Set<string>() };
 
 function fakePaseo(dir: string) {
   const sent: Array<{ agentId: string; text: string }> = [];
   const archived = new Set<string>();
   let agents = 0;
   const ref = (agentId: string) => ({
-    refresh: async () => ({ agent: { id: agentId, status: "idle", provider: "claude", model: null, archivedAt: archived.has(agentId) ? "now" : null, pendingPermissions: [] } }),
+    refresh: async () => (faults.gone.has(agentId) ? null : { agent: { id: agentId, status: "idle", provider: "claude", model: null, archivedAt: archived.has(agentId) ? "now" : null, pendingPermissions: [] } }),
     send: async (text: string) => void sent.push({ agentId, text }),
     reload: async () => undefined,
     archive: async () => void archived.add(agentId),
   });
   const create = async () => {
+    if (faults.failCreate) throw new Error("no capacity");
     const id = `agent${++agents}`;
     return { id, send: async (text: string) => void sent.push({ agentId: id, text }) };
   };
@@ -37,6 +43,7 @@ function fakePaseo(dir: string) {
 const PLAYBOOKS: Record<string, string> = {
   "human.yaml": `title: Human\nsteps:\n  - id: approve\n    gate: { question: Ship it?, choices: { approved: { label: Approve }, rejected: { label: Reject, comment: required } } }\n    on: { rejected: fail }\n`,
   "role.yaml": `title: Role\nsteps:\n  - id: approve\n    gate: { question: Ship it?, decider: { by: role, role: reviewer } }\n`,
+  "manager.yaml": `title: Manager\nsteps:\n  - id: approve\n    gate: { question: Ship it?, decider: { by: manager } }\n`,
   "ask.yaml": `title: Ask\nsteps:\n  - id: work\n    role: { name: investigator }\n    outcomes: [success, unsure]\n    on:\n      unsure: { ask: "Which way?", decider: { by: manager } }\n`,
 };
 
@@ -295,5 +302,130 @@ describe("event subscriptions", () => {
     await again.runtime.watchEvents();
     expect(await again.runtime.bus.list("gone")).toEqual([]);
     expect(toAgent(again.sent, "gone")).toBe("");
+  });
+});
+
+describe("gate.escalated", () => {
+  async function roleGate(options: { fail?: boolean } = {}) {
+    const ctx = await setup();
+    await ctx.runtime.subscribeEvents("watcher", ["gate.*"], {});
+    await ctx.runtime.watchEvents();
+    faults.failCreate = options.fail ?? false;
+    const run = await ctx.runtime.startPlaybook(mgr("m1"), "role", {});
+    const gate = await ctx.runtime.requestGate("m1", run.id, "approve", "Ship?", "");
+    await ctx.runtime.watchEvents();
+    return { ...ctx, run, gate };
+  }
+  const escalations = async (runtime: Runtime) => (await runtime.bus.recent({ types: ["gate.escalated"] })).events;
+
+  it("is emitted when a role escalates, with the reason, who held it and the tools; never back to the role", async () => {
+    const { runtime, store, sent, run, gate } = await roleGate();
+    const decider = gate.deciderAgentId!;
+    await runtime.subscribeEvents(decider, ["gate.escalated"], {});
+    await runtime.reportGateDecision(decider, { decision: "escalate", comment: "It touches billing." });
+    await runtime.watchEvents();
+    const [event] = await escalations(runtime);
+    expect(event!.payload).toMatchObject({
+      runId: run.id, playbook: "role", gateId: gate.id, stepId: "approve", kind: "gate", question: "Ship?",
+      heldBefore: "role", heldBeforeRole: "reviewer", deciderBy: "role", reason: "It touches billing.", waitingForHuman: true, roleDeciding: false,
+    });
+    expect(event!.payload.choices).toHaveLength(2);
+    expect(event!.payload.workspaceDir).toBeTruthy();
+    expect(toAgent(sent, "watcher")).toMatch(/gate.escalated: role reviewer left the gate at step approve[\s\S]*It touches billing\.[\s\S]*approved \| rejected[\s\S]*Now waiting for a human[\s\S]*list_gates[\s\S]*get_run/);
+    expect(toAgent(sent, decider)).not.toMatch(/gate.escalated/);
+    await runtime.watchEvents();
+    expect(await escalations(runtime)).toHaveLength(1);
+    const listed = listAttention(store.list(), Date.now(), { runId: run.id }).gates[0]!;
+    expect(listed).toMatchObject({ waitingForHuman: true, escalationReason: "It touches billing.", heldBy: "human" });
+    expect(listed.escalatedAt).toBeTruthy();
+  });
+
+  it("is emitted when the role ends without a decision, after the reminder", async () => {
+    const { runtime, gate } = await roleGate();
+    await runtime.onTurnEnded(gate.deciderAgentId!, "completed");
+    await runtime.watchEvents();
+    expect(await escalations(runtime)).toHaveLength(0);
+    await runtime.onTurnEnded(gate.deciderAgentId!, "completed");
+    await runtime.watchEvents();
+    expect((await escalations(runtime))[0]!.payload).toMatchObject({ reason: "its agent ended without a decision", heldBefore: "role" });
+  });
+
+  it("is emitted when the role's agent fails to start", async () => {
+    const { runtime } = await roleGate({ fail: true });
+    const [event] = await escalations(runtime);
+    expect(event!.payload).toMatchObject({ heldBefore: "role", reason: expect.stringContaining("its agent could not start: no capacity"), waitingForHuman: true });
+  });
+
+  it("is emitted when the role's agent was archived or lost in a restart", async () => {
+    const first = await roleGate();
+    const decider = first.gate.deciderAgentId!;
+    await first.runtime.dispose();
+    faults.gone.add(decider);
+    const again = await setup({}, { dir: first.dir, file: "" });
+    await again.runtime.subscribeEvents("late", ["gate.escalated"], {});
+    await again.runtime.watchEvents();
+    await again.runtime.watchEvents();
+    expect((await escalations(again.runtime)).map((event) => event.payload.reason)).toEqual(["its agent was lost in a daemon restart"]);
+    expect(toAgent(again.sent, "late")).toMatch(/lost in a daemon restart/);
+  });
+
+  it("is emitted when the manager escalates, and only on a manager's gate", async () => {
+    const { runtime, sent } = await setup();
+    await runtime.subscribeEvents("watcher", ["gate.escalated"], { deciderBy: "manager" });
+    await runtime.subscribeEvents("m1", ["gate.escalated"], {});
+    await runtime.watchEvents();
+    const run = await runtime.startPlaybook(mgr("m1"), "manager", {});
+    const gate = await runtime.requestGate("m1", run.id, "approve", "Ship?", "");
+    await runtime.watchEvents();
+    expect(await escalations(runtime)).toHaveLength(0);
+    const human = await runtime.startPlaybook(mgr("m2"), "human", {});
+    await runtime.requestGate("m2", human.id, "approve", "Ship?", "");
+    await expect(runtime.escalateByManager("m2", human.id, "approve", "x")).rejects.toThrow(/decided by a human/);
+    await expect(runtime.escalateByManager("m3", run.id, "approve", "x")).rejects.toThrow(/belongs to another manager/);
+    expect(await runtime.escalateByManager("m1", run.id, "approve", "Touches billing.")).toMatch(/left to a human/);
+    await runtime.watchEvents();
+    expect((await escalations(runtime)).map((event) => event.payload)).toHaveLength(1);
+    expect((await escalations(runtime))[0]!.payload).toMatchObject({ runId: run.id, gateId: gate.id, heldBefore: "manager", heldBeforeRole: null, reason: "Touches billing.", waitingForHuman: true });
+    expect(toAgent(sent, "watcher")).toMatch(/the manager left the gate/);
+    expect(toAgent(sent, "m1")).not.toMatch(/gate.escalated/);
+    expect(await runtime.escalateByManager("m1", run.id, "approve", "again")).toMatch(/already left/);
+  });
+
+  it("does not fire for a gate that opens waiting for a human, and filters like other gate events", async () => {
+    const { runtime, sent } = await setup();
+    await runtime.subscribeEvents("w-role", ["gate.escalated"], { deciderBy: "role" });
+    await runtime.subscribeEvents("w-manager", ["gate.escalated"], { deciderBy: "manager" });
+    await runtime.watchEvents();
+    const human = await runtime.startPlaybook(mgr("m1"), "human", {});
+    await runtime.requestGate("m1", human.id, "approve", "Ship?", "");
+    const role = await runtime.startPlaybook(mgr("m2"), "role", {});
+    const gate = await runtime.requestGate("m2", role.id, "approve", "Ship?", "");
+    await runtime.reportGateDecision(gate.deciderAgentId!, { decision: "escalate", comment: "unsure" });
+    await runtime.watchEvents();
+    expect((await escalations(runtime)).map((event) => event.runId)).toEqual([role.id]);
+    expect(toAgent(sent, "w-role")).toMatch(/gate.escalated/);
+    expect(toAgent(sent, "w-manager")).toBe("");
+    // A human gate showed up as opened, already waiting for a human.
+    const opened = (await runtime.bus.recent({ types: ["gate.opened"] })).events.find((event) => event.runId === human.id)!;
+    expect(opened.payload).toMatchObject({ heldBy: "human", roleDeciding: false });
+  });
+
+  it("can be caught up with list_events", async () => {
+    const { runtime, gate } = await roleGate();
+    const before = (await runtime.bus.recent()).lastSeq;
+    await runtime.reportGateDecision(gate.deciderAgentId!, { decision: "escalate", comment: "unsure" });
+    await runtime.watchEvents();
+    const missed = await runtime.bus.recent({ since: before, types: ["gate.*"] });
+    expect(missed.events.map((event) => event.type)).toEqual(["gate.escalated"]);
+  });
+
+  it("is not emitted again for a gate escalated before a restart", async () => {
+    const first = await roleGate();
+    await first.runtime.reportGateDecision(first.gate.deciderAgentId!, { decision: "escalate", comment: "unsure" });
+    await first.runtime.watchEvents();
+    await first.runtime.dispose();
+    const again = await setup({}, { dir: first.dir, file: "" });
+    await again.runtime.watchEvents();
+    expect(await escalations(again.runtime)).toHaveLength(1);
   });
 });

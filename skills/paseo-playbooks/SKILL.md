@@ -526,7 +526,8 @@ after:
 - The "may both edit files" rule applies between after-tasks, not between an after-task and
   a main step.
 - Step agents cannot call `get_run`. Other agents can read any run with it (read-only), and
-  `list_gates` lists every open gate and ask across runs. A retro step that reviews the whole run gets it from
+  `list_gates` lists every open gate and ask across runs (a gate a decider left to a human shows `waitingForHuman`, `escalatedAt` and
+  `escalationReason`; `subscribe_events` on `gate.escalated` tells agents when that happens). A retro step that reviews the whole run gets it from
   the manager: tell the manager (in the playbook `description`) to put `get_run` with
   `view: "full"` in the step's brief. The default `get_run` view is compact (per step: status,
   outcome, attempts, turn end and the first 300 characters of the summary), without reports
@@ -631,7 +632,8 @@ on:
 - `by: human` (the default): the manager asks the human in chat and relays the answer, or the
   human decides in the panel.
 - `by: manager`: the manager may decide alone (`resume` with `byManager: true` and its reason
-  as comment, shown as "by the manager"), or ask a human as for a human gate.
+  as comment, shown as "by the manager"), or call `escalate_gate` with its reason and ask a human as
+  for a human gate (this tells agents subscribed to `gate.escalated`).
 - `by: role`: the plugin starts an agent with that role (it must be `readonly`) when the gate
   opens. It gets the gate, its choices, the run's inputs and the steps' summaries and
   outputs, and calls `report_gate_decision` with a choice or `escalate`, and its reason.

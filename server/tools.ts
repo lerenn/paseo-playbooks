@@ -379,6 +379,17 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
         }),
     }),
     defineAgentTool({
+      name: "escalate_gate",
+      description:
+        "On a gate whose decider is the manager: tell the plugin you leave it to a human, with your reason, right before you ask the human in chat. It records the hand-over (agents subscribed to gate.escalated are told) and the gate then works as a human gate. Refused on other gates.",
+      input: z.object({
+        runId: IdArg,
+        stepId: z.string().describe("Gate step id or gate id"),
+        reason: z.string().describe("Why you do not decide it yourself, in one or two sentences"),
+      }),
+      execute: ({ runId, stepId, reason }, { agent }) => guard(async () => ok(await runtime.escalateByManager(agent.id, runId, stepId, reason))),
+    }),
+    defineAgentTool({
       name: "nudge_step",
       description: "Send a follow-up message to a step's current agent (same conversation, no new attempt), e.g. when it ended without reporting. On a step that timed out, its next report replaces the timeout failure.",
       input: z.object({ runId: IdArg, stepId: z.string(), message: z.string() }),

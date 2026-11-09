@@ -43,6 +43,7 @@ export const MANAGER_TOOL_NAMES = [
   "complete_step",
   "request_gate",
   "resume",
+  "escalate_gate",
   "nudge_step",
   "get_run",
   "list_runs",
@@ -594,6 +595,21 @@ export class Runtime {
       await this.deliver(run.id);
     }
     return `Decision "${input.decision}" recorded for gate ${gate.id}. Stop here: end your turn.`;
+  }
+
+  /** escalate_gate: the manager of a manager-decided gate hands it to a human before asking one in chat. */
+  async escalateByManager(managerId: string, runId: string, ref: string, reason: string): Promise<string> {
+    const run = this.ownedRun(managerId, runId);
+    const gate = engine.findGate(run, ref);
+    if (!gate) throw new UserError(`no gate "${ref}" in run ${run.id}`);
+    if (gate.status !== "pending") return `Gate ${gate.id} is already decided (${gate.status}${gate.decidedVia ? ` via ${gate.decidedVia}` : ""}). Nothing to escalate.`;
+    if (gate.decider.by !== "manager") throw new UserError(`gate "${gate.id}" is decided by ${engine.deciderText(gate.decider)}, not by you: ask a human as usual, no escalate_gate`);
+    if (gate.escalated !== null) return `Gate ${gate.id} was already left to a human. Ask one.`;
+    if (!reason.trim()) throw new UserError("reason: say why you leave it to a human");
+    await this.store.mutate(run.id, (current) => engine.escalateGate(current, gate.id, reason, nowIso()));
+    const current = this.store.get(run.id)!;
+    const updated = current.gates.find((candidate) => candidate.id === gate.id)!;
+    return `Gate ${gate.id} is left to a human. ${askHumanText(updated, choicesOfGate(updated, engine.stepDef(current, updated.stepId)))}`;
   }
 
   /** The manager or role decider leaves the gate to a human: the manager is told to ask one. */
