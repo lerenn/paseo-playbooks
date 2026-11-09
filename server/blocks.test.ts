@@ -315,4 +315,62 @@ describe("end inside a sub-playbook block", () => {
     finish("last", "success");
     expect(run.status).toBe("completed");
   });
+  it("resets a block's loop counters each time an outer loop re-enters it", async () => {
+    const dir = await folder({
+      "fix.yaml": "steps:\n  - id: qa\n    role: { name: reviewer }\n    outcomes: [pass, retry]\n    on:\n      retry: { goto: qa, max_loops: 2 }\n",
+      "all.yaml": "steps:\n  - id: fix\n    playbook: { name: fix }\n  - id: next\n    needs: [fix]\n    role: { name: reviewer }\n    outcomes: [done, more]\n    on:\n      more: { goto: fix, max_loops: 2 }\n",
+    });
+    const entry = (await loadPlaybooks(dir)).entries.find((candidate) => candidate.id === "all")!;
+    expect(entry.errors).toEqual([]);
+    let clock = 0;
+    const now = () => new Date(Date.UTC(2026, 10, 2, 12, 0, clock++)).toISOString();
+    const r: Run = newRun({ id: "run_l", playbook: entry.playbook!, workspaceId: "ws", workspaceDir: "/tmp", projectId: "p", branch: null, managerAgentId: "m", inputs: {}, now: now() });
+    const finish = (stepId: string, outcome: string) => {
+      const agentId = `a-${stepId}-${clock}`;
+      startAttempt(r, stepId, { agentId, brief: "", now: now(), readonlySnapshot: null });
+      recordReport(r, agentId, { outcome, summary: "ok", outputs: {} }, now());
+      endTurn(r, agentId, { turnEnd: "completed", lastMessage: null, now: now() });
+      return completeStep(r, stepId, { outcome, now: now() });
+    };
+    const item = (last: boolean) => {
+      finish("fix.qa", "retry");
+      finish("fix.qa", "retry");
+      finish("fix.qa", "pass");
+      return finish("next", last ? "done" : "more");
+    };
+    item(false);
+    expect(r.loops["fix.qa->fix.qa"]).toBeUndefined();
+    expect(r.loops["next->fix.qa"]).toBe(1);
+    item(false);
+    item(true);
+    expect(r.gates).toEqual([]);
+    expect(r.status).toBe("completed");
+    expect(r.loopTotals["fix.qa->fix.qa"]).toBe(6);
+    expect(r.loopTotals["next->fix.qa"]).toBe(2);
+  });
+
+  it("still opens the outer loop-limit gate when the block is re-entered too often", async () => {
+    const dir = await folder({
+      "fix.yaml": "steps:\n  - id: qa\n    role: { name: reviewer }\n",
+      "all.yaml": "steps:\n  - id: fix\n    playbook: { name: fix }\n  - id: next\n    needs: [fix]\n    role: { name: reviewer }\n    outcomes: [done, more]\n    on:\n      more: { goto: fix, max_loops: 2 }\n",
+    });
+    const entry = (await loadPlaybooks(dir)).entries.find((candidate) => candidate.id === "all")!;
+    let clock = 0;
+    const now = () => new Date(Date.UTC(2026, 10, 2, 12, 0, clock++)).toISOString();
+    const r: Run = newRun({ id: "run_m", playbook: entry.playbook!, workspaceId: "ws", workspaceDir: "/tmp", projectId: "p", branch: null, managerAgentId: "m", inputs: {}, now: now() });
+    const finish = (stepId: string, outcome: string) => {
+      const agentId = `a-${stepId}-${clock}`;
+      startAttempt(r, stepId, { agentId, brief: "", now: now(), readonlySnapshot: null });
+      recordReport(r, agentId, { outcome, summary: "ok", outputs: {} }, now());
+      endTurn(r, agentId, { turnEnd: "completed", lastMessage: null, now: now() });
+      completeStep(r, stepId, { outcome, now: now() });
+    };
+    for (let i = 0; i < 3; i++) {
+      finish("fix.qa", "success");
+      finish("next", "more");
+    }
+    expect(r.gates.filter((gate) => gate.kind === "loop_limit")).toHaveLength(1);
+    expect(r.status).toBe("waiting_gate");
+  });
+
 });

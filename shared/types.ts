@@ -466,6 +466,8 @@ export const RunSchema = z.object({
   /** Times each goto edge fired, keyed "source->target", and extra loops granted at a loop-limit gate. */
   loops: z.record(z.string(), z.number().int()),
   loopAllowance: z.record(z.string(), z.number().int()),
+  /** Cumulative times each goto edge fired; `loops` is reset when an outer goto re-enters the block holding the edge. */
+  loopTotals: z.record(z.string(), z.number().int()).default({}),
   gates: z.array(GateSchema),
   /** State of each after-task, by id. Runs created before after-tasks have none. */
   after: z.record(z.string(), RunAfterTaskSchema).default({}),

@@ -169,6 +169,7 @@ function createRun(input: NewRunInput, inputs: Record<string, VarValue>, kind: "
     ),
     loops: {},
     loopAllowance: {},
+    loopTotals: {},
     gates: [],
     after: Object.fromEntries(
       input.playbook.after.map((task) => [task.id, { status: "pending", startedAt: null, endedAt: null, detail: null }]),
@@ -848,9 +849,27 @@ function endBlock(run: Run, step: Step, prefix: string, outcome: string | undefi
   advance(run, step.id, now, fx);
 }
 
+/**
+ * A goto from outside a block into it starts the block afresh: the loop counters (and
+ * granted allowances) of the transitions inside it go back to 0, so a `max_loops` inside a
+ * block holds per pass, not per run. `loopTotals` keeps the cumulative counts.
+ */
+function resetBlockLoops(run: Run, source: string, target: string): void {
+  const parts = target.split(".");
+  for (let i = 1; i < parts.length; i++) {
+    const prefix = `${parts.slice(0, i).join(".")}.`;
+    if (source.startsWith(prefix)) continue;
+    for (const counters of [run.loops, run.loopAllowance]) {
+      for (const key of Object.keys(counters)) if (key.startsWith(prefix)) delete counters[key];
+    }
+  }
+}
+
 function performGoto(run: Run, source: string, target: string, feedback: string, now: string, fx: Effects): void {
   const key = `${source}->${target}`;
+  resetBlockLoops(run, source, target);
   run.loops[key] = (run.loops[key] ?? 0) + 1;
+  run.loopTotals[key] = (run.loopTotals[key] ?? 0) + 1;
   const reset = new Set([target, ...descendantsOf(run.playbook.steps, target)]);
   for (const stepId of reset) {
     const state = run.steps[stepId]!;
