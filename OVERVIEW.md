@@ -6,7 +6,7 @@ runs it step by step, each step as a subagent, and stops at human gates for your
 `.paseo/plugins/playbooks/fix.yaml`: fix, then review and test in parallel, loop back on
 requested changes, and ask a human before finishing. Roles are defined once in `roles/<id>/`.
 
-![The example as a graph: fix, then review and test in parallel, then a merge gate, with loops back to fix](https://raw.githubusercontent.com/lerenn/paseo-playbooks/v0.17.1/assets/example-flow.png)
+![The example as a graph: fix, then review and test in parallel, then a merge gate, with loops back to fix](https://raw.githubusercontent.com/lerenn/paseo-playbooks/main/assets/example-flow.png)
 
 ```yaml
 title: Fix a bug
@@ -59,7 +59,7 @@ steps:
 - [Getting started](https://playbooks.paseo.lerenn.dev/getting-started.html): write,
   validate and run a first playbook.
 - [Examples](https://playbooks.paseo.lerenn.dev/examples.html): a pull-request workflow, a
-  release with QA, a capability chaining both through a gate, and a docs check.
+  release with QA, a capability combining both through a gate, and a docs check.
 - [Agent skill](https://github.com/lerenn/paseo-playbooks/blob/main/skills/paseo-playbooks/SKILL.md):
   teaches your agents to write playbooks.
 

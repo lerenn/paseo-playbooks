@@ -15,10 +15,11 @@
 <main>
 
 <h1>Examples</h1>
-<p class="lead">Two complete playbook folders. Copy one into your repository as <code>.paseo/plugins/playbooks/</code> or <code>.paseo/playbooks/</code>, adjust it, then run <code>validate_playbooks</code>.</p>
+<p class="lead">Four complete playbooks: Pull request, Release to dev and Capability are in <code>examples/</code>, and Docs check is at the root of this repository. Copy a folder into your repository as <code>.paseo/plugins/playbooks/</code> or <code>.paseo/playbooks/</code>, adjust it, then run <code>validate_playbooks</code>.</p>
 <ul>
-<li><a href="#pr">Pull request</a>: investigate, implement, review and local QA in parallel, babysit the PR until it is green.</li>
+<li><a href="#pr">Pull request</a>: investigate runs first, then implement, then review and local QA run in parallel, and babysit the PR until it is green.</li>
 <li><a href="#capability">Capability</a>: the Pull request playbook, a human gate, then the Release to dev playbook, as <a href="reference.html#subplaybooks">sub-playbooks</a>.</li>
+<li><a href="#release">Release to dev</a>: deploy the change to the development environment, check it there, and redeploy when the check asks for it.</li>
 <li><a href="#docs">Docs check</a>: compare the docs with the code, fix them, review and check in parallel, loop until clean, human gate. It needs no shell commands.</li>
 </ul>
 
@@ -236,6 +237,8 @@ steps:
     needs: [approve]
     playbook: { name: release }  # pr_url comes from the pr block
 </code></pre>
+<h2 id="release">Release to dev</h2>
+<p>From <a href="https://github.com/lerenn/paseo-playbooks/tree/main/examples/.paseo/plugins/playbooks"><code>examples/.paseo/plugins/playbooks/</code></a>. It deploys the change named by <code>pr_url</code> to the development environment, then checks it there. Used on its own, or as the second block of the Capability playbook.</p>
 <pre><code># release.yaml
 title: Release to dev
 description: Deploy a change to the development environment and check it there.
@@ -273,7 +276,7 @@ steps:
 <p>The Release to dev roles, <code>dev_env_releaser</code> and <code>dev_env_qa</code>, deploy and check the change with the process your repository documents, and report a failure when there is none.</p>
 
 <h2 id="docs">Docs check</h2>
-<p>Every role only reads or edits files, so <code>default</code> and <code>acceptEdits</code> are enough. The verdict step loops back to the writer at most twice, and a rejected gate sends the work back with your comment.</p>
+<p>From <a href="https://github.com/lerenn/paseo-playbooks/tree/main/.paseo/plugins/playbooks"><code>.paseo/plugins/playbooks/</code></a> at the root of this repository, the playbook that checks this repository's own docs. Every role only reads or edits files, so <code>default</code> and <code>acceptEdits</code> are enough. The verdict step loops back to the writer at most twice, and a rejected gate sends the work back with your comment.</p>
 <pre><code>investigate ─▶ write ─┬─▶ review ──────┬─▶ verdict ─▶ ◆ approve ─▶ end
                  ▲    └─▶ consistency ─┘      │           │
                  └──── changes_requested ─────┘           │
@@ -286,7 +289,7 @@ manager:
 inputs:
   focus:
     type: string
-    default: README.md, OVERVIEW.md, skills/paseo-playbooks/SKILL.md and the website/ pages
+    default: README.md, OVERVIEW.md (and its translations OVERVIEW.fr.md and OVERVIEW.zh-CN.md, which must say the same), skills/paseo-playbooks/SKILL.md and the website/ pages
     description: Which documents to check
   strictness:
     type: enum
@@ -375,12 +378,14 @@ steps:
       rejected: { goto: write }</code></pre>
 <p class="file">defaults/main.yaml</p>
 <pre><code># Local test setup: cheap step agents, a stronger manager.
+tiers:
+  cheap: { provider: claude, model: claude-haiku-5-5 }
+  worker: { provider: claude, model: claude-sonnet-5-5 }
 agent:
-  provider: claude
-  model: claude-haiku-5-5
+  tier: cheap
   mode: default                # read-only roles only read files: no permission prompts
 manager:
-  model: claude-sonnet-5-5
+  tier: worker
   mode: default</code></pre>
 <p class="file">roles/consistency_checker/role.yaml</p>
 <pre><code>title: Consistency checker

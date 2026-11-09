@@ -4,7 +4,7 @@ Playbooks 把多智能体工作流写成仓库里的一个 YAML 文件。由一�
 
 `.paseo/plugins/playbooks/fix.yaml`：先修复，再并行评审和测试，需要修改时回到修复步骤，结束前请人工确认。角色只需在 `roles/<id>/` 中定义一次。
 
-![示例流程图：先修复，再并行评审和测试，然后是合并审批，可回到修复步骤](https://raw.githubusercontent.com/lerenn/paseo-playbooks/v0.17.1/assets/example-flow.png)
+![示例流程图：先修复，再并行评审和测试，然后是合并审批，可回到修复步骤](https://raw.githubusercontent.com/lerenn/paseo-playbooks/main/assets/example-flow.png)
 
 ```yaml
 title: Fix a bug
@@ -47,7 +47,7 @@ steps:
 ## 快速开始
 
 - [入门指南](https://playbooks.paseo.lerenn.dev/getting-started.html)：编写、校验并运行第一个 playbook。
-- [示例](https://playbooks.paseo.lerenn.dev/examples.html)：pull request 工作流、带 QA 的发布流程、通过人工审批串联两者的功能交付 playbook，以及文档检查。
+- [示例](https://playbooks.paseo.lerenn.dev/examples.html)：pull request 工作流、带 QA 的发布流程、通过人工审批把两者组合起来的功能交付 playbook，以及文档检查。
 - [智能体技能](https://github.com/lerenn/paseo-playbooks/blob/main/skills/paseo-playbooks/SKILL.md)：教你的智能体编写 playbook。
 
 ## 须知

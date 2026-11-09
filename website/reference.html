@@ -267,11 +267,11 @@ steps:
 <ul>
 <li>YAML syntax errors and values of the wrong type (unknown keys are ignored, except inside a step's <code>role</code>, <code>gate</code>, <code>script</code> or <code>playbook</code> block)</li>
 <li>duplicate step ids, reserved ids, invalid names</li>
-<li>a step with none or more than one of <code>role</code>, <code>gate</code>, <code>script</code> and <code>playbook</code>, a kind written as a plain string, a block without its required key (<code>name</code>, <code>question</code> or <code>run</code>), or a field on the wrong kind or outside its block, with the form to write</li>
+<li>a step with none or more than one of <code>role</code>, <code>gate</code>, <code>script</code>, <code>playbook</code> and <code>handoff</code>, a kind written as a plain string, a block without its required key (<code>name</code>, <code>question</code> or <code>run</code>), or a field on the wrong kind or outside its block, with the form to write</li>
 <li>missing roles (<code>role.yaml</code> or <code>instructions.md</code>), unknown <code>needs</code>, cycles in <code>needs</code></li>
 <li><code>on</code> keys that are not outcomes, extra outcomes without an <code>on</code> entry, <code>goto</code> targets that are not earlier steps</li>
 <li>two steps that can run together and both edit files</li>
-<li>prompts using anything other than <code>inputs</code>, <code>run.id</code> and <code>attempt</code> (after-tasks may also use <code>run.status</code> and <code>run.failure</code>)</li>
+<li>prompts using anything other than <code>inputs</code>, <code>run.id</code>, <code>run.jobs</code>, <code>attempt</code> and <code>loop</code> (after-tasks may also use <code>run.status</code> and <code>run.failure</code>)</li>
 <li><code>needs</code> on an after-task, <code>trigger</code> on a step, an after-task id that clashes with a step id</li>
 <li>unresolved, ambiguous or type-incompatible inputs and outputs</li>
 <li><code>enum</code> without <code>values</code>, invalid durations</li>

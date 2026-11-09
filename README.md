@@ -49,6 +49,7 @@ How the Playbook Manager drives steps, human gates and nested playbooks:
 | `index.client.tsx`, `client/` | The Playbooks panel (graph, node sheet, Start form), header button, and the sidebar entry with its all-workspaces screen |
 | `shared/` | Zod types, RPC contracts, graph and template helpers |
 | `examples/.paseo/plugins/playbooks/` | Example playbooks (PR, Release to dev, and Capability, which combines them as sub-playbooks) and their roles (not loaded by the plugin) |
+| `.paseo/plugins/playbooks/` | This repository's own Docs check playbook (`docs.yaml`), which checks its docs, and its roles |
 | `skills/paseo-playbooks/SKILL.md` | Agent skill for writing playbooks; copy or symlink it into a repo's `.agents/skills/` or `.claude/skills/` |
 
 ## Develop
@@ -79,9 +80,10 @@ workspace, and "Start in a new workspace", which creates a new worktree and mana
 
 ## Release
 
-The version lives in `package.json`. A pull request that changes shipped files
-(`client/`, `server/`, `shared/`, `skills/`, `assets/`, `index.*`, `paseo-plugin.json` or
-`OVERVIEW*.md`) must bump it, or CI fails:
+The version lives in `package.json`, and `package-lock.json` must carry the same one. A pull
+request that changes shipped files (`client/`, `server/`, `shared/`, `skills/`, `assets/`,
+`index.*`, `paseo-plugin.json` or `OVERVIEW*.md`) must bump it, or CI fails; CI also fails when
+the two files differ:
 
 ```bash
 npm version patch --no-git-tag-version   # or minor / major
