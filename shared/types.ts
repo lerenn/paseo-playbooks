@@ -117,6 +117,8 @@ export const WhenSchema = z.object({
   /** Template rendered against the run, e.g. "{{ playbook.inputs.env }}". */
   source: z.string(),
   values: z.array(z.string()),
+  /** The step's own loop count (`when: { loop: ">=2" }`): it holds when any of these tests does. Then `source` and `values` are unused. */
+  loop: z.array(z.object({ op: z.enum(["==", ">=", "<=", ">", "<"]), value: z.number().int().min(0) })).optional(),
 });
 export type When = z.infer<typeof WhenSchema>;
 
@@ -342,6 +344,8 @@ export const RunStepSchema = z.object({
   summary: z.string().nullable(),
   /** Feedback injected into the next attempt after a goto. */
   feedback: z.string().nullable(),
+  /** How many times a goto has sent the run back through this step (0 on its first pass). Runs from before it start at 0. */
+  loop: z.number().int().min(0).default(0),
   completedSeq: z.number().int().nullable(),
   /** When the step started waiting for a free `concurrency` slot of its block (orders the queue). */
   queuedAt: z.string().nullable().default(null),

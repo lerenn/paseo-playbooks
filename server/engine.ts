@@ -164,7 +164,7 @@ function createRun(input: NewRunInput, inputs: Record<string, VarValue>, kind: "
     steps: Object.fromEntries(
       input.playbook.steps.map((step) => [
         step.id,
-        { status: "pending", attempts: [], outputs: {}, summary: null, feedback: null, completedSeq: null, queuedAt: null },
+        { status: "pending", attempts: [], outputs: {}, summary: null, feedback: null, loop: 0, completedSeq: null, queuedAt: null },
       ]),
     ),
     loops: {},
@@ -244,10 +244,25 @@ export function refreshReady(run: Run, now: string): { ready: string[]; queued: 
 export function unmetWhen(run: Run, step: Step): string | null {
   const context = templateContext(run);
   for (const condition of step.when ?? []) {
+    if (condition.loop) {
+      const loop = run.steps[step.id]?.loop ?? 0;
+      if (!condition.loop.some((test) => loopTest(test, loop))) return `when: loop is ${loop}, not ${condition.loop.map((test) => `${test.op}${test.value}`).join(" or ")}`;
+      continue;
+    }
     const value = formatValue(resolveValue(condition.source, context));
     if (!condition.values.includes(value)) return `when: ${condition.input} is ${value}, not ${condition.values.join(" or ")}`;
   }
   return null;
+}
+
+function loopTest(test: { op: "==" | ">=" | "<=" | ">" | "<"; value: number }, loop: number): boolean {
+  switch (test.op) {
+    case "==": return loop === test.value;
+    case ">=": return loop >= test.value;
+    case "<=": return loop <= test.value;
+    case ">": return loop > test.value;
+    case "<": return loop < test.value;
+  }
 }
 
 /** Steps waiting for a free `concurrency` slot of their block. */
@@ -403,6 +418,7 @@ export function startAttempt(
     inputs: Object.fromEntries(Object.entries(values).map(([name, entry]) => [name, entry.value])),
     run: { id: run.id, status: run.status, failure: run.failure, jobs: jobsText(run) },
     attempt: n,
+    loop: state.loop,
   };
   const sections: string[] = [];
   const rendered = renderTemplate(step.prompt, context).trim();
@@ -848,6 +864,7 @@ function performGoto(run: Run, source: string, target: string, feedback: string,
     state.status = "pending";
     state.outputs = {};
     state.completedSeq = null;
+    state.loop += 1;
   }
   for (const gate of run.gates) {
     if (gate.status === "pending" && reset.has(gate.stepId)) {
@@ -1105,6 +1122,25 @@ export interface GateDecision {
   now: string;
 }
 
+/** Who took a decision, as the target step reads it: "the human", "the manager" or `the role "x"`. */
+function deciderLabel(decision: GateDecision): string {
+  return decision.via === "manager" ? "the manager" : decision.via === "role" ? `the role "${decision.by ?? "?"}"` : "the human";
+}
+
+/**
+ * The feedback a decision passes to the step its goto leads to: the comment, as a human gave it,
+ * or told apart when the manager or a role decided. Empty without a comment.
+ */
+function capitalized(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+function decisionFeedback(decision: GateDecision): string {
+  const comment = decision.comment?.trim() ?? "";
+  if (!comment) return "";
+  return decision.via === "manager" || decision.via === "role" ? `${deciderLabel(decision)} decided: ${comment}` : comment;
+}
+
 /** Records a gate decision. The first decision wins; a second one returns the first. */
 export function decideGate(run: Run, ref: string, decision: GateDecision): { gate: Gate; alreadyDecided: boolean; effects: Effects } {
   const gate = findGate(run, ref);
@@ -1150,7 +1186,7 @@ export function decideGate(run: Run, ref: string, decision: GateDecision): { gat
     // Each choice goes to its own target. With declared choices the target also learns which
     // one the human picked; the single default "answered" passes the answer alone.
     const comment = decision.comment?.trim() ?? "";
-    const feedback = ask?.choices?.length ? `The human answered "${choice.id}"${comment ? `: ${comment}` : "."}` : decision.comment ?? "";
+    const feedback = ask?.choices?.length ? `${capitalized(deciderLabel(decision))} answered "${choice.id}"${comment ? `: ${comment}` : "."}` : decisionFeedback(decision);
     gotoOrLimit(run, step, picked?.target ?? gate.gotoTarget!, picked?.maxLoops, feedback, decision.now, fx, ask?.decider);
     updateStatus(run);
     return { gate, alreadyDecided: false, effects: fx };
@@ -1159,7 +1195,11 @@ export function decideGate(run: Run, ref: string, decision: GateDecision): { gat
     if (decision.decision === "approved") {
       const key = `${gate.stepId}->${gate.gotoTarget}`;
       run.loopAllowance[key] = (run.loopAllowance[key] ?? 0) + 1;
-      performGoto(run, gate.stepId, gate.gotoTarget!, run.steps[gate.stepId]!.summary ?? decision.comment ?? "", decision.now, fx);
+      // The step's last feedback, then the decision's comment: the target addresses both.
+      const latest = run.steps[gate.stepId]!.summary ?? "";
+      const comment = decision.comment?.trim();
+      const said = comment ? `On the loop limit, ${deciderLabel(decision)} said: ${comment}` : "";
+      performGoto(run, gate.stepId, gate.gotoTarget!, [latest, said].filter(Boolean).join("\n\n"), decision.now, fx);
     } else {
       run.steps[gate.stepId]!.status = "failed";
       endFlow(run, step, "failed", `loop limit for "${gate.stepId}" → "${gate.gotoTarget}" rejected`, decision.now, fx);
@@ -1178,7 +1218,7 @@ export function decideGate(run: Run, ref: string, decision: GateDecision): { gat
       endFrom(run, gate.stepId, transition.outcome, decision.now, fx);
       break;
     case "goto":
-      gotoOrLimit(run, step, transition.target, transition.maxLoops, decision.comment ?? "", decision.now, fx, transition.decider);
+      gotoOrLimit(run, step, transition.target, transition.maxLoops, decisionFeedback(decision), decision.now, fx, transition.decider);
       break;
     default:
       state.status = "failed";

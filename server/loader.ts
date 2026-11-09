@@ -47,12 +47,28 @@ const RawOutputSchema = RawVarDefSchema.extend({ value: z.string().optional() })
 
 const RawScalarSchema = z.union([z.string(), z.number(), z.boolean()]);
 
+/** Agent settings as written in YAML: `tier` names an entry of the defaults' `tiers`, which the other fields override. */
+const RawAgentSchema = AgentSettingsSchema.extend({ tier: z.string().min(1).optional() });
+type RawAgent = z.infer<typeof RawAgentSchema>;
+
+/** A named bundle of agent settings in `defaults/main.yaml`. */
+const RawTierSchema = z
+  .object({
+    provider: z.string().optional(),
+    model: z.string().optional(),
+    mode: z.string().optional(),
+    thinking: z.string().optional(),
+  })
+  .strict();
+
 /** Who decides a gate besides a human in the panel; absent = a human. */
 const RawDeciderSchema = z
   .object({
     by: z.enum(["human", "manager", "role"]),
     /** With `by: role`: a readonly role of the folder's roles/. */
     role: z.string().optional(),
+    /** With `by: role`: agent settings of the deciding agent, over the role's. */
+    agent: RawAgentSchema.optional(),
   })
   .strict();
 type RawDecider = z.infer<typeof RawDeciderSchema>;
@@ -120,7 +136,7 @@ const RawRoleStepSchema = z
     silence: z.string().optional(),
     /** Archive the step's agents once it completes or its flow ends, and each attempt's once the next starts. Default true. */
     archive_agents: z.boolean().optional(),
-    agent: AgentSettingsSchema.optional(),
+    agent: RawAgentSchema.optional(),
   })
   .strict();
 
@@ -230,7 +246,7 @@ const RawPlaybookSchema = z.object({
     description: z.string().optional(),
     /** Left out of the panel's list: for playbooks only meant as sub-playbooks or after-tasks. */
     hidden: z.boolean().default(false),
-    agent: AgentSettingsSchema.optional(),
+    agent: RawAgentSchema.optional(),
     /** For the Playbook Manager of runs that use this playbook. */
     manager: z
       .object({
@@ -268,12 +284,14 @@ const RawPlaybookSchema = z.object({
 const RawRoleSchema = z.object({
     title: z.string().optional(),
     readonly: z.boolean().default(false),
-    agent: AgentSettingsSchema.optional(),
+    agent: RawAgentSchema.optional(),
   });
 
 const RawDefaultsSchema = z.object({
-    agent: AgentSettingsSchema.optional(),
-    manager: AgentSettingsSchema.optional(),
+    /** Named agent settings roles, steps and playbooks reference with `agent: { tier: <name> }`. */
+    tiers: z.record(z.string(), RawTierSchema).optional(),
+    agent: RawAgentSchema.optional(),
+    manager: RawAgentSchema.optional(),
     timeout: z.string().optional(),
     /** Defaults for agent steps, in the shape of a step's `role:` block. */
     role: z
@@ -328,6 +346,25 @@ function mergeAgent(...layers: Array<AgentSettings | undefined>): AgentSettings 
   return merged;
 }
 
+type Tiers = Record<string, AgentSettings>;
+
+/**
+ * Agent settings with their `tier` expanded: the tier's fields, then the layer's own over them.
+ * An unknown tier is an error (reported through `fail`) and leaves the layer's own fields.
+ */
+function resolveAgent(raw: RawAgent | undefined, tiers: Tiers, at: string, fail: (message: string) => void): AgentSettings | undefined {
+  if (raw === undefined) return undefined;
+  const { tier, ...own } = raw;
+  if (tier === undefined) return own;
+  const found = tiers[tier];
+  if (!found) {
+    const known = Object.keys(tiers);
+    fail(`${at}: unknown tier "${tier}"${known.length ? ` (defined in defaults/main.yaml: ${known.join(", ")})` : "; define it under `tiers:` in defaults/main.yaml"}`);
+    return own;
+  }
+  return mergeAgent(found, own);
+}
+
 function toVarDef(raw: z.infer<typeof RawVarDefSchema> | null): VarDef {
   const def: VarDef = { type: raw?.type ?? "string" };
   if (raw?.values) def.values = raw.values;
@@ -349,7 +386,7 @@ interface RoleLoad {
   errors: string[];
 }
 
-async function loadRole(root: string, relDir: string, id: string): Promise<RoleLoad> {
+async function loadRole(root: string, relDir: string, id: string, tiers: Tiers): Promise<RoleLoad> {
   const rel = `${relDir}/roles/${id}`;
   if (!ID.test(id)) return { role: null, errors: [`role "${id}": invalid name (lowercase letters, digits, - and _)`] };
   const raw = await readYaml(path.join(root, "roles", id, "role.yaml"), `${rel}/role.yaml`);
@@ -361,6 +398,7 @@ async function loadRole(root: string, relDir: string, id: string): Promise<RoleL
   if ("error" in raw || instructions === null) return { role: null, errors };
   const parsed = RawRoleSchema.safeParse(raw.value);
   if (!parsed.success) return { role: null, errors: [...errors, ...formatZodError(`${rel}/role.yaml`, parsed.error)] };
+  const agent = resolveAgent(parsed.data.agent, tiers, "agent", (message) => errors.push(`${rel}/role.yaml: ${message}`));
   if (errors.length > 0) return { role: null, errors };
   return {
     role: {
@@ -368,7 +406,7 @@ async function loadRole(root: string, relDir: string, id: string): Promise<RoleL
       title: parsed.data.title ?? id,
       readonly: parsed.data.readonly,
       instructions: instructions.trim(),
-      agent: parsed.data.agent ?? {},
+      agent: agent ?? {},
     },
     errors: [],
   };
@@ -401,13 +439,22 @@ async function loadDefaults(root: string, relDir: string): Promise<{ defaults: R
     const block = flowMap({ ...parsed.data.role, ...Object.fromEntries(flat.map((field) => [field, parsed.data[field]])) });
     errors.push(`${rel}: ${codeList(flat)} moved under \`role:\`: write \`role: ${block}\``);
   }
+  const tiers: Tiers = {};
+  for (const [name, tier] of Object.entries(parsed.data.tiers ?? {})) {
+    if (!ID.test(name)) errors.push(`${rel}: tiers.${name}: invalid name (lowercase letters, digits, - and _)`);
+    tiers[name] = tier;
+  }
+  const fail = (message: string) => errors.push(`${rel}: ${message}`);
+  const defaults: RawDefaults = { ...parsed.data, tiers };
+  if (parsed.data.agent) defaults.agent = resolveAgent(parsed.data.agent, tiers, "agent", fail);
+  if (parsed.data.manager) defaults.manager = resolveAgent(parsed.data.manager, tiers, "manager", fail);
   if (parsed.data.timeout && parseDuration(parsed.data.timeout) === null) {
     errors.push(`${rel}: timeout: expected a duration such as 30m or 2h`);
   }
   if (parsed.data.role?.silence && parseSilence(parsed.data.role.silence) === null) {
     errors.push(`${rel}: role.silence: expected a duration such as 30m, or off`);
   }
-  return { defaults: parsed.data, errors };
+  return { defaults, errors };
 }
 
 /**
@@ -500,7 +547,7 @@ export async function loadPlaybooks(workspaceDir: string): Promise<LoadResult> {
     const defaultsErrors = [...mainErrors, ...managerErrors];
     const roleCache = new Map<string, Promise<RoleLoad>>();
     const role = (id: string) => {
-      if (!roleCache.has(id)) roleCache.set(id, loadRole(root, relDir, id));
+      if (!roleCache.has(id)) roleCache.set(id, loadRole(root, relDir, id, defaults.tiers ?? {}));
       return roleCache.get(id)!;
     };
     const loads = new Map<string, Promise<Loaded>>();
@@ -615,6 +662,16 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     const conditions: When[] = [];
     for (const [name, given] of Object.entries(raw)) {
       const def = inputs[name];
+      if (name === "loop" && !def) {
+        const tests: NonNullable<When["loop"]> = [];
+        for (const value of Array.isArray(given) ? given : [given]) {
+          const match = /^\s*(==|=|>=|<=|>|<)?\s*(\d+)\s*$/.exec(String(value));
+          if (match) tests.push({ op: match[1] === undefined || match[1] === "=" ? "==" : (match[1] as "==" | ">=" | "<=" | ">" | "<"), value: Number(match[2]) });
+          else err(`${where}: when.loop: ${JSON.stringify(value)}: expected a loop count such as 1, ">=2" or "<3"`);
+        }
+        if (tests.length > 0) conditions.push({ input: "loop", source: "", values: [], loop: tests });
+        continue;
+      }
       if (!def) {
         err(`${where}: when.${name}: not an input of this playbook${Object.keys(inputs).length ? ` (${Object.keys(inputs).join(", ")})` : ""}`);
         continue;
@@ -655,6 +712,9 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
   for (const raw of pb.steps) if (raw.trigger !== undefined) err(`step "${raw.id}": \`trigger\` only applies to an after-task`);
   for (const raw of pb.after ?? []) if (raw.needs !== undefined) err(`after "${raw.id}": \`needs\` does not apply to an after-task (each one starts when the run ends)`);
 
+  const tiers = defaults.tiers ?? {};
+  const playbookAgent = resolveAgent(pb.agent, tiers, "agent", err);
+
   // Roles used by agent steps.
   const roles: Record<string, Role> = {};
   const deciderRoles = rawAll.flatMap(({ raw: step }) => [kindBlocks(step).gate?.decider, ...Object.values(step.on ?? {}).map((transition) => (typeof transition === "object" && "decider" in transition ? transition.decider : undefined))].flatMap((decider) => (decider?.by === "role" && decider.role ? [decider.role] : [])));
@@ -669,6 +729,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     if (raw === undefined) return undefined;
     if (raw.by !== "role") {
       if (raw.role !== undefined) err(`${at}.role: only applies with \`by: role\``);
+      if (raw.agent !== undefined) err(`${at}.agent: only applies with \`by: role\` (only a role decider runs an agent)`);
       return { by: raw.by };
     }
     if (raw.role === undefined) {
@@ -677,7 +738,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     }
     const decider = roles[raw.role];
     if (decider && !decider.readonly) err(`${at}.role: role "${raw.role}" decides gates, so it must be \`readonly: true\``);
-    return { by: "role", role: raw.role, agent: mergeAgent(defaults.agent, pb.agent, decider?.agent) };
+    return { by: "role", role: raw.role, agent: mergeAgent(defaults.agent, playbookAgent, decider?.agent, resolveAgent(raw.agent, tiers, `${at}.agent`, err)) };
   };
 
   // Steps, first pass. A `playbook:` step is a placeholder until expansion below.
@@ -705,6 +766,9 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     refuseFlatForms(where, rawStep, err);
     if (typeof rawStep.handoff === "string") err(`${where}: handoff: write \`handoff: { name: ${rawStep.handoff} }\``);
     if (task && rawStep.when !== undefined) err(`${where}: \`when\` does not apply to an after-task`);
+    if (rawStep.when && "loop" in rawStep.when && !inputs.loop && kindBlocks(rawStep).playbook !== undefined) {
+      err(`${where}: when.loop does not apply to a playbook step (it has no loop count); put it on a step of the sub-playbook`);
+    }
     const when = task ? undefined : parseWhen(where, rawStep.when);
     const conditional = when ? { when } : {};
     if (rawStep.settle !== undefined && (isGate || isBlock || isHandoff || task)) {
@@ -975,7 +1039,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
       outputs,
       outcomes,
       retries: rawStep.retries,
-      agent: isGate || isScript ? {} : mergeAgent(defaults.agent, pb.agent, stepRole?.agent, roleStep?.agent),
+      agent: isGate || isScript ? {} : mergeAgent(defaults.agent, playbookAgent, stepRole?.agent, resolveAgent(roleStep?.agent, tiers, `${where}: role.agent`, err)),
       on,
       choices,
       ...conditional,
@@ -1235,7 +1299,7 @@ function refuseFlatForms(where: string, raw: RawStep, err: (message: string) => 
 /** What an ask choice's `outputs` may read besides `inputs.<name>` and `report.outputs.<name>`. */
 const ASK_OUTPUT_REFS = /^(gate\.comment|gate\.choice|report\.summary)$/;
 
-const PROMPT_REFS = /^(inputs\.[A-Za-z_][\w-]*|run\.id|run\.status|run\.failure|run\.jobs|attempt)$/;
+const PROMPT_REFS = /^(inputs\.[A-Za-z_][\w-]*|run\.id|run\.status|run\.failure|run\.jobs|attempt|loop)$/;
 
 /** The run field to suggest when an after-task input has no source. */
 function runExample(name: string): string {
@@ -1374,7 +1438,7 @@ function wireStep(
     }
   }
   for (const ref of templateRefs(step.prompt)) {
-    if (!PROMPT_REFS.test(ref)) err(`${where}: prompt uses "{{ ${ref} }}"; prompts may only use inputs.<name>, run.id, run.jobs, attempt${after ? ", run.status and run.failure" : ""}${promptHint(ref)}`);
+    if (!PROMPT_REFS.test(ref)) err(`${where}: prompt uses "{{ ${ref} }}"; prompts may only use inputs.<name>, run.id, run.jobs, attempt, loop${after ? ", run.status and run.failure" : ""}${promptHint(ref)}`);
     else if (!after && (ref === "run.status" || ref === "run.failure")) {
       err(`${where}: prompt uses "{{ ${ref} }}", which only after-tasks can use (the run is still running in its own steps)`);
     }

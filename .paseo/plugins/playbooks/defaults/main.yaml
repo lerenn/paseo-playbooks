@@ -1,8 +1,10 @@
 # Local test setup: cheap step agents, a stronger manager.
+tiers:
+  cheap: { provider: claude, model: claude-haiku-5-5 }
+  worker: { provider: claude, model: claude-sonnet-5-5 }
 agent:
-  provider: claude
-  model: claude-haiku-5-5
+  tier: cheap
   mode: default                # read-only roles only read files: no permission prompts
 manager:
-  model: claude-sonnet-5-5
+  tier: worker
   mode: default
