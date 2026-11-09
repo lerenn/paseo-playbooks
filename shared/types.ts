@@ -24,6 +24,19 @@ export const AgentSettingsSchema = z.object({
 });
 export type AgentSettings = z.infer<typeof AgentSettingsSchema>;
 
+/**
+ * When the plugin sends `/compact` to a run's manager, once it is idle with an empty inbox:
+ * never; after it handled a wake-up (`on_step`: a step ended, a gate was decided, ...); after a
+ * gate was decided; or after either, when its context holds more than `above_tokens`.
+ */
+export const ManagerCompactSchema = z.union([
+  z.enum(["never", "on_step", "on_gate_decided"]),
+  z.object({ above_tokens: z.number().int().positive() }).strict(),
+]);
+export type ManagerCompact = z.infer<typeof ManagerCompactSchema>;
+/** Used when neither the playbook nor `defaults/main.yaml` sets `manager.compact`. */
+export const DEFAULT_MANAGER_COMPACT: ManagerCompact = { above_tokens: 150_000 };
+
 /** A button on a human gate. Its id is the outcome; where it leads comes from the step's `on`. */
 export const GateChoiceSchema = z.object({
   id: z.string(),
@@ -233,6 +246,8 @@ export const PlaybookSchema = z.object({
   steps: z.array(StepSchema),
   roles: z.record(z.string(), RoleSchema),
   manager: AgentSettingsSchema,
+  /** When the manager is compacted (`manager.compact`). Unset on runs from before it. */
+  managerCompact: ManagerCompactSchema.default(DEFAULT_MANAGER_COMPACT),
   /** Whether the plugin archives the workspace it created for a run once the run ends. */
   workspace: z
     .object({ archive: z.enum(["never", "on_end"]), keepFailed: z.boolean() })

@@ -196,6 +196,10 @@ export class Runtime {
   private paseo: PaseoApi | null = null;
   private reconciled: Promise<void> | null = null;
   private readonly busyManagers = new Set<string>();
+  /** Managers that handled a wake-up since they were last checked for compaction. */
+  private readonly wokenManagers = new Set<string>();
+  /** Managers of a run where a gate was decided since they were last checked for compaction. */
+  private readonly gateManagers = new Set<string>();
   /**
    * Managers of a station's previous train: archived once their turn ends, and never woken
    * again (sending to an archived agent brings it back).
@@ -465,6 +469,7 @@ export class Runtime {
     try {
       this.busyManagers.add(run.managerAgentId);
       await this.api().agents.ref(run.managerAgentId).send(text, { activeTurnBehavior: "steer" });
+      this.wokenManagers.add(run.managerAgentId);
     } catch (error) {
       this.busyManagers.delete(run.managerAgentId);
       console.error(`[playbooks] could not wake manager of ${runId}:`, errorText(error));
@@ -491,6 +496,39 @@ export class Runtime {
     this.busyManagers.delete(agentId);
     if (this.retiredManagers.has(agentId)) return this.archiveStepAgent(agentId);
     for (const run of this.runsOfManager(agentId)) await this.deliver(run.id);
+    await this.compactManager(agentId);
+  }
+
+  /**
+   * Sends `/compact` to a manager that is idle with nothing queued, after it handled a wake-up
+   * or a gate decision, when the run's `manager.compact` asks for it. Sent like any message
+   * (not as an agent), which is what makes Claude Code run it as a command. Never mid-turn, and
+   * never while a wake-up waits: the next wake-up would find a manager compacting.
+   */
+  private async compactManager(agentId: string): Promise<void> {
+    const woke = this.wokenManagers.has(agentId);
+    const gate = this.gateManagers.has(agentId);
+    if (!woke && !gate) return;
+    if (this.busyManagers.has(agentId) || this.retiredManagers.has(agentId)) return;
+    const runs = this.runsOfManager(agentId).filter((run) => isActive(run));
+    if (runs.length === 0 || runs.some((run) => run.inbox.length > 0)) return;
+    this.wokenManagers.delete(agentId);
+    this.gateManagers.delete(agentId);
+    const policy = runs[0]!.playbook.managerCompact;
+    if (policy === "never" || (policy === "on_gate_decided" && !gate)) return;
+    try {
+      if (typeof policy === "object") {
+        const current = await this.api().agents.ref(agentId).refresh();
+        // A zero (or missing) reading is the one right after a compaction: not a size.
+        const used = current?.agent.lastUsage?.contextWindowUsedTokens ?? 0;
+        if (used <= policy.above_tokens) return;
+      }
+      this.busyManagers.add(agentId);
+      await this.api().agents.ref(agentId).send("/compact");
+    } catch (error) {
+      this.busyManagers.delete(agentId);
+      console.error(`[playbooks] could not compact manager ${agentId}:`, errorText(error));
+    }
   }
 
   private async applyEffects(runId: string, effects: engine.Effects): Promise<void> {
@@ -1468,6 +1506,10 @@ export class Runtime {
   /** A gate decision from the panel (wakes the manager) or from chat via resume (does not). */
   async decideGate(runId: string, gateId: string, decision: engine.GateDecision): Promise<{ alreadyDecided: boolean; gate: Run["gates"][number] }> {
     const result = await this.store.mutate(runId, (current) => engine.decideGate(current, gateId, decision));
+    if (!result.alreadyDecided) {
+      const manager = this.store.get(runId)?.managerAgentId;
+      if (manager) this.gateManagers.add(manager);
+    }
     // An ask choice with an outcome may complete a train step with `settle`.
     if (!result.alreadyDecided) {
       const problems = await this.applySettle(runId, result.gate.stepId);
