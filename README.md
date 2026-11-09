@@ -104,6 +104,11 @@ submission) with that tag.
 - After a daemon restart, recovery starts at the plugin's first event (the app connecting, an
   agent opening a session), not when the daemon starts. A step's timeout keeps counting while
   the daemon is down.
+- After a plugin update, idle agents whose session holds the old plugin's tools are reloaded (history
+  kept) so they stop failing with "Tool not found"; an agent mid-turn is reloaded when its turn ends,
+  never one waiting on a permission or question. Turn off with `reload_stale_sessions: false` in
+  `defaults/main.yaml`. Agents from before v0.51.0 are reloaded only if they belong to a run
+  (see `docs/adrs/2026-11-09-reload-stale-sessions.md`).
 - `isolation: worktree` is prompt-directed: Paseo pins an agent's directory to its workspace, so agents
   start in the workspace and are told (and, by the guard, checked) to work only in the run's worktree.
   An agent that ignores the prompt fails its step; it is not prevented.

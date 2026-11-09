@@ -32,6 +32,7 @@ import { OversightProducer, registerOversightTypes } from "./oversight-events";
 import { gateListing, listAttention, type GateFilter } from "./overseer";
 import { managerLostNotice, gateDeciderPrompt, gateDeciderSystemPrompt, gateDecisionReminder, managerAfterRestart, managerKickoff, managerTakeover, reportReminder, resumeAfterRestart, silenceReminder, singletonKickoff, stepSystemPrompt, withPreamble } from "./prompts";
 import { askHumanText, choicesOfGate, waitsForHuman } from "../shared/gates";
+import { StaleSessions } from "./stale-sessions";
 import type { RunStore } from "./store";
 import { holdsBlock, planAdmissions, slotHolders } from "../shared/slots";
 
@@ -243,6 +244,8 @@ export class Runtime {
   /** The plugin's own work (scripts, hand-offs, departures) runs one pass at a time; a call during a pass asks for another. */
   private ticking = false;
   private tickAgain = false;
+  /** Sessions opened with this load of the plugin's tools, and the reload of older ones (stale-sessions.ts). */
+  readonly sessions: StaleSessions;
   /** Role deciders reminded once to decide, by agent id. */
   private readonly remindedDeciders = new Set<string>();
   /** Role deciders of closed gates already stopped, by agent id. */
@@ -260,6 +263,7 @@ export class Runtime {
   ) {
     const dir = options.dataDir ?? path.dirname(store.dir);
     this.worktreesDir = path.join(dir, "worktrees");
+    this.sessions = new StaleSessions(path.join(dir, "sessions.json"));
     this.bus = new EventBus({ events: path.join(dir, "events.json"), subscriptions: path.join(dir, "subscriptions.json") }, options.debounceMs === undefined ? {} : { debounceMs: options.debounceMs });
     registerOversightTypes(this.bus);
     this.bus.registerNotifier("agent", this.agentNotifier());
@@ -283,7 +287,10 @@ export class Runtime {
   /** Every hook, tool and RPC context hands us the daemon API; the first one triggers reconcile. */
   attach(paseo: PaseoApi): Promise<void> {
     this.paseo ??= paseo;
-    this.reconciled ??= this.reconcile().catch((error) => console.error("[playbooks] reconcile failed:", error));
+    this.reconciled ??= this.reconcile()
+      .catch((error) => console.error("[playbooks] reconcile failed:", error))
+      .then(() => this.reloadStaleSessions())
+      .catch((error) => console.error("[playbooks] stale session reload failed:", errorText(error)));
     if (!this.eventsTimer) {
       this.eventsTimer = setInterval(() => void this.watchEvents().catch((error) => console.error("[playbooks] event watch failed:", errorText(error))), this.options.pollMs ?? 2000);
       (this.eventsTimer as unknown as { unref?: () => void }).unref?.();
@@ -304,7 +311,7 @@ export class Runtime {
     this.timers.clear();
     this.watches.clear();
     for (const id of [...this.scripts.keys()]) this.stopScript(id);
-    return Promise.all([this.store.close(), this.bus.close()]).then(() => undefined);
+    return Promise.all([this.store.close(), this.bus.close(), this.sessions.flush()]).then(() => undefined);
   }
 
   /**
@@ -2200,8 +2207,27 @@ export class Runtime {
     return true;
   }
 
+  /** An agent the plugin set up: a manager, or a step or decider agent of a run. */
+  private isRunAgent(agentId: string): boolean {
+    return this.runsOfManager(agentId).length > 0 || this.stepRunOf(agentId) !== null || this.deciderOf(agentId) !== null;
+  }
+
+  /**
+   * After a plugin reload: reloads the idle agents whose session holds the old plugin's tools
+   * (those still running are reloaded when their turn ends). Off with `reload_stale_sessions: false`.
+   */
+  private async reloadStaleSessions(): Promise<void> {
+    const listed = await this.api().agents.list({});
+    for (const { agent } of listed.entries) {
+      if (agent.archivedAt || agent.status !== "idle") continue;
+      await this.sessions.reloadIfStale(this.api(), agent.id, { known: agent.labels?.[STEP_LABEL] !== undefined || agent.labels?.[GATE_LABEL] !== undefined || this.isRunAgent(agent.id) });
+    }
+  }
+
   /** Lifecycle hook: any agent's turn ended. */
   async onTurnEnded(agentId: string, outcome: "completed" | "failed" | "canceled"): Promise<void> {
+    // First, while the agent is idle: what follows may send it a new turn.
+    await this.sessions.reloadIfStale(this.api(), agentId, { known: this.isRunAgent(agentId) });
     const decider = this.deciderOf(agentId);
     if (decider) return this.onDeciderTurnEnded(decider.run.id, decider.gate.id, agentId, outcome);
     const step = this.stepRunOf(agentId);
