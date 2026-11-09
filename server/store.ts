@@ -20,7 +20,7 @@ export class RunStore {
   private readonly writing = new Set<Promise<void>>();
   private closed = false;
 
-  constructor(private readonly dir: string) {}
+  constructor(readonly dir: string) {}
 
   async init(): Promise<void> {
     await mkdir(this.dir, { recursive: true });

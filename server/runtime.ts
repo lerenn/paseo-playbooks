@@ -25,6 +25,9 @@ import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "./defaults";
 import * as engine from "./engine";
 import { checkoutSnapshot, currentRef, defaultBranch, fastForward, freshRef, snapshotDiff } from "./git";
 import { loadPlaybooks } from "./loader";
+import { BusError, EventBus, type BusEvent, type Notifier, type Subscription } from "./bus";
+import { OversightProducer, registerOversightTypes } from "./oversight-events";
+import { gateListing, listAttention, type GateFilter } from "./overseer";
 import { managerLostNotice, gateDeciderPrompt, gateDeciderSystemPrompt, gateDecisionReminder, managerAfterRestart, managerKickoff, managerTakeover, reportReminder, resumeAfterRestart, silenceReminder, singletonKickoff, stepSystemPrompt } from "./prompts";
 import { askHumanText, choicesOfGate, waitsForHuman } from "../shared/gates";
 import type { RunStore } from "./store";
@@ -220,7 +223,34 @@ export class Runtime {
   /** Role deciders of closed gates already stopped, by agent id. */
   private readonly stoppedDeciders = new Set<string>();
 
-  constructor(private readonly store: RunStore) {}
+  /** The event bus (bus.ts) and its first producer, the runs (oversight-events.ts). */
+  readonly bus: EventBus;
+  private readonly producer: OversightProducer;
+  private eventsScanning = false;
+  private eventsTimer: ReturnType<typeof setInterval> | null = null;
+
+  constructor(
+    private readonly store: RunStore,
+    private readonly options: { dataDir?: string; debounceMs?: number; pollMs?: number } = {},
+  ) {
+    const dir = options.dataDir ?? path.dirname(store.dir);
+    this.bus = new EventBus({ events: path.join(dir, "events.json"), subscriptions: path.join(dir, "subscriptions.json") }, options.debounceMs === undefined ? {} : { debounceMs: options.debounceMs });
+    registerOversightTypes(this.bus);
+    this.bus.registerNotifier("agent", this.agentNotifier());
+    this.producer = new OversightProducer(this.bus);
+  }
+
+  /** Sends a subscription's events as a plain-text message to its agent; an archived or missing agent is "gone". */
+  private agentNotifier(): Notifier {
+    return {
+      deliver: async (subscription: Subscription, _events: BusEvent[], text: string) => {
+        const agent = await this.api().agents.ref(subscription.sink.target).refresh().catch(() => null);
+        if (!agent || agent.agent.archivedAt) return "gone";
+        await this.api().agents.ref(subscription.sink.target).send(text, { activeTurnBehavior: "steer" });
+        return "delivered";
+      },
+    };
+  }
 
   // ---------------------------------------------------------------- lifecycle
 
@@ -228,6 +258,10 @@ export class Runtime {
   attach(paseo: PaseoApi): Promise<void> {
     this.paseo ??= paseo;
     this.reconciled ??= this.reconcile().catch((error) => console.error("[playbooks] reconcile failed:", error));
+    if (!this.eventsTimer) {
+      this.eventsTimer = setInterval(() => void this.watchEvents().catch((error) => console.error("[playbooks] event watch failed:", errorText(error))), this.options.pollMs ?? 2000);
+      (this.eventsTimer as unknown as { unref?: () => void }).unref?.();
+    }
     return this.reconciled;
   }
 
@@ -238,11 +272,13 @@ export class Runtime {
 
   /** Stops timers and scripts; resolves once the run files written in flight are on disk, after which nothing is written. */
   dispose(): Promise<void> {
+    if (this.eventsTimer) clearInterval(this.eventsTimer);
+    this.eventsTimer = null;
     for (const timer of [...this.timers.values(), ...this.watches.values()]) clearTimeout(timer);
     this.timers.clear();
     this.watches.clear();
     for (const id of [...this.scripts.keys()]) this.stopScript(id);
-    return this.store.close();
+    return Promise.all([this.store.close(), this.bus.close()]).then(() => undefined);
   }
 
   /**
@@ -342,6 +378,48 @@ export class Runtime {
 
   activeRunOfManager(agentId: string): Run | undefined {
     return this.runsOfManager(agentId).find((run) => isActive(run));
+  }
+
+  /** Open gates and asks across the runs (see overseer.ts). */
+  attention(filter: GateFilter = {}) {
+    return listAttention(this.store.list(), Date.now(), filter);
+  }
+
+  // ---------------------------------------------------------------- events
+
+  async subscribeEvents(agentId: string, types: string[], filter: Record<string, string | number | boolean>): Promise<Subscription> {
+    try {
+      if (typeof filter.runId === "string" && !this.store.get(filter.runId)) throw new UserError(`unknown run "${filter.runId}"`);
+      return await this.bus.subscribe(agentId, { kind: "agent", target: agentId }, types, filter);
+    } catch (error) {
+      throw error instanceof BusError ? new UserError(error.message) : error;
+    }
+  }
+
+  async unsubscribeEvents(agentId: string, id: string): Promise<void> {
+    await this.bus.unsubscribe(agentId, id).catch((error: unknown) => {
+      throw error instanceof BusError ? new UserError(error.message) : error;
+    });
+  }
+
+  /** One pass: producers emit what changed, then the bus delivers what has waited out its debounce. */
+  async watchEvents(now = Date.now()): Promise<void> {
+    if (this.eventsScanning) return;
+    this.eventsScanning = true;
+    try {
+      await this.producer.scan(this.store.list(), now);
+      await this.bus.flush(now);
+    } finally {
+      this.eventsScanning = false;
+    }
+  }
+
+  /** A run a tool only reads: any run, whoever manages it. Writes go through ownedRun. */
+  readableRun(callerId: string, runId: string | undefined): Run {
+    if (!runId) return this.ownedRun(callerId, runId);
+    const run = this.store.get(runId);
+    if (!run) throw new UserError(`unknown run "${runId}"`);
+    return run;
   }
 
   private stepRunOf(agentId: string): { run: Run; stepId: string } | null {
@@ -1797,6 +1875,7 @@ export class Runtime {
     const at = Date.now();
     this.recentArchives = [...this.recentArchives.filter((entry) => at - entry.at < 5000), { id: agentId, at }];
     this.pendingHandoffs.delete(agentId);
+    await this.bus.dropOwner(agentId);
     const decider = this.deciderOf(agentId);
     if (decider) {
       this.stoppedDeciders.add(agentId);

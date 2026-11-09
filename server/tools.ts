@@ -6,6 +6,7 @@ import { repairReport } from "./malformed";
 import { isActive, isAgentlessAttempt, isPaused, isPipeline, isTerminal, restartBlocker, runningAfterTasks, VarValueSchema } from "../shared/types";
 import * as engine from "./engine";
 import { hasPlaybooks, loadPlaybooks } from "./loader";
+import { attentionText } from "./overseer";
 import { MANAGER_PROTOCOL, managerInstructionsText } from "./prompts";
 import { UserError, type Runtime } from "./runtime";
 
@@ -411,23 +412,6 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
           );
         }),
     }),
-    defineAgentTool({
-      name: "get_run",
-      description:
-        'Show a run\'s state. Without runId, your active (or latest) run. view "compact" (default): per step its status, outcome, attempts, turn end and the start of its summary, plus gates, loops and after-tasks. view "full": every step\'s definition, full report, outputs and summary, the run inputs and the gates in full (e.g. for a retro brief). steps limits either view to those steps.',
-      input: z.object({
-        runId: IdArg.optional(),
-        view: z.enum(["compact", "full"]).default("compact").describe('"compact" (default) or "full" (reports, outputs, inputs, gate details)'),
-        steps: z.array(z.string()).optional().describe("Only these step ids (default: all)"),
-      }),
-      execute: ({ runId, view, steps }, { agent }) =>
-        guard(async () => {
-          const run = runtime.ownedRun(agent.id, runId);
-          await runtime.clearInbox(run.id);
-          const summary = view === "full" ? runFull(run, steps) : runCompact(run, steps);
-          return ok(JSON.stringify(summary, null, 2), summary);
-        }),
-    }),
   ];
 }
 
@@ -489,6 +473,88 @@ export function runTools(runtime: Runtime): AgentToolDefinition[] {
             .filter((run) => (archived || !run.archivedAt) && (all || archived || isActive(run)))
             .map(runListing);
           return ok(runs.length === 0 ? (all || archived ? "No runs." : "No active run.") : JSON.stringify(runs, null, 2), { runs });
+        }),
+    }),
+    defineAgentTool({
+      name: "get_run",
+      description:
+        'Show a run\'s state. Read-only on a run you do not manage (any run id works); the tools that change it refuse it. Without runId, your active (or latest) run. view "compact" (default): per step its status, outcome, attempts, turn end and the start of its summary, plus gates, loops and after-tasks. view "full": every step\'s definition, full report, outputs and summary, the run inputs and the gates in full (e.g. for a retro brief). steps limits either view to those steps.',
+      input: z.object({
+        runId: IdArg.optional(),
+        view: z.enum(["compact", "full"]).default("compact").describe('"compact" (default) or "full" (reports, outputs, inputs, gate details)'),
+        steps: z.array(z.string()).optional().describe("Only these step ids (default: all)"),
+      }),
+      execute: ({ runId, view, steps }, { agent }) =>
+        guard(async () => {
+          const run = runtime.readableRun(agent.id, runId);
+          if (run.managerAgentId === agent.id) await runtime.clearInbox(run.id);
+          const summary = view === "full" ? runFull(run, steps) : runCompact(run, steps);
+          return ok(JSON.stringify(summary, null, 2), summary);
+        }),
+    }),
+    defineAgentTool({
+      name: "list_gates",
+      description:
+        "List what waits for a decision across all playbook runs, oldest first: every open gate and ask (run, playbook, workspace, step, kind, question, choices, decider, who holds it now, opened-at and age in minutes). With includeFailed, also the runs that failed or lost their manager, with the reason and restartableFrom. Read-only; compact and stable, so a scheduled agent can call it and compare. Decide a gate with resume (its run's manager or a human in the panel), not here.",
+      input: z.object({
+        runId: IdArg.optional().describe("Only this run"),
+        olderThanMinutes: z.number().min(0).optional().describe("Only gates open at least this long"),
+        includeFailed: z.boolean().default(false).describe("Also list failed runs (and runs that lost their manager)"),
+        includeFinished: z.boolean().default(false).describe("Also gates of runs that have ended (an after-task's gate)"),
+      }),
+      execute: (filter) =>
+        guard(async () => {
+          const result = runtime.attention(filter);
+          return ok(attentionText(result), result);
+        }),
+    }),
+    defineAgentTool({
+      name: "subscribe_events",
+      description:
+        'Get a plain-text message from the plugin when events happen on the daemon. types: exact names or globs ("gate.*", "run.failed", "*"). Types today: gate.opened (a gate step, ask or loop-limit gate opened: question, choices, decider and who holds it), gate.stale (still open after filter.olderThanMinutes, default 30; once per gate), gate.decided (who, via panel/chat/manager/role, and the comment; not sent to the manager or role agent that decided it), run.failed (reason and restartableFrom), run.manager_lost. filter: payload fields that must equal a value (e.g. { playbook: "release", deciderBy: "role" }, { runId }), plus olderThanMinutes for gate.stale. Bursts are merged into one message. The subscriber is you; it survives daemon restarts and ends when you are archived. Returns the subscription id. list_events replays what you missed.',
+      input: z.object({
+        types: z.array(z.string()).min(1).describe('Event types or globs, e.g. ["gate.*", "run.failed"]'),
+        filter: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).default({}).describe("Payload fields to match by equality; olderThanMinutes picks the delay of a stale event"),
+      }),
+      execute: ({ types, filter }, { agent }) =>
+        guard(async () => {
+          const sub = await runtime.subscribeEvents(agent.id, types, filter);
+          return ok(`Subscribed (${sub.id}) to ${sub.types.join(", ")}. You get a "[playbooks]" message when one happens; list_gates shows what is open now, list_events what happened.`, { subscription: sub });
+        }),
+    }),
+    defineAgentTool({
+      name: "unsubscribe_events",
+      description: "Stop a subscription of yours (see list_subscriptions).",
+      input: z.object({ id: z.string().describe("Subscription id from subscribe_events") }),
+      execute: ({ id }, { agent }) =>
+        guard(async () => {
+          await runtime.unsubscribeEvents(agent.id, id);
+          return ok(`Subscription ${id} removed.`);
+        }),
+    }),
+    defineAgentTool({
+      name: "list_subscriptions",
+      description: "List your event subscriptions (subscribe_events): id, types, filter and sink.",
+      input: z.object({}),
+      execute: (_input, { agent }) =>
+        guard(async () => {
+          const subscriptions = await runtime.bus.list(agent.id);
+          return ok(subscriptions.length === 0 ? "No subscription." : JSON.stringify(subscriptions, null, 2), { subscriptions });
+        }),
+    }),
+    defineAgentTool({
+      name: "list_events",
+      description:
+        "The recent events log (the last 500, kept across restarts), oldest first, each with a monotonic seq, type, time, run and payload. Pass since: the seq of the last event you saw to catch up on what you missed (after a restart, or when you were down); lastSeq is the newest. types takes exact names or globs. Without since: the last `limit` events. If oldestSeq is above your since + 1, older events were dropped.",
+      input: z.object({
+        since: z.number().int().min(0).optional().describe("Only events with a seq above this"),
+        types: z.array(z.string()).optional().describe('Exact names or globs, e.g. ["gate.*"]'),
+        limit: z.number().int().min(1).max(500).optional().describe("At most this many (default 50)"),
+      }),
+      execute: (query) =>
+        guard(async () => {
+          const result = await runtime.bus.recent(query);
+          return ok(result.events.length === 0 ? `No event${query.since === undefined ? "" : ` after ${query.since}`}. lastSeq: ${result.lastSeq}.` : JSON.stringify(result, null, 2), result);
         }),
     }),
     defineAgentTool({
