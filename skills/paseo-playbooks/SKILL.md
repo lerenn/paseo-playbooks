@@ -60,6 +60,7 @@ role:                  # defaults for agent steps, in the shape of a step's `rol
 workspace:             # what happens to the workspace a run created with newWorkspace
   archive: on_end      # never (default) | on_end: archive it when the run completes or is canceled
   keep_failed: true    # keep it when the run failed or lost its manager (default true)
+isolation: none        # none (default) | worktree | { mode: worktree, submodules: none | all | [paths], base: <branch> }: see "Isolated runs"
 ```
 
 Agent settings (`provider`, `model`, `mode`, `thinking`) merge field by field. Precedence:
@@ -117,6 +118,7 @@ agent: { model: claude-opus-5-5 }          # optional playbook-wide settings
 concurrency: 1                             # optional: max active runs (or held blocks) in the project
 manager: { prompt: Check the PR exists before accepting implement., compact: on_step }  # optional: prompt is added to the manager's instructions; compact overrides the default
 workspace: { archive: on_end }             # optional: overrides defaults/main.yaml's workspace block
+isolation: { mode: worktree, submodules: none }  # optional: each run works in its own git worktree (see "Isolated runs"); the string form `isolation: worktree` also works
 hidden: false                              # optional: true moves it to the panel's collapsed "Hidden playbooks" section (for one meant as a sub-playbook or after-task; it can still be started from there or by start_playbook)
 
 inputs:                                    # the Start form; the manager fills them from chat
@@ -217,7 +219,7 @@ several lines:
 | Block field | Meaning |
 | --- | --- |
 | `role.name` | Required: the role (a directory of `roles/`). |
-| `role.prompt` | Template; may use only `{{ inputs.<name> }}`, `{{ run.id }}`, `{{ run.jobs }}` (a singleton train's open jobs, as YAML), `{{ attempt }}` (retries), `{{ loop }}` (times a `goto` sent the run back through this step: 0 on the first pass). |
+| `role.prompt` | Template; may use only `{{ inputs.<name> }}`, `{{ run.id }}`, `{{ worktree }}` (the run's worktree, else the workspace), `{{ run.jobs }}` (a singleton train's open jobs, as YAML), `{{ attempt }}` (retries), `{{ loop }}` (times a `goto` sent the run back through this step: 0 on the first pass). |
 | `role.silence` | After this long without agent activity (default `30m`, or `off`), the plugin asks the agent once to report or say what it is waiting for, and tells the manager. |
 | `role.archive_agents` | When the step completes, or its run or after-task ends, its agents are archived, and an attempt's agent is archived when the next attempt starts (default `true`). `false` keeps them, e.g. to debug. |
 | `role.agent` | Step-level agent settings, or `{ tier: <name> }` (a tier of `defaults/main.yaml`) with fields that override it. |
@@ -655,9 +657,10 @@ error.
 - no cycles in `needs`; no unknown steps, roles, inputs or outputs
 - two steps that can run at the same time (neither needs the other) must not both be able
   to edit files: make one role `readonly: true` or order them with `needs`
-- prompts use only `inputs`, `run.id`, `run.jobs`, `attempt` and `loop` (after-tasks also `run.status` and
+- prompts use only `inputs`, `run.id`, `run.jobs`, `worktree`, `attempt` and `loop` (after-tasks also `run.status` and
   `run.failure`); inputs only reference ancestors (after-tasks also main steps and `run.*`)
 - after-tasks have no `needs`, and only after-tasks have `trigger`
+- `isolation` is `none`, `worktree`, or a block `{ mode, submodules, base }` (mistyped keys fail); a singleton cannot ask for `worktree`
 - a `script` names an existing, executable file of `scripts/`; `poll` goes in the `script:` block
 - a `handoff` names a singleton playbook of the same folder, and does not lead back to its
   own playbook; a singleton is never a sub-playbook or an after-task, its steps never wire a
@@ -667,6 +670,46 @@ error.
   type; a skipped step's outputs are read only by steps with the same `when`
 - no `next` key: chaining was removed; to run a playbook after another, write a parent
   playbook that includes both as sub-playbook steps
+
+## Isolated runs (`isolation: worktree`)
+
+By default every run works in its workspace's checkout, so a workspace holds one active run. With
+`isolation: worktree` (per playbook, or repository-wide in `defaults/main.yaml`; the playbook's fields win)
+the plugin gives each run a private git worktree, and several isolated runs may share one workspace.
+
+```yaml
+isolation: worktree                          # short form
+isolation: { mode: worktree, submodules: [ops/api, ops/web], base: main }   # block form
+```
+
+- **Where**: `$PASEO_HOME/plugin-data/paseo-playbooks/worktrees/<runId>`, on a new branch
+  `playbooks/<playbook>-<id>` off a freshly fetched `origin/<base>` (`base` default: the project's default
+  branch). The path and branch show in `list_runs` and `get_run`.
+- **Why a prompt, not a cwd**: Paseo pins an agent's directory to its workspace, so agents still start in the
+  workspace. The plugin tells every manager and step agent (system prompt and first message) to work only in
+  the worktree: absolute path, `cd <path> && ...` or `git -C <path>` for every command (the shell resets
+  between commands), absolute paths for Read/Edit/Write, never edit the workspace checkout. `{{ worktree }}`
+  puts the path in a prompt or in a role's `instructions.md`; without isolation it renders the workspace
+  directory, so one prompt works both ways.
+- **Guard**: when each step ends, the plugin compares the original workspace checkout (`HEAD` and
+  `git status`, untracked files included) with its state at run start. Any change fails the step ("isolation
+  guard", naming the changed paths) and is told to the manager. A `readonly` role's check covers the worktree.
+  When the run ends the same check runs; on a change the worktree is kept and the manager is told.
+- **Submodules** (`submodules`): `none` (default) leaves them empty: agents run
+  `git submodule update --init -- <path>` for the ones they need (the preamble says so). `all` or a list
+  links each as a detached worktree of the workspace's own clone of it, at the commit the worktree pins
+  (fast, shares objects; a submodule the workspace never initialised is initialised in place).
+- **Cleanup**: when the run completes or is canceled (and its after-tasks end), the plugin removes the worktree
+  and its branch, and the history says so. It keeps the worktree, with a `worktree_kept` history entry, when the
+  run failed and `workspace.keep_failed` is true, when it has uncommitted changes, or when the guard fired; it
+  keeps the branch (not the directory) when the branch has commits on no remote. Restarting a run brings the
+  worktree back on its branch. At daemon start the plugin deletes worktree directories whose run no longer
+  exists. It never deletes outside its worktrees directory.
+- **Concurrency**: isolated runs share a workspace freely; a run without isolation still needs the workspace to
+  itself and is refused while an isolated run is active there (and the other way round). Singletons and release
+  trains are never isolated.
+- Scripts of an isolated run run in the worktree (`PLAYBOOK_WORKSPACE` is the worktree; the original is
+  `PLAYBOOK_ORIGINAL_WORKSPACE`).
 
 ## YAML pitfall
 

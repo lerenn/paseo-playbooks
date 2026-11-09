@@ -6,7 +6,7 @@ import { descendantsOf } from "../shared/graph";
 import { blockEntrySteps, blockStepIds, holdsBlock, innermostBlock } from "../shared/slots";
 import { askChoices, askHumanText, askTransitionOf, choicesOfGate, outcomeTransition } from "../shared/gates";
 import { parse as parseYaml, stringify as toYaml } from "yaml";
-import type { AfterTask, AskChoice, Attempt, Gate, GateDecider, Job, Playbook, Run, RunStep, Step, Transition, VarValue } from "../shared/types";
+import type { AfterTask, AskChoice, Attempt, Gate, GateDecider, Job, Playbook, Run, RunStep, RunWorktree, Step, Transition, VarValue } from "../shared/types";
 import { isActive, isAgentlessAttempt, isPaused, isPipeline, isStepDone, isStepLive, isTerminal, restartBlocker, runningAfterTasks } from "../shared/types";
 import { coerceValue, formatValue, parseDuration, renderTemplate, replaceRefs, resolveValue, templateRefs } from "../shared/vars";
 
@@ -75,6 +75,8 @@ export interface NewRunInput {
   name?: string | null;
   /** The plugin created the workspace for this run. */
   workspaceCreated?: boolean;
+  /** The run's private git worktree (`isolation: worktree`), already created. */
+  worktree?: RunWorktree;
   inputs: Record<string, unknown>;
   now: string;
 }
@@ -167,6 +169,7 @@ function createRun(input: NewRunInput, inputs: Record<string, VarValue>, kind: "
     updatedAt: input.now,
     workspaceCreated: input.workspaceCreated ?? false,
     workspaceArchive: null,
+    worktree: input.worktree ?? null,
     archivedAt: null,
     seenAt: null,
     pausedAt: null,
@@ -428,6 +431,7 @@ export function startAttempt(
   const context = {
     inputs: Object.fromEntries(Object.entries(values).map(([name, entry]) => [name, entry.value])),
     run: { id: run.id, status: run.status, failure: run.failure, jobs: jobsText(run) },
+    worktree: workDir(run),
     attempt: n,
     loop: state.loop,
   };
@@ -1355,11 +1359,21 @@ export function resumeRun(run: Run, now: string): boolean {
 }
 
 /** Marks a failed or timed-out readonly check on the current attempt. */
-export function markReadonlyViolation(run: Run, stepId: string, detail: string, now: string): void {
+export function markReadonlyViolation(run: Run, stepId: string, detail: string, now: string, kind: "readonly" | "isolation" = "readonly"): void {
   const attempt = currentAttempt(run, stepId);
   if (!attempt) return;
+  if (kind === "isolation") {
+    attempt.report = { outcome: "failure", summary: `isolation guard: the step changed the workspace checkout instead of the run's worktree (${run.worktree?.path ?? "?"}): ${detail}`, outputs: {} };
+    log(run, now, "isolation_violation", stepId, detail);
+    return;
+  }
   attempt.report = { outcome: "failure", summary: `readonly role modified the checkout: ${detail}`, outputs: {} };
   log(run, now, "readonly_violation", stepId, detail);
+}
+
+/** Where the run's agents work: its private worktree, else the workspace checkout. */
+export function workDir(run: Pick<Run, "worktree" | "workspaceDir">): string {
+  return run.worktree?.path ?? run.workspaceDir;
 }
 
 /** Hands the run to another manager agent (its previous one was archived with its parent). */

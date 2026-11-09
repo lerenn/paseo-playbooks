@@ -218,6 +218,33 @@ export const StationSchema = z.object({
 });
 export type Station = z.infer<typeof StationSchema>;
 
+/** `isolation:` of a playbook: `worktree` gives each run a private git worktree (see ADR 2026-11-09-isolation-worktree). */
+export const IsolationSchema = z.object({
+  mode: z.enum(["none", "worktree"]),
+  /** Submodules to link into the worktree: none (agents init the ones they need), all, or these paths. */
+  submodules: z.union([z.enum(["none", "all"]), z.array(z.string())]),
+  /** Branch the worktree starts from (fresh origin copy); default: the project's default branch. */
+  base: z.string().nullable(),
+});
+export type Isolation = z.infer<typeof IsolationSchema>;
+export const DEFAULT_ISOLATION: Isolation = { mode: "none", submodules: "none", base: null };
+
+/** The private worktree of an isolated run, kept in run state. */
+export const RunWorktreeSchema = z.object({
+  path: z.string(),
+  branch: z.string(),
+  /** The ref it was created from (e.g. origin/main) and that ref's commit. */
+  base: z.string(),
+  baseSha: z.string(),
+  /** Submodule paths linked as worktrees of the workspace's own submodule clones. */
+  linked: z.array(z.string()).default([]),
+  /** HEAD and status of the original workspace checkout at run start: the isolation guard compares to it. */
+  workspaceSnapshot: z.string().nullable(),
+  /** active: exists; removed: the plugin deleted it; kept: it stays on disk (the history says why). */
+  state: z.enum(["active", "removed", "kept"]),
+});
+export type RunWorktree = z.infer<typeof RunWorktreeSchema>;
+
 export const PlaybookSchema = z.object({
   id: z.string(),
   title: z.string(),
@@ -252,6 +279,11 @@ export const PlaybookSchema = z.object({
   workspace: z
     .object({ archive: z.enum(["never", "on_end"]), keepFailed: z.boolean() })
     .default({ archive: "never", keepFailed: true }),
+  /**
+   * Where the run's agents work: the workspace checkout (`none`), or a private git worktree the
+   * plugin creates for the run (`worktree`). Unset on runs from before isolation.
+   */
+  isolation: IsolationSchema.default(DEFAULT_ISOLATION),
   /**
    * Instructions added to the manager's protocol: `defaults/manager.md` (playbook null), then
    * this playbook's and each sub-playbook's `manager.prompt`, non-empty ones only, each once.
@@ -473,6 +505,8 @@ export const RunSchema = z.object({
   workspaceCreated: z.boolean().default(false),
   /** Once the run ended: `done` (workspace archived) or `skipped` (kept; the history says why). */
   workspaceArchive: z.enum(["done", "skipped"]).nullable().default(null),
+  /** The run's private git worktree (`isolation: worktree`); null when it works in the workspace checkout. */
+  worktree: RunWorktreeSchema.nullable().default(null),
   /** A short name the Playbook Manager gave the run (e.g. "login-redirect-fix"): its tab label. */
   name: z.string().nullable().default(null),
   inputs: z.record(z.string(), VarValueSchema),

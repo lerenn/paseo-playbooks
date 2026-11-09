@@ -1,6 +1,6 @@
 # `isolation: worktree`: a private git worktree per run, with no Paseo workspace
 
-Status: Proposed (blocked on a Paseo core change; not implemented)
+Status: Superseded by 2026-11-09-isolation-worktree.md (the core change was not needed: agents are directed by prompt)
 
 ## Context
 
