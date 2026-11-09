@@ -25,7 +25,7 @@ import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "./defaults";
 import * as engine from "./engine";
 import { checkoutSnapshot, currentRef, defaultBranch, fastForward, freshRef, snapshotDiff } from "./git";
 import { loadPlaybooks } from "./loader";
-import { gateDeciderPrompt, gateDeciderSystemPrompt, gateDecisionReminder, managerAfterRestart, managerKickoff, managerTakeover, reportReminder, resumeAfterRestart, silenceReminder, singletonKickoff, stepSystemPrompt } from "./prompts";
+import { managerLostNotice, gateDeciderPrompt, gateDeciderSystemPrompt, gateDecisionReminder, managerAfterRestart, managerKickoff, managerTakeover, reportReminder, resumeAfterRestart, silenceReminder, singletonKickoff, stepSystemPrompt } from "./prompts";
 import { askHumanText, choicesOfGate, waitsForHuman } from "../shared/gates";
 import type { RunStore } from "./store";
 import { holdsBlock, planAdmissions, slotHolders } from "../shared/slots";
@@ -259,7 +259,7 @@ export class Runtime {
       if (!isActive(run) || isPipeline(run)) continue;
       const manager = await this.api().agents.ref(run.managerAgentId).refresh().catch(() => null);
       if (!manager || manager.agent.archivedAt) {
-        await this.failRun(run.id, "manager lost");
+        await this.failManagerLost(run.id, "manager lost", `manager ${run.managerAgentId} ${manager ? "was archived" : "no longer exists"} before the daemon started: the plugin was not running to see who archived it`, null);
         continue;
       }
       if (manager.agent.status === "running") this.busyManagers.add(run.managerAgentId);
@@ -1639,11 +1639,20 @@ export class Runtime {
 
   // ---------------------------------------------------------------- step agents
 
-  async report(agentId: string, report: { outcome: string; summary: string; outputs: Record<string, unknown> }): Promise<string> {
+  /** The outcomes the agent's current step accepts (empty when it is no step's attempt). */
+  outcomesOf(agentId: string): string[] {
+    const found = this.stepRunOf(agentId);
+    return found ? engine.stepDef(found.run, found.stepId).outcomes : [];
+  }
+
+  async report(agentId: string, report: { outcome: string; summary: string; outputs: Record<string, unknown> }, repairNote: string | null = null): Promise<string> {
     const found = this.stepRunOf(agentId);
     if (!found) throw new UserError("you are not the current attempt of any playbook step");
     this.checkReportedOutcomes(found.run, found.stepId, report.outputs);
-    await this.store.mutate(found.run.id, (current) => engine.recordReport(current, agentId, report, nowIso()));
+    await this.store.mutate(found.run.id, (current) => {
+      engine.recordReport(current, agentId, report, nowIso());
+      if (repairNote) engine.noteEvent(current, "report_repaired", found.stepId, repairNote, nowIso());
+    });
     await this.onLateReport(found.run.id, found.stepId, agentId);
     return found.stepId;
   }
@@ -1785,6 +1794,8 @@ export class Runtime {
   }
 
   async onAgentArchived(agentId: string, parentAgentId: string | null = null): Promise<void> {
+    const at = Date.now();
+    this.recentArchives = [...this.recentArchives.filter((entry) => at - entry.at < 5000), { id: agentId, at }];
     this.pendingHandoffs.delete(agentId);
     const decider = this.deciderOf(agentId);
     if (decider) {
@@ -1795,7 +1806,7 @@ export class Runtime {
     const active = this.activeRunOfManager(agentId);
     if (active) {
       const adopted = parentAgentId !== null && (await this.archivedWithParent(parentAgentId)) && (await this.adoptOrphanedRun(active.id, parentAgentId));
-      if (!adopted) await this.failRun(active.id, "manager lost (archived)");
+      if (!adopted) await this.failManagerLost(active.id, "manager lost (archived)", await this.archiveCause(agentId, parentAgentId, active.workspaceId), parentAgentId);
     }
     // Archiving the manager archives its runs (an adopted one is no longer its own; another active one was just failed).
     for (const run of this.runsOfManager(agentId)) {
@@ -1803,6 +1814,43 @@ export class Runtime {
     }
     const step = this.stepRunOf(agentId);
     if (step) await this.onStepTurnEnded(step.run.id, agentId, "lost");
+  }
+
+  /** Agents archived in the last few seconds, to tell a batch archive from a single one. */
+  private recentArchives: Array<{ id: string; at: number }> = [];
+
+  /**
+   * What the plugin can tell about an archive: the host's hook names the agent and its parent,
+   * not who called it (an agent, the UI, a workspace archive or a cleanup), so the cause lists
+   * the evidence: a cascade from an archived parent, a workspace that is gone, and the other
+   * managers archived within the same couple of seconds.
+   */
+  private async archiveCause(agentId: string, parentAgentId: string | null, workspaceId: string): Promise<string> {
+    const parts = [`manager ${agentId} was archived; the host does not say by whom (an agent, the UI, a workspace archive or a cleanup)`];
+    if (parentAgentId) parts.push(`its parent ${parentAgentId} is ${(await this.archivedWithParent(parentAgentId)) ? "archived too" : "still active"}`);
+    parts.push(`workspace ${workspaceId} ${(await this.workspaceOf(workspaceId)) ? "still exists" : "is gone"}`);
+    const now = Date.now();
+    const together = this.recentArchives.filter((entry) => entry.id !== agentId && now - entry.at < 2000 && this.runsOfManager(entry.id).length > 0).map((entry) => entry.id);
+    if (together.length > 0) parts.push(`other managers archived within 2 s: ${together.join(", ")} (one batch, probably one source)`);
+    return parts.join("; ");
+  }
+
+  /**
+   * Fails a run whose manager is gone, records why in its history, and tells the agent that
+   * created the manager (the plugin has no push notification or Slack facility; the run's
+   * failure shows in the panel and in list_runs).
+   */
+  private async failManagerLost(runId: string, reason: string, cause: string, notify: string | null): Promise<void> {
+    const before = this.store.get(runId)!;
+    const reached = Object.entries(before.steps).filter(([, state]) => state.status === "running" || state.status === "reported" || state.status === "waiting").map(([id]) => id);
+    await this.store.mutate(runId, (current) => engine.noteEvent(current, "manager_archived", null, cause, nowIso()));
+    await this.failRun(runId, reason);
+    if (!notify) return;
+    const run = this.store.get(runId)!;
+    const restartable = run.playbook.steps.filter((step) => restartBlocker(run, step.id) === null).map((step) => step.id);
+    const parent = await this.api().agents.ref(notify).refresh().catch(() => null);
+    if (!parent || parent.agent.archivedAt) return;
+    await this.api().agents.ref(notify).send(managerLostNotice(run, reached, restartable, cause)).catch((error: unknown) => console.error(`[playbooks] could not tell agent ${notify} that run ${runId} lost its manager:`, errorText(error)));
   }
 
   /** Whether the agent was archived by Paseo's cascade from its archived parent, not on its own. */

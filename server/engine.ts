@@ -42,6 +42,11 @@ function log(run: Run, now: string, type: string, stepId: string | null, detail:
   run.updatedAt = now;
 }
 
+/** Adds an entry to the run's history. */
+export function noteEvent(run: Run, type: string, stepId: string | null, detail: string, now: string): void {
+  log(run, now, type, stepId, detail);
+}
+
 /** A main step moves while the run is not finished; an after-step while its task runs. */
 function assertLive(run: Run, stepId: string): void {
   if (isStepLive(run, stepId)) return;

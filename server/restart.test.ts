@@ -355,11 +355,30 @@ describe("a manager archived with the agent that created it", () => {
     expect(takeover.text).toMatch(/Steps waiting for complete_step: implement/);
   });
 
-  it("still fails the run when the manager itself was archived", async () => {
-    const { store, runtime, created } = await activeRun(false);
+  it("still fails the run when the manager itself was archived, records the cause and tells the agent that created it", async () => {
+    const { store, runtime, created, sent } = await activeRun(false);
     await runtime.onAgentArchived("m", "coordinator");
     expect(created).toEqual([]);
-    expect(store.get("run_r")).toMatchObject({ status: "failed", failure: "manager lost (archived)" });
+    const run = store.get("run_r")!;
+    expect(run).toMatchObject({ status: "failed", failure: "manager lost (archived)" });
+    const cause = run.history.find((entry) => entry.type === "manager_archived")!;
+    expect(cause.detail).toMatch(/manager m was archived; the host does not say by whom.*parent coordinator is still active.*workspace ws still exists/);
+    expect(run.history.indexOf(cause)).toBeLessThan(run.history.findIndex((entry) => entry.type === "run_failed"));
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.agentId).toBe("coordinator");
+    expect(sent[0]!.text).toMatch(/Run run_r .* failed: manager lost \(archived\)\. Steps? reached: implement\..*restart_run\(\{ runId: "run_r", stepId: "implement" \}\).*restartableFrom: investigate, implement, docs/);
+  });
+
+  it("notes the other managers archived in the same second", async () => {
+    const { store, runtime } = await activeRun(false);
+    const other = start(await playbook());
+    other.id = "run_other";
+    other.workspaceId = "ws9";
+    other.managerAgentId = "m2";
+    await store.create(other);
+    await runtime.onAgentArchived("m2", "coordinator");
+    await runtime.onAgentArchived("m", "coordinator");
+    expect(store.get("run_r")!.history.find((entry) => entry.type === "manager_archived")!.detail).toMatch(/other managers archived within 2 s: m2/);
   });
 });
 
