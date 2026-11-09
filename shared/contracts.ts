@@ -12,6 +12,13 @@ export const listPlaybooks = defineRpc({
   }),
 });
 
+/** Writes the starter playbook into a workspace that has none. */
+export const createExampleRpc = defineRpc({
+  name: "playbooks.create-example",
+  input: z.object({ workspaceId: z.string() }),
+  output: z.object({ files: z.array(z.string()) }),
+});
+
 export const listRuns = defineRpc({
   name: "runs.list",
   input: z.object({ workspaceId: z.string() }),

@@ -7,6 +7,7 @@ import type { PluginServerContext } from "@getpaseo/plugin/server";
 import {
   archiveRunRpc,
   cancelRunRpc,
+  createExampleRpc,
   pauseRunRpc,
   resumeRunRpc,
   decideGateRpc,
@@ -25,6 +26,7 @@ import {
 } from "./shared/contracts";
 import { hasPlaybooks, loadPlaybooks } from "./server/loader";
 import { GATE_LABEL, Runtime, STEP_LABEL, UserError } from "./server/runtime";
+import { createStarter } from "./server/starter";
 import { defaultRunsDir, RunStore } from "./server/store";
 import { gateTool, managerTools, runTools, stepTool, validateTool } from "./server/tools";
 
@@ -97,6 +99,11 @@ export default function contribute(server: PluginServerContext) {
     const workspace = await paseo.workspaces.ref(workspaceId).refresh();
     if (!workspace) throw new UserError("workspace not found");
     return loadPlaybooks(workspace.workspaceDirectory ?? workspace.projectRootPath);
+  });
+  handle(createExampleRpc, async ({ workspaceId }, { paseo }) => {
+    const workspace = await paseo.workspaces.ref(workspaceId).refresh();
+    if (!workspace) throw new UserError("workspace not found");
+    return { files: await createStarter(workspace.workspaceDirectory ?? workspace.projectRootPath) };
   });
   handle(listRuns, async ({ workspaceId }) => ({ runs: store.list().filter((run) => run.workspaceId === workspaceId && !run.archivedAt) }));
   handle(archiveRunRpc, async ({ runId }) => ({ archivedAt: await runtime.archiveRun(runId) }));

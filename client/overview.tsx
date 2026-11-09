@@ -1,4 +1,4 @@
-import { usePaseo, useRpc, type PluginIconProps, type PluginScreenProps, type PluginSidebarItemProps } from "@getpaseo/plugin/client";
+import { openExternalUrl, usePaseo, useRpc, type PluginIconProps, type PluginScreenProps, type PluginSidebarItemProps } from "@getpaseo/plugin/client";
 import { Icon, ScrollView, SidebarRow, useToast } from "@getpaseo/plugin/client/ui";
 import { useQueryClient } from "@tanstack/react-query";
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
@@ -9,7 +9,8 @@ import { isActive, isPaused, isPipeline, isTerminal, type Gate, type Run, type S
 import { useReduceMotion } from "./graph";
 import { LABEL_WIDTH, labelLayout, ROW_HEIGHT } from "./layout";
 import { useOverview, type OverviewStore } from "./overview-store";
-import { GateActions } from "./sheet";
+import { GETTING_STARTED_URL } from "./panel";
+import { Button, GateActions } from "./sheet";
 import { openJobsLabel, Stations, trainName } from "./stations";
 import { stepShortTitle, stepTitle, stepTitleOf, withAlpha, type Theme } from "./theme";
 
@@ -305,6 +306,7 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
   const [showDone, setShowDone] = useState(false);
   // The sidebar badge and this screen share one store: one agent subscription, one request per change.
   const overview = useOverview(store);
+  const toast = useToast();
   useEffect(() => store.watchRuns(), [store]);
   const queryClient = useQueryClient();
 
@@ -461,9 +463,28 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
         {overview.runs && groups.length === 0 ? (
           <View style={{ alignItems: "center", gap: 8, paddingVertical: 32 }}>
             <Icon name="Workflow" size={28} color={theme.colors.foregroundMuted} />
-            <Text style={{ color: theme.colors.foregroundMuted, fontSize: 13, textAlign: "center" }}>
-              {showDone ? "No runs yet." : "Nothing running. Show done lists the finished runs."}
-            </Text>
+            {overview.runs.length === 0 ? (
+              <>
+                <Text style={{ color: theme.colors.foreground, fontSize: 15, fontWeight: "600", textAlign: "center" }}>No runs yet</Text>
+                <Text style={{ color: theme.colors.foregroundMuted, fontSize: 13, textAlign: "center", maxWidth: 340 }}>
+                  Open a workspace, then its Playbooks panel: if it has no playbook, one button creates a small example you can start.
+                </Text>
+                <Button
+                  theme={theme}
+                  label="Read the guide ↗"
+                  accessibilityLabel="Open the getting started guide in your browser"
+                  onPress={() =>
+                    void openExternalUrl(GETTING_STARTED_URL).catch((error: unknown) =>
+                      toast.error(error instanceof Error ? error.message : String(error)),
+                    )
+                  }
+                />
+              </>
+            ) : (
+              <Text style={{ color: theme.colors.foregroundMuted, fontSize: 13, textAlign: "center" }}>
+                {showDone ? "No runs yet." : "Nothing running. Show done lists the finished runs."}
+              </Text>
+            )}
           </View>
         ) : null}
       </ScrollView>
