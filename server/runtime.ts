@@ -96,6 +96,8 @@ interface Reservation {
   branch: string | null;
   playbook: Playbook;
   inputs: Record<string, VarValue>;
+  /** The plugin created the workspace (newWorkspace), so its run may archive it. */
+  created?: boolean;
 }
 
 /** Kept of a script's output: the end of stdout and stderr, shown in the panel and to the manager. */
@@ -699,6 +701,7 @@ export class Runtime {
       projectId: workspace.projectId,
       branch: reservation?.branch ?? (await currentRef(workspaceDir)),
       managerAgentId: manager.id,
+      workspaceCreated: reservation?.created === true,
       name: runName(options.name),
       inputs,
       now: nowIso(),
@@ -755,10 +758,66 @@ export class Runtime {
         await this.noticeTrainGates();
         await this.endTrains();
         await this.departTrains();
+        await this.archiveEndedWorkspaces();
       } while (this.tickAgain);
     } finally {
       this.ticking = false;
     }
+  }
+
+  // ---------------------------------------------------------------- workspace archiving
+
+  /**
+   * `workspace: { archive: on_end }`: archives the workspace the plugin created for a run once the
+   * run has ended and nothing else lives there. Every check is programmatic; a refusal is
+   * written in the run's history and never fails the run.
+   */
+  private async archiveEndedWorkspaces(): Promise<void> {
+    for (const candidate of this.store.list()) {
+      if (candidate.workspaceArchive !== null || !candidate.workspaceCreated || !isTerminal(candidate.status) || candidate.train || isPipeline(candidate)) continue;
+      if (candidate.playbook.workspace.archive !== "on_end") continue;
+      const verdict = await this.workspaceArchiveVerdict(candidate.id).catch((error: unknown) => ({ skip: `could not check: ${errorText(error)}` }));
+      if (verdict === "wait") continue;
+      if (verdict === "ok") {
+        const archived = await this.api().workspaces.ref(candidate.workspaceId).archive().then(() => null, (error: unknown) => errorText(error));
+        if (archived === null) {
+          await this.store.mutate(candidate.id, (run) => {
+            run.workspaceArchive = "done";
+            engine.noteEvent(run, "workspace_archived", null, `workspace ${run.workspaceId} archived (workspace.archive: on_end)`, nowIso());
+          });
+          continue;
+        }
+        await this.skipWorkspaceArchive(candidate.id, `archive_workspace failed: ${archived}`);
+        continue;
+      }
+      await this.skipWorkspaceArchive(candidate.id, verdict.skip);
+    }
+  }
+
+  private async skipWorkspaceArchive(runId: string, reason: string): Promise<void> {
+    await this.store.mutate(runId, (run) => {
+      run.workspaceArchive = "skipped";
+      engine.noteEvent(run, "workspace_kept", null, `workspace ${run.workspaceId} not archived: ${reason}`, nowIso());
+    });
+  }
+
+  /** "ok": archive it; "wait": ask again later (something is still running); otherwise why it is kept. */
+  private async workspaceArchiveVerdict(runId: string): Promise<"ok" | "wait" | { skip: string }> {
+    const run = this.store.get(runId)!;
+    if (run.status === "failed" && run.playbook.workspace.keepFailed) return { skip: "the run failed and keep_failed is true" };
+    const others = this.store.list().filter((other) => other.id !== run.id && other.workspaceId === run.workspaceId);
+    if (others.some((other) => isActive(other))) return "wait";
+    const open = others.concat(run).find((other) => other.gates.some((gate) => gate.status === "pending"));
+    if (open) return { skip: `run ${open.id} has an open gate` };
+    const workspace = await this.api().workspaces.ref(run.workspaceId).refresh();
+    if (!workspace) return { skip: "the workspace no longer exists" };
+    const listed = await this.api().agents.list({ filter: { projectKeys: [run.projectId] } });
+    const agents = listed.entries.map((entry) => entry.agent).filter((agent) => agent.workspaceId === run.workspaceId && !agent.archivedAt && !agent.internal);
+    const runIds = new Set(this.store.list().filter((other) => other.workspaceId === run.workspaceId).map((other) => other.id));
+    const foreign = agents.filter((agent) => !(agent.labels?.[MANAGER_LABEL] === "true" || (agent.labels?.[RUN_LABEL] && runIds.has(agent.labels[RUN_LABEL]))));
+    if (foreign.length > 0) return { skip: `it holds agents the plugin did not create: ${foreign.map((agent) => agent.id).join(", ")}` };
+    if (agents.some((agent) => agent.status === "running" || agent.status === "initializing")) return "wait";
+    return "ok";
   }
 
   // ---------------------------------------------------------------- hand-offs and singleton pipelines
@@ -1885,6 +1944,7 @@ export class Runtime {
       return;
     }
     await this.onManagerTurnEnded(agentId);
+    await this.archiveEndedWorkspaces().catch((error) => console.error("[playbooks] workspace archive check failed:", errorText(error)));
   }
 
   async onAgentArchived(agentId: string, parentAgentId: string | null = null): Promise<void> {
@@ -2214,7 +2274,7 @@ export class Runtime {
       title: `${playbook.title}${headline ? `: ${headline}` : ""}`,
       source: { kind: "worktree", cwd: workspaceDir, action: "branch-off", branchName: branch, ...(base ? { refName: base } : {}) },
     });
-    this.reservations.set(created.id, { runId, branch, playbook, inputs });
+    this.reservations.set(created.id, { runId, branch, playbook, inputs, created: true });
     const manager = await created.agents.create({
       config: this.managerConfig(playbook),
       title: `Playbook Manager · ${playbook.title}`,

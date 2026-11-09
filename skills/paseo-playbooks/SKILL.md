@@ -56,6 +56,9 @@ timeout: 1h            # default step timeout (optional)
 role:                  # defaults for agent steps, in the shape of a step's `role:` block
   silence: 30m         # remind a step agent after this long without activity (default 30m; off to disable)
   archive_agents: true # archive step agents once the run no longer needs them (default true)
+workspace:             # what happens to the workspace a run created with newWorkspace
+  archive: on_end      # never (default) | on_end: archive it when the run completes or is canceled
+  keep_failed: true    # keep it when the run failed or lost its manager (default true)
 ```
 
 Agent settings (`provider`, `model`, `mode`, `thinking`) merge field by field. Precedence:
@@ -112,6 +115,7 @@ description: Investigate, implement, open a PR and babysit it until it is green.
 agent: { model: claude-opus-5-5 }          # optional playbook-wide settings
 concurrency: 1                             # optional: max active runs (or held blocks) in the project
 manager: { prompt: Check the PR exists before accepting implement. }  # optional: added to the manager's instructions
+workspace: { archive: on_end }             # optional: overrides defaults/main.yaml's workspace block
 hidden: false                              # optional: true moves it to the panel's collapsed "Hidden playbooks" section (for one meant as a sub-playbook or after-task; it can still be started from there or by start_playbook)
 
 inputs:                                    # the Start form; the manager fills them from chat

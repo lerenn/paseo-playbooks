@@ -241,6 +241,16 @@ const RawAfterSchema = RawStepSchema.extend({
     needs: z.unknown().optional(),
   });
 
+/** What happens to the workspace a run created for itself (`start_playbook` with `newWorkspace`). */
+const RawWorkspaceSchema = z
+  .object({
+    /** `never` (default) keeps it; `on_end` archives it when the run completes or is canceled, if nothing else lives there. */
+    archive: z.enum(["never", "on_end"]).optional(),
+    /** Keep the workspace of a failed run (or one that lost its manager) for inspection. Default true. */
+    keep_failed: z.boolean().optional(),
+  })
+  .strict();
+
 const RawPlaybookSchema = z.object({
     title: z.string().optional(),
     description: z.string().optional(),
@@ -255,6 +265,7 @@ const RawPlaybookSchema = z.object({
       })
       .strict()
       .optional(),
+    workspace: RawWorkspaceSchema.optional(),
     inputs: z.record(z.string(), RawVarDefSchema.nullable()).optional(),
     outputs: z.record(z.string(), RawOutputSchema.nullable()).optional(),
     /** Removed: playbooks compose only as sub-playbook steps. Kept here to refuse it clearly. */
@@ -292,6 +303,7 @@ const RawDefaultsSchema = z.object({
     tiers: z.record(z.string(), RawTierSchema).optional(),
     agent: RawAgentSchema.optional(),
     manager: RawAgentSchema.optional(),
+    workspace: RawWorkspaceSchema.optional(),
     timeout: z.string().optional(),
     /** Defaults for agent steps, in the shape of a step's `role:` block. */
     role: z
@@ -1227,6 +1239,10 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     manager,
     managerInstructions: managerInstructions(folder.managerText, id, pb.manager?.prompt, [...blocks.values()]),
     outcomes: playbookOutcomes,
+    workspace: {
+      archive: pb.workspace?.archive ?? defaults.workspace?.archive ?? "never",
+      keepFailed: pb.workspace?.keep_failed ?? defaults.workspace?.keep_failed ?? true,
+    },
     blocks: blockInfo,
     after: (pb.after ?? []).map((raw) => ({
       id: raw.id,
