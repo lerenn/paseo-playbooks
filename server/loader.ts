@@ -615,6 +615,16 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     const conditions: When[] = [];
     for (const [name, given] of Object.entries(raw)) {
       const def = inputs[name];
+      if (name === "loop" && !def) {
+        const tests: NonNullable<When["loop"]> = [];
+        for (const value of Array.isArray(given) ? given : [given]) {
+          const match = /^\s*(==|=|>=|<=|>|<)?\s*(\d+)\s*$/.exec(String(value));
+          if (match) tests.push({ op: match[1] === undefined || match[1] === "=" ? "==" : (match[1] as "==" | ">=" | "<=" | ">" | "<"), value: Number(match[2]) });
+          else err(`${where}: when.loop: ${JSON.stringify(value)}: expected a loop count such as 1, ">=2" or "<3"`);
+        }
+        if (tests.length > 0) conditions.push({ input: "loop", source: "", values: [], loop: tests });
+        continue;
+      }
       if (!def) {
         err(`${where}: when.${name}: not an input of this playbook${Object.keys(inputs).length ? ` (${Object.keys(inputs).join(", ")})` : ""}`);
         continue;
@@ -705,6 +715,9 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     refuseFlatForms(where, rawStep, err);
     if (typeof rawStep.handoff === "string") err(`${where}: handoff: write \`handoff: { name: ${rawStep.handoff} }\``);
     if (task && rawStep.when !== undefined) err(`${where}: \`when\` does not apply to an after-task`);
+    if (rawStep.when && "loop" in rawStep.when && !inputs.loop && kindBlocks(rawStep).playbook !== undefined) {
+      err(`${where}: when.loop does not apply to a playbook step (it has no loop count); put it on a step of the sub-playbook`);
+    }
     const when = task ? undefined : parseWhen(where, rawStep.when);
     const conditional = when ? { when } : {};
     if (rawStep.settle !== undefined && (isGate || isBlock || isHandoff || task)) {
@@ -1235,7 +1248,7 @@ function refuseFlatForms(where: string, raw: RawStep, err: (message: string) => 
 /** What an ask choice's `outputs` may read besides `inputs.<name>` and `report.outputs.<name>`. */
 const ASK_OUTPUT_REFS = /^(gate\.comment|gate\.choice|report\.summary)$/;
 
-const PROMPT_REFS = /^(inputs\.[A-Za-z_][\w-]*|run\.id|run\.status|run\.failure|run\.jobs|attempt)$/;
+const PROMPT_REFS = /^(inputs\.[A-Za-z_][\w-]*|run\.id|run\.status|run\.failure|run\.jobs|attempt|loop)$/;
 
 /** The run field to suggest when an after-task input has no source. */
 function runExample(name: string): string {
@@ -1374,7 +1387,7 @@ function wireStep(
     }
   }
   for (const ref of templateRefs(step.prompt)) {
-    if (!PROMPT_REFS.test(ref)) err(`${where}: prompt uses "{{ ${ref} }}"; prompts may only use inputs.<name>, run.id, run.jobs, attempt${after ? ", run.status and run.failure" : ""}${promptHint(ref)}`);
+    if (!PROMPT_REFS.test(ref)) err(`${where}: prompt uses "{{ ${ref} }}"; prompts may only use inputs.<name>, run.id, run.jobs, attempt, loop${after ? ", run.status and run.failure" : ""}${promptHint(ref)}`);
     else if (!after && (ref === "run.status" || ref === "run.failure")) {
       err(`${where}: prompt uses "{{ ${ref} }}", which only after-tasks can use (the run is still running in its own steps)`);
     }

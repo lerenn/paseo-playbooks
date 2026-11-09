@@ -164,7 +164,7 @@ function createRun(input: NewRunInput, inputs: Record<string, VarValue>, kind: "
     steps: Object.fromEntries(
       input.playbook.steps.map((step) => [
         step.id,
-        { status: "pending", attempts: [], outputs: {}, summary: null, feedback: null, completedSeq: null, queuedAt: null },
+        { status: "pending", attempts: [], outputs: {}, summary: null, feedback: null, loop: 0, completedSeq: null, queuedAt: null },
       ]),
     ),
     loops: {},
@@ -244,10 +244,25 @@ export function refreshReady(run: Run, now: string): { ready: string[]; queued: 
 export function unmetWhen(run: Run, step: Step): string | null {
   const context = templateContext(run);
   for (const condition of step.when ?? []) {
+    if (condition.loop) {
+      const loop = run.steps[step.id]?.loop ?? 0;
+      if (!condition.loop.some((test) => loopTest(test, loop))) return `when: loop is ${loop}, not ${condition.loop.map((test) => `${test.op}${test.value}`).join(" or ")}`;
+      continue;
+    }
     const value = formatValue(resolveValue(condition.source, context));
     if (!condition.values.includes(value)) return `when: ${condition.input} is ${value}, not ${condition.values.join(" or ")}`;
   }
   return null;
+}
+
+function loopTest(test: { op: "==" | ">=" | "<=" | ">" | "<"; value: number }, loop: number): boolean {
+  switch (test.op) {
+    case "==": return loop === test.value;
+    case ">=": return loop >= test.value;
+    case "<=": return loop <= test.value;
+    case ">": return loop > test.value;
+    case "<": return loop < test.value;
+  }
 }
 
 /** Steps waiting for a free `concurrency` slot of their block. */
@@ -403,6 +418,7 @@ export function startAttempt(
     inputs: Object.fromEntries(Object.entries(values).map(([name, entry]) => [name, entry.value])),
     run: { id: run.id, status: run.status, failure: run.failure, jobs: jobsText(run) },
     attempt: n,
+    loop: state.loop,
   };
   const sections: string[] = [];
   const rendered = renderTemplate(step.prompt, context).trim();
@@ -848,6 +864,7 @@ function performGoto(run: Run, source: string, target: string, feedback: string,
     state.status = "pending";
     state.outputs = {};
     state.completedSeq = null;
+    state.loop += 1;
   }
   for (const gate of run.gates) {
     if (gate.status === "pending" && reset.has(gate.stepId)) {

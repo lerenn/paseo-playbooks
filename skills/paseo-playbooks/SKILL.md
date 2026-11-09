@@ -160,7 +160,7 @@ steps:
 | `short_title` | Name in the Playbooks screen's step columns. Default: `title`. Not on playbook steps (their own steps are the columns). |
 | `needs` | Steps that must complete first. No `needs` = starts with the run. Steps ready together run in parallel. File order does not matter. |
 | `role` / `gate` / `playbook` / `script` / `handoff` | Exactly one, as a block: an agent step, a human gate, a sub-playbook, a script the plugin runs itself, or a hand-off to a singleton playbook (see "Step kinds" and "Singleton playbooks and hand-off steps" below). |
-| `when` | Run the step only for some values of the run's inputs: `{ env: prd }` or `{ env: [stg, prd] }`; otherwise it is skipped (see Conditional steps). |
+| `when` | Run the step only for some values of the run's inputs: `{ env: prd }` or `{ env: [stg, prd] }`, or on the step's own loop count, `{ loop: ">=2" }`; otherwise it is skipped (see Conditional steps). |
 | `queue` | A singleton's stations only: `{ mode: fifo }` (default, one job per train) or `{ mode: merge }` (every waiting job per train). |
 | `settle` | Role or script steps: `{ output: <name> }`, a string output holding YAML per job id (`{ outputs: {...}, outcome?, reason? }`). When the step completes on a train of a singleton pipeline, the plugin settles those jobs itself, as `settle_job` would; `complete_step` refuses entries that do not apply. Has no effect outside a train. |
 | `inputs` | List of names (auto-matched) or map of name → source (`"{{ playbook.inputs.x }}"`, `"{{ steps.<id>.outputs.y }}"`) or `~`. |
@@ -202,7 +202,7 @@ several lines:
 | Block field | Meaning |
 | --- | --- |
 | `role.name` | Required: the role (a directory of `roles/`). |
-| `role.prompt` | Template; may use only `{{ inputs.<name> }}`, `{{ run.id }}`, `{{ run.jobs }}` (a singleton train's open jobs, as YAML), `{{ attempt }}`. |
+| `role.prompt` | Template; may use only `{{ inputs.<name> }}`, `{{ run.id }}`, `{{ run.jobs }}` (a singleton train's open jobs, as YAML), `{{ attempt }}` (retries), `{{ loop }}` (times a `goto` sent the run back through this step: 0 on the first pass). |
 | `role.silence` | After this long without agent activity (default `30m`, or `off`), the plugin asks the agent once to report or say what it is waiting for, and tells the manager. |
 | `role.archive_agents` | When the step completes, or its run or after-task ends, its agents are archived, and an attempt's agent is archived when the next attempt starts (default `true`). `false` keeps them, e.g. to debug. |
 | `role.agent` | Step-level agent settings. |
@@ -302,6 +302,11 @@ steps:
 
 A skipped step's outputs are unset: a later step may read them only if it has the same
 `when`. A `when` on a playbook step applies to every step of the block. After-tasks have none.
+
+`when: { loop: ">=1" }` tests the step's loop count: how many times a `goto` (or an `ask`, or an
+approved loop-limit gate) sent the run back through the step; 0 on the first pass. It takes a number
+(equals), a comparison (`">=2"`, `"<3"`, `"==1"`) or a list (any holds). An input named `loop` wins over
+it. It does not apply to a playbook step. Prompts read the same count as `{{ loop }}`.
 
 ### Singleton playbooks and hand-off steps
 
