@@ -6,6 +6,8 @@ import { repairReport } from "./malformed";
 import { isActive, isAgentlessAttempt, isPaused, isPipeline, isTerminal, restartBlocker, runningAfterTasks, VarValueSchema } from "../shared/types";
 import * as engine from "./engine";
 import { hasPlaybooks, loadPlaybooks } from "./loader";
+import { EVENT_NAMES } from "./events";
+import { attentionText } from "./overseer";
 import { MANAGER_PROTOCOL, managerInstructionsText } from "./prompts";
 import { UserError, type Runtime } from "./runtime";
 
@@ -411,23 +413,6 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
           );
         }),
     }),
-    defineAgentTool({
-      name: "get_run",
-      description:
-        'Show a run\'s state. Without runId, your active (or latest) run. view "compact" (default): per step its status, outcome, attempts, turn end and the start of its summary, plus gates, loops and after-tasks. view "full": every step\'s definition, full report, outputs and summary, the run inputs and the gates in full (e.g. for a retro brief). steps limits either view to those steps.',
-      input: z.object({
-        runId: IdArg.optional(),
-        view: z.enum(["compact", "full"]).default("compact").describe('"compact" (default) or "full" (reports, outputs, inputs, gate details)'),
-        steps: z.array(z.string()).optional().describe("Only these step ids (default: all)"),
-      }),
-      execute: ({ runId, view, steps }, { agent }) =>
-        guard(async () => {
-          const run = runtime.ownedRun(agent.id, runId);
-          await runtime.clearInbox(run.id);
-          const summary = view === "full" ? runFull(run, steps) : runCompact(run, steps);
-          return ok(JSON.stringify(summary, null, 2), summary);
-        }),
-    }),
   ];
 }
 
@@ -489,6 +474,80 @@ export function runTools(runtime: Runtime): AgentToolDefinition[] {
             .filter((run) => (archived || !run.archivedAt) && (all || archived || isActive(run)))
             .map(runListing);
           return ok(runs.length === 0 ? (all || archived ? "No runs." : "No active run.") : JSON.stringify(runs, null, 2), { runs });
+        }),
+    }),
+    defineAgentTool({
+      name: "get_run",
+      description:
+        'Show a run\'s state. Read-only on a run you do not manage (any run id works); the tools that change it refuse it. Without runId, your active (or latest) run. view "compact" (default): per step its status, outcome, attempts, turn end and the start of its summary, plus gates, loops and after-tasks. view "full": every step\'s definition, full report, outputs and summary, the run inputs and the gates in full (e.g. for a retro brief). steps limits either view to those steps.',
+      input: z.object({
+        runId: IdArg.optional(),
+        view: z.enum(["compact", "full"]).default("compact").describe('"compact" (default) or "full" (reports, outputs, inputs, gate details)'),
+        steps: z.array(z.string()).optional().describe("Only these step ids (default: all)"),
+      }),
+      execute: ({ runId, view, steps }, { agent }) =>
+        guard(async () => {
+          const run = runtime.readableRun(agent.id, runId);
+          if (run.managerAgentId === agent.id) await runtime.clearInbox(run.id);
+          const summary = view === "full" ? runFull(run, steps) : runCompact(run, steps);
+          return ok(JSON.stringify(summary, null, 2), summary);
+        }),
+    }),
+    defineAgentTool({
+      name: "list_gates",
+      description:
+        "List what waits for a decision across all playbook runs, oldest first: every open gate and ask (run, playbook, workspace, step, kind, question, choices, decider, who holds it now, opened-at and age in minutes). With includeFailed, also the runs that failed or lost their manager, with the reason and restartableFrom. Read-only; compact and stable, so a scheduled agent can call it and compare. Decide a gate with resume (its run's manager or a human in the panel), not here.",
+      input: z.object({
+        runId: IdArg.optional().describe("Only this run"),
+        olderThanMinutes: z.number().min(0).optional().describe("Only gates open at least this long"),
+        includeFailed: z.boolean().default(false).describe("Also list failed runs (and runs that lost their manager)"),
+        includeFinished: z.boolean().default(false).describe("Also gates of runs that have ended (an after-task's gate)"),
+      }),
+      execute: (filter) =>
+        guard(async () => {
+          const result = runtime.attention(filter);
+          return ok(attentionText(result), result);
+        }),
+    }),
+    defineAgentTool({
+      name: "subscribe_events",
+      description:
+        "Get a message from the plugin when something happens on any playbook run: gate_opened (a gate step, ask or loop-limit gate opened: question, choices, decider and who holds it), gate_stale (still open after olderThanMinutes, default 30; one reminder per gate), gate_decided (who decided, via panel, chat, manager or role, and the comment; not sent to the manager or role agent that decided it itself), run_failed (reason and restartableFrom), manager_lost (a run failed because its manager is gone). Bursts are merged into one message. The subscriber is you; the subscription survives daemon restarts and ends when you are archived. Read-only: you still decide nothing. Returns the subscription id.",
+      input: z.object({
+        events: z.array(z.enum(EVENT_NAMES)).min(1).describe("Events to receive"),
+        filter: z
+          .object({
+            playbook: z.string().optional().describe("Only runs of this playbook id"),
+            runId: IdArg.optional().describe("Only this run"),
+            deciderBy: z.enum(["human", "manager", "role"]).optional().describe("Only gates with this decider (gate events)"),
+            olderThanMinutes: z.number().min(0).optional().describe("For gate_stale: minutes a gate stays open first (default 30)"),
+          })
+          .default({}),
+      }),
+      execute: ({ events, filter }, { agent }) =>
+        guard(async () => {
+          const sub = await runtime.subscribe(agent.id, events, filter);
+          return ok(`Subscribed (${sub.id}) to ${sub.events.join(", ")}. You get a "[playbooks]" message when one happens; list_gates shows what is open now.`, { subscription: sub });
+        }),
+    }),
+    defineAgentTool({
+      name: "unsubscribe_events",
+      description: "Stop a subscription of yours (see list_subscriptions).",
+      input: z.object({ id: z.string().describe("Subscription id from subscribe_events") }),
+      execute: ({ id }, { agent }) =>
+        guard(async () => {
+          await runtime.unsubscribe(agent.id, id);
+          return ok(`Subscription ${id} removed.`);
+        }),
+    }),
+    defineAgentTool({
+      name: "list_subscriptions",
+      description: "List your event subscriptions (subscribe_events): id, events and filter.",
+      input: z.object({}),
+      execute: (_input, { agent }) =>
+        guard(async () => {
+          const subscriptions = await runtime.listSubscriptions(agent.id);
+          return ok(subscriptions.length === 0 ? "No subscription." : JSON.stringify(subscriptions, null, 2), { subscriptions });
         }),
     }),
     defineAgentTool({

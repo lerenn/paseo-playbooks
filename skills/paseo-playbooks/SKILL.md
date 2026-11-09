@@ -525,7 +525,8 @@ after:
 - Canceling the run while after-tasks run cancels them; the run's status stays.
 - The "may both edit files" rule applies between after-tasks, not between an after-task and
   a main step.
-- Step agents cannot call `get_run`. A retro step that reviews the whole run gets it from
+- Step agents cannot call `get_run`. Other agents can read any run with it (read-only), and
+  `list_gates` lists every open gate and ask across runs. A retro step that reviews the whole run gets it from
   the manager: tell the manager (in the playbook `description`) to put `get_run` with
   `view: "full"` in the step's brief. The default `get_run` view is compact (per step: status,
   outcome, attempts, turn end and the first 300 characters of the summary), without reports

@@ -67,6 +67,13 @@ How to run a playbook:
    nudge_step are refused and you are not woken; running steps finish their turn. End your
    turn. On resume you are woken with the ready steps and the reports that came in meanwhile.
 
+11. Overseeing: get_run reads any run, not only yours (writes stay with the run's manager).
+   list_gates shows every open gate and ask across runs and who holds each; with
+   includeFailed it adds failed runs and runs that lost their manager. subscribe_events
+   asks the plugin to message you when a gate opens, stays open, is decided, or a run
+   fails: use it only when a human asks you to watch the runs. None of this lets you
+   decide another run's gate.
+
 Rules: create step agents only with start_step (never with Paseo's create_agent tool), do
 not do the steps' work yourself, and never edit files in this workspace.`;
 
