@@ -552,6 +552,10 @@ to the target as "Feedback to address". Reaching `max_loops` opens a "loop limit
 sends the target the step's feedback and the decision's comment ("On the loop limit, the human said: …"). A comment
 from the manager or a role decider reads "the manager said"/"the role "x" said", whichever gate it is.
 
+A `max_loops` inside a block holds per pass: when a `goto` from outside re-enters the block (an outer
+loop over items, say), the counters of the block's own loops start again from 0. The outer
+goto's counter keeps counting, and `{{ loop }}` is not reset (it counts every re-run of the step).
+
 To let an agent step ask a human a question, give it an outcome that routes to `ask`:
 
 ```yaml
