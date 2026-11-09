@@ -226,7 +226,11 @@ outputs set at earlier stations); the steps read them all through {{ run.jobs }}
   (unless the job is detached), and this train goes on with the others.
 A step with \`settle\` (see get_run) settles the jobs itself: when you complete it, the plugin applies its
 settle output (YAML per job id: outputs, and an outcome for a job that ends now), and complete_step refuses
-entries that do not apply. Do not call settle_job for those entries.
+entries that do not apply. Do not call settle_job for those entries, and do not pass the settle output in
+complete_step: the plugin takes it from the step's report (a value of yours replaces it, and never with fewer
+entries). Never turn an outcome the agent did not give into one (no_deploy, ejected...): send the step back.
+A step that reports an outcome with an \`ask\` (asking, needs_input) has its ask opened by the plugin at once: it
+is answered through that ask (the human, or resume), never by a nudge_step.
 When the train completes, its jobs still open pass this station and go on to the next ones. If the train
 fails, they wait here for the next train (within the station's retries), then fail.
 ${jobs ? `Jobs on this train:\n${jobs}` : "This train carries no job."}

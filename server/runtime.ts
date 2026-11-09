@@ -913,7 +913,11 @@ export class Runtime {
       const pipeline = this.store.get(train.train.pipelineId);
       if (!pipeline || !pipeline.jobs.some((job) => job.riding.some((ride) => ride.runId === train.id))) continue;
       const ended = await this.store.mutate(pipeline.id, (current) => engine.trainEnded(current, train, nowIso()));
-      for (const job of ended) await this.deliverJob(job, job.status === "settled" ? { outcome: job.outcome!, summary: job.summary ?? "", outputs: job.outputs } : { outcome: "failure", summary: job.summary ?? "", outputs: {} });
+      for (const job of ended) {
+        // A job that passed every station yet failed (missing outputs) shipped: its hand-off is never retried.
+        const shipped = job.status === "failed" && engine.stationsOf(pipeline).every((station) => job.passed.includes(station.id));
+        await this.deliverJob(job, job.status === "settled" ? { outcome: job.outcome!, summary: job.summary ?? "", outputs: job.outputs } : { outcome: "failure", summary: job.summary ?? "", outputs: {} }, shipped);
+      }
       for (const job of this.store.get(pipeline.id)!.jobs.filter((candidate) => candidate.status === "open")) {
         const next = job.waiting.map((place) => `"${place.station}"`).join(", ");
         if (next) await this.noteHandoff(job, `Waiting at ${next} of "${pipeline.playbook.title}".`);
@@ -932,15 +936,15 @@ export class Runtime {
   }
 
   /** A job's result reaches the step that handed it off (which completes now, or on resume when its run is paused). */
-  private async deliverJob(job: Job, result: { outcome: string; summary: string; outputs: Record<string, unknown> }): Promise<void> {
+  private async deliverJob(job: Job, result: { outcome: string; summary: string; outputs: Record<string, unknown> }, noRetry = false): Promise<void> {
     // A detached job's result stays on the pipeline: its run moved on long ago.
     if (job.detached || !this.store.get(job.fromRunId)) return;
-    await this.finishHandoff(job.fromRunId, job.fromStepId, handoffAttemptId(job.fromRunId, job.fromStepId, job.attempt), result);
+    await this.finishHandoff(job.fromRunId, job.fromStepId, handoffAttemptId(job.fromRunId, job.fromStepId, job.attempt), result, noRetry);
   }
 
-  private async finishHandoff(runId: string, stepId: string, attemptId: string, result: { outcome: string; summary: string; outputs: Record<string, unknown> }): Promise<void> {
+  private async finishHandoff(runId: string, stepId: string, attemptId: string, result: { outcome: string; summary: string; outputs: Record<string, unknown> }, noRetry = false): Promise<void> {
     this.clearTimeout(attemptId);
-    const received = await this.store.mutate(runId, (current) => engine.receiveJobResult(current, stepId, attemptId, result, nowIso()));
+    const received = await this.store.mutate(runId, (current) => engine.receiveJobResult(current, stepId, attemptId, result, nowIso(), noRetry));
     if (received) await this.settleScripts(runId);
   }
 
@@ -981,8 +985,8 @@ export class Runtime {
    * Checks a train step's `settle` output before the step completes: every entry must apply to
    * the pipeline as it is (tried on a copy). Returns the entries; throws with what is wrong.
    */
-  private checkSettle(train: Run, step: Step, value: unknown): engine.JobResult[] {
-    if (!train.train || !step.settle) return [];
+  private checkSettle(train: Run, step: Step, value: unknown): { results: engine.JobResult[]; pipeline: Run | null } {
+    if (!train.train || !step.settle) return { results: [], pipeline: null };
     const pipeline = this.store.get(train.train.pipelineId);
     if (!pipeline) throw new UserError(`the pipeline of train ${train.id} no longer exists`);
     const where = `settle.output "${step.settle.output}" of "${step.id}"`;
@@ -993,7 +997,7 @@ export class Runtime {
         if (result.outcome === undefined && Object.keys(result.outputs).length === 0) continue;
         engine.settleJob(copy, train.id, result.jobId, { ...result, now: nowIso() });
       }
-      return results;
+      return { results, pipeline: copy };
     } catch (error) {
       throw new UserError(`${where}: ${errorText(error)}. Fix the entries (one per job id: \`{ outputs: {...}, outcome?, reason? }\`) and complete the step again.`);
     }
@@ -1252,7 +1256,42 @@ export class Runtime {
     const step = run.train ? engine.stepDef(run, stepId) : null;
     const settles = step?.settle && engine.completesStep(step, input.outcome) ? step.settle.output : null;
     const settleValue = settles ? (input.outputs?.[settles] ?? run.steps[stepId]?.attempts.at(-1)?.report?.outputs?.[settles]) : undefined;
-    if (settles && step) this.checkSettle(run, step, settleValue);
+    let pipeline: Run | null = null;
+    if (settles && step) {
+      const asText = (value: unknown) => (typeof value === "string" ? value : value === undefined || value === null ? "" : String(value));
+      const checked = this.checkSettle(run, step, settleValue);
+      pipeline = checked.pipeline;
+      // The manager's value replaces the report's: never with fewer entries.
+      const reported = run.steps[stepId]?.attempts.at(-1)?.report?.outputs?.[settles];
+      if (input.outputs?.[settles] !== undefined && reported !== undefined) {
+        const given = new Set(checked.results.map((result) => result.jobId));
+        const lost = engine.parseJobResults(asText(reported)).map((result) => result.jobId).filter((jobId) => !given.has(jobId));
+        if (lost.length > 0) {
+          throw new UserError(`"${stepId}" reported ${settles} for ${lost.length + given.size} job(s), and the value you passed leaves out ${lost.join(", ")}. Pass the same entries or correct them, never empty them; or leave ${settles} out of complete_step: the plugin takes it from the report.`);
+        }
+      }
+    }
+    if (run.train) {
+      // Before the train's last step completes it: no job may leave the pipeline missing an output.
+      const train = structuredClone(run);
+      const trial = structuredClone(this.store.get(run.train.pipelineId) ?? null);
+      if (trial) {
+        if (pipeline) Object.assign(trial, pipeline);
+        const probe: Parameters<typeof engine.completeStep>[2] = { outcome: input.outcome, now: nowIso() };
+        if (input.outputs !== undefined) probe.outputs = input.outputs;
+        let completes = false;
+        try {
+          engine.completeStep(train, stepId, probe);
+          completes = train.status === "completed";
+        } catch {
+          // The real call below reports why.
+        }
+        const missing = completes ? engine.jobsMissingOutputs(trial, run) : [];
+        if (missing.length > 0) {
+          throw new UserError(`"${stepId}" would end the train with jobs missing outputs they need to leave the pipeline: ${missing.join("; ")}. Set them first (settle_job without an outcome, or the step's settle output) and complete the step again.`);
+        }
+      }
+    }
     const effects = await this.store.mutate(run.id, (current) => {
       const args: Parameters<typeof engine.completeStep>[2] = { outcome: input.outcome, now: nowIso() };
       if (input.summary !== undefined) args.summary = input.summary;
@@ -1413,6 +1452,8 @@ export class Runtime {
       await this.store.mutate(runId, (current) => engine.reopenAttempt(current, stepId, nowIso()));
       this.armTimeout(this.store.get(runId)!, stepId);
     } else if (state.status !== "running") {
+      const ask = run.gates.find((gate) => gate.kind === "ask" && gate.stepId === stepId && gate.status === "pending");
+      if (ask) throw new UserError(`step "${stepId}" asks (${ask.id}): answer it through its ask with resume, never with nudge_step`);
       throw new UserError(`step "${stepId}" is ${state.status}; only a running or reported step can be nudged`);
     }
     await this.api().agents.ref(attempt.agentId).send(message, { activeTurnBehavior: "steer" });
@@ -1575,9 +1616,50 @@ export class Runtime {
   async report(agentId: string, report: { outcome: string; summary: string; outputs: Record<string, unknown> }): Promise<string> {
     const found = this.stepRunOf(agentId);
     if (!found) throw new UserError("you are not the current attempt of any playbook step");
+    this.checkReportedOutcomes(found.run, found.stepId, report.outputs);
     await this.store.mutate(found.run.id, (current) => engine.recordReport(current, agentId, report, nowIso()));
     await this.onLateReport(found.run.id, found.stepId, agentId);
     return found.stepId;
+  }
+
+  /**
+   * A step reported an outcome whose transition is an ask: its ask opens at once, as for a script,
+   * without waiting for complete_step. Returns the effects' notes, or null when the report is no ask.
+   */
+  private async openReportedAsk(runId: string, stepId: string): Promise<string[] | null> {
+    const run = this.store.get(runId);
+    const report = run?.steps[stepId]?.attempts.at(-1)?.report;
+    if (!run || !report || run.steps[stepId]!.status !== "reported" || isPaused(run)) return null;
+    if (engine.defaultTransition(engine.stepDef(run, stepId), report.outcome).kind !== "ask") return null;
+    let effects: engine.Effects;
+    try {
+      effects = await this.store.mutate(runId, (current) => engine.completeStep(current, stepId, { outcome: report.outcome, summary: report.summary, now: nowIso() }));
+    } catch {
+      return null;
+    }
+    await this.applyEffects(runId, effects);
+    return [...effects.notes, `Its ask is open: a human answers it (the panel, or resume). Do not call complete_step or nudge_step for "${stepId}".`];
+  }
+
+  /** A train step's `settle` output may only name outcomes the singleton has: refused at report time, so the agent corrects it. */
+  private checkReportedOutcomes(run: Run, stepId: string, outputs: Record<string, unknown>): void {
+    const step = run.train ? engine.stepDef(run, stepId) : null;
+    if (!run.train || !step?.settle) return;
+    const raw = outputs[step.settle.output];
+    const pipeline = this.store.get(run.train.pipelineId);
+    if (!pipeline || raw === undefined || raw === null) return;
+    let results: engine.JobResult[];
+    try {
+      results = engine.parseJobResults(typeof raw === "string" ? raw : String(raw));
+    } catch {
+      return;
+    }
+    const allowed = pipeline.playbook.outcomes;
+    for (const result of results) {
+      if (result.outcome !== undefined && !allowed.includes(result.outcome)) {
+        throw new UserError(`${step.settle.output}: job ${result.jobId} has outcome "${result.outcome}", which is not an outcome of "${pipeline.playbook.id}" (use ${allowed.join(", ")}, or no outcome key for a job that keeps riding). Fix it and call report_step_result again.`);
+      }
+    }
   }
 
   /**
@@ -1591,10 +1673,11 @@ export class Runtime {
     if (run.steps[stepId]!.status !== "reported" || attempt.agentId !== agentId || !attempt.report) return;
     const violation = attempt.readonlySnapshot !== null ? snapshotDiff(attempt.readonlySnapshot, await checkoutSnapshot(run.workspaceDir)) : null;
     if (violation) await this.store.mutate(runId, (current) => engine.markReadonlyViolation(current, stepId, violation, nowIso()));
+    const asked = violation ? null : await this.openReportedAsk(runId, stepId);
     await this.enqueue(runId, [
       `${reportedLine(stepId, attempt.n, this.store.get(runId)!.steps[stepId]!.attempts.at(-1)!.report!)} It reported after its turn had ended.`,
       violation ? `Readonly check failed (${violation}); complete it with "failure".` : "",
-      `Call complete_step for "${stepId}".`,
+      ...(asked ?? [`Call complete_step for "${stepId}".`]),
     ].filter(Boolean));
     await this.deliver(runId);
   }
@@ -1626,13 +1709,14 @@ export class Runtime {
       : ended.attempt.reminded
         ? `${head} ended (${turnEnd}) without reporting, even after the plugin asked it to.${lastMessage ? ` Last message: ${lastMessage.slice(0, 1500)}` : ""} If it is still waiting on something, nudge_step it later. If it could not report (e.g. report_step_result "not found"), check the outputs it gave in its conversation and call complete_step with them.`
         : `${head} ended (${turnEnd}) without reporting.${lastMessage ? ` Last message: ${lastMessage.slice(0, 1500)}` : ""} Use nudge_step to ask it to report, or complete_step.`;
+    const asked = report && !violation ? await this.openReportedAsk(runId, ended.stepId) : null;
     const others = Object.entries(this.store.get(runId)!.steps)
       .filter(([, state]) => state.status === "running")
       .map(([id]) => id);
     await this.enqueue(runId, [
       line,
       violation ? `Readonly check failed (${violation}); complete it with "failure".` : "",
-      `Call complete_step for "${ended.stepId}".`,
+      ...(asked ?? [`Call complete_step for "${ended.stepId}".`]),
       others.length > 0 ? `Still running: ${others.join(", ")}.` : "",
     ].filter(Boolean));
     await this.deliver(runId);
