@@ -168,7 +168,7 @@ describe("restart a finished run from a step", () => {
 });
 
 /** Just enough of the daemon API for Runtime.restartRun. */
-function fakePaseo(agents: Record<string, { archivedAt: string | null; status?: string }>) {
+function fakePaseo(agents: Record<string, { archivedAt: string | null; status?: string }>, gone: string[] = []) {
   const sent: Array<{ agentId: string; text: string }> = [];
   const created: Array<{ workspaceId: string; labels: Record<string, string> }> = [];
   const ref = (agentId: string) => ({
@@ -184,7 +184,7 @@ function fakePaseo(agents: Record<string, { archivedAt: string | null; status?: 
     agents: { ref },
     workspaces: {
       ref: (workspaceId: string) => ({
-        refresh: async () => ({ id: workspaceId, projectId: "p", workspaceDirectory: tmpdir() }),
+        refresh: async () => (gone.includes(workspaceId) ? null : { id: workspaceId, projectId: workspaceId === "foreign" ? "other" : "p", workspaceDirectory: tmpdir() }),
         agents: {
           create: async (input: { labels: Record<string, string> }) => {
             const id = `mgr-${created.length + 1}`;
@@ -200,7 +200,7 @@ function fakePaseo(agents: Record<string, { archivedAt: string | null; status?: 
 }
 
 describe("Runtime.restartRun", () => {
-  async function stored(archivedManager: boolean, failure?: string) {
+  async function stored(archivedManager: boolean, failure?: string, gone: string[] = []) {
     const dir = await mkdtemp(path.join(tmpdir(), "restart-store-"));
     temps.push(dir);
     const store = new RunStore(dir);
@@ -212,7 +212,7 @@ describe("Runtime.restartRun", () => {
     else cancelRun(run, "stop", now());
     if (archivedManager) run.archivedAt = now();
     await store.create(run);
-    const fake = fakePaseo({ m: { archivedAt: archivedManager ? now() : null } });
+    const fake = fakePaseo({ m: { archivedAt: archivedManager ? now() : null } }, gone);
     const runtime = new Runtime(store);
     runtimes.push(runtime);
     await runtime.attach(fake.paseo as never);
@@ -265,6 +265,37 @@ describe("Runtime.restartRun", () => {
     expect(run.steps.investigate).toMatchObject({ status: "completed", outputs: { plan: "p" } });
     expect(readySteps(run).sort()).toEqual(["docs", "implement"]);
     expect(runtime.ownedRun("agent-y", "run_r").id).toBe("run_r");
+  });
+
+  it("moves a \"manager lost\" run whose workspace was deleted to another workspace, keeping earlier outputs", async () => {
+    const { store, runtime, sent, created } = await stored(true, "manager lost (archived)", ["ws"]);
+    await expect(runtime.restartRun("run_r", "implement", null, "agent-x", "agent")).rejects.toThrow(/no longer exists.*Pass workspaceId/);
+    const result = await runtime.restartRun("run_r", "implement", null, "agent-x", "agent", undefined, "ws2");
+    expect(result.newManager).toBe(true);
+    expect(created).toEqual([{ workspaceId: "ws2", labels: { "playbooks/manager": "true" } }]);
+    const run = store.get("run_r")!;
+    expect(run).toMatchObject({ status: "running", workspaceId: "ws2", managerAgentId: "mgr-1", failure: null });
+    expect(run.steps.investigate).toMatchObject({ status: "completed", outputs: { plan: "p" } });
+    expect(run.history.some((entry) => entry.type === "run_moved")).toBe(true);
+    expect(sent[0]!.agentId).toBe("mgr-1");
+    expect(sent[0]!.text).toMatch(/restarted in workspace ws2/);
+  });
+
+  it("names the active run of a busy workspace and suggests workspaceId; refuses a busy or foreign target", async () => {
+    const { store, runtime } = await stored(false);
+    const other = start(await playbook());
+    other.id = "run_busy";
+    other.workspaceId = "ws";
+    await store.create(other);
+    await expect(runtime.restartRun("run_r", "implement", null, "laptop")).rejects.toThrow(/another active run \(run_busy\).*Pass workspaceId/);
+    const third = start(await playbook());
+    third.id = "run_third";
+    third.workspaceId = "ws3";
+    await store.create(third);
+    await expect(runtime.restartRun("run_r", "implement", null, "laptop", "panel", undefined, "ws3")).rejects.toThrow(/workspace ws3 already has an active run \(run_third\)/);
+    await expect(runtime.restartRun("run_r", "implement", null, "laptop", "panel", undefined, "foreign")).rejects.toThrow(/another project/);
+    await expect(runtime.restartRun("run_r", "implement", null, "laptop", "panel", undefined, "ws2")).resolves.toMatchObject({ newManager: true });
+    expect(store.get("run_r")!.workspaceId).toBe("ws2");
   });
 
   it("refuses a takeover from an agent of another workspace", async () => {

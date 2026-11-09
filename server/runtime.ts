@@ -1481,7 +1481,7 @@ export class Runtime {
 
   /**
    * Reopens a finished (or archived) run from a step, from the panel or the restart_run tool.
-   * Same workspace and branch. With `takeOver`, that agent (the restart_run caller, in the
+   * Same workspace and branch, unless the workspace is gone or busy: then `workspaceId` names another workspace of the project to move the run to. With `takeOver`, that agent (the restart_run caller, in the
    * run's workspace) becomes the manager. Otherwise the manager stays when it still exists,
    * and a new Playbook Manager is created in the run's workspace when it does not. Refused
    * when the workspace has another active run or a concurrency slot the restarted run would
@@ -1494,6 +1494,7 @@ export class Runtime {
     by: string | null,
     via: "panel" | "agent" = "panel",
     takeOver?: { id: string; workspaceId: string | null },
+    workspaceId?: string,
   ): Promise<{ run: Run; newManager: boolean }> {
     const run = this.store.get(runId);
     if (!run) throw new UserError(`unknown run "${runId}"`);
@@ -1501,11 +1502,27 @@ export class Runtime {
     if (blocker) throw new UserError(blocker);
     if (isPipeline(run)) throw new UserError(`run ${run.id} is a singleton pipeline: it is not restarted; the next hand-off starts a new one`);
     if (run.train) throw new UserError(`run ${run.id} is a train of pipeline ${run.train.pipelineId}: a failed train's jobs ride the station's next train (or fail, past its retries)`);
-    if (takeOver && takeOver.workspaceId !== run.workspaceId) {
-      throw new UserError(`run ${run.id} is in another workspace (${run.workspaceId}, ${run.workspaceDir}): only an agent of that workspace can take it over; omit takeOver and a manager is found for it`);
+    const origin = await this.workspaceOf(run.workspaceId);
+    const active = (inWorkspace: string) => this.store.list().find((other) => other.id !== run.id && other.workspaceId === inWorkspace && isActive(other));
+    const busy = active(run.workspaceId);
+    let move: { id: string; dir: string; branch: string | null } | null = null;
+    if (workspaceId && workspaceId !== run.workspaceId) {
+      const target = await this.workspaceOf(workspaceId);
+      if (!target) throw new UserError(`workspace ${workspaceId} does not exist (list_workspaces shows the ones that do; create_workspace makes one)`);
+      if (target.projectId !== run.projectId) throw new UserError(`workspace ${workspaceId} belongs to another project than run ${run.id} (${run.projectId}): pick a workspace of the same project`);
+      const there = active(workspaceId);
+      if (there) throw new UserError(`workspace ${workspaceId} already has an active run (${there.id}); one active run per workspace`);
+      const dir = target.workspaceDirectory;
+      if (!dir) throw new UserError(`workspace ${workspaceId} has no directory`);
+      move = { id: workspaceId, dir, branch: (await currentRef(dir)) ?? run.branch };
+    } else if (!origin || busy) {
+      const why = !origin ? `its workspace (${run.workspaceId}, ${run.workspaceDir}) no longer exists` : `its workspace (${run.workspaceId}) has another active run (${busy!.id}); one active run per workspace`;
+      throw new UserError(`run ${run.id} cannot restart in place: ${why}. Pass workspaceId (an existing workspace of the same project with no active run; create_workspace makes one) to restart it there with its completed steps kept${busy ? `, or wait for ${busy.id} to end` : ""}.`);
     }
-    const busy = this.store.list().find((other) => other.id !== run.id && other.workspaceId === run.workspaceId && isActive(other));
-    if (busy) throw new UserError(`this workspace has another active run (${busy.id}); one active run per workspace`);
+    const homeId = move?.id ?? run.workspaceId;
+    if (takeOver && takeOver.workspaceId !== homeId) {
+      throw new UserError(`run ${run.id} will be in workspace ${homeId}: only an agent of that workspace can take it over; omit takeOver and a manager is found for it`);
+    }
     // Dry run: the restarted run must fit in the concurrency slots it would hold.
     const trial = structuredClone(run);
     engine.restartRun(trial, stepId, { comment, by, now: nowIso() });
@@ -1521,13 +1538,17 @@ export class Runtime {
         throw new UserError(`"${playbookId}" allows ${limit} active run(s) in this project; held by: ${holders.filter((id) => !id.startsWith(run.id)).join(", ")}. Try again once one ends.`);
       }
     }
-    const manager = takeOver ? null : await this.api().agents.ref(run.managerAgentId).refresh().catch(() => null);
-    const managerGone = !takeOver && (!manager || Boolean(manager.agent.archivedAt));
+    const manager = takeOver || move ? null : await this.api().agents.ref(run.managerAgentId).refresh().catch(() => null);
+    // A run moved to another workspace always gets a manager there.
+    const managerGone = !takeOver && (Boolean(move) || !manager || Boolean(manager.agent.archivedAt));
     // The original manager was archived (which also archives its runs): a new one takes over.
     // It is created without a prompt, so it cannot look for the run before the run is its own.
-    const replacement = managerGone ? await this.createReplacementManager(run) : null;
+    const replacement = managerGone ? await this.createReplacementManager(homeId, run.playbook) : null;
     const effects = await this.store.mutate(runId, (current) => {
       const fx = engine.restartRun(current, stepId, { comment, by, now: nowIso() });
+      if (move) {
+        engine.moveRun(current, move, nowIso());
+      }
       if (replacement) current.managerAgentId = replacement.id;
       if (takeOver) current.managerAgentId = takeOver.id;
       return fx;
@@ -1544,7 +1565,7 @@ export class Runtime {
       // The caller reads the ready steps in the tool result; nothing to wake.
     } else if (replacement) {
       const current = this.store.get(runId)!;
-      await replacement.send(`${managerTakeover(current, ready, "restarted after its previous manager was archived")}\n\n[playbooks] ${lines.join(" ")}`);
+      await replacement.send(`${managerTakeover(current, ready, move ? `restarted in workspace ${move.id} (${move.dir}), moved from ${run.workspaceId}` : "restarted after its previous manager was archived")}\n\n[playbooks] ${lines.join(" ")}`);
     } else {
       await this.enqueue(runId, lines);
       await this.deliver(runId);
@@ -1552,13 +1573,18 @@ export class Runtime {
     return { run: this.store.get(runId)!, newManager: replacement !== null || (takeOver !== undefined && takeOver.id !== run.managerAgentId) };
   }
 
+  /** The workspace, or null when it no longer exists. */
+  private async workspaceOf(workspaceId: string) {
+    return (await this.api().workspaces.ref(workspaceId).refresh().catch(() => null)) ?? null;
+  }
+
   /** A new Playbook Manager in the run's workspace, created without a prompt so it cannot look for the run before the run is its own. */
-  private async createReplacementManager(run: Run) {
+  private async createReplacementManager(workspaceId: string, playbook: Playbook) {
     return this.api()
-      .workspaces.ref(run.workspaceId)
+      .workspaces.ref(workspaceId)
       .agents.create({
-        config: this.managerConfig(run.playbook),
-        title: `Playbook Manager · ${run.playbook.title}`,
+        config: this.managerConfig(playbook),
+        title: `Playbook Manager · ${playbook.title}`,
         labels: { [MANAGER_LABEL]: "true" },
       })
       .catch((error: unknown) => {
@@ -1574,7 +1600,7 @@ export class Runtime {
    */
   private async adoptOrphanedRun(runId: string, parentId: string): Promise<boolean> {
     const run = this.store.get(runId)!;
-    const replacement = await this.createReplacementManager(run).catch((error: unknown) => {
+    const replacement = await this.createReplacementManager(run.workspaceId, run.playbook).catch((error: unknown) => {
       console.error(`[playbooks] could not hand run ${runId} to a new manager:`, errorText(error));
       return null;
     });

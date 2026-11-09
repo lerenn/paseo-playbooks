@@ -1364,6 +1364,14 @@ export function replaceManager(run: Run, managerAgentId: string, reason: string,
   log(run, now, "manager_replaced", null, `${previous} → ${managerAgentId}: ${reason}`);
 }
 
+/** Moves a run to another workspace (its own is gone or busy); completed steps keep their outputs. */
+export function moveRun(run: Run, to: { id: string; dir: string; branch: string | null }, now: string): void {
+  log(run, now, "run_moved", null, `${run.workspaceId} (${run.workspaceDir}) → ${to.id} (${to.dir})${to.branch && to.branch !== run.branch ? `; branch ${run.branch ?? "(none)"} → ${to.branch}` : ""}`);
+  run.workspaceId = to.id;
+  run.workspaceDir = to.dir;
+  run.branch = to.branch;
+}
+
 // ---------------------------------------------------------------- singleton pipelines and jobs
 
 /** A train's open jobs, as its steps read them: `{{ run.jobs }}` (YAML), `PLAYBOOK_JOBS` (JSON). */
