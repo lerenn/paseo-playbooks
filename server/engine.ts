@@ -73,6 +73,8 @@ export interface NewRunInput {
   branch: string | null;
   managerAgentId: string;
   name?: string | null;
+  /** The plugin created the workspace for this run. */
+  workspaceCreated?: boolean;
   inputs: Record<string, unknown>;
   now: string;
 }
@@ -163,6 +165,8 @@ function createRun(input: NewRunInput, inputs: Record<string, VarValue>, kind: "
     failure: null,
     createdAt: input.now,
     updatedAt: input.now,
+    workspaceCreated: input.workspaceCreated ?? false,
+    workspaceArchive: null,
     archivedAt: null,
     seenAt: null,
     pausedAt: null,
@@ -1376,6 +1380,8 @@ export function moveRun(run: Run, to: { id: string; dir: string; branch: string 
   run.workspaceId = to.id;
   run.workspaceDir = to.dir;
   run.branch = to.branch;
+  // The target workspace is the caller's: the plugin never archives it.
+  run.workspaceCreated = false;
 }
 
 // ---------------------------------------------------------------- singleton pipelines and jobs

@@ -233,6 +233,10 @@ export const PlaybookSchema = z.object({
   steps: z.array(StepSchema),
   roles: z.record(z.string(), RoleSchema),
   manager: AgentSettingsSchema,
+  /** Whether the plugin archives the workspace it created for a run once the run ends. */
+  workspace: z
+    .object({ archive: z.enum(["never", "on_end"]), keepFailed: z.boolean() })
+    .default({ archive: "never", keepFailed: true }),
   /**
    * Instructions added to the manager's protocol: `defaults/manager.md` (playbook null), then
    * this playbook's and each sub-playbook's `manager.prompt`, non-empty ones only, each once.
@@ -450,6 +454,10 @@ export const RunSchema = z.object({
   projectId: z.string(),
   branch: z.string().nullable(),
   managerAgentId: z.string(),
+  /** The plugin created this run's workspace (`newWorkspace`), so it may archive it. Never set for a pipeline's or a moved run's. */
+  workspaceCreated: z.boolean().default(false),
+  /** Once the run ended: `done` (workspace archived) or `skipped` (kept; the history says why). */
+  workspaceArchive: z.enum(["done", "skipped"]).nullable().default(null),
   /** A short name the Playbook Manager gave the run (e.g. "login-redirect-fix"): its tab label. */
   name: z.string().nullable().default(null),
   inputs: z.record(z.string(), VarValueSchema),
