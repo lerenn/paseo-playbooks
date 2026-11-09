@@ -696,9 +696,14 @@ steps that completed:
      outputs), then `start_step` the ready steps.
    - Without it, the run's manager is woken, or a new Playbook Manager is created in the
      run's workspace if the old one was archived.
+   - `workspaceId: <id>` moves the run to another workspace of the same project (no active
+     run in it) when its own workspace was deleted or has another active run. A new Playbook
+     Manager is created there; the history records the move. `create_workspace` makes a
+     workspace; check out the run's branch in it first if the work lives there.
 
 `restart_run` refuses an active run (cancel it first), a step whose needs did not complete,
-and a workspace that already has another active run. A new run cannot start mid-way: to
+and a workspace that is gone or already has another active run (the message names that run and
+suggests `workspaceId`). A new run cannot start mid-way: to
 skip work that a lost run did, restart that run rather than starting a new one.
 
 Paseo archives an agent's children with it. If a coordinator that created the manager is

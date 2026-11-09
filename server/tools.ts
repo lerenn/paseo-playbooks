@@ -530,23 +530,27 @@ export function runTools(runtime: Runtime): AgentToolDefinition[] {
     defineAgentTool({
       name: "restart_run",
       description:
-        "Recover a finished (completed, failed, canceled, or failed with \"manager lost\") or archived run: reopen it from a step of its main graph whose needs completed. That step and everything after it run again; completed steps before it keep their outputs and are not repeated. With takeOver: true you become its manager (you must be in the run's workspace). Otherwise its manager is woken, or, if that manager was archived, a new Playbook Manager is created in the run's workspace and takes over. See list_runs (archived: true) for runs, failure and restartableFrom.",
+        "Recover a finished (completed, failed, canceled, or failed with \"manager lost\") or archived run: reopen it from a step of its main graph whose needs completed. That step and everything after it run again; completed steps before it keep their outputs and are not repeated. With takeOver: true you become its manager (you must be in the run's workspace). Otherwise its manager is woken, or, if that manager was archived, a new Playbook Manager is created in the run's workspace and takes over. If the run's workspace was deleted or has another active run, pass workspaceId to restart it in another workspace of the project. See list_runs (archived: true) for runs, failure and restartableFrom.",
       input: z.object({
         runId: IdArg,
         stepId: z.string().describe("Step to restart from (see restartableFrom in list_runs)"),
         note: z.string().optional().describe("Feedback for the restarted step's next attempt, e.g. what changed since it stopped"),
+        workspaceId: z
+          .string()
+          .optional()
+          .describe("Move the run to this workspace (same project, no active run) when its own workspace is gone or has another active run; a new Playbook Manager is created there and completed steps keep their outputs"),
         takeOver: z
           .boolean()
           .default(false)
           .describe("Become the run's manager yourself (you must be an agent of the run's workspace), instead of its previous manager or a new one"),
       }),
-      execute: ({ runId, stepId, note, takeOver }, { agent }) =>
+      execute: ({ runId, stepId, note, takeOver, workspaceId }, { agent }) =>
         guard(async () => {
           // A taker needs the manager tools, which agents get in a workspace with playbooks.
           if (takeOver && runtime.runsOfManager(agent.id).length === 0 && !(await hasPlaybooks(agent.cwd))) {
             throw new UserError("you do not have the manager tools (your workspace has no playbooks): omit takeOver and a Playbook Manager is found for the run");
           }
-          const { run, newManager } = await runtime.restartRun(runId, stepId, note?.trim() || null, agent.id, "agent", takeOver ? { id: agent.id, workspaceId: agent.workspaceId } : undefined);
+          const { run, newManager } = await runtime.restartRun(runId, stepId, note?.trim() || null, agent.id, "agent", takeOver ? { id: agent.id, workspaceId: agent.workspaceId } : undefined, workspaceId);
           const isManager = run.managerAgentId === agent.id;
           const next = isManager
             ? `You manage it${newManager ? " now (get_run with view \"full\" shows the completed steps' reports and outputs)" : ""}: start the ready steps (${engine.readySteps(run).join(", ") || "none"}) with start_step.`
