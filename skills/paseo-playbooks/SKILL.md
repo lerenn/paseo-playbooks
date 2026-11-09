@@ -538,7 +538,9 @@ output that name, validation fails: map it explicitly. Nothing is chosen silentl
 
 `goto` must point to an earlier step that this one needs (or itself). It re-runs the
 target and every step after it. The step or gate that looped hands its summary or comment
-to the target as "Feedback to address". Reaching `max_loops` opens a "loop limit" gate.
+to the target as "Feedback to address". Reaching `max_loops` opens a "loop limit" gate; approving it
+sends the target the step's feedback and the decision's comment ("On the loop limit, the human said: …"). A comment
+from the manager or a role decider reads "the manager said"/"the role "x" said", whichever gate it is.
 
 To let an agent step ask a human a question, give it an outcome that routes to `ask`:
 
