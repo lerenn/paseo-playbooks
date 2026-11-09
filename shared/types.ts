@@ -381,6 +381,8 @@ export const GateSchema = z.object({
   deciderAgentId: z.string().nullable().default(null),
   /** Set when the manager or role decider left the gate to a human: its reason. */
   escalated: z.string().nullable().default(null),
+  /** When it was escalated. */
+  escalatedAt: z.string().nullable().default(null),
   decidedAt: z.string().nullable(),
 });
 export type Gate = z.infer<typeof GateSchema>;

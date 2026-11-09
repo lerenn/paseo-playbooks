@@ -42,7 +42,7 @@ How to run a playbook:
    chat some other way, call resume with it.
    A gate may name another decider; each gate's message says which. With the manager as
    decider, decide it yourself when the run gives you enough (resume with byManager: true
-   and your reason as comment), or ask a human as above. With a role as decider, the plugin
+   and your reason as comment), or call escalate_gate with your reason and ask a human as above. With a role as decider, the plugin
    starts an agent that decides it or leaves it to a human: do not ask and do not call
    resume, end your turn; you are woken with its decision, or told to ask a human. Never
    decide a gate without byManager unless a human gave you the answer.

@@ -38,6 +38,8 @@ export function gateListing(run: Run, gate: Gate, now: number) {
     heldBy: holder.heldBy,
     roleDeciding: holder.roleDeciding,
     waitingForHuman: waitsForHuman(gate),
+    escalatedAt: gate.escalated !== null ? gate.escalatedAt ?? null : null,
+    escalationReason: gate.escalated,
     openedAt: gate.requestedAt,
     ageMinutes: Number.isNaN(opened) ? null : Math.max(0, Math.floor((now - opened) / 60_000)),
   };

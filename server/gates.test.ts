@@ -34,7 +34,7 @@ describe("gateText and linkify", () => {
   const gate = {
     id: "g", kind: "gate" as const, stepId: "pr_approval", gotoTarget: null, outcome: null, status: "pending",
     message: "", summary: long, details: "The PR is ready.", requestedAt: "", comment: null, decidedBy: null, decidedVia: null, decidedAt: null,
-    decider: { by: "human" as const }, deciderAgentId: null, escalated: null,
+    decider: { by: "human" as const }, deciderAgentId: null, escalated: null, escalatedAt: null,
   };
 
   it("keeps the first sentence as the summary and moves the rest to details", () => {
