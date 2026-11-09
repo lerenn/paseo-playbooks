@@ -25,7 +25,8 @@ import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "./defaults";
 import * as engine from "./engine";
 import { checkoutSnapshot, currentRef, defaultBranch, fastForward, freshRef, snapshotDiff } from "./git";
 import { loadPlaybooks } from "./loader";
-import { DEFAULT_STALE_MINUTES, decidedBySubscriber, decidedLine, eventsMessage, failedLine, loadSubscriptions, matches, MAX_SUBSCRIPTIONS, openedLine, saveSubscriptions, staleLine, type EventName, type Subscription, type SubscriptionFilter } from "./events";
+import { BusError, EventBus, type BusEvent, type Notifier, type Subscription } from "./bus";
+import { OversightProducer, registerOversightTypes } from "./oversight-events";
 import { gateListing, listAttention, type GateFilter } from "./overseer";
 import { managerLostNotice, gateDeciderPrompt, gateDeciderSystemPrompt, gateDecisionReminder, managerAfterRestart, managerKickoff, managerTakeover, reportReminder, resumeAfterRestart, silenceReminder, singletonKickoff, stepSystemPrompt } from "./prompts";
 import { askHumanText, choicesOfGate, waitsForHuman } from "../shared/gates";
@@ -222,21 +223,34 @@ export class Runtime {
   /** Role deciders of closed gates already stopped, by agent id. */
   private readonly stoppedDeciders = new Set<string>();
 
-  /** Event subscriptions (events.ts): kept in a file, loaded on first use. */
-  private subscriptions: Subscription[] | null = null;
-  private subscriptionsLoading: Promise<Subscription[]> | null = null;
-  /** Gates seen open, runs whose failure was reported, and the events of the debounce window per subscriber. */
-  private readonly knownGates = new Map<string, { runId: string; gateId: string }>();
-  private readonly failuresSeen = new Set<string>();
-  private readonly eventBuffers = new Map<string, { lines: string[]; since: number }>();
-  private eventsSeeded = false;
+  /** The event bus (bus.ts) and its first producer, the runs (oversight-events.ts). */
+  readonly bus: EventBus;
+  private readonly producer: OversightProducer;
   private eventsScanning = false;
   private eventsTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     private readonly store: RunStore,
-    private readonly options: { subscriptionsFile?: string; debounceMs?: number; pollMs?: number } = {},
-  ) {}
+    private readonly options: { dataDir?: string; debounceMs?: number; pollMs?: number } = {},
+  ) {
+    const dir = options.dataDir ?? path.dirname(store.dir);
+    this.bus = new EventBus({ events: path.join(dir, "events.json"), subscriptions: path.join(dir, "subscriptions.json") }, options.debounceMs === undefined ? {} : { debounceMs: options.debounceMs });
+    registerOversightTypes(this.bus);
+    this.bus.registerNotifier("agent", this.agentNotifier());
+    this.producer = new OversightProducer(this.bus);
+  }
+
+  /** Sends a subscription's events as a plain-text message to its agent; an archived or missing agent is "gone". */
+  private agentNotifier(): Notifier {
+    return {
+      deliver: async (subscription: Subscription, _events: BusEvent[], text: string) => {
+        const agent = await this.api().agents.ref(subscription.sink.target).refresh().catch(() => null);
+        if (!agent || agent.agent.archivedAt) return "gone";
+        await this.api().agents.ref(subscription.sink.target).send(text, { activeTurnBehavior: "steer" });
+        return "delivered";
+      },
+    };
+  }
 
   // ---------------------------------------------------------------- lifecycle
 
@@ -264,7 +278,7 @@ export class Runtime {
     this.timers.clear();
     this.watches.clear();
     for (const id of [...this.scripts.keys()]) this.stopScript(id);
-    return this.store.close();
+    return Promise.all([this.store.close(), this.bus.close()]).then(() => undefined);
   }
 
   /**
@@ -371,121 +385,30 @@ export class Runtime {
     return listAttention(this.store.list(), Date.now(), filter);
   }
 
-  // ---------------------------------------------------------------- event subscriptions
+  // ---------------------------------------------------------------- events
 
-  private subscriptionsFile(): string {
-    return this.options.subscriptionsFile ?? path.join(path.dirname(this.store.dir), "subscriptions.json");
+  async subscribeEvents(agentId: string, types: string[], filter: Record<string, string | number | boolean>): Promise<Subscription> {
+    try {
+      if (typeof filter.runId === "string" && !this.store.get(filter.runId)) throw new UserError(`unknown run "${filter.runId}"`);
+      return await this.bus.subscribe(agentId, { kind: "agent", target: agentId }, types, filter);
+    } catch (error) {
+      throw error instanceof BusError ? new UserError(error.message) : error;
+    }
   }
 
-  private async subs(): Promise<Subscription[]> {
-    if (this.subscriptions) return this.subscriptions;
-    this.subscriptionsLoading ??= loadSubscriptions(this.subscriptionsFile()).then((loaded) => (this.subscriptions = loaded));
-    return this.subscriptionsLoading;
+  async unsubscribeEvents(agentId: string, id: string): Promise<void> {
+    await this.bus.unsubscribe(agentId, id).catch((error: unknown) => {
+      throw error instanceof BusError ? new UserError(error.message) : error;
+    });
   }
 
-  private async persistSubs(): Promise<void> {
-    await saveSubscriptions(this.subscriptionsFile(), this.subscriptions ?? []).catch((error: unknown) => console.error("[playbooks] could not save subscriptions:", errorText(error)));
-  }
-
-  async subscribe(agentId: string, events: EventName[], filter: SubscriptionFilter): Promise<Subscription> {
-    const all = await this.subs();
-    if (all.filter((sub) => sub.agentId === agentId).length >= MAX_SUBSCRIPTIONS) throw new UserError(`you already hold ${MAX_SUBSCRIPTIONS} subscriptions: unsubscribe_events one first (see list_subscriptions)`);
-    if (filter.runId && !this.store.get(filter.runId)) throw new UserError(`unknown run "${filter.runId}"`);
-    const sub: Subscription = { id: `sub-${shortId()}`, agentId, events: [...new Set(events)], filter, createdAt: nowIso(), reminded: [] };
-    all.push(sub);
-    await this.persistSubs();
-    return sub;
-  }
-
-  /** Only the subscriber can drop its subscription. */
-  async unsubscribe(agentId: string, id: string): Promise<void> {
-    const all = await this.subs();
-    const at = all.findIndex((sub) => sub.id === id);
-    if (at < 0 || all[at]!.agentId !== agentId) throw new UserError(`you have no subscription "${id}" (see list_subscriptions)`);
-    all.splice(at, 1);
-    await this.persistSubs();
-  }
-
-  async listSubscriptions(agentId: string): Promise<Subscription[]> {
-    return (await this.subs()).filter((sub) => sub.agentId === agentId);
-  }
-
-  private async dropSubscriptions(agentId: string): Promise<void> {
-    const all = await this.subs();
-    const kept = all.filter((sub) => sub.agentId !== agentId);
-    this.eventBuffers.delete(agentId);
-    if (kept.length === all.length) return;
-    this.subscriptions = kept;
-    await this.persistSubs();
-  }
-
-  /**
-   * Finds what happened since the last scan (a gate or ask opened, decided or still open past its
-   * age, a run failed or lost its manager) and queues a line for each subscriber it matches; a
-   * subscriber's lines of one debounce window go out as one message. What is open at the first
-   * scan after a start is not reported as opened. The events of runs of a train are not
-   * reported as failures (a train's end is its job's outcome).
-   */
+  /** One pass: producers emit what changed, then the bus delivers what has waited out its debounce. */
   async watchEvents(now = Date.now()): Promise<void> {
     if (this.eventsScanning) return;
     this.eventsScanning = true;
     try {
-      const subs = await this.subs();
-      const seeding = !this.eventsSeeded;
-      this.eventsSeeded = true;
-      const queue = (agentId: string, line: string) => {
-        const buffer = this.eventBuffers.get(agentId) ?? { lines: [], since: now };
-        buffer.lines.push(line);
-        this.eventBuffers.set(agentId, buffer);
-      };
-      const dirty = new Set<Subscription>();
-      const open = new Set<string>();
-      for (const run of this.store.list()) {
-        if (run.archivedAt) continue;
-        for (const gate of run.gates) {
-          const key = `${run.id}/${gate.id}`;
-          if (gate.status === "pending") {
-            if (!isActive(run)) continue;
-            open.add(key);
-            const listing = gateListing(run, gate, now);
-            if (!this.knownGates.has(key)) {
-              this.knownGates.set(key, { runId: run.id, gateId: gate.id });
-              if (!seeding) for (const sub of subs) if (sub.events.includes("gate_opened") && matches(sub.filter, run, gate)) queue(sub.agentId, openedLine(listing));
-            }
-            for (const sub of subs) {
-              if (!sub.events.includes("gate_stale") || !matches(sub.filter, run, gate) || sub.reminded.includes(key)) continue;
-              if ((listing.ageMinutes ?? 0) < (sub.filter.olderThanMinutes ?? DEFAULT_STALE_MINUTES)) continue;
-              sub.reminded.push(key);
-              dirty.add(sub);
-              queue(sub.agentId, staleLine(listing));
-            }
-          } else if (this.knownGates.has(key)) {
-            this.knownGates.delete(key);
-            for (const sub of subs) {
-              if (sub.events.includes("gate_decided") && matches(sub.filter, run, gate) && !decidedBySubscriber(run, gate, sub.agentId)) queue(sub.agentId, decidedLine(run, gate));
-            }
-          }
-        }
-        if (run.status === "failed" && !this.failuresSeen.has(run.id)) {
-          this.failuresSeen.add(run.id);
-          if (seeding || run.train) continue;
-          const lost = (run.failure ?? "").startsWith("manager lost");
-          for (const sub of subs) if (sub.events.includes(lost ? "manager_lost" : "run_failed") && matches(sub.filter, run)) queue(sub.agentId, failedLine(run, lost));
-        }
-      }
-      // A gate that left the open set without being decided (its run ended or was archived) is forgotten.
-      for (const key of [...this.knownGates.keys()]) if (!open.has(key)) this.knownGates.delete(key);
-      if (dirty.size > 0) await this.persistSubs();
-      for (const [agentId, buffer] of [...this.eventBuffers]) {
-        if (now - buffer.since < (this.options.debounceMs ?? 5000)) continue;
-        this.eventBuffers.delete(agentId);
-        const agent = await this.api().agents.ref(agentId).refresh().catch(() => null);
-        if (!agent || agent.agent.archivedAt) {
-          await this.dropSubscriptions(agentId);
-          continue;
-        }
-        await this.api().agents.ref(agentId).send(eventsMessage(buffer.lines), { activeTurnBehavior: "steer" }).catch((error: unknown) => console.error(`[playbooks] could not send events to ${agentId}:`, errorText(error)));
-      }
+      await this.producer.scan(this.store.list(), now);
+      await this.bus.flush(now);
     } finally {
       this.eventsScanning = false;
     }
@@ -1952,7 +1875,7 @@ export class Runtime {
     const at = Date.now();
     this.recentArchives = [...this.recentArchives.filter((entry) => at - entry.at < 5000), { id: agentId, at }];
     this.pendingHandoffs.delete(agentId);
-    await this.dropSubscriptions(agentId);
+    await this.bus.dropOwner(agentId);
     const decider = this.deciderOf(agentId);
     if (decider) {
       this.stoppedDeciders.add(agentId);

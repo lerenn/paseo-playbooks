@@ -6,7 +6,6 @@ import { repairReport } from "./malformed";
 import { isActive, isAgentlessAttempt, isPaused, isPipeline, isTerminal, restartBlocker, runningAfterTasks, VarValueSchema } from "../shared/types";
 import * as engine from "./engine";
 import { hasPlaybooks, loadPlaybooks } from "./loader";
-import { EVENT_NAMES } from "./events";
 import { attentionText } from "./overseer";
 import { MANAGER_PROTOCOL, managerInstructionsText } from "./prompts";
 import { UserError, type Runtime } from "./runtime";
@@ -512,22 +511,15 @@ export function runTools(runtime: Runtime): AgentToolDefinition[] {
     defineAgentTool({
       name: "subscribe_events",
       description:
-        "Get a message from the plugin when something happens on any playbook run: gate_opened (a gate step, ask or loop-limit gate opened: question, choices, decider and who holds it), gate_stale (still open after olderThanMinutes, default 30; one reminder per gate), gate_decided (who decided, via panel, chat, manager or role, and the comment; not sent to the manager or role agent that decided it itself), run_failed (reason and restartableFrom), manager_lost (a run failed because its manager is gone). Bursts are merged into one message. The subscriber is you; the subscription survives daemon restarts and ends when you are archived. Read-only: you still decide nothing. Returns the subscription id.",
+        'Get a plain-text message from the plugin when events happen on the daemon. types: exact names or globs ("gate.*", "run.failed", "*"). Types today: gate.opened (a gate step, ask or loop-limit gate opened: question, choices, decider and who holds it), gate.stale (still open after filter.olderThanMinutes, default 30; once per gate), gate.decided (who, via panel/chat/manager/role, and the comment; not sent to the manager or role agent that decided it), run.failed (reason and restartableFrom), run.manager_lost. filter: payload fields that must equal a value (e.g. { playbook: "release", deciderBy: "role" }, { runId }), plus olderThanMinutes for gate.stale. Bursts are merged into one message. The subscriber is you; it survives daemon restarts and ends when you are archived. Returns the subscription id. list_events replays what you missed.',
       input: z.object({
-        events: z.array(z.enum(EVENT_NAMES)).min(1).describe("Events to receive"),
-        filter: z
-          .object({
-            playbook: z.string().optional().describe("Only runs of this playbook id"),
-            runId: IdArg.optional().describe("Only this run"),
-            deciderBy: z.enum(["human", "manager", "role"]).optional().describe("Only gates with this decider (gate events)"),
-            olderThanMinutes: z.number().min(0).optional().describe("For gate_stale: minutes a gate stays open first (default 30)"),
-          })
-          .default({}),
+        types: z.array(z.string()).min(1).describe('Event types or globs, e.g. ["gate.*", "run.failed"]'),
+        filter: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).default({}).describe("Payload fields to match by equality; olderThanMinutes picks the delay of a stale event"),
       }),
-      execute: ({ events, filter }, { agent }) =>
+      execute: ({ types, filter }, { agent }) =>
         guard(async () => {
-          const sub = await runtime.subscribe(agent.id, events, filter);
-          return ok(`Subscribed (${sub.id}) to ${sub.events.join(", ")}. You get a "[playbooks]" message when one happens; list_gates shows what is open now.`, { subscription: sub });
+          const sub = await runtime.subscribeEvents(agent.id, types, filter);
+          return ok(`Subscribed (${sub.id}) to ${sub.types.join(", ")}. You get a "[playbooks]" message when one happens; list_gates shows what is open now, list_events what happened.`, { subscription: sub });
         }),
     }),
     defineAgentTool({
@@ -536,18 +528,33 @@ export function runTools(runtime: Runtime): AgentToolDefinition[] {
       input: z.object({ id: z.string().describe("Subscription id from subscribe_events") }),
       execute: ({ id }, { agent }) =>
         guard(async () => {
-          await runtime.unsubscribe(agent.id, id);
+          await runtime.unsubscribeEvents(agent.id, id);
           return ok(`Subscription ${id} removed.`);
         }),
     }),
     defineAgentTool({
       name: "list_subscriptions",
-      description: "List your event subscriptions (subscribe_events): id, events and filter.",
+      description: "List your event subscriptions (subscribe_events): id, types, filter and sink.",
       input: z.object({}),
       execute: (_input, { agent }) =>
         guard(async () => {
-          const subscriptions = await runtime.listSubscriptions(agent.id);
+          const subscriptions = await runtime.bus.list(agent.id);
           return ok(subscriptions.length === 0 ? "No subscription." : JSON.stringify(subscriptions, null, 2), { subscriptions });
+        }),
+    }),
+    defineAgentTool({
+      name: "list_events",
+      description:
+        "The recent events log (the last 500, kept across restarts), oldest first, each with a monotonic seq, type, time, run and payload. Pass since: the seq of the last event you saw to catch up on what you missed (after a restart, or when you were down); lastSeq is the newest. types takes exact names or globs. Without since: the last `limit` events. If oldestSeq is above your since + 1, older events were dropped.",
+      input: z.object({
+        since: z.number().int().min(0).optional().describe("Only events with a seq above this"),
+        types: z.array(z.string()).optional().describe('Exact names or globs, e.g. ["gate.*"]'),
+        limit: z.number().int().min(1).max(500).optional().describe("At most this many (default 50)"),
+      }),
+      execute: (query) =>
+        guard(async () => {
+          const result = await runtime.bus.recent(query);
+          return ok(result.events.length === 0 ? `No event${query.since === undefined ? "" : ` after ${query.since}`}. lastSeq: ${result.lastSeq}.` : JSON.stringify(result, null, 2), result);
         }),
     }),
     defineAgentTool({

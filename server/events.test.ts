@@ -122,10 +122,27 @@ describe("get_run is read-only on a run of another manager", () => {
   });
 });
 
+describe("event log", () => {
+  it("records gate and run events with sequence numbers, for an agent that was away", async () => {
+    const { runtime } = await setup();
+    await runtime.watchEvents();
+    const a = await runtime.startPlaybook(mgr("m1"), "human", {});
+    const gate = await runtime.requestGate("m1", a.id, "approve", "Ship?", "");
+    await runtime.watchEvents();
+    await runtime.decideGate(a.id, gate.id, { decision: "approved", comment: "ok", by: "U1", via: "panel", now: now() });
+    await runtime.watchEvents();
+    const { events, lastSeq } = await runtime.bus.recent();
+    expect(events.map((event) => [event.seq, event.type])).toEqual([[1, "gate.opened"], [2, "gate.decided"]]);
+    expect(events[1]!.payload).toMatchObject({ decision: "approved", decidedVia: "panel", comment: "ok" });
+    expect(lastSeq).toBe(2);
+    expect((await runtime.bus.recent({ since: 1 })).events.map((event) => event.type)).toEqual(["gate.decided"]);
+  });
+});
+
 describe("event subscriptions", () => {
   it("tells the subscriber when a gate opens, with the question, choices, decider and holder", async () => {
     const { runtime, sent } = await setup();
-    const sub = await runtime.subscribe("watcher", ["gate_opened"], {});
+    const sub = await runtime.subscribeEvents("watcher", ["gate.opened"], {});
     await runtime.watchEvents(); // seeds
     const human = await runtime.startPlaybook(mgr("m1"), "human", {});
     await runtime.requestGate("m1", human.id, "approve", "Ship A?", "");
@@ -149,20 +166,20 @@ describe("event subscriptions", () => {
     const first = await setup();
     const run = await first.runtime.startPlaybook(mgr("m1"), "human", {});
     const gate = await first.runtime.requestGate("m1", run.id, "approve", "Ship?", "");
-    await first.runtime.subscribe("watcher", ["gate_opened", "gate_decided"], {});
+    await first.runtime.subscribeEvents("watcher", ["gate.opened", "gate.decided"], {});
     await first.runtime.dispose();
     const again = await setup({}, { dir: first.dir, file: "" });
     await again.runtime.watchEvents();
     expect(toAgent(again.sent, "watcher")).toBe("");
     await again.runtime.decideGate(run.id, gate.id, { decision: "rejected", comment: "Not now.", by: "U1", via: "chat", now: now() });
     await again.runtime.watchEvents();
-    expect(toAgent(again.sent, "watcher")).toMatch(/gate_decided[\s\S]*rejected, by U1 via chat\. Comment: "Not now\."/);
+    expect(toAgent(again.sent, "watcher")).toMatch(/gate.decided[\s\S]*rejected, by U1 via chat\. Comment: "Not now\."/);
   });
 
   it("does not report a decision back to the manager or role that took it", async () => {
     const { runtime, sent } = await setup();
-    await runtime.subscribe("m1", ["gate_decided"], {});
-    await runtime.subscribe("watcher", ["gate_decided"], {});
+    await runtime.subscribeEvents("m1", ["gate.decided"], {});
+    await runtime.subscribeEvents("watcher", ["gate.decided"], {});
     await runtime.watchEvents();
     const run = await runtime.startPlaybook(mgr("m1"), "human", {});
     const gate = await runtime.requestGate("m1", run.id, "approve", "Ship?", "");
@@ -170,51 +187,51 @@ describe("event subscriptions", () => {
     await runtime.decideGate(run.id, gate.id, { decision: "approved", comment: null, by: "U1", via: "chat", now: now() });
     await runtime.watchEvents();
     expect(toAgent(sent, "m1")).toBe("");
-    expect(toAgent(sent, "watcher")).toMatch(/gate_decided/);
+    expect(toAgent(sent, "watcher")).toMatch(/gate.decided/);
   });
 
   it("sends one reminder per gate after olderThanMinutes (default 30)", async () => {
     const { runtime, store, sent } = await setup();
-    await runtime.subscribe("watcher", ["gate_stale"], {});
-    await runtime.subscribe("quick", ["gate_stale"], { olderThanMinutes: 5 });
+    await runtime.subscribeEvents("watcher", ["gate.stale"], {});
+    await runtime.subscribeEvents("quick", ["gate.stale"], { olderThanMinutes: 5 });
     const run = await runtime.startPlaybook(mgr("m1"), "human", {});
     await runtime.requestGate("m1", run.id, "approve", "Ship?", "");
     await runtime.watchEvents();
     expect(sent).toHaveLength(0);
     await store.mutate(run.id, (current) => void (current.gates[0]!.requestedAt = new Date(Date.now() - 10 * 60_000).toISOString()));
     await runtime.watchEvents();
-    expect(toAgent(sent, "quick")).toMatch(/gate_stale: still open after 10 min/);
+    expect(toAgent(sent, "quick")).toMatch(/gate.stale: still open after 10 min/);
     expect(toAgent(sent, "watcher")).toBe("");
     await store.mutate(run.id, (current) => void (current.gates[0]!.requestedAt = new Date(Date.now() - 31 * 60_000).toISOString()));
     await runtime.watchEvents();
     await runtime.watchEvents();
-    expect(toAgent(sent, "watcher").match(/gate_stale/g)).toHaveLength(1);
-    expect(toAgent(sent, "quick").match(/gate_stale/g)).toHaveLength(1);
+    expect(toAgent(sent, "watcher").match(/gate.stale/g)).toHaveLength(1);
+    expect(toAgent(sent, "quick").match(/gate.stale/g)).toHaveLength(1);
   });
 
   it("reports a failed run with its reason, and a lost manager as its own event", async () => {
     const { runtime, store, sent } = await setup();
-    await runtime.subscribe("failures", ["run_failed"], {});
-    await runtime.subscribe("lost", ["manager_lost"], {});
+    await runtime.subscribeEvents("failures", ["run.failed"], {});
+    await runtime.subscribeEvents("lost", ["run.manager_lost"], {});
     await runtime.watchEvents();
     const a = await runtime.startPlaybook(mgr("m1"), "ask", {});
     const b = await runtime.startPlaybook(mgr("m2"), "ask", {});
     await store.mutate(a.id, (run) => void Object.assign(run, { status: "failed", failure: "step work failed" }));
     await store.mutate(b.id, (run) => void Object.assign(run, { status: "failed", failure: "manager lost (archived)" }));
     await runtime.watchEvents();
-    expect(toAgent(sent, "failures")).toMatch(new RegExp(`run_failed: run ${a.id}[\\s\\S]*step work failed; restartable from`));
+    expect(toAgent(sent, "failures")).toMatch(new RegExp(`run.failed: run ${a.id}[\\s\\S]*step work failed; restartable from`));
     expect(toAgent(sent, "failures")).not.toContain(b.id);
-    expect(toAgent(sent, "lost")).toMatch(new RegExp(`manager_lost: run ${b.id}[\\s\\S]*manager lost \\(archived\\)`));
+    expect(toAgent(sent, "lost")).toMatch(new RegExp(`run.manager_lost: run ${b.id}[\\s\\S]*manager lost \\(archived\\)`));
     expect(toAgent(sent, "lost")).not.toContain(a.id);
   });
 
   it("filters by playbook, run and decider", async () => {
     const { runtime, sent } = await setup();
-    await runtime.subscribe("byPlaybook", ["gate_opened"], { playbook: "role" });
-    await runtime.subscribe("byDecider", ["gate_opened"], { deciderBy: "human" });
+    await runtime.subscribeEvents("byPlaybook", ["gate.opened"], { playbook: "role" });
+    await runtime.subscribeEvents("byDecider", ["gate.opened"], { deciderBy: "human" });
     await runtime.watchEvents();
     const human = await runtime.startPlaybook(mgr("m1"), "human", {});
-    await runtime.subscribe("byRun", ["gate_opened"], { runId: human.id });
+    await runtime.subscribeEvents("byRun", ["gate.opened"], { runId: human.id });
     await runtime.requestGate("m1", human.id, "approve", "Ship A?", "");
     const role = await runtime.startPlaybook(mgr("m2"), "role", {});
     await runtime.requestGate("m2", role.id, "approve", "Ship B?", "");
@@ -225,12 +242,12 @@ describe("event subscriptions", () => {
     expect(toAgent(sent, "byDecider")).not.toMatch(/Ship B\?/);
     expect(toAgent(sent, "byRun")).toMatch(/Ship A\?/);
     expect(toAgent(sent, "byRun")).not.toMatch(/Ship B\?/);
-    await expect(runtime.subscribe("x", ["gate_opened"], { runId: "nope" })).rejects.toThrow(/unknown run/);
+    await expect(runtime.subscribeEvents("x", ["gate.opened"], { runId: "nope" })).rejects.toThrow(/unknown run/);
   });
 
   it("merges a burst into one message once the debounce window has passed", async () => {
     const { runtime, sent } = await setup({ debounceMs: 5000 });
-    await runtime.subscribe("watcher", ["gate_opened"], {});
+    await runtime.subscribeEvents("watcher", ["gate.opened"], {});
     const t = Date.now();
     await runtime.watchEvents(t);
     const a = await runtime.startPlaybook(mgr("m1"), "human", {});
@@ -247,27 +264,27 @@ describe("event subscriptions", () => {
 
   it("lists and removes subscriptions, only the subscriber's own", async () => {
     const { runtime } = await setup();
-    const mine = await runtime.subscribe("me", ["run_failed"], { playbook: "human" });
-    await runtime.subscribe("you", ["run_failed"], {});
-    expect((await runtime.listSubscriptions("me")).map((sub) => sub.id)).toEqual([mine.id]);
-    await expect(runtime.unsubscribe("you", mine.id)).rejects.toThrow(/no subscription/);
-    await runtime.unsubscribe("me", mine.id);
-    expect(await runtime.listSubscriptions("me")).toEqual([]);
-    expect(await runtime.listSubscriptions("you")).toHaveLength(1);
+    const mine = await runtime.subscribeEvents("me", ["run.failed"], { playbook: "human" });
+    await runtime.subscribeEvents("you", ["run.failed"], {});
+    expect((await runtime.bus.list("me")).map((sub) => sub.id)).toEqual([mine.id]);
+    await expect(runtime.unsubscribeEvents("you", mine.id)).rejects.toThrow(/no subscription/);
+    await runtime.unsubscribeEvents("me", mine.id);
+    expect(await runtime.bus.list("me")).toEqual([]);
+    expect(await runtime.bus.list("you")).toHaveLength(1);
   });
 
   it("keeps subscriptions across a restart, and drops them when the agent is archived", async () => {
     const first = await setup();
-    const sub = await first.runtime.subscribe("watcher", ["gate_opened"], { playbook: "human" });
-    await first.runtime.subscribe("gone", ["gate_opened"], {});
+    const sub = await first.runtime.subscribeEvents("watcher", ["gate.opened"], { playbook: "human" });
+    await first.runtime.subscribeEvents("gone", ["gate.opened"], {});
     await first.runtime.dispose();
     const file = path.join(first.dir, "data", "subscriptions.json");
     expect(JSON.parse(await readFile(file, "utf8"))).toHaveLength(2);
 
     const again = await setup({}, { dir: first.dir, file });
-    expect((await again.runtime.listSubscriptions("watcher")).map((entry) => entry.id)).toEqual([sub.id]);
+    expect((await again.runtime.bus.list("watcher")).map((entry) => entry.id)).toEqual([sub.id]);
     await again.runtime.onAgentArchived("watcher");
-    expect(await again.runtime.listSubscriptions("watcher")).toEqual([]);
+    expect(await again.runtime.bus.list("watcher")).toEqual([]);
     expect(JSON.parse(await readFile(file, "utf8"))).toHaveLength(1);
 
     // An agent that vanished without the hook (lost) is dropped at the next send.
@@ -276,7 +293,7 @@ describe("event subscriptions", () => {
     const run = await again.runtime.startPlaybook(mgr("m1"), "human", {});
     await again.runtime.requestGate("m1", run.id, "approve", "Ship?", "");
     await again.runtime.watchEvents();
-    expect(await again.runtime.listSubscriptions("gone")).toEqual([]);
+    expect(await again.runtime.bus.list("gone")).toEqual([]);
     expect(toAgent(again.sent, "gone")).toBe("");
   });
 });
