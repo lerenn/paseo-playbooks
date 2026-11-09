@@ -23,7 +23,7 @@ import type {
   VarValue,
   When,
 } from "../shared/types";
-import { AgentSettingsSchema, DEFAULT_MANAGER_COMPACT, ManagerCompactSchema, VarTypeSchema, VarValueSchema } from "../shared/types";
+import { AgentSettingsSchema, DEFAULT_MANAGER_COMPACT, ManagerCompactSchema, type Isolation, VarTypeSchema, VarValueSchema } from "../shared/types";
 import { coerceValue, parseDuration, replaceRefs, singleRef, templateRefs, typeCompatible } from "../shared/vars";
 
 /** Folders searched for playbooks, relative to the workspace. Each folder is self-contained. */
@@ -252,6 +252,29 @@ const RawWorkspaceSchema = z
   })
   .strict();
 
+/** Where a run's agents work: `worktree` (or `{ mode: worktree }`) gives the run a private git worktree. */
+const RawIsolationSchema = z.union([
+  z.enum(["none", "worktree"]),
+  z
+    .object({
+      /** `none` (default): the workspace checkout. `worktree`: a private git worktree per run. */
+      mode: z.enum(["none", "worktree"]).optional(),
+      /** Submodules linked into the worktree: `none` (default; agents init what they need), `all`, or a list of paths. */
+      submodules: z.union([z.enum(["none", "all"]), z.array(z.string().min(1))]).optional(),
+      /** Branch the worktree starts from (its fresh origin copy). Default: the project's default branch. */
+      base: z.string().min(1).optional(),
+    })
+    .strict(),
+]);
+type RawIsolation = z.infer<typeof RawIsolationSchema>;
+
+/** A playbook's isolation over the defaults': the playbook's own fields win, field by field. */
+function resolveIsolation(own: RawIsolation | undefined, fallback: RawIsolation | undefined): Isolation {
+  const fields = (raw: RawIsolation | undefined) => (typeof raw === "string" ? { mode: raw } : (raw ?? {}));
+  const merged = { ...fields(fallback), ...fields(own) } as { mode?: Isolation["mode"]; submodules?: Isolation["submodules"]; base?: string };
+  return { mode: merged.mode ?? "none", submodules: merged.submodules ?? "none", base: merged.base ?? null };
+}
+
 const RawPlaybookSchema = z.object({
     title: z.string().optional(),
     description: z.string().optional(),
@@ -269,6 +292,7 @@ const RawPlaybookSchema = z.object({
       .strict()
       .optional(),
     workspace: RawWorkspaceSchema.optional(),
+    isolation: RawIsolationSchema.optional(),
     inputs: z.record(z.string(), RawVarDefSchema.nullable()).optional(),
     outputs: z.record(z.string(), RawOutputSchema.nullable()).optional(),
     /** Removed: playbooks compose only as sub-playbook steps. Kept here to refuse it clearly. */
@@ -307,6 +331,7 @@ const RawDefaultsSchema = z.object({
     agent: RawAgentSchema.optional(),
     manager: RawAgentSchema.extend({ compact: ManagerCompactSchema.optional() }).optional(),
     workspace: RawWorkspaceSchema.optional(),
+    isolation: RawIsolationSchema.optional(),
     timeout: z.string().optional(),
     /** Defaults for agent steps, in the shape of a step's `role:` block. */
     role: z
@@ -1232,6 +1257,12 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     }
   }
 
+  let isolation = resolveIsolation(pb.isolation, defaults.isolation);
+  if (isolation.mode === "worktree" && singleton) {
+    // The repository default never reaches a singleton (its trains share one pipeline workspace); asking for it there is an error.
+    if (resolveIsolation(pb.isolation, undefined).mode === "worktree") err("`isolation: worktree` does not apply to a singleton: its trains share one pipeline workspace");
+    isolation = { ...isolation, mode: "none" };
+  }
   if (errors.length > 0) return fail(errors);
   const manager = mergeAgent(defaults.agent?.provider ? { provider: defaults.agent.provider, model: defaults.agent.model } : undefined, defaults.manager);
   entry.playbook = {
@@ -1251,6 +1282,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
       archive: pb.workspace?.archive ?? defaults.workspace?.archive ?? "never",
       keepFailed: pb.workspace?.keep_failed ?? defaults.workspace?.keep_failed ?? true,
     },
+    isolation,
     blocks: blockInfo,
     after: (pb.after ?? []).map((raw) => ({
       id: raw.id,
@@ -1323,7 +1355,7 @@ function refuseFlatForms(where: string, raw: RawStep, err: (message: string) => 
 /** What an ask choice's `outputs` may read besides `inputs.<name>` and `report.outputs.<name>`. */
 const ASK_OUTPUT_REFS = /^(gate\.comment|gate\.choice|report\.summary)$/;
 
-const PROMPT_REFS = /^(inputs\.[A-Za-z_][\w-]*|run\.id|run\.status|run\.failure|run\.jobs|attempt|loop)$/;
+const PROMPT_REFS = /^(worktree|inputs\.[A-Za-z_][\w-]*|run\.id|run\.status|run\.failure|run\.jobs|attempt|loop)$/;
 
 /** The run field to suggest when an after-task input has no source. */
 function runExample(name: string): string {
@@ -1462,7 +1494,7 @@ function wireStep(
     }
   }
   for (const ref of templateRefs(step.prompt)) {
-    if (!PROMPT_REFS.test(ref)) err(`${where}: prompt uses "{{ ${ref} }}"; prompts may only use inputs.<name>, run.id, run.jobs, attempt, loop${after ? ", run.status and run.failure" : ""}${promptHint(ref)}`);
+    if (!PROMPT_REFS.test(ref)) err(`${where}: prompt uses "{{ ${ref} }}"; prompts may only use inputs.<name>, run.id, run.jobs, worktree, attempt, loop${after ? ", run.status and run.failure" : ""}${promptHint(ref)}`);
     else if (!after && (ref === "run.status" || ref === "run.failure")) {
       err(`${where}: prompt uses "{{ ${ref} }}", which only after-tasks can use (the run is still running in its own steps)`);
     }

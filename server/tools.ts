@@ -7,7 +7,7 @@ import { isActive, isAgentlessAttempt, isPaused, isPipeline, isTerminal, restart
 import * as engine from "./engine";
 import { hasPlaybooks, loadPlaybooks } from "./loader";
 import { attentionText } from "./overseer";
-import { MANAGER_PROTOCOL, managerInstructionsText } from "./prompts";
+import { MANAGER_PROTOCOL, managerInstructionsText, worktreePreamble } from "./prompts";
 import { UserError, type Runtime } from "./runtime";
 
 function ok(text: string, structuredContent?: unknown): AgentToolResult {
@@ -87,6 +87,11 @@ export function runChange(run: Run, stepId?: string) {
   };
 }
 
+/** An isolated run's worktree (`isolation: worktree`); nothing for a run in the workspace checkout. */
+function worktreeView(run: Run) {
+  return run.worktree ? { worktree: { path: run.worktree.path, branch: run.worktree.branch, state: run.worktree.state } } : {};
+}
+
 /** The default get_run view: one short line of state per step, no reports, outputs or inputs. */
 export function runCompact(run: Run, only?: string[]) {
   return {
@@ -97,6 +102,7 @@ export function runCompact(run: Run, only?: string[]) {
     active: isActive(run),
     paused: isPaused(run),
     branch: run.branch,
+    ...worktreeView(run),
     outputs: run.outputs,
     ready: engine.readySteps(run),
     queued: engine.queuedSteps(run),
@@ -139,6 +145,7 @@ export function runFull(run: Run, only?: string[]) {
     /** True while a human has paused the run: start_step is refused until they resume it. */
     paused: isPaused(run),
     branch: run.branch,
+    ...worktreeView(run),
     inputs: run.inputs,
     outputs: run.outputs,
     ready: engine.readySteps(run),
@@ -245,7 +252,7 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
     defineAgentTool({
       name: "start_playbook",
       description:
-        "Create a run of a playbook with you as its manager, in your workspace (one active run per workspace). Returns the run id and the ready steps. With newWorkspace, the run gets a new workspace and its own Playbook Manager instead (for example a train's manager starting rework for an ejected job).",
+        "Create a run of a playbook with you as its manager, in your workspace (one active run per workspace, unless the playbook has `isolation: worktree`: it gets a private git worktree, and runs may share the workspace). Returns the run id and the ready steps. With newWorkspace, the run gets a new workspace and its own Playbook Manager instead (for example a train's manager starting rework for an ejected job).",
       input: z.object({
         playbook: z.string().describe("Playbook id (its file name without .yaml)"),
         inputs: z.record(z.string(), VarValueSchema).default({}).describe("Playbook inputs by name"),
@@ -276,7 +283,7 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
           }
           const instructions = managerInstructionsText(run.playbook);
           return ok(
-            `Run ${run.id} started on branch ${run.branch ?? "(unknown)"}. Ready: ${engine.readySteps(run).join(", ") || "none"}. Start them with start_step.${engine.queuedSteps(run).length ? ` Queued for a free concurrency slot of another run: ${engine.queuedSteps(run).join(", ")}; you are woken when they are ready.` : ""}${instructions ? `\n\n${instructions}` : ""}`,
+            `Run ${run.id} started on branch ${run.branch ?? "(unknown)"}. Ready: ${engine.readySteps(run).join(", ") || "none"}. Start them with start_step.${run.worktree ? `\n\n${worktreePreamble(run)}\n` : ""}${engine.queuedSteps(run).length ? ` Queued for a free concurrency slot of another run: ${engine.queuedSteps(run).join(", ")}; you are woken when they are ready.` : ""}${instructions ? `\n\n${instructions}` : ""}`,
             runChange(run),
           );
         }),
@@ -440,6 +447,7 @@ export function runListing(run: Run) {
     workspaceId: run.workspaceId,
     workspaceDir: run.workspaceDir,
     branch: run.branch,
+    ...worktreeView(run),
     managerAgentId: run.managerAgentId,
     createdAt: run.createdAt,
     runningSteps: Object.entries(run.steps).filter(([, state]) => state.status === "running").map(([id]) => id),

@@ -104,6 +104,9 @@ submission) with that tag.
 - After a daemon restart, recovery starts at the plugin's first event (the app connecting, an
   agent opening a session), not when the daemon starts. A step's timeout keeps counting while
   the daemon is down.
+- `isolation: worktree` is prompt-directed: Paseo pins an agent's directory to its workspace, so agents
+  start in the workspace and are told (and, by the guard, checked) to work only in the run's worktree.
+  An agent that ignores the prompt fails its step; it is not prevented.
 - Plain Start picks the workspace's most recently used agent (the one you last sent a
   message to, skipping agents that already manage a run), because the panel cannot see
   which tab has focus. To pick a specific agent, send it a message first, or use "Start on

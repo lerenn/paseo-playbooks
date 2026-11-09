@@ -1,5 +1,6 @@
 import type { Gate, GateChoice, Playbook, Role, Run, Step, VarValue } from "../shared/types";
 import { jobsText } from "./engine";
+import { replaceRefs } from "../shared/vars";
 
 /** How the manager works. Returned by list_playbooks and sent when Start creates a manager. */
 export const MANAGER_PROTOCOL = `You are the Playbook Manager. You run a playbook by starting each step as a subagent,
@@ -8,7 +9,8 @@ the rules: it refuses any step or transition the playbook does not allow.
 
 How to run a playbook:
 1. list_playbooks shows the playbooks of this workspace, their inputs and steps.
-2. start_playbook creates the run in your workspace (one active run per workspace). It
+2. start_playbook creates the run in your workspace (one active run per workspace, unless the playbook
+   is isolated: its runs work in private git worktrees and may share a workspace). It
    returns the ready steps. Give it a name: 2 to 4 words saying what this run is about
    (e.g. "login-redirect-fix"), so humans can tell runs apart in the panel.
 3. For each ready agent step, call start_step with a short brief: what matters from the
@@ -78,6 +80,33 @@ How to run a playbook:
 Rules: create step agents only with start_step (never with Paseo's create_agent tool), do
 not do the steps' work yourself, and never edit files in this workspace.`;
 
+/**
+ * What every agent of an isolated run is told first: it works in the run's private git worktree, never
+ * in the workspace checkout it was started in (Paseo pins an agent's directory to its workspace).
+ */
+export function worktreePreamble(run: Pick<Run, "worktree" | "workspaceDir">): string {
+  const wt = run.worktree;
+  if (!wt) return "";
+  const subs = wt.linked.length > 0 ? ` Submodules linked there: ${wt.linked.join(", ")}.` : "";
+  return `ISOLATED RUN. This run works ONLY in its own git worktree: ${wt.path} (branch ${wt.branch}, created from ${wt.base}).${subs}
+Your shell starts in ${run.workspaceDir}, the original workspace checkout: do not use it.
+- Run every command from the worktree: \`cd ${wt.path} && <command>\` in the same command, or \`git -C ${wt.path} ...\`; the shell resets to the workspace directory between commands, so a bare \`cd\` does not stick.
+- Use absolute paths under ${wt.path} for Read, Edit and Write. A relative path in your instructions means a path inside the worktree.
+- Never edit, create or delete files in ${run.workspaceDir}, and never commit there or switch its branch. The plugin checks that checkout when you finish and fails the step if it changed.
+- A submodule directory that is empty in the worktree is not initialised: run \`git -C ${wt.path} submodule update --init -- <path>\` for the ones you need.`;
+}
+
+/** Puts the run's worktree path where a prompt or instruction writes {{ worktree }}; the other placeholders stay. */
+export function withWorktree(text: string, run: Pick<Run, "worktree" | "workspaceDir">): string {
+  return replaceRefs(text, (ref) => (ref === "worktree" ? (run.worktree?.path ?? run.workspaceDir) : null));
+}
+
+/** `text` led by the isolation preamble when the run is isolated. */
+export function withPreamble(text: string, run: Pick<Run, "worktree" | "workspaceDir">): string {
+  const preamble = worktreePreamble(run);
+  return preamble ? `${preamble}\n\n${text}` : text;
+}
+
 /** The repository's and the playbooks' added instructions for the manager, or "" when there are none. */
 export function managerInstructionsText(playbook: Playbook): string {
   const list = playbook.managerInstructions ?? [];
@@ -92,18 +121,25 @@ function withInstructions(text: string, playbook: Playbook): string {
   return instructions ? `${text}\n\n${instructions}` : text;
 }
 
+/** Told to a manager before its run exists: start_playbook creates the worktree and returns its path. */
+function isolationNote(playbook: Playbook): string {
+  return playbook.isolation.mode === "worktree"
+    ? `\nThis playbook runs ISOLATED: start_playbook creates a private git worktree for the run and returns its path. Any command of yours that reads the repository runs from there (\`cd <worktree> && ...\` or \`git -C <worktree> ...\`), never from your workspace checkout, which stays untouched.\n`
+    : "";
+}
+
 export function managerKickoff(playbook: Playbook, inputs: Record<string, VarValue>): string {
   return `${MANAGER_PROTOCOL}
-
+${isolationNote(playbook)}
 Start now: call start_playbook with playbook "${playbook.id}" and these inputs:
 ${JSON.stringify(inputs, null, 2)}
 Then start the ready steps.`;
 }
 
 /** Kickoff for an existing agent the panel made manager of an already-created run. */
-export function managerTakeover(run: { id: string; playbook: Playbook; inputs: Record<string, VarValue> }, ready: string[], how = "started from the Playbooks panel"): string {
+export function managerTakeover(run: { id: string; playbook: Playbook; inputs: Record<string, VarValue>; worktree?: Run["worktree"]; workspaceDir?: string }, ready: string[], how = "started from the Playbooks panel"): string {
   return `${withInstructions(MANAGER_PROTOCOL, run.playbook)}
-
+${run.worktree ? `\n${worktreePreamble({ worktree: run.worktree, workspaceDir: run.workspaceDir ?? "the workspace" })}\n` : ""}
 You are now the Playbook Manager of run ${run.id} (playbook "${run.playbook.id}"), ${how}. The run already exists: do not call start_playbook.
 Inputs:
 ${JSON.stringify(run.inputs, null, 2)}
@@ -123,11 +159,13 @@ function describeOutputs(step: Step): string {
 }
 
 /** System prompt for a step agent: role instructions plus the step protocol. */
-export function stepSystemPrompt(playbook: Playbook, step: Step, role: Role): string {
+export function stepSystemPrompt(playbook: Playbook, step: Step, role: Role, run?: Pick<Run, "worktree" | "workspaceDir">): string {
   const readonly = role.readonly
     ? `\n\nThis role is READONLY: do not edit, create or delete tracked files, do not commit and do not switch branches. The plugin checks the checkout when you finish and fails the step if anything changed. Build output in ignored files is fine.`
     : "";
-  return `${role.instructions}${readonly}
+  const instructions = run ? withWorktree(role.instructions, run) : role.instructions;
+  const preamble = run ? worktreePreamble(run) : "";
+  return `${preamble ? `${preamble}\n\n` : ""}${instructions}${readonly}
 
 You are running step "${step.id}" (${role.title}) of the playbook "${playbook.title}", started by a
 Playbook Manager agent. Other steps may share this checkout.
@@ -147,8 +185,9 @@ woken again.`;
 }
 
 /** System prompt for a gate's role decider: role instructions plus the decider protocol. */
-export function gateDeciderSystemPrompt(playbook: Playbook, gate: Gate, role: Role, choices: GateChoice[]): string {
-  return `${role.instructions}
+export function gateDeciderSystemPrompt(playbook: Playbook, gate: Gate, role: Role, choices: GateChoice[], run?: Pick<Run, "worktree" | "workspaceDir">): string {
+  const preamble = run ? worktreePreamble(run) : "";
+  return `${preamble ? `${preamble}\n\n` : ""}${run ? withWorktree(role.instructions, run) : role.instructions}
 
 This role is READONLY: do not edit, create or delete tracked files, do not commit and do not switch branches.
 

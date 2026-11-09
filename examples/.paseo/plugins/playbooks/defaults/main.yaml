@@ -10,3 +10,4 @@ agent:
 manager:
   mode: default                # the manager never edits files
   compact: { above_tokens: 150000 }   # never | on_step | on_gate_decided | { above_tokens: N }
+# isolation: worktree          # every run works in its own git worktree, so runs can share a workspace

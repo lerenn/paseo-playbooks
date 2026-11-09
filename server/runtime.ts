@@ -1,11 +1,12 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 
 /** The daemon API handed to plugin handlers (typed via the SDK, so the build needs no @getpaseo/client). */
 type PaseoApi = PluginHandlerContext["paseo"];
-import type { Attempt, Gate, Job, Playbook, Run, Step, VarValue } from "../shared/types";
+import type { Attempt, Gate, Job, Playbook, Run, RunWorktree, Step, VarValue } from "../shared/types";
 import {
   SCRIPT_NOT_YET,
   attemptTimeoutMs,
@@ -24,11 +25,12 @@ import {
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "./defaults";
 import * as engine from "./engine";
 import { checkoutSnapshot, currentRef, defaultBranch, fastForward, freshRef, snapshotDiff } from "./git";
+import { createWorktree, dirtyPaths, linkedSubmodules, listWorktreeDirs, pruneWorktrees, removeWorktree, repoOfWorktree, worktreeBranch, worktreePath } from "./worktree";
 import { loadPlaybooks } from "./loader";
 import { BusError, EventBus, type BusEvent, type Notifier, type Subscription } from "./bus";
 import { OversightProducer, registerOversightTypes } from "./oversight-events";
 import { gateListing, listAttention, type GateFilter } from "./overseer";
-import { managerLostNotice, gateDeciderPrompt, gateDeciderSystemPrompt, gateDecisionReminder, managerAfterRestart, managerKickoff, managerTakeover, reportReminder, resumeAfterRestart, silenceReminder, singletonKickoff, stepSystemPrompt } from "./prompts";
+import { managerLostNotice, gateDeciderPrompt, gateDeciderSystemPrompt, gateDecisionReminder, managerAfterRestart, managerKickoff, managerTakeover, reportReminder, resumeAfterRestart, silenceReminder, singletonKickoff, stepSystemPrompt, withPreamble } from "./prompts";
 import { askHumanText, choicesOfGate, waitsForHuman } from "../shared/gates";
 import type { RunStore } from "./store";
 import { holdsBlock, planAdmissions, slotHolders } from "../shared/slots";
@@ -84,6 +86,17 @@ const RUN_NAME_MAX = 32;
 export function runName(name: string | undefined): string | null {
   const line = (name ?? "").replace(/\s+/g, " ").trim();
   return line ? line.slice(0, RUN_NAME_MAX).trim() : null;
+}
+
+interface Violation {
+  kind: "readonly" | "isolation";
+  detail: string;
+}
+
+function violationLine(violation: Violation): string {
+  return violation.kind === "readonly"
+    ? `Readonly check failed (${violation.detail}); complete it with "failure".`
+    : `Isolation guard failed: the original workspace checkout changed (${violation.detail}) although the run works in its worktree; complete the step with "failure" and nudge or restart it so it works only in the worktree.`;
 }
 
 function errorText(error: unknown): string {
@@ -145,8 +158,9 @@ function scriptEnv(run: Run, stepId: string, attempt: Run["steps"][string]["atte
     PLAYBOOK_STEP_ID: stepId,
     PLAYBOOK_ATTEMPT: String(attempt.n),
     PLAYBOOK_CHECK: String(attempt.checks + 1),
-    PLAYBOOK_WORKSPACE: run.workspaceDir,
+    PLAYBOOK_WORKSPACE: engine.workDir(run),
   };
+  if (run.worktree) env.PLAYBOOK_ORIGINAL_WORKSPACE = run.workspaceDir;
   if (feedback) env.PLAYBOOK_FEEDBACK = feedback;
   // A singleton run's open jobs, as {{ run.jobs }} gives them to prompts.
   if (run.playbook.singleton) env.PLAYBOOK_JOBS = JSON.stringify(engine.openJobs(run));
@@ -213,7 +227,11 @@ export class Runtime {
   /** Silence checks of running agent steps, by agent id. */
   private readonly watches = new Map<string, ReturnType<typeof setTimeout>>();
   /** Start reserves a run id and playbook snapshot for the worktree it creates. */
-  private readonly reservations = new Map<string, Reservation>();
+  private readonly reservations = new Map<string, Reservation[]>();
+  /** Where isolated runs' worktrees live: `<plugin data>/worktrees/<runId>`. */
+  readonly worktreesDir: string;
+  /** Worktrees being created, which the orphan sweep must not touch. */
+  private readonly creatingWorktrees = new Set<string>();
   /** Runs started from the panel for a busy agent: agent id → run id, delivered when its turn ends. */
   private readonly pendingHandoffs = new Map<string, string>();
   /** Script steps in flight, by attempt id: the running check, or the timer of the next one. */
@@ -241,6 +259,7 @@ export class Runtime {
     private readonly options: { dataDir?: string; debounceMs?: number; pollMs?: number } = {},
   ) {
     const dir = options.dataDir ?? path.dirname(store.dir);
+    this.worktreesDir = path.join(dir, "worktrees");
     this.bus = new EventBus({ events: path.join(dir, "events.json"), subscriptions: path.join(dir, "subscriptions.json") }, options.debounceMs === undefined ? {} : { debounceMs: options.debounceMs });
     registerOversightTypes(this.bus);
     this.bus.registerNotifier("agent", this.agentNotifier());
@@ -339,6 +358,7 @@ export class Runtime {
       if (!run.train || isTerminal(run.status)) continue;
       for (const gate of run.gates) if (gate.status === "pending") this.trainGates.add(`${run.id}/${gate.id}`);
     }
+    await this.sweepWorktrees().catch((error) => console.error("[playbooks] worktree sweep failed:", errorText(error)));
     await this.admitQueued();
   }
 
@@ -603,7 +623,7 @@ export class Runtime {
     const agent = await this.api()
       .workspaces.ref(run.workspaceId)
       .agents.create({
-        config: { ...config, systemPrompt: gateDeciderSystemPrompt(run.playbook, gate, role, choices) },
+        config: { ...config, systemPrompt: gateDeciderSystemPrompt(run.playbook, gate, role, choices, run) },
         parent: run.managerAgentId,
         title: `${run.playbook.title} · ${role.title} · ${gate.id}`,
         labels: { [RUN_LABEL]: run.id, [GATE_LABEL]: gate.id },
@@ -717,10 +737,8 @@ export class Runtime {
     if (!manager.workspaceId) throw new UserError("this agent has no workspace");
     const workspace = await this.api().workspaces.ref(manager.workspaceId).refresh();
     if (!workspace) throw new UserError("workspace not found");
-    const active = this.store.list().find((run) => run.workspaceId === workspace.id && isActive(run));
-    if (active) throw new UserError(`this workspace already has an active run (${active.id}); one active run per workspace`);
     const workspaceDir = workspace.workspaceDirectory ?? manager.cwd;
-    const reservation = this.reservations.get(workspace.id);
+    const reservation = this.reservationFor(workspace.id, playbookId, inputs);
     let playbook: Playbook | null = options.playbook ?? (reservation && reservation.playbook.id === playbookId ? reservation.playbook : null);
     if (!playbook) {
       const loaded = await loadPlaybooks(workspaceDir);
@@ -729,25 +747,207 @@ export class Runtime {
       if (!entry.playbook) throw new UserError(`playbook "${playbookId}" is invalid:\n${entry.errors.join("\n")}`);
       playbook = entry.playbook;
     }
+    this.checkWorkspaceFree(workspace.id, playbook.isolation.mode === "worktree");
     if (playbook.singleton) return this.startPipeline(workspaceDir, workspace.projectId, playbook);
     this.checkConcurrency(playbook, workspace.projectId);
-    const run = engine.newRun({
-      id: reservation?.runId ?? `run_${shortId()}`,
-      playbook,
-      workspaceId: workspace.id,
-      workspaceDir,
-      projectId: workspace.projectId,
-      branch: reservation?.branch ?? (await currentRef(workspaceDir)),
-      managerAgentId: manager.id,
-      workspaceCreated: reservation?.created === true,
-      name: runName(options.name),
-      inputs,
-      now: nowIso(),
-    });
-    await this.store.create(run);
-    this.reservations.delete(workspace.id);
+    const runId = reservation?.runId ?? `run_${shortId()}`;
+    const worktree = playbook.isolation.mode === "worktree" ? await this.createRunWorktree(runId, playbook, workspaceDir, reservation?.branch ?? null) : undefined;
+    let run: Run;
+    try {
+      run = engine.newRun({
+        id: runId,
+        playbook,
+        workspaceId: workspace.id,
+        workspaceDir,
+        projectId: workspace.projectId,
+        branch: worktree?.branch ?? reservation?.branch ?? (await currentRef(workspaceDir)),
+        managerAgentId: manager.id,
+        workspaceCreated: reservation?.created === true,
+        ...(worktree ? { worktree } : {}),
+        name: runName(options.name),
+        inputs,
+        now: nowIso(),
+      });
+      await this.store.create(run);
+    } catch (error) {
+      if (worktree) await this.dropWorktree(runId, worktree, workspaceDir, true).catch(() => undefined);
+      throw error;
+    } finally {
+      this.creatingWorktrees.delete(runId);
+    }
+    if (reservation) this.dropReservation(workspace.id, reservation);
     await this.admitQueued(run.id);
     return this.store.get(run.id)!;
+  }
+
+  // ---------------------------------------------------------------- isolated runs (isolation: worktree)
+
+  /**
+   * One non-isolated run may own a workspace; any number of isolated runs may share it, because
+   * they work in worktrees. The two do not mix: a non-isolated run edits the checkout that the
+   * isolated runs' guard watches.
+   */
+  private workspaceConflict(workspaceId: string, isolated: boolean, exceptRunId?: string): Run | undefined {
+    return this.store.list().find((run) => run.id !== exceptRunId && run.workspaceId === workspaceId && isActive(run) && (!isolated ? true : run.playbook.isolation.mode !== "worktree"));
+  }
+
+  private checkWorkspaceFree(workspaceId: string, isolated: boolean, exceptRunId?: string): void {
+    const other = this.workspaceConflict(workspaceId, isolated, exceptRunId);
+    if (!other) return;
+    const otherIsolated = other.playbook.isolation.mode === "worktree";
+    throw new UserError(
+      isolated
+        ? `this workspace has an active run without isolation (${other.id}), which works in the workspace checkout: wait for it to end`
+        : otherIsolated
+          ? `this workspace has an active isolated run (${other.id}); a run without isolation edits the checkout those runs guard: wait for it to end, or set \`isolation: worktree\` on this playbook`
+          : `this workspace already has an active run (${other.id}); one active run per workspace (several runs may share a workspace only with \`isolation: worktree\`)`,
+    );
+  }
+
+  /** `git worktree add` for the run, under the plugin's data directory; the guard's baseline is taken here. */
+  private async createRunWorktree(runId: string, playbook: Playbook, workspaceDir: string, takenBranch: string | null): Promise<RunWorktree> {
+    const id = runId.replace(/^run_/, "");
+    let branch = worktreeBranch(playbook.id, id);
+    if (branch === takenBranch) branch = `${branch}-wt`;
+    this.creatingWorktrees.add(runId);
+    try {
+      const created = await createWorktree({ workspaceDir, worktreesDir: this.worktreesDir, runId, branch, isolation: playbook.isolation });
+      return { ...created, state: "active" };
+    } catch (error) {
+      this.creatingWorktrees.delete(runId);
+      throw new UserError(`could not create the run's worktree (isolation: worktree): ${errorText(error)}`);
+    }
+  }
+
+  /**
+   * The run's worktree, ready for work: the one that exists, or (an ended run's was deleted) a new one
+   * on the run's branch (kept locally or pushed) or fresh off the base. The guard's baseline is retaken.
+   * Null for a run that is not isolated.
+   */
+  private async ensureWorktree(run: Run, workspaceDir: string): Promise<RunWorktree | null> {
+    const wt = run.worktree;
+    if (!wt) return null;
+    const workspaceSnapshot = await checkoutSnapshot(workspaceDir);
+    if (wt.state !== "removed" && existsSync(wt.path)) return { ...wt, state: "active", workspaceSnapshot };
+    this.creatingWorktrees.add(run.id);
+    try {
+      const created = await createWorktree({ workspaceDir, worktreesDir: this.worktreesDir, runId: run.id, branch: wt.branch, isolation: run.playbook.isolation, reuseBranch: true });
+      return { ...created, base: wt.base, baseSha: wt.baseSha, state: "active" };
+    } catch (error) {
+      throw new UserError(`could not recreate the run's worktree: ${errorText(error)}`);
+    } finally {
+      this.creatingWorktrees.delete(run.id);
+    }
+  }
+
+  /** The repository a run's worktree belongs to: read from the worktree itself, else the workspace. */
+  private async repoOf(run: Run, worktree: RunWorktree): Promise<string> {
+    return (await repoOfWorktree(worktree.path))?.repo ?? run.workspaceDir;
+  }
+
+  /**
+   * Isolated run ended: deletes its worktree (and its branch, unless that holds unpushed commits).
+   * Kept, with the reason in the history, when the run failed and `workspace.keep_failed` is true,
+   * when the worktree has uncommitted changes, or when the original checkout changed during the run.
+   */
+  private async cleanupEndedWorktrees(): Promise<void> {
+    for (const candidate of this.store.list()) {
+      const wt = candidate.worktree;
+      if (!wt || wt.state !== "active" || !isTerminal(candidate.status) || isActive(candidate)) continue;
+      try {
+        if (await this.runAgentsBusy(candidate)) continue;
+        const keep = await this.worktreeKeepReason(candidate, wt);
+        if (keep) {
+          await this.store.mutate(candidate.id, (run) => {
+            run.worktree = { ...wt, state: "kept" };
+            engine.noteEvent(run, "worktree_kept", null, `worktree ${wt.path} kept: ${keep.reason}`, nowIso());
+            if (keep.violation) engine.noteEvent(run, "isolation_violation", null, keep.violation, nowIso());
+          });
+          if (keep.violation) {
+            await this.enqueue(candidate.id, [`Isolation guard: the run ended but the original workspace checkout changed (${keep.violation}) although the run works in its worktree. Tell the human; the worktree ${wt.path} is kept.`]);
+            await this.deliver(candidate.id);
+          }
+          continue;
+        }
+        const removed = await this.dropWorktree(candidate.id, wt, await this.repoOf(candidate, wt), false);
+        await this.store.mutate(candidate.id, (run) => {
+          run.worktree = { ...wt, state: "removed" };
+          engine.noteEvent(run, "worktree_removed", null, `worktree ${wt.path} removed${removed.keptBranch ? `; branch ${removed.keptBranch} kept: it has commits that are not pushed` : `; branch ${wt.branch} deleted`}`, nowIso());
+        });
+      } catch (error) {
+        console.error(`[playbooks] could not clean up the worktree of ${candidate.id}:`, errorText(error));
+      }
+    }
+  }
+
+  private async worktreeKeepReason(run: Run, wt: RunWorktree): Promise<{ reason: string; violation?: string } | null> {
+    if (run.status === "failed" && run.playbook.workspace.keepFailed) return { reason: "the run failed and workspace.keep_failed is true" };
+    if (wt.workspaceSnapshot) {
+      const violation = snapshotDiff(wt.workspaceSnapshot, await checkoutSnapshot(run.workspaceDir));
+      if (violation) return { reason: "the original workspace checkout changed during the run", violation };
+    }
+    if (existsSync(wt.path)) {
+      const dirty = await dirtyPaths(wt.path, wt.linked);
+      if (dirty.length > 0) return { reason: `it has uncommitted changes (${dirty.slice(0, 5).join(", ")}${dirty.length > 5 ? ", …" : ""}); remove it by hand once they are saved` };
+    }
+    return null;
+  }
+
+  /** Whether an agent of the run still runs (a canceled run's agents stop shortly after). */
+  private async runAgentsBusy(run: Run): Promise<boolean> {
+    const listed = await this.api().agents.list({ filter: { projectKeys: [run.projectId] } });
+    return listed.entries.some(({ agent }) => agent.labels?.[RUN_LABEL] === run.id && !agent.archivedAt && (agent.status === "running" || agent.status === "initializing"));
+  }
+
+  /**
+   * Orphans: a directory of the worktrees folder whose run is gone (or says it was removed) is deleted
+   * with its git metadata, so a crash, a deleted run or a daemon restart cannot leave one behind.
+   * Uncommitted changes of an orphan are dropped (nobody can claim it) and logged; its branch goes
+   * unless it holds unpushed commits. Returns the directories removed.
+   */
+  async sweepWorktrees(): Promise<string[]> {
+    const removed: string[] = [];
+    const runs = new Map(this.store.list().map((run) => [run.id, run]));
+    for (const name of await listWorktreeDirs(this.worktreesDir)) {
+      if (this.creatingWorktrees.has(name)) continue;
+      const record = runs.get(name);
+      if (record?.worktree && record.worktree.state !== "removed") continue;
+      const dir = path.join(this.worktreesDir, name);
+      try {
+        const origin = await repoOfWorktree(dir);
+        const linked = origin ? await linkedSubmodules(dir) : [];
+        const result = await removeWorktree({ repo: origin?.repo ?? this.worktreesDir, dir, worktreesDir: this.worktreesDir, branch: origin?.branch ?? null, linked, force: true, ...(record?.worktree ? { baseSha: record.worktree.baseSha } : {}) });
+        removed.push(dir);
+        console.log(`[playbooks] removed orphan worktree ${dir}${result.dropped.length ? ` (dropped uncommitted: ${result.dropped.slice(0, 10).join(", ")})` : ""}${result.keptBranch ? `; kept branch ${result.keptBranch}` : ""}`);
+      } catch (error) {
+        console.error(`[playbooks] could not remove orphan worktree ${dir}:`, errorText(error));
+      }
+    }
+    for (const repo of new Set(this.store.list().map((run) => run.workspaceDir))) {
+      await pruneWorktrees(repo);
+    }
+    return removed;
+  }
+
+  /** Removes a run's worktree and records nothing; callers write the history. */
+  private async dropWorktree(runId: string, worktree: RunWorktree, repo: string, force: boolean): Promise<{ keptBranch: string | null; dropped: string[] }> {
+    return removeWorktree({ repo, dir: worktree.path || worktreePath(this.worktreesDir, runId), worktreesDir: this.worktreesDir, branch: worktree.branch, linked: worktree.linked, baseSha: worktree.baseSha, force });
+  }
+
+  private reservationFor(workspaceId: string, playbookId: string, inputs: Record<string, unknown>): Reservation | undefined {
+    const list = this.reservations.get(workspaceId) ?? [];
+    const same = (r: Reservation) => r.playbook.id === playbookId;
+    return list.find((r) => same(r) && JSON.stringify(r.inputs) === JSON.stringify(inputs)) ?? list.find(same) ?? list[0];
+  }
+
+  private addReservation(workspaceId: string, reservation: Reservation): void {
+    this.reservations.set(workspaceId, [...(this.reservations.get(workspaceId) ?? []), reservation]);
+  }
+
+  private dropReservation(workspaceId: string, reservation: Reservation): void {
+    const rest = (this.reservations.get(workspaceId) ?? []).filter((r) => r !== reservation);
+    if (rest.length > 0) this.reservations.set(workspaceId, rest);
+    else this.reservations.delete(workspaceId);
   }
 
   /** Slots are shared: active runs of the playbook, and blocks of it that other runs hold. */
@@ -796,6 +996,7 @@ export class Runtime {
         await this.noticeTrainGates();
         await this.endTrains();
         await this.departTrains();
+        await this.cleanupEndedWorktrees();
         await this.archiveEndedWorkspaces();
       } while (this.tickAgain);
     } finally {
@@ -1278,8 +1479,10 @@ export class Runtime {
       void this.onCheckEnded(runId, stepId, attemptId, result, tailOf([stdout.trimEnd(), stderr.trimEnd()].filter(Boolean).join("\n")));
     };
     try {
-      const child = spawn(path.join(run.workspaceDir, step.script!), [], {
-        cwd: run.workspaceDir,
+      // An isolated run's scripts run in its worktree; one the worktree's commit lacks (uncommitted in the workspace) runs from the workspace.
+      const inWorktree = run.worktree ? path.join(run.worktree.path, step.script!) : null;
+      const child = spawn(inWorktree && existsSync(inWorktree) ? inWorktree : path.join(run.workspaceDir, step.script!), [], {
+        cwd: engine.workDir(run),
         env: scriptEnv(run, stepId, attempt, this.scriptFeedback.get(attemptId) ?? null),
         stdio: ["ignore", "pipe", "pipe"],
       });
@@ -1398,7 +1601,7 @@ export class Runtime {
   }
 
   async startStep(managerId: string, runId: string, stepId: string, brief: string): Promise<{ agentId: string; attempt: number }> {
-    const run = this.ownedRun(managerId, runId);
+    let run = this.ownedRun(managerId, runId);
     const step = engine.stepDef(run, stepId);
     if (step.kind === "script") throw new UserError(`step "${stepId}" is a script step: the plugin runs it by itself and wakes you with its result`);
     if (step.kind === "handoff") throw new UserError(`step "${stepId}" is a hand-off step: the plugin hands its job to "${step.handoff}" and wakes you with the result`);
@@ -1408,13 +1611,19 @@ export class Runtime {
     }
     const role = run.playbook.roles[step.role]!;
     const config = await this.stepAgentConfig(run, step);
-    const snapshot = role.readonly ? await checkoutSnapshot(run.workspaceDir) : null;
+    if (run.worktree && (run.worktree.state !== "active" || !existsSync(run.worktree.path))) {
+      // An after-task or a late step of an ended run: its worktree was deleted or kept; work needs it back.
+      const worktree = await this.ensureWorktree(run, run.workspaceDir);
+      await this.store.mutate(run.id, (current) => void (current.worktree = worktree));
+      run = this.store.get(run.id)!;
+    }
+    const snapshot = role.readonly ? await checkoutSnapshot(engine.workDir(run)) : null;
     const attemptNo = run.steps[stepId]!.attempts.length + 1;
     const previous = run.steps[stepId]!.attempts.at(-1);
     const agent = await this.api()
       .workspaces.ref(run.workspaceId)
       .agents.create({
-        config: { ...config, systemPrompt: stepSystemPrompt(run.playbook, step, role) },
+        config: { ...config, systemPrompt: stepSystemPrompt(run.playbook, step, role, run) },
         parent: managerId,
         title: `${run.playbook.title} · ${role.title} #${attemptNo}`,
         labels: { [RUN_LABEL]: run.id, [STEP_LABEL]: stepId, "playbooks/attempt": String(attemptNo) },
@@ -1422,7 +1631,7 @@ export class Runtime {
     const started = await this.store.mutate(run.id, (current) =>
       engine.startAttempt(current, stepId, { agentId: agent.id, brief, now: nowIso(), readonlySnapshot: snapshot }),
     );
-    await agent.send(started.prompt);
+    await agent.send(withPreamble(started.prompt, run));
     this.armTimeout(this.store.get(run.id)!, stepId);
     // The previous attempt's agent is done: the step's history keeps its outcome.
     if (previous && step.archiveAgents !== false) await this.archiveStepAgent(previous.agentId);
@@ -1664,7 +1873,7 @@ export class Runtime {
     if (!run) throw new UserError(`unknown run "${runId}"`);
     const manager = await this.api().agents.ref(run.managerAgentId).refresh().catch(() => null);
     if (!manager || manager.agent.archivedAt) throw new UserError("this run's Playbook Manager no longer exists");
-    const busy = this.store.list().find((other) => other.id !== run.id && other.workspaceId === run.workspaceId && isActive(other));
+    const busy = this.workspaceConflict(run.workspaceId, run.playbook.isolation.mode === "worktree", run.id);
     if (busy) throw new UserError(`this workspace has another active run (${busy.id}); wait for it to end`);
     const effects = await this.store.mutate(runId, (current) => engine.startAfterTask(current, taskId, nowIso()));
     if (by === run.managerAgentId) return this.store.get(runId)!;
@@ -1698,7 +1907,7 @@ export class Runtime {
     if (isPipeline(run)) throw new UserError(`run ${run.id} is a singleton pipeline: it is not restarted; the next hand-off starts a new one`);
     if (run.train) throw new UserError(`run ${run.id} is a train of pipeline ${run.train.pipelineId}: a failed train's jobs ride the station's next train (or fail, past its retries)`);
     const origin = await this.workspaceOf(run.workspaceId);
-    const active = (inWorkspace: string) => this.store.list().find((other) => other.id !== run.id && other.workspaceId === inWorkspace && isActive(other));
+    const active = (inWorkspace: string) => this.workspaceConflict(inWorkspace, run.playbook.isolation.mode === "worktree", run.id);
     const busy = active(run.workspaceId);
     let move: { id: string; dir: string; branch: string | null } | null = null;
     if (workspaceId && workspaceId !== run.workspaceId) {
@@ -1739,8 +1948,11 @@ export class Runtime {
     // The original manager was archived (which also archives its runs): a new one takes over.
     // It is created without a prompt, so it cannot look for the run before the run is its own.
     const replacement = managerGone ? await this.createReplacementManager(homeId, run.playbook) : null;
+    // An isolated run gets its worktree back (the ended run's was deleted), with a fresh baseline for the guard.
+    const worktree = await this.ensureWorktree(run, move?.dir ?? run.workspaceDir);
     const effects = await this.store.mutate(runId, (current) => {
       const fx = engine.restartRun(current, stepId, { comment, by, now: nowIso() });
+      if (worktree) current.worktree = worktree;
       if (move) {
         engine.moveRun(current, move, nowIso());
       }
@@ -1893,6 +2105,23 @@ export class Runtime {
   }
 
   /**
+   * What a step changed that it must not have: a readonly role's edits to its checkout, and, in an
+   * isolated run, any change to the original workspace checkout (the agent worked in the wrong tree).
+   */
+  private async checkoutViolation(run: Run, attempt: Attempt): Promise<Violation | null> {
+    if (attempt.readonlySnapshot !== null) {
+      const detail = snapshotDiff(attempt.readonlySnapshot, await checkoutSnapshot(engine.workDir(run)));
+      if (detail) return { kind: "readonly", detail };
+    }
+    const baseline = run.worktree?.workspaceSnapshot;
+    if (baseline) {
+      const detail = snapshotDiff(baseline, await checkoutSnapshot(run.workspaceDir));
+      if (detail) return { kind: "isolation", detail };
+    }
+    return null;
+  }
+
+  /**
    * A report for an attempt whose turn already ended (after the reminder, say, the agent ended its
    * turn waiting, then a background task woke it). Its next turn end is ignored as the step is no
    * longer running, so the manager is woken here, as if the turn had ended with the report.
@@ -1901,12 +2130,12 @@ export class Runtime {
     const run = this.store.get(runId)!;
     const attempt = run.steps[stepId]!.attempts.at(-1)!;
     if (run.steps[stepId]!.status !== "reported" || attempt.agentId !== agentId || !attempt.report) return;
-    const violation = attempt.readonlySnapshot !== null ? snapshotDiff(attempt.readonlySnapshot, await checkoutSnapshot(run.workspaceDir)) : null;
-    if (violation) await this.store.mutate(runId, (current) => engine.markReadonlyViolation(current, stepId, violation, nowIso()));
+    const violation = await this.checkoutViolation(run, attempt);
+    if (violation) await this.store.mutate(runId, (current) => engine.markReadonlyViolation(current, stepId, violation.detail, nowIso(), violation.kind));
     const asked = violation ? null : await this.openReportedAsk(runId, stepId);
     await this.enqueue(runId, [
       `${reportedLine(stepId, attempt.n, this.store.get(runId)!.steps[stepId]!.attempts.at(-1)!.report!)} It reported after its turn had ended.`,
-      violation ? `Readonly check failed (${violation}); complete it with "failure".` : "",
+      violation ? violationLine(violation) : "",
       ...(asked ?? [`Call complete_step for "${stepId}".`]),
     ].filter(Boolean));
     await this.deliver(runId);
@@ -1924,11 +2153,10 @@ export class Runtime {
       lastMessage = page ? lastAssistantText(page.entries as never) : null;
       if (turnEnd === "completed" && !found.attempt.reminded && !isPaused(run) && (await this.remindToReport(runId, found.stepId, agentId))) return;
     }
-    const violation =
-      found.attempt.readonlySnapshot !== null ? snapshotDiff(found.attempt.readonlySnapshot, await checkoutSnapshot(run.workspaceDir)) : null;
+    const violation = await this.checkoutViolation(run, found.attempt);
     const ended = await this.store.mutate(runId, (current) => {
       const result = engine.endTurn(current, agentId, { turnEnd, lastMessage, now: nowIso() });
-      if (result && violation) engine.markReadonlyViolation(current, result.stepId, violation, nowIso());
+      if (result && violation) engine.markReadonlyViolation(current, result.stepId, violation.detail, nowIso(), violation.kind);
       return result;
     });
     if (!ended) return;
@@ -1945,7 +2173,7 @@ export class Runtime {
       .map(([id]) => id);
     await this.enqueue(runId, [
       line,
-      violation ? `Readonly check failed (${violation}); complete it with "failure".` : "",
+      violation ? violationLine(violation) : "",
       ...(asked ?? [`Call complete_step for "${ended.stepId}".`]),
       others.length > 0 ? `Still running: ${others.join(", ")}.` : "",
     ].filter(Boolean));
@@ -1986,6 +2214,7 @@ export class Runtime {
       return;
     }
     await this.onManagerTurnEnded(agentId);
+    await this.cleanupEndedWorktrees().catch((error) => console.error("[playbooks] worktree cleanup failed:", errorText(error)));
     await this.archiveEndedWorkspaces().catch((error) => console.error("[playbooks] workspace archive check failed:", errorText(error)));
   }
 
@@ -2059,6 +2288,8 @@ export class Runtime {
   async onWorkspaceArchived(workspaceId: string): Promise<void> {
     for (const run of this.store.list().filter((candidate) => candidate.workspaceId === workspaceId)) {
       if (isActive(run)) await this.cancelRun(run.id, "worktree archived", null).catch(() => undefined);
+      const wt = this.store.get(run.id)?.worktree;
+      if (wt && wt.state !== "removed") await this.dropWorktree(run.id, wt, await this.repoOf(run, wt), true).catch((error: unknown) => console.error(`[playbooks] could not remove the worktree of ${run.id}:`, errorText(error)));
       await this.store.delete(run.id);
     }
     this.reservations.delete(workspaceId);
@@ -2289,11 +2520,11 @@ export class Runtime {
     }
     if (input.agentId) return this.startWithAgent(workspace.id, input.agentId, playbook, resolved.inputs);
     if (input.sameWorkspace) {
-      const busy = this.store.list().find((run) => run.workspaceId === workspace.id && isActive(run));
-      if (busy) throw new UserError(`this workspace already has an active run (${busy.id}); use "Start in a new workspace"`);
+      const busy = this.workspaceConflict(workspace.id, playbook.isolation.mode === "worktree");
+      if (busy) throw new UserError(`this workspace already has an active run (${busy.id}); use "Start in a new workspace"${playbook.isolation.mode === "worktree" ? "" : ", or give the playbook `isolation: worktree` so runs can share a workspace"}`);
       // The new agent creates the run itself with start_playbook, which takes this reserved id.
       const runId = `run_${shortId()}`;
-      this.reservations.set(workspace.id, { runId, branch: null, playbook, inputs: resolved.inputs });
+      this.addReservation(workspace.id, { runId, branch: null, playbook, inputs: resolved.inputs });
       const manager = await this.api().workspaces.ref(workspace.id).agents.create({
         config: this.managerConfig(playbook),
         title: `Playbook Manager · ${playbook.title}`,
@@ -2316,7 +2547,7 @@ export class Runtime {
       title: `${playbook.title}${headline ? `: ${headline}` : ""}`,
       source: { kind: "worktree", cwd: workspaceDir, action: "branch-off", branchName: branch, ...(base ? { refName: base } : {}) },
     });
-    this.reservations.set(created.id, { runId, branch, playbook, inputs, created: true });
+    this.addReservation(created.id, { runId, branch, playbook, inputs, created: true });
     const manager = await created.agents.create({
       config: this.managerConfig(playbook),
       title: `Playbook Manager · ${playbook.title}`,
@@ -2353,6 +2584,6 @@ export class Runtime {
   }
 
   hasReservation(workspaceId: string | null): boolean {
-    return workspaceId !== null && this.reservations.has(workspaceId);
+    return workspaceId !== null && (this.reservations.get(workspaceId)?.length ?? 0) > 0;
   }
 }
