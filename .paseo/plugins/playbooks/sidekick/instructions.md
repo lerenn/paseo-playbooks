@@ -12,7 +12,7 @@ Rules of the paseo-playbooks repository for the Sidekick. They add to the built-
 - `npm run typecheck` and `npx vitest run` must both pass before a pull request is opened.
 
 ## Pull requests and releases
-- Pull requests are squash-merged by the human. The Release workflow tags `vX.Y.Z` when `package.json` changes on main, so a version bump is a release: never bump or merge for the human.
+- Pull requests are squash-merged by the human. The Release workflow tags `vX.Y.Z` when `package.json` changes on main, so a version bump is a release: never merge for the human, and choose the version level only when the human has said which.
 - Title: a short imperative sentence, with the new version in parentheses when it bumps, for example "Provider fallback: a tier may list several providers (v0.57.0)". The description says what changed and why, names the ADR, and lists the runs that motivated it when there are some.
 
 ## Subagent hygiene
