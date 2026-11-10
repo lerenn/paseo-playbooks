@@ -399,6 +399,10 @@ steps:
     gate: { question: Done? }
 ```
 
+A case may end the run: `{ name: nothing, if: {...}, end: nothing_to_do }` (`end: true` for a plain end, else an
+`outcomes` entry of the playbook). A gate `question` and an `ask` text may read `{{ playbook.inputs.<name> }}` and
+`{{ steps.<id>.outputs.<name> }}` of earlier steps, e.g. `question: "Merge {{ steps.scan.outputs.prs }}?"`.
+
 `validate_playbooks` refuses a missing or misplaced `else`, an unreachable case (an earlier case holds whenever it
 does), duplicate names, and unknown steps, outputs, outcomes or values. A branch does not apply to after-tasks or
 singleton stations. `get_run` shows the case taken (`chosen`) and why a step was skipped.

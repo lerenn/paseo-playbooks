@@ -175,7 +175,7 @@ export const StepSchema = z.object({
    * Branch steps: ordered cases, the first whose conditions hold wins (a case without `when` is the
    * `else`, always last). The step completes at once with the winning case as its outcome.
    */
-  branch: z.object({ cases: z.array(z.object({ name: z.string(), when: z.array(WhenSchema).optional() })) }).optional(),
+  branch: z.object({ cases: z.array(z.object({ name: z.string(), when: z.array(WhenSchema).optional(), end: z.object({ outcome: z.string().optional() }).optional() })) }).optional(),
   /** On a train of a singleton pipeline: the plugin settles its jobs from this output when the step completes. */
   settle: z.object({ output: z.string() }).optional(),
   /** Script steps: rerun the script this often while it exits with SCRIPT_NOT_YET. Unset = run it once. */

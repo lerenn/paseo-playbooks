@@ -10,6 +10,8 @@ Extends `2026-11-06-conditional-steps.md`, which left conditions on step outputs
 | ---------------------------- | ---------------- | ---- | ----------------------------------------------------------------------- |
 | `branch: { cases: [...] }`   | step kind        | new  | Ordered cases; the first whose `if` holds wins; the last has no `if`    |
 | `when` / `if` operands       | step, branch     | changed | Also `steps.<id>.outputs.<name>`, `steps.<id>.outcome`, `{ empty: bool }` |
+| `end` on a case              | branch case      | new  | Ends the run (or block) when the case wins                              |
+| templates in gate text       | gate, ask        | changed | `question` / `ask` read inputs and step outputs                      |
 | `branch` (`RunStep`)         | run state        | new  | The case a branch step took (default `null`)                            |
 
 ## Context
@@ -60,6 +62,13 @@ case's name as its outcome (and `state.branch`). Steps of a case put the case in
 - **Run state and tools**: `RunStep.branch` (default `null`); `get_run` shows `chosen` for a branch step and the
   `skipped` reason for a skipped one; the history records `step_completed` ("branch service: ...") and `step_skipped`.
   The panel draws a branch as a node with its cases and the one taken, and skipped cases dimmed.
+
+- **A case may end the run**: `end: true`, or `end: <outcome>` (one of the playbook's `outcomes`), on a case. When it
+  wins, the flow ends like an `end` transition (the run; inside a sub-playbook, its block) and the steps after it never
+  run. The history records `branch_end`. A case may instead lead to a human-held gate or `ask` through its steps.
+- **Dynamic gate text**: a gate `question` and an `ask` text are rendered when the gate opens, and may read
+  `{{ playbook.inputs.<name> }}` and `{{ steps.<id>.outputs.<name> }}` of a step the step needs (validated; unset renders
+  as "(none)"). Not allowed in after-tasks. This is a format change of `gate.question` and `on.<outcome>.ask`.
 
 ## Consequences
 

@@ -204,6 +204,8 @@ const RawBranchStepSchema = z
             name: z.string().min(1),
             /** Conditions that must all hold. Absent on the last case only: that is the `else`. */
             if: RawConditionSchema.optional(),
+            /** Ends the run (or the block, in a sub-playbook) when this case wins: `end: true`, or `end: <outcome>` of the playbook. */
+            end: z.union([z.literal(true), z.string().min(1)]).optional(),
           })
           .strict(),
       )
@@ -984,7 +986,8 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
         const last = index === rawStep.branch!.cases.length - 1;
         if (raw.if === undefined && !last) err(`${at}: "${raw.name}" has no \`if\`, so it is the else and must be the last case: the ${rawStep.branch!.cases.length - 1 - index} case(s) after it can never run`);
         if (raw.if !== undefined && Object.keys(raw.if).length === 0) err(`${at}: \`if\` is empty; list at least one condition, or leave it out for the else`);
-        return { name: raw.name, ...(raw.if !== undefined ? { when: parseWhen(at, raw.if, "if") } : {}) };
+        const end = raw.end === undefined ? undefined : endTransition(`${at}: end`, raw.end === true ? undefined : raw.end);
+        return { name: raw.name, ...(raw.if !== undefined ? { when: parseWhen(at, raw.if, "if") } : {}), ...(end ? { end: end.kind === "end" && end.outcome !== undefined ? { outcome: end.outcome } : {} } : {}) };
       });
       const lastCase = rawStep.branch.cases.at(-1)!;
       if (lastCase.if !== undefined) err(`${where}: branch has no else: end the cases with one that has no \`if\` (e.g. \`{ name: other }\`), so every run takes a branch`);
@@ -1359,6 +1362,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
       const after = step.afterTask ? afterContext : undefined;
       const target = handoffs.get(step.id);
       checkStepRefs(step, steps, ancestors, new Set(blocks.keys()), err);
+      checkTextRefs(step, ancestors, steps, inputs, err);
       if (sub) wireBlock(step, raw, sub, steps, ancestors, inputs, err, after);
       else if (target) wireBlock(step, raw, target, steps, ancestors, inputs, err, after);
       else wireStep(step, raw, steps, ancestors, inputs, err, new Set(), undefined, after);
@@ -1829,14 +1833,20 @@ function expandBlocks(
       );
       const inputs = Object.fromEntries(Object.entries(step.inputs).map(([name, wired]) => [name, { ...wired, source: outer(wired.source) }]));
       const when = step.when?.map((condition) => ({ ...condition, source: outer(condition.source) }));
+      const texts = { ...(step.gate !== undefined ? { gate: outer(step.gate) } : {}) };
+      for (const transition of Object.values(on)) if (transition.kind === "ask") transition.ask = outer(transition.ask);
       const branch = step.branch && { cases: step.branch.cases.map((candidate) => ({ ...candidate, ...(candidate.when ? { when: candidate.when.map((condition) => ({ ...condition, source: outer(condition.source) })) } : {}) })) };
-      result.push({ ...step, needs: mapNeeds(step.needs), inputs, on, ...(when ? { when } : {}), ...(branch ? { branch } : {}) });
+      result.push({ ...step, needs: mapNeeds(step.needs), inputs, on, ...texts, ...(when ? { when } : {}), ...(branch ? { branch } : {}) });
       continue;
     }
     for (const innerStep of mainOf(sub)) {
       const on = Object.fromEntries(
-        Object.entries(innerStep.on).map(([outcome, transition]) => [outcome, mapTargets(transition, (target) => `${step.id}.${target}`)]),
+        Object.entries(innerStep.on).map(([outcome, transition]) => {
+          const mapped = mapTargets(transition, (target) => `${step.id}.${target}`);
+          return [outcome, mapped.kind === "ask" ? { ...mapped, ask: inner(step.id, sub, mapped.ask) } : mapped];
+        }),
       );
+      const gate = innerStep.gate !== undefined ? { gate: inner(step.id, sub, innerStep.gate) } : {};
       const inputs = Object.fromEntries(
         Object.entries(innerStep.inputs).map(([name, wired]) => {
           const source = inner(step.id, sub, wired.source);
@@ -1855,6 +1865,7 @@ function expandBlocks(
         needs: innerStep.needs.length === 0 ? mapNeeds(step.needs) : innerStep.needs.map((need) => `${step.id}.${need}`),
         inputs,
         on,
+        ...gate,
         ...(when.length > 0 ? { when } : {}),
         ...(branch ? { branch } : {}),
         ...(step.afterTask ? { afterTask: step.afterTask } : {}),
@@ -1961,6 +1972,31 @@ function checkStepRefs(step: Step, steps: Step[], ancestors: Set<string>, blockI
         for (const value of condition.values) {
           if (!source.outcomes.includes(value)) err(`${at}: ${label}.${condition.input}: "${value}" is not an outcome of step "${id}" (${source.outcomes.join(", ")})`);
         }
+      }
+    }
+  }
+}
+
+/**
+ * The templates of a gate's question and of an `ask` text may read `{{ playbook.inputs.<name> }}` and
+ * `{{ steps.<id>.outputs.<name> }}` of a step this one needs; an unset value renders as "(none)".
+ */
+function checkTextRefs(step: Step, ancestors: Set<string>, steps: Step[], inputs: Record<string, VarDef>, err: (message: string) => void): void {
+  const texts: Array<{ at: string; text: string }> = [
+    ...(step.gate ? [{ at: "gate.question", text: step.gate }] : []),
+    ...Object.entries(step.on).flatMap(([outcome, transition]) => (transition.kind === "ask" ? [{ at: `on.${outcome}.ask`, text: transition.ask }] : [])),
+  ];
+  const byId = new Map(steps.map((candidate) => [candidate.id, candidate]));
+  for (const { at, text } of texts) {
+    for (const ref of templateRefs(text)) {
+      const where = `step "${step.id}": ${at}: "{{ ${ref} }}"`;
+      const source = parseSourceRef(ref);
+      if (step.afterTask) err(`${where}: templates in a gate question or ask text do not apply to an after-task`);
+      else if (!source || (source.kind !== "playbook" && source.kind !== "step")) err(`${where} must be playbook.inputs.<name> or steps.<id>.outputs.<name>`);
+      else if (source.kind === "playbook" && !inputs[source.name]) err(`${where}: playbook input "${source.name}" is not declared`);
+      else if (source.kind === "step") {
+        if (!ancestors.has(source.step)) err(`${where}: step "${source.step}" is not one this step needs (directly or not)`);
+        else if (!byId.get(source.step)!.outputs[source.output]) err(`${where}: step "${source.step}" has no output "${source.output}"`);
       }
     }
   }

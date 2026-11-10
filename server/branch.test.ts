@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Playbook, Run } from "../shared/types";
-import { completeStep, endTurn, newRun, readySteps, recordReport, startAttempt } from "./engine";
+import { completeStep, endTurn, newRun, readySteps, recordReport, requestGate, startAttempt } from "./engine";
 import { loadPlaybooks } from "./loader";
 
 const EXAMPLES = path.resolve(__dirname, "..", "examples");
@@ -305,5 +305,69 @@ describe("example playbook", () => {
     report(run, "classify", { kind: "infra", plan: "p" });
     expect(readySteps(run)).toEqual(["apply"]);
     expect(["ship", "review"].map((id) => status(run, id))).toEqual(["skipped", "skipped"]);
+  });
+});
+
+describe("branch cases that end the run, and templated gate text", () => {
+  const ENDING = `
+title: B
+outcomes: [success, nothing_to_do]
+steps:
+  - id: scan
+    role: { name: reviewer }
+    outputs: { prs: { type: string } }
+  - id: route
+    needs: [scan]
+    branch:
+      cases:
+        - { name: none, if: { steps.scan.outputs.prs: { empty: true } }, end: nothing_to_do }
+        - { name: some }
+  - id: confirm
+    needs: [route]
+    when: { steps.route.outcome: some }
+    gate: { question: "Merge {{ steps.scan.outputs.prs }} on {{ playbook.inputs.env }}?" }
+inputs: { env: { type: string, default: prd } }
+`;
+
+  it("ends the run with the case's outcome and runs nothing after it", async () => {
+    const playbook = await playbookOf({ "b.yaml": ENDING });
+    const some = start(playbook);
+    report(some, "scan", { prs: "api#1" });
+    expect(some.steps.route!.branch).toBe("some");
+    expect(readySteps(some)).toEqual(["confirm"]);
+    expect(some.status).not.toBe("completed");
+  });
+
+  it("completes the run when the case that wins ends it", async () => {
+    const playbook = await playbookOf({
+      "b.yaml": ENDING.replace("steps.scan.outputs.prs: { empty: true }", "steps.opt.outputs.x: { empty: true }").replace(
+        "  - id: route\n    needs: [scan]",
+        "  - id: opt\n    when: { env: dev }\n    role: { name: reviewer }\n    outputs: { x: {} }\n  - id: route\n    needs: [scan, opt]",
+      ),
+    });
+    const run = start(playbook);
+    report(run, "scan", { prs: "api#1" });
+    expect(run.status).toBe("completed");
+    expect(status(run, "confirm")).toBe("skipped");
+    expect(run.history.some((event) => event.type === "branch_end")).toBe(true);
+  });
+
+  it("renders a gate question with inputs and step outputs", async () => {
+    const playbook = await playbookOf({ "b.yaml": ENDING });
+    const run = start(playbook);
+    report(run, "scan", { prs: "api#1" });
+    const gate = requestGate(run, "confirm", "", now());
+    expect(gate.details).toBe("Merge api#1 on prd?");
+  });
+
+  it("refuses an end outcome the playbook does not declare", async () => {
+    const errors = await errorsOf({ "b.yaml": ENDING.replace("end: nothing_to_do", "end: bogus") });
+    expect(errors).toMatch(/end: "bogus" is not an outcome of this playbook/);
+  });
+
+  it("validates the references of a gate question", async () => {
+    const errors = await errorsOf({ "b.yaml": ENDING.replace("{{ steps.scan.outputs.prs }}", "{{ steps.scan.outputs.nope }} {{ steps.ghost.outputs.x }}") });
+    expect(errors).toMatch(/step "scan" has no output "nope"/);
+    expect(errors).toMatch(/step "ghost" is not one this step needs/);
   });
 });
