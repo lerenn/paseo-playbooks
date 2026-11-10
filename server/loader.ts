@@ -186,6 +186,33 @@ const RawHandoffStepSchema = z
   })
   .strict();
 
+/**
+ * One operand test of a condition (`when`, a branch case's `if`): a value, a list of values (any of),
+ * or `{ empty: true }` / `{ empty: false }`. The key is an input, `steps.<id>.outputs.<name>` or `steps.<id>.outcome`.
+ */
+const RawConditionSchema = z.record(z.string(), z.union([RawScalarSchema, z.array(RawScalarSchema).min(1), z.object({ empty: z.boolean() }).strict()]));
+type RawCondition = z.infer<typeof RawConditionSchema>;
+
+/** A branch step: ordered cases, the first whose `if` holds wins; the last one has no `if` (the else). */
+const RawBranchStepSchema = z
+  .object({
+    cases: z
+      .array(
+        z
+          .object({
+            /** The case's name: the outcome of the branch step, which the steps of the case test in their `when`. */
+            name: z.string().min(1),
+            /** Conditions that must all hold. Absent on the last case only: that is the `else`. */
+            if: RawConditionSchema.optional(),
+            /** Ends the run (or the block, in a sub-playbook) when this case wins: `end: true`, or `end: <outcome>` of the playbook. */
+            end: z.union([z.literal(true), z.string().min(1)]).optional(),
+          })
+          .strict(),
+      )
+      .min(1),
+  })
+  .strict();
+
 /** Fields that moved into a kind's block; read flat only to refuse them with the new form. */
 const MOVED_FIELDS = { prompt: "role", silence: "role", archive_agents: "role", agent: "role", choices: "gate", poll: "script" } as const;
 type MovedField = keyof typeof MOVED_FIELDS;
@@ -202,6 +229,7 @@ const RawStepSchema = z.object({
     playbook: kindBlock(RawPlaybookStepSchema).optional(),
     script: kindBlock(RawScriptStepSchema).optional(),
     handoff: kindBlock(RawHandoffStepSchema).optional(),
+    branch: RawBranchStepSchema.optional(),
     /** A singleton's station: which waiting jobs a train takes. */
     queue: z
       .object({
@@ -218,8 +246,8 @@ const RawStepSchema = z.object({
       })
       .strict()
       .optional(),
-    /** Runs the step only for these input values (one value or a list per input); otherwise it is skipped. */
-    when: z.record(z.string(), z.union([RawScalarSchema, z.array(RawScalarSchema).min(1)])).optional(),
+    /** Runs the step only when these conditions all hold (inputs, step outputs and outcomes); otherwise it is skipped. */
+    when: RawConditionSchema.optional(),
     inputs: z.union([z.array(z.string()), z.record(z.string(), z.string().nullable())]).optional(),
     outputs: z.record(z.string(), RawVarDefSchema.nullable()).optional(),
     outcomes: z.array(z.string()).min(1).optional(),
@@ -817,37 +845,48 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
   // A singleton has no run inputs: every input is each job's.
   const keyInputs = new Set<string>();
 
-  /** A step's `when`: each input must exist (a key input on a singleton) and each value fit its type. */
-  const parseWhen = (where: string, raw: Record<string, VarValue | VarValue[]> | undefined): When[] | undefined => {
+  /**
+   * A condition map (a step's `when`, a branch case's `if`): each key is an input of the playbook (a key
+   * input on a singleton), `steps.<id>.outputs.<name>` or `steps.<id>.outcome`. Inputs are checked here,
+   * step references once the graph is known (checkStepRefs).
+   */
+  const parseWhen = (where: string, raw: RawCondition | undefined, label = "when"): When[] | undefined => {
     if (raw === undefined) return undefined;
     const conditions: When[] = [];
     for (const [name, given] of Object.entries(raw)) {
-      const def = inputs[name];
+      const ref = /^steps\.([a-z][a-z0-9_.-]*?)\.(?:outputs\.([A-Za-z_][\w-]*)|(outcome))$/.exec(name);
+      const def = ref ? undefined : inputs[name];
+      const source = ref ? `{{ steps.${ref[1]}.${ref[3] ? "outcome" : `outputs.${ref[2]}`} }}` : `{{ playbook.inputs.${name} }}`;
       if (name === "loop" && !def) {
         const tests: NonNullable<When["loop"]> = [];
         for (const value of Array.isArray(given) ? given : [given]) {
           const match = /^\s*(==|=|>=|<=|>|<)?\s*(\d+)\s*$/.exec(String(value));
           if (match) tests.push({ op: match[1] === undefined || match[1] === "=" ? "==" : (match[1] as "==" | ">=" | "<=" | ">" | "<"), value: Number(match[2]) });
-          else err(`${where}: when.loop: ${JSON.stringify(value)}: expected a loop count such as 1, ">=2" or "<3"`);
+          else err(`${where}: ${label}.loop: ${JSON.stringify(value)}: expected a loop count such as 1, ">=2" or "<3"`);
         }
         if (tests.length > 0) conditions.push({ input: "loop", source: "", values: [], loop: tests });
         continue;
       }
-      if (!def) {
-        err(`${where}: when.${name}: not an input of this playbook${Object.keys(inputs).length ? ` (${Object.keys(inputs).join(", ")})` : ""}`);
+      if (!ref && !def) {
+        err(`${where}: ${label}.${name}: not an input of this playbook${Object.keys(inputs).length ? ` (${Object.keys(inputs).join(", ")})` : ""}; to test a step write \`steps.<id>.outputs.<name>\` or \`steps.<id>.outcome\``);
         continue;
       }
-      if (singleton && !keyInputs.has(name)) {
-        err(`${where}: when.${name}: a singleton's inputs are each job's, so \`when\` cannot use them; put the condition in the station's sub-playbook, on an input the station sets`);
+      if (singleton && (ref || !keyInputs.has(name))) {
+        err(`${where}: ${label}.${name}: a singleton's inputs are each job's${ref ? ", and its trains do not read other steps in a condition" : ""}, so \`${label}\` cannot use ${ref ? "this" : "them"}; put the condition in the station's sub-playbook, on an input the station sets`);
+        continue;
+      }
+      if (typeof given === "object" && !Array.isArray(given)) {
+        conditions.push({ input: name, source, values: [], empty: given.empty });
         continue;
       }
       const values: string[] = [];
       for (const value of Array.isArray(given) ? given : [given]) {
-        const coerced = coerceValue(def, value);
+        // Step values are checked against the step's output type later; an input's now.
+        const coerced = def ? coerceValue(def, value) : { ok: true as const, value };
         if (coerced.ok) values.push(String(coerced.value));
-        else err(`${where}: when.${name}: ${JSON.stringify(value)}: ${coerced.error}`);
+        else err(`${where}: ${label}.${name}: ${JSON.stringify(value)}: ${coerced.error}`);
       }
-      conditions.push({ input: name, source: `{{ playbook.inputs.${name} }}`, values });
+      conditions.push({ input: name, source, values });
     }
     return conditions.length > 0 ? conditions : undefined;
   };
@@ -921,12 +960,13 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     const isBlock = playbookStep !== undefined;
     const isScript = scriptStep !== undefined;
     const isHandoff = rawStep.handoff !== undefined;
-    if ([roleStep, gateStep, playbookStep, scriptStep, rawStep.handoff].filter((value) => value !== undefined).length !== 1) {
-      err(`${where}: set exactly one of \`role\`, \`gate\`, \`playbook\`, \`script\` or \`handoff\``);
+    if ([roleStep, gateStep, playbookStep, scriptStep, rawStep.handoff, rawStep.branch].filter((value) => value !== undefined).length !== 1) {
+      err(`${where}: set exactly one of \`role\`, \`gate\`, \`playbook\`, \`script\`, \`handoff\` or \`branch\``);
     }
     refuseFlatForms(where, rawStep, err);
     if (typeof rawStep.handoff === "string") err(`${where}: handoff: write \`handoff: { name: ${rawStep.handoff} }\``);
     if (task && rawStep.when !== undefined) err(`${where}: \`when\` does not apply to an after-task`);
+    if (rawStep.branch !== undefined && (task || singleton)) err(`${where}: \`branch\` does not apply to ${task ? "an after-task" : "a singleton's station"}`);
     if (rawStep.when && "loop" in rawStep.when && !inputs.loop && kindBlocks(rawStep).playbook !== undefined) {
       err(`${where}: when.loop does not apply to a playbook step (it has no loop count); put it on a step of the sub-playbook`);
     }
@@ -934,6 +974,52 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     const conditional = when ? { when } : {};
     if (rawStep.settle !== undefined && (isGate || isBlock || isHandoff || task)) {
       err(`${where}: \`settle\` only applies to a role or script step (its outputs settle the train's jobs)`);
+    }
+    if (rawStep.branch !== undefined) {
+      for (const field of ["inputs", "outputs", "outcomes", "timeout", "on", "settle"] as const) {
+        if (rawStep[field] !== undefined) err(`${where}: \`${field}\` does not apply to a branch step (its outcome is the case that won)`);
+      }
+      if (rawStep.retries !== 0) err(`${where}: \`retries\` does not apply to a branch step`);
+      const cases = rawStep.branch.cases.map((raw, index) => {
+        const at = `${where}: branch.cases[${index}]`;
+        if (!ID.test(raw.name)) err(`${at}: invalid name "${raw.name}" (lowercase letters, digits, - and _)`);
+        const last = index === rawStep.branch!.cases.length - 1;
+        if (raw.if === undefined && !last) err(`${at}: "${raw.name}" has no \`if\`, so it is the else and must be the last case: the ${rawStep.branch!.cases.length - 1 - index} case(s) after it can never run`);
+        if (raw.if !== undefined && Object.keys(raw.if).length === 0) err(`${at}: \`if\` is empty; list at least one condition, or leave it out for the else`);
+        const end = raw.end === undefined ? undefined : endTransition(`${at}: end`, raw.end === true ? undefined : raw.end);
+        return { name: raw.name, ...(raw.if !== undefined ? { when: parseWhen(at, raw.if, "if") } : {}), ...(end ? { end: end.kind === "end" && end.outcome !== undefined ? { outcome: end.outcome } : {} } : {}) };
+      });
+      const lastCase = rawStep.branch.cases.at(-1)!;
+      if (lastCase.if !== undefined) err(`${where}: branch has no else: end the cases with one that has no \`if\` (e.g. \`{ name: other }\`), so every run takes a branch`);
+      const names = cases.map((candidate) => candidate.name);
+      for (const name of names) if (names.indexOf(name) !== names.lastIndexOf(name)) err(`${where}: branch: duplicate case name "${name}"`);
+      // A case is unreachable when an earlier one holds in every state where it does: each of that case's
+      // tests also appears in this one, with the same or fewer values.
+      for (const [index, later] of cases.entries()) {
+        const earlier = cases.slice(0, index).find((candidate) => {
+          const held = candidate.when ?? [];
+          return held.length > 0 && held.every((test) => (later.when ?? []).some((other) => sameOrNarrower(other, test)));
+        });
+        if (earlier && later.when) err(`${where}: branch case "${later.name}" is unreachable: whenever it holds, the earlier case "${earlier.name}" holds and wins`);
+      }
+      steps.push({
+        id: rawStep.id,
+        kind: "branch",
+        needs: rawStep.needs,
+        prompt: "",
+        inputs: {},
+        outputs: {},
+        outcomes: names,
+        retries: 0,
+        agent: {},
+        on: {},
+        choices: [],
+        branch: { cases },
+        ...(rawStep.title !== undefined ? { title: rawStep.title } : {}),
+        ...(rawStep.short_title !== undefined ? { shortTitle: rawStep.short_title } : {}),
+        ...conditional,
+      });
+      continue;
     }
     if (isBlock) {
       for (const field of ["outputs", "outcomes", "timeout"] as const) {
@@ -1275,6 +1361,8 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
       const ancestors = ancestorsOf(steps, step.id);
       const after = step.afterTask ? afterContext : undefined;
       const target = handoffs.get(step.id);
+      checkStepRefs(step, steps, ancestors, new Set(blocks.keys()), err);
+      checkTextRefs(step, ancestors, steps, inputs, err);
       if (sub) wireBlock(step, raw, sub, steps, ancestors, inputs, err, after);
       else if (target) wireBlock(step, raw, target, steps, ancestors, inputs, err, after);
       else wireStep(step, raw, steps, ancestors, inputs, err, new Set(), undefined, after);
@@ -1722,7 +1810,9 @@ function expandBlocks(
         return fallback === undefined ? "" : String(fallback);
       }
       const step = /^steps\.([a-z][a-z0-9_.-]*)\.outputs\.([A-Za-z_][\w-]*)$/.exec(ref);
-      return step ? `{{ steps.${blockId}.${step[1]}.outputs.${step[2]} }}` : null;
+      if (step) return `{{ steps.${blockId}.${step[1]}.outputs.${step[2]} }}`;
+      const outcome = /^steps\.([a-z][a-z0-9_.-]*)\.outcome$/.exec(ref);
+      return outcome ? `{{ steps.${blockId}.${outcome[1]}.outcome }}` : null;
     });
   const result: Step[] = [];
   for (const step of steps) {
@@ -1742,13 +1832,21 @@ function expandBlocks(
         ]),
       );
       const inputs = Object.fromEntries(Object.entries(step.inputs).map(([name, wired]) => [name, { ...wired, source: outer(wired.source) }]));
-      result.push({ ...step, needs: mapNeeds(step.needs), inputs, on });
+      const when = step.when?.map((condition) => ({ ...condition, source: outer(condition.source) }));
+      const texts = { ...(step.gate !== undefined ? { gate: outer(step.gate) } : {}) };
+      for (const transition of Object.values(on)) if (transition.kind === "ask") transition.ask = outer(transition.ask);
+      const branch = step.branch && { cases: step.branch.cases.map((candidate) => ({ ...candidate, ...(candidate.when ? { when: candidate.when.map((condition) => ({ ...condition, source: outer(condition.source) })) } : {}) })) };
+      result.push({ ...step, needs: mapNeeds(step.needs), inputs, on, ...texts, ...(when ? { when } : {}), ...(branch ? { branch } : {}) });
       continue;
     }
     for (const innerStep of mainOf(sub)) {
       const on = Object.fromEntries(
-        Object.entries(innerStep.on).map(([outcome, transition]) => [outcome, mapTargets(transition, (target) => `${step.id}.${target}`)]),
+        Object.entries(innerStep.on).map(([outcome, transition]) => {
+          const mapped = mapTargets(transition, (target) => `${step.id}.${target}`);
+          return [outcome, mapped.kind === "ask" ? { ...mapped, ask: inner(step.id, sub, mapped.ask) } : mapped];
+        }),
       );
+      const gate = innerStep.gate !== undefined ? { gate: inner(step.id, sub, innerStep.gate) } : {};
       const inputs = Object.fromEntries(
         Object.entries(innerStep.inputs).map(([name, wired]) => {
           const source = inner(step.id, sub, wired.source);
@@ -1758,21 +1856,33 @@ function expandBlocks(
         }),
       );
       // The block's own `when` holds for each of its steps, before theirs (read through the parent's wiring).
-      const when = [...(step.when ?? []), ...(innerStep.when ?? []).map((condition) => ({ ...condition, source: inner(step.id, sub, condition.source) }))];
-      const { when: _innerWhen, ...rest } = innerStep;
+      const when = [...(step.when ?? []).map((condition) => ({ ...condition, source: outer(condition.source) })), ...(innerStep.when ?? []).map((condition) => ({ ...condition, source: inner(step.id, sub, condition.source) }))];
+      const { when: _innerWhen, branch: innerBranch, ...rest } = innerStep;
+      const branch = innerBranch && { cases: innerBranch.cases.map((candidate) => ({ ...candidate, ...(candidate.when ? { when: candidate.when.map((condition) => ({ ...condition, source: inner(step.id, sub, condition.source) })) } : {}) })) };
       result.push({
         ...rest,
         id: `${step.id}.${innerStep.id}`,
         needs: innerStep.needs.length === 0 ? mapNeeds(step.needs) : innerStep.needs.map((need) => `${step.id}.${need}`),
         inputs,
         on,
+        ...gate,
         ...(when.length > 0 ? { when } : {}),
+        ...(branch ? { branch } : {}),
         ...(step.afterTask ? { afterTask: step.afterTask } : {}),
       });
     }
   }
   for (const [name, output] of Object.entries(outputs)) outputs[name] = { ...output, source: outer(output.source) };
   return { steps: result, blocks: info };
+}
+
+/** Whether `test` holds in every state where `other` does (same operand; the same, or fewer, values). */
+function sameOrNarrower(other: When, test: When): boolean {
+  if (other.source !== test.source || other.input !== test.input) return false;
+  if (other.loop || test.loop) return JSON.stringify(other.loop) === JSON.stringify(test.loop);
+  if (test.empty !== undefined) return other.empty === test.empty;
+  if (other.empty !== undefined) return false;
+  return other.values.every((value) => test.values.includes(value));
 }
 
 /** Whether a step may read the outputs of `source`: it has no `when`, or the reader has the same one. */
@@ -1827,4 +1937,67 @@ function mapTargets(transition: Transition, map: (target: string) => string): Tr
   if (transition.kind !== "ask") return transition;
   const choices = transition.choices?.map((choice) => ({ ...choice, target: map(choice.target) }));
   return { ...transition, target: map(transition.target), ...(choices ? { choices } : {}) };
+}
+
+/**
+ * The step references of a step's conditions (`when`, and each branch case's): the step must be one
+ * this step needs (directly or not), which also rules out cycles; an output must exist and each value fit
+ * its type; an outcome must be one the step can end with, and a playbook step has none to test.
+ */
+function checkStepRefs(step: Step, steps: Step[], ancestors: Set<string>, blockIds: Set<string>, err: (message: string) => void): void {
+  const byId = new Map(steps.map((candidate) => [candidate.id, candidate]));
+  const groups: Array<{ at: string; label: string; conditions: When[] }> = [
+    { at: `step "${step.id}"`, label: "when", conditions: step.when ?? [] },
+    ...(step.branch?.cases ?? []).map((candidate) => ({ at: `step "${step.id}": branch case "${candidate.name}"`, label: "if", conditions: candidate.when ?? [] })),
+  ];
+  for (const { at, label, conditions } of groups) {
+    for (const condition of conditions) {
+      const ref = /^\{\{ steps\.(.+?)\.(?:outputs\.([^.]+)|(outcome)) \}\}$/.exec(condition.source);
+      if (!ref) continue;
+      const [, id, output] = ref;
+      const source = byId.get(id!);
+      if (!source) err(`${at}: ${label}.${condition.input}: unknown step "${id}"`);
+      else if (id === step.id || !ancestors.has(id!)) {
+        err(`${at}: ${label}.${condition.input}: step "${id}" is not one this step needs (directly or not), so its ${output ? "output" : "outcome"} is not known when this one is reached (a condition cannot read a step that runs after it)`);
+      } else if (output) {
+        const def = source.outputs[output];
+        if (!def) err(`${at}: ${label}.${condition.input}: step "${id}" has no output "${output}"${source.outputs && Object.keys(source.outputs).length ? ` (${Object.keys(source.outputs).join(", ")})` : ""}`);
+        else for (const value of condition.values) {
+          const coerced = coerceValue(def, value);
+          if (!coerced.ok) err(`${at}: ${label}.${condition.input}: ${JSON.stringify(value)}: ${coerced.error}`);
+        }
+      } else if (blockIds.has(source.id)) {
+        err(`${at}: ${label}.${condition.input}: step "${id}" is a playbook step, which has no outcome of its own to test; test one of its outputs`);
+      } else {
+        for (const value of condition.values) {
+          if (!source.outcomes.includes(value)) err(`${at}: ${label}.${condition.input}: "${value}" is not an outcome of step "${id}" (${source.outcomes.join(", ")})`);
+        }
+      }
+    }
+  }
+}
+
+/**
+ * The templates of a gate's question and of an `ask` text may read `{{ playbook.inputs.<name> }}` and
+ * `{{ steps.<id>.outputs.<name> }}` of a step this one needs; an unset value renders as "(none)".
+ */
+function checkTextRefs(step: Step, ancestors: Set<string>, steps: Step[], inputs: Record<string, VarDef>, err: (message: string) => void): void {
+  const texts: Array<{ at: string; text: string }> = [
+    ...(step.gate ? [{ at: "gate.question", text: step.gate }] : []),
+    ...Object.entries(step.on).flatMap(([outcome, transition]) => (transition.kind === "ask" ? [{ at: `on.${outcome}.ask`, text: transition.ask }] : [])),
+  ];
+  const byId = new Map(steps.map((candidate) => [candidate.id, candidate]));
+  for (const { at, text } of texts) {
+    for (const ref of templateRefs(text)) {
+      const where = `step "${step.id}": ${at}: "{{ ${ref} }}"`;
+      const source = parseSourceRef(ref);
+      if (step.afterTask) err(`${where}: templates in a gate question or ask text do not apply to an after-task`);
+      else if (!source || (source.kind !== "playbook" && source.kind !== "step")) err(`${where} must be playbook.inputs.<name> or steps.<id>.outputs.<name>`);
+      else if (source.kind === "playbook" && !inputs[source.name]) err(`${where}: playbook input "${source.name}" is not declared`);
+      else if (source.kind === "step") {
+        if (!ancestors.has(source.step)) err(`${where}: step "${source.step}" is not one this step needs (directly or not)`);
+        else if (!byId.get(source.step)!.outputs[source.output]) err(`${where}: step "${source.step}" has no output "${source.output}"`);
+      }
+    }
+  }
 }

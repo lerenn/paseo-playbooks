@@ -8,6 +8,7 @@ import { startAfterTaskRpc } from "../shared/contracts";
 import { askChoices } from "../shared/gates";
 import { END, layerOf, layoutGraph, START, withTerminals } from "../shared/graph";
 import { isTerminal, type AfterTask, type Playbook, type Run, type Step } from "../shared/types";
+import { conditionText } from "../shared/labels";
 import { agentBackground, gateBackground, stepTitle, nodeColor, nodeIcon, nodeStateLabel, type NodeState, type Theme } from "./theme";
 
 /** Nodes grow with the panel between these widths; below the minimum the graph scrolls sideways. */
@@ -680,8 +681,11 @@ function Node(props: GraphProps & { step: Step; longNeeds: string[]; nodeWidth: 
     return () => loop.stop();
   }, [nodeState, reduceMotion, pulse]);
 
-  const condition = step.when?.length ? ` · if ${step.when.map((when) => `${when.input}=${when.values.join("|")}`).join(", ")}` : "";
-  const subtitle = (isGate
+  const condition = step.when?.length ? ` · if ${step.when.map(conditionText).join(", ")}` : "";
+  const chosen = run?.steps[step.id]?.branch ?? null;
+  const subtitle = (step.kind === "branch"
+    ? `Branch${chosen ? ` → ${chosen}` : ` · ${step.branch?.cases.map((candidate) => candidate.name).join(" | ") ?? ""}`}`
+    : isGate
     ? "Gate"
     : isScript
       ? `Script${nodeState === "running" && latest?.checks ? ` · check ${latest.checks}` : ""}`

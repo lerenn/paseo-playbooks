@@ -5,6 +5,7 @@ import { useState, type ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
 import { decideGateRpc, nudgeStepRpc, restartRunRpc, retryStepRpc } from "../shared/contracts";
 import { askChoices, askTransitionOf, choicesOfGate, destinationOf, gateText, linkify } from "../shared/gates";
+import { conditionText } from "../shared/labels";
 import { attemptTimeoutMs, isPaused, isStepLive, restartBlocker, type Gate, type GateChoice, type Playbook, type Run, type RunSummary } from "../shared/types";
 import { stepTitle, stepTitleOf, type Theme } from "./theme";
 
@@ -297,7 +298,7 @@ export function StepSheet(props: {
   const timeoutText = timeoutMs ? ` · timeout ${Math.round(timeoutMs / 60000)} min` : step.timeout ? ` · timeout ${step.timeout}` : "";
 
   return (
-    <Modal title={`${stepTitle(step)}${role ? ` · ${role.title}` : step.kind === "gate" ? " · Gate" : step.kind === "script" ? " · Script" : step.kind === "handoff" ? " · Hand-off" : ""}`} open onOpenChange={(open) => !open && props.onClose()}>
+    <Modal title={`${stepTitle(step)}${role ? ` · ${role.title}` : step.kind === "gate" ? " · Gate" : step.kind === "script" ? " · Script" : step.kind === "handoff" ? " · Hand-off" : step.kind === "branch" ? " · Branch" : ""}`} open onOpenChange={(open) => !open && props.onClose()}>
       <Modal.Content>
         {state ? <Line theme={theme}>Status: {state.status}{latest ? ` · attempt ${latest.n}` : ""}</Line> : null}
         {step.kind === "agent" ? (
@@ -343,7 +344,22 @@ export function StepSheet(props: {
           <Section theme={theme} title="Runs only when">
             {step.when.map((when) => (
               <Line key={when.input} theme={theme} muted>
-                {when.input} is {when.values.join(" or ")}
+                {conditionText(when)}
+              </Line>
+            ))}
+          </Section>
+        ) : null}
+        {state?.status === "skipped" ? (
+          <Line theme={theme} muted>
+            Skipped: {run?.history.findLast((event) => event.type === "step_skipped" && event.stepId === stepId)?.detail ?? "not reached"}
+          </Line>
+        ) : null}
+        {step.branch ? (
+          <Section theme={theme} title="Branch (first case that holds runs)">
+            {step.branch.cases.map((candidate) => (
+              <Line key={candidate.name} theme={theme} muted={state?.branch !== candidate.name}>
+                {state?.branch === candidate.name ? "▶ " : ""}
+                {candidate.name}: {candidate.when ? `if ${candidate.when.map(conditionText).join(" and ")}` : "else"}
               </Line>
             ))}
           </Section>

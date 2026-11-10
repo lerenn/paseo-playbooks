@@ -6,7 +6,7 @@ import { descendantsOf } from "../shared/graph";
 import { blockEntrySteps, blockStepIds, holdsBlock, innermostBlock } from "../shared/slots";
 import { askChoices, askHumanText, askTransitionOf, choicesOfGate, outcomeTransition } from "../shared/gates";
 import { parse as parseYaml, stringify as toYaml } from "yaml";
-import type { AfterTask, AskChoice, Attempt, Gate, GateDecider, Job, Playbook, Run, RunDefinition, RunStep, RunWorktree, Step, Transition, VarValue } from "../shared/types";
+import type { AfterTask, AskChoice, Attempt, Gate, GateDecider, Job, Playbook, Run, RunDefinition, RunStep, RunWorktree, Step, Transition, VarValue, When } from "../shared/types";
 import { isActive, isAgentlessAttempt, isPaused, isPipeline, isStepDone, isStepLive, isTerminal, restartBlocker, runningAfterTasks } from "../shared/types";
 import { coerceValue, formatValue, parseDuration, renderTemplate, replaceRefs, resolveValue, templateRefs } from "../shared/vars";
 
@@ -179,7 +179,7 @@ function createRun(input: NewRunInput, inputs: Record<string, VarValue>, kind: "
     steps: Object.fromEntries(
       input.playbook.steps.map((step) => [
         step.id,
-        { status: "pending", attempts: [], outputs: {}, summary: null, feedback: null, loop: 0, completedSeq: null, queuedAt: null },
+        { status: "pending", attempts: [], outputs: {}, summary: null, feedback: null, loop: 0, completedSeq: null, branch: null, queuedAt: null },
       ]),
     ),
     loops: {},
@@ -217,26 +217,45 @@ function createRun(input: NewRunInput, inputs: Record<string, VarValue>, kind: "
  * block with `concurrency` while it is not held: those are queued until the runtime admits
  * them (see planAdmissions). Returns the newly ready and the newly queued ids.
  */
-export function refreshReady(run: Run, now: string): { ready: string[]; queued: string[] } {
+export function refreshReady(run: Run, now: string, fx?: Effects): { ready: string[]; queued: string[] } {
   const ready: string[] = [];
   const queued: string[] = [];
   if (run.status === "boarding" || isPipeline(run)) return { ready, queued };
   const limited = Object.entries(run.playbook.blocks).filter(([, block]) => block.concurrency !== undefined);
   // A skipped step (its `when` did not match) counts as done, so the steps after it may move too.
+  // A branch step that is reached picks its case and completes at once; the steps of the other cases then skip.
   let skipped = true;
+  let ending: { stepId: string; outcome?: string } | null = null;
   while (skipped) {
     skipped = false;
     for (const step of run.playbook.steps) {
       const state = run.steps[step.id]!;
-      if (state.status !== "pending" || !step.when || !isStepLive(run, step.id)) continue;
+      if (state.status !== "pending" || (!step.when && !step.branch) || !isStepLive(run, step.id)) continue;
       if (!step.needs.every((need) => isStepDone(run.steps[need]?.status ?? "pending"))) continue;
       const missed = unmetWhen(run, step);
-      if (missed === null) continue;
-      state.status = "skipped";
-      state.completedSeq = null;
-      log(run, now, "step_skipped", step.id, missed);
-      skipped = true;
+      if (missed !== null) {
+        state.status = "skipped";
+        state.completedSeq = null;
+        log(run, now, "step_skipped", step.id, missed);
+        skipped = true;
+      } else if (step.branch) {
+        const chosen = chooseCase(run, step);
+        state.status = "completed";
+        state.branch = chosen.name;
+        state.summary = chosen.why;
+        state.completedSeq = run.seq + 1;
+        log(run, now, "step_completed", step.id, `branch ${chosen.name}: ${chosen.why}`);
+        const closing = step.branch.cases.find((candidate) => candidate.name === chosen.name)?.end;
+        if (closing && !ending) ending = { stepId: step.id, ...(closing.outcome !== undefined ? { outcome: closing.outcome } : {}) };
+        skipped = true;
+      }
     }
+  }
+  // A case that ends the flow (the run, or its block) does so now: the steps after it never run.
+  if (ending && fx) {
+    log(run, now, "branch_end", ending.stepId, ending.outcome ?? "end");
+    endFrom(run, ending.stepId, ending.outcome, now, fx);
+    return { ready, queued };
   }
   for (const step of run.playbook.steps) {
     const state = run.steps[step.id]!;
@@ -260,15 +279,43 @@ export function refreshReady(run: Run, now: string): { ready: string[]; queued: 
 export function unmetWhen(run: Run, step: Step): string | null {
   const context = templateContext(run);
   for (const condition of step.when ?? []) {
-    if (condition.loop) {
-      const loop = run.steps[step.id]?.loop ?? 0;
-      if (!condition.loop.some((test) => loopTest(test, loop))) return `when: loop is ${loop}, not ${condition.loop.map((test) => `${test.op}${test.value}`).join(" or ")}`;
-      continue;
-    }
-    const value = formatValue(resolveValue(condition.source, context));
-    if (!condition.values.includes(value)) return `when: ${condition.input} is ${value}, not ${condition.values.join(" or ")}`;
+    const missed = unmetCondition(run, step, condition, context);
+    if (missed !== null) return `when: ${missed}`;
   }
   return null;
+}
+
+/** Why one condition does not hold (`env is dev, not prd`), or null when it does. */
+function unmetCondition(run: Run, step: Step, condition: When, context: Record<string, unknown>): string | null {
+  if (condition.loop) {
+    const loop = run.steps[step.id]?.loop ?? 0;
+    return condition.loop.some((test) => loopTest(test, loop)) ? null : `loop is ${loop}, not ${condition.loop.map((test) => `${test.op}${test.value}`).join(" or ")}`;
+  }
+  const raw = resolveValue(condition.source, context);
+  const value = formatValue(raw);
+  if (condition.empty !== undefined) {
+    const isEmpty = raw === undefined || raw === "";
+    return isEmpty === condition.empty ? null : `${condition.input} is ${isEmpty ? "empty" : value}, not ${condition.empty ? "empty" : "set"}`;
+  }
+  return condition.values.includes(value) ? null : `${condition.input} is ${value}, not ${condition.values.join(" or ")}`;
+}
+
+/** The first case of a branch step whose conditions all hold (the last one, the `else`, has none), and what made it win. */
+function chooseCase(run: Run, step: Step): { name: string; why: string } {
+  const context = templateContext(run);
+  const cases = step.branch!.cases;
+  for (const [index, candidate] of cases.entries()) {
+    if (!candidate.when) return { name: candidate.name, why: index === 0 ? "else" : "no earlier case held" };
+    const missed = candidate.when.map((condition) => unmetCondition(run, step, condition, context)).find((miss) => miss !== null);
+    if (missed === undefined) return { name: candidate.name, why: candidate.when.map((condition) => describe(condition, context)).join(" and ") };
+  }
+  const last = cases.at(-1)!;
+  return { name: last.name, why: "no case held" };
+}
+
+function describe(condition: When, context: Record<string, unknown>): string {
+  if (condition.empty !== undefined) return `${condition.input} is ${condition.empty ? "empty" : "set"}`;
+  return `${condition.input} is ${formatValue(resolveValue(condition.source, context))}`;
 }
 
 function loopTest(test: { op: "==" | ">=" | "<=" | ">" | "<"; value: number }, loop: number): boolean {
@@ -336,7 +383,7 @@ function baseContext(run: Run): Record<string, unknown> & { run: Record<string, 
   return {
     playbook: { inputs: run.inputs },
     steps: Object.fromEntries(
-      Object.entries(run.steps).map(([id, state]) => [id, { outputs: state.outputs, summary: state.summary }]),
+      Object.entries(run.steps).map(([id, state]) => [id, { outputs: state.outputs, summary: state.summary, outcome: state.branch ?? state.attempts.at(-1)?.outcome ?? "" }]),
     ),
     run: { id: run.id, status: run.status, failure: run.failure },
   };
@@ -697,6 +744,7 @@ function launchTask(run: Run, taskId: string, now: string): string[] {
     const state = run.steps[stepId]!;
     state.status = "pending";
     state.outputs = {};
+    state.branch = null;
     state.completedSeq = null;
   }
   const { ready } = refreshReady(run, now);
@@ -810,7 +858,8 @@ function advance(run: Run, stepId: string, now: string, fx: Effects): void {
     else completeRun(run, now, fx);
     return;
   }
-  const { ready, queued } = refreshReady(run, now);
+  const { ready, queued } = refreshReady(run, now, fx);
+  if (isTerminal(run.status)) return;
   // Skipped steps (`when`) may have finished the flow.
   if (flow.every((step) => isStepDone(run.steps[step.id]!.status))) {
     if (task) finishTask(run, task, "completed", "", now, fx);
@@ -934,6 +983,7 @@ function performGoto(run: Run, source: string, target: string, feedback: string,
     }
     state.status = "pending";
     state.outputs = {};
+    state.branch = null;
     state.completedSeq = null;
     state.loop += 1;
   }
@@ -946,7 +996,7 @@ function performGoto(run: Run, source: string, target: string, feedback: string,
   }
   run.steps[target]!.feedback = feedback || null;
   log(run, now, "goto", source, `${key} (loop ${run.loops[key]})`);
-  const { ready, queued } = refreshReady(run, now);
+  const { ready, queued } = refreshReady(run, now, fx);
   fx.notes.push(`Looping back to "${target}" (loop ${run.loops[key]}). Ready: ${ready.join(", ") || "none"}.`);
   if (queued.length > 0) fx.notes.push(queueNote(run, queued));
 }
@@ -990,6 +1040,7 @@ function openDecider(decider: GateDecider | undefined): Pick<Gate, "decider" | "
 function openAskGate(run: Run, step: Step, outcome: string, transition: Extract<Transition, { kind: "ask" }>, summary: string, now: string, fx: Effects): void {
   run.steps[step.id]!.status = "waiting";
   const asked = run.gates.filter((gate) => gate.kind === "ask" && gate.stepId === step.id).length;
+  const question = renderTemplate(transition.ask, templateContext(run));
   const gate: Gate = {
     id: `ask-${step.id}-${asked + 1}`,
     kind: "ask",
@@ -997,8 +1048,8 @@ function openAskGate(run: Run, step: Step, outcome: string, transition: Extract<
     gotoTarget: transition.target,
     outcome,
     status: "pending",
-    message: [transition.ask, summary].filter(Boolean).join("\n\n"),
-    summary: transition.ask,
+    message: [question, summary].filter(Boolean).join("\n\n"),
+    summary: question,
     details: summary,
     requestedAt: now,
     comment: null,
@@ -1124,6 +1175,8 @@ export function requestGate(run: Run, stepId: string, summary: string, now: stri
   const state = runStep(run, stepId);
   if (step.kind !== "gate") throw new EngineError(`step "${stepId}" is not a gate`);
   if (state.status !== "ready") throw new EngineError(`gate "${stepId}" is ${state.status}, not ready`);
+  // The question may read the run's inputs and the outputs of earlier steps ({{ steps.<id>.outputs.<name> }}).
+  const question = step.gate ? renderTemplate(step.gate, templateContext(run)) : step.gate;
   const gate: Gate = {
     id: `${stepId}-${state.attempts.length + run.gates.filter((g) => g.stepId === stepId).length + 1}`,
     kind: "gate",
@@ -1131,9 +1184,9 @@ export function requestGate(run: Run, stepId: string, summary: string, now: stri
     gotoTarget: null,
     outcome: null,
     status: "pending",
-    message: [summary, step.gate, details].filter(Boolean).join("\n\n"),
+    message: [summary, question, details].filter(Boolean).join("\n\n"),
     summary,
-    details: [step.gate, details].filter(Boolean).join("\n\n"),
+    details: [question, details].filter(Boolean).join("\n\n"),
     requestedAt: now,
     comment: null,
     decidedBy: null,
@@ -1338,6 +1391,7 @@ export function restartRun(run: Run, stepId: string, input: { comment: string | 
     if (!reset.has(step.id) && isStepDone(state.status)) continue;
     state.status = "pending";
     state.outputs = {};
+    state.branch = null;
     state.completedSeq = null;
     state.queuedAt = null;
   }
@@ -1353,7 +1407,7 @@ export function restartRun(run: Run, stepId: string, input: { comment: string | 
   run.archivedAt = null;
   run.seenAt = null;
   log(run, now, "run_restarted", stepId, `was ${previous}${input.by ? `, by ${input.by}` : ""}${input.comment?.trim() ? `: ${input.comment.trim()}` : ""}`);
-  const { ready, queued } = refreshReady(run, now);
+  const { ready, queued } = refreshReady(run, now, fx);
   fx.notes.push(`The run (was ${previous}) restarted from "${stepId}". Ready: ${ready.join(", ") || "none"}.`);
   if (queued.length > 0) fx.notes.push(queueNote(run, queued));
   updateStatus(run);
