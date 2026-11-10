@@ -56,6 +56,10 @@ steps:
 - **Every run on one screen**: a Playbooks entry in Paseo's left sidebar, badged with the
   gates waiting for you, lists the runs of all workspaces by playbook, each with its
   progress across the steps. Decide a gate from there without opening the workspace.
+- **A Sidekick per project**: a chat column on the Playbooks screen, one tab per project, with a
+  coordinator agent defined by a `sidekick/` folder beside the playbooks. It watches the runs, judges
+  which decisions could be automated, and sends subagents to change the playbooks in pull requests
+  you merge. It has no shell or file tools of its own.
 
 ## Get started
 

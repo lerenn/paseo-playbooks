@@ -20,6 +20,7 @@
 <li><a href="#folders">Folders and layout</a></li>
 <li><a href="#defaults">defaults/main.yaml</a></li>
 <li><a href="#roles">Roles</a></li>
+<li><a href="#sidekick">Sidekick</a></li>
 <li><a href="#playbook">Playbook fields</a></li>
 <li><a href="#steps">Step fields</a></li>
 <li><a href="#flow">Outcomes and flow</a></li>
@@ -79,6 +80,22 @@ role:               # defaults for the role block of every agent step
 <h2 id="roles">Roles</h2>
 <p>A role is a folder <code>roles/&lt;id&gt;/</code> with two files. A playbook refers to it by its folder name, and several playbooks can share it.</p>
 <table><thead><tr><th>File / key</th><th>Meaning</th></tr></thead><tbody><tr><td><code>instructions.md</code></td><td>Required and non-empty. The system prompt of every step that uses the role. The plugin appends the step protocol: allowed outcomes, required outputs, and how to call <code>report_step_result</code>.</td></tr><tr><td><code>role.yaml</code> <code>title</code></td><td>Display name. Defaults to the id.</td></tr><tr><td><code>role.yaml</code> <code>readonly</code></td><td><code>true</code> if the role must not edit files. Default <code>false</code>. See <a href="#readonly">readonly roles</a>.</td></tr><tr><td><code>role.yaml</code> <code>agent</code></td><td>Agent settings for this role.</td></tr></tbody></table>
+
+<h2 id="sidekick">Sidekick</h2>
+<p>A project may have a Sidekick: a coordinator agent in a column beside the Playbooks screen, one tab per project. It is defined by a <code>sidekick/</code> folder next to the playbooks. The folder never takes a playbook id: a playbook <code>sidekick.yaml</code> and <code>sidekick/sidekick.yaml</code> coexist. Without the folder the project has no Sidekick, and its tab offers <strong>Create the Sidekick files</strong>.</p>
+<pre><code>.paseo/plugins/playbooks/sidekick/
+├── sidekick.yaml          # optional
+└── instructions.md        # optional: the repository's rules for the Sidekick</code></pre>
+<p class="file">sidekick/sidekick.yaml</p>
+<pre><code>sidekick:
+  model: claude-opus-5-5
+  watch: [gate.escalated, run.failed, run.manager_lost]</code></pre>
+<table>
+<tr><th>Field</th><th>Meaning</th></tr>
+<tr><td><code>provider</code>, <code>model</code>, <code>mode</code>, <code>thinking</code></td><td>The Sidekick agent's settings; without them it uses the managers' default.</td></tr>
+<tr><td><code>watch</code></td><td>Event types (or globs such as <code>gate.*</code>) it is subscribed to, for this project's runs. Default: <code>gate.escalated</code>, <code>run.failed</code>, <code>run.manager_lost</code>.</td></tr>
+</table>
+<p>Unknown keys are errors. <code>instructions.md</code> is added after the Sidekick's built-in rules and never replaces them; when present it must not be empty. The Sidekick runs in a hidden workspace on the project root with no shell or file tools: it sends subagents to change playbooks, and they open pull requests for you to merge. <code>validate_playbooks</code> checks both files.</p>
 
 <h2 id="playbook">Playbook fields</h2>
 <table><thead><tr><th>Field</th><th>Meaning</th></tr></thead><tbody><tr><td><code>title</code></td><td>Display title. Defaults to the file name.</td></tr><tr><td><code>description</code></td><td>Shown in the Start form. Also returned to agents by <code>list_playbooks</code> and <code>validate_playbooks</code>.</td></tr><tr><td><code>hidden</code></td><td><code>true</code> moves the playbook to the collapsed "Hidden playbooks" section at the bottom of the Playbooks panel, for one only meant as a sub-playbook or after-task (a retro, say). It can still be started from there or by <code>start_playbook</code>, and used by other playbooks; while it has runs of its own, its card is in the main list. Default <code>false</code>.</td></tr><tr><td><code>agent</code></td><td>Agent settings for all steps of this playbook.</td></tr><tr><td><code>manager</code></td><td>A block, <code>{ prompt }</code>: instructions added to the Playbook Manager's protocol for runs that use this playbook, itself or as a sub-playbook. See <a href="#manager-instructions">manager instructions</a>.</td></tr><tr><td><code>inputs</code></td><td>Typed variables. They make up the Start form, and <code>start_playbook</code> takes them. See <a href="#variables">variables</a>.</td></tr><tr><td><code>outputs</code></td><td>Typed run results, resolved when the run completes. <code>value</code> maps them from step outputs or playbook inputs; without it they are matched by name.</td></tr><tr><td><code>isolation</code></td><td><code>worktree</code> (or <code>{ mode: worktree, submodules, base }</code>): each run works in a private git worktree the plugin creates and deletes, and several runs may share a workspace. Default <code>none</code>. See <a href="#isolation">isolated runs</a>.</td></tr><tr><td><code>concurrency</code></td><td>Maximum active runs of this playbook in the Paseo project, across all worktrees, and also the number of runs that may be inside it as a sub-playbook (see Sub-playbooks). Unlimited when absent.</td></tr><tr><td><code>singleton</code></td><td>A block, <code>{ branch }</code> (<code>{}</code> for the defaults; absent = an ordinary playbook): the playbook takes jobs from <a href="#singletons">hand-off steps</a>, with a waiting list per key value. Replaces <code>concurrency</code> on that playbook.</td></tr><tr><td><code>steps</code></td><td>At least one step.</td></tr><tr><td><code>after</code></td><td>Tasks run once the run has ended, without changing its result. See <a href="#after">after-tasks</a>.</td></tr></tbody></table>

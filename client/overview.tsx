@@ -12,6 +12,8 @@ import { LABEL_WIDTH, labelLayout, ROW_HEIGHT } from "./layout";
 import { useOverview, type OverviewStore } from "./overview-store";
 import { GETTING_STARTED_URL } from "./panel";
 import { PreReleaseFlag } from "./pre-release";
+import { SidekickPane } from "./sidekick/pane";
+import { sidekickUi, useSidekickUi } from "./sidekick/ui-state";
 import { Button, GateActions } from "./sheet";
 import { openJobsLabel, Stations, trainName } from "./stations";
 import { stepShortTitle, stepTitle, stepTitleOf, withAlpha, type Theme } from "./theme";
@@ -309,6 +311,9 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
   // The sidebar badge and this screen share one store: one agent subscription, one request per change.
   const overview = useOverview(store);
   const toast = useToast();
+  // The Sidekick column: open on wide layouts, one tab per project. Compact layouts have no room for it.
+  const sidekickOpen = useSidekickUi().open;
+  const setSidekickOpen = sidekickUi.setOpen;
   useEffect(() => store.watchRuns(), [store]);
   const queryClient = useQueryClient();
 
@@ -352,8 +357,8 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
   const onOpenAgent = navigation ? (agentId: string) => navigation.openAgent({ agentId }) : undefined;
   return (
     <StoreContext.Provider value={store}>
-    <View style={{ flex: 1, backgroundColor: theme.colors.surface0 }}>
-      <ScrollView contentContainerStyle={{ padding: pad, gap: 18 }}>
+    <View style={{ flex: 1, flexDirection: "row", backgroundColor: theme.colors.surface0 }}>
+      <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: pad, gap: 18 }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 10, flexWrap: "wrap", zIndex: 50 }}>
           <PreReleaseFlag theme={theme} />
           <Text style={{ flex: 1, color: theme.colors.foregroundMuted, fontSize: 13 }}>
@@ -373,6 +378,19 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
               </>
             ) : null}
           </Text>
+          {!layout.compact ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`${sidekickOpen ? "Close" : "Open"} the Sidekick: a coordinator agent per project that watches the runs and improves the playbooks`}
+              accessibilityState={{ expanded: sidekickOpen }}
+              hitSlop={8}
+              onPress={() => setSidekickOpen(!sidekickOpen)}
+              style={{ flexDirection: "row", alignItems: "center", gap: 6 }}
+            >
+              <Icon name="Bot" size={16} color={sidekickOpen ? theme.colors.accent : theme.colors.foregroundMuted} />
+              <Text style={{ color: sidekickOpen ? theme.colors.accent : theme.colors.foregroundMuted, fontSize: 12, fontWeight: "600" }}>Sidekick</Text>
+            </Pressable>
+          ) : null}
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Refresh playbooks"
@@ -499,6 +517,14 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
           </>
         )}
       </ScrollView>
+      {!layout.compact && sidekickOpen ? (
+        <SidekickPane
+          theme={theme}
+          workspaces={workspaces}
+          openAgent={onOpenAgent}
+          onClose={() => setSidekickOpen(false)}
+        />
+      ) : null}
     </View>
     </StoreContext.Provider>
   );

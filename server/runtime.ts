@@ -30,7 +30,8 @@ import * as engine from "./engine";
 import { checkoutSnapshot, currentRef, defaultBranch, fastForward, freshRef, removedGitlinks, snapshotDiff } from "./git";
 import { createWorktree, dirtyPaths, linkedSubmodules, listWorktreeDirs, pruneWorktrees, removeWorktree, repoOfWorktree, worktreeBranch, worktreePath } from "./worktree";
 import { chooseDefinition } from "./fresh";
-import { loadPlaybooks } from "./loader";
+import { loadPlaybooks, loadSidekick } from "./loader";
+import { SIDEKICK_DISALLOWED_TOOLS, SIDEKICK_KICKOFF, SIDEKICK_LABEL, SIDEKICK_PASEO_TOOLS, SIDEKICK_PLUGIN_TOOLS, SidekickRegistry, sidekickPrompt, sidekickTitle } from "./sidekick";
 import { BusError, EventBus, type BusEvent, type Notifier, type Subscription } from "./bus";
 import { OversightProducer, registerOversightTypes } from "./oversight-events";
 import { gateListing, listAttention, type GateFilter } from "./overseer";
@@ -63,7 +64,7 @@ export const MANAGER_TOOL_NAMES = [
 export const STEP_TOOL_NAMES = ["report_step_result"];
 export const GATE_TOOL_NAMES = ["report_gate_decision"];
 
-type AgentConfig = { provider: string; modeId?: string; thinkingOptionId?: string; options?: { allowedTools: string[] } };
+type AgentConfig = { provider: string; modeId?: string; thinkingOptionId?: string; options?: { allowedTools: string[]; disallowedTools?: string[] } };
 
 /** Pre-approves our own tools so unattended agents in `default` mode are not blocked on them. */
 function preapprove(config: AgentConfig, provider: string, tools: string[]): AgentConfig {
@@ -280,6 +281,9 @@ export class Runtime {
   /** Role deciders of closed gates already stopped, by agent id. */
   private readonly stoppedDeciders = new Set<string>();
 
+  private readonly sidekickRegistry: SidekickRegistry;
+  private readonly sidekickOpening = new Map<string, Promise<{ projectId: string; workspaceId: string; agentId: string; created: boolean }>>();
+
   /** The event bus (bus.ts) and its first producer, the runs (oversight-events.ts). */
   readonly bus: EventBus;
   private readonly producer: OversightProducer;
@@ -293,6 +297,7 @@ export class Runtime {
     const dir = options.dataDir ?? path.dirname(store.dir);
     this.worktreesDir = path.join(dir, "worktrees");
     this.sessions = new StaleSessions(path.join(dir, "sessions.json"));
+    this.sidekickRegistry = new SidekickRegistry(path.join(dir, "sidekick.json"));
     this.bus = new EventBus({ events: path.join(dir, "events.json"), subscriptions: path.join(dir, "subscriptions.json"), pending: path.join(dir, "pending-events.json") }, options.debounceMs === undefined ? {} : { debounceMs: options.debounceMs });
     registerOversightTypes(this.bus);
     this.bus.registerNotifier("agent", this.agentNotifier());
@@ -2754,6 +2759,109 @@ export class Runtime {
       return { status: "started" as const, workspaceId: workspace.id, managerAgentId: manager.id, runId, queued: false };
     }
     return this.startInNewWorkspace(workspaceDir, playbook, resolved.inputs);
+  }
+
+
+  /**
+   * The Sidekick of a project: one coordinator agent in a hidden background workspace whose directory is the
+   * project root, defined by the project's `sidekick/` files. Created on first use and again if it was
+   * archived; the plugin subscribes it to the events it watches, for this project's runs. Concurrent calls
+   * for a project share one creation.
+   */
+  openSidekick(workspaceId: string): Promise<{ projectId: string; workspaceId: string; agentId: string; created: boolean }> {
+    return this.withProject(workspaceId, async (project) => {
+      const pending = this.sidekickOpening.get(project.projectId);
+      if (pending) return pending;
+      const creation = this.ensureSidekick(project).finally(() => this.sidekickOpening.delete(project.projectId));
+      this.sidekickOpening.set(project.projectId, creation);
+      return creation;
+    });
+  }
+
+  /** The workspace's project: id, label and root directory. */
+  private async projectOf(workspaceId: string) {
+    const workspace = await this.api().workspaces.ref(workspaceId).refresh();
+    if (!workspace) throw new UserError("workspace not found");
+    return {
+      projectId: workspace.projectId,
+      label: workspace.projectDisplayName || path.basename(workspace.projectRootPath),
+      root: workspace.projectRootPath,
+    };
+  }
+
+  private async withProject<T>(workspaceId: string, fn: (project: { projectId: string; label: string; root: string }) => Promise<T>): Promise<T> {
+    return fn(await this.projectOf(workspaceId));
+  }
+
+  /** The project root of a workspace, for callers that act on the project's files. */
+  async projectRootOf(workspaceId: string): Promise<string> {
+    return (await this.projectOf(workspaceId)).root;
+  }
+
+  /** For each project (given by one of its workspaces): its Sidekick config, agent and active runs. */
+  async sidekickProjects(workspaces: Array<{ projectId: string; workspaceId: string }>) {
+    const registry = await this.sidekickRegistry.all();
+    const projects = [];
+    for (const { projectId, workspaceId } of workspaces) {
+      const project = await this.projectOf(workspaceId).catch(() => null);
+      if (!project) continue;
+      const load = await loadSidekick(project.root);
+      const record = registry[projectId];
+      const agent = record ? await this.api().agents.ref(record.agentId).refresh().catch(() => null) : null;
+      const open = this.store.list().filter((run) => run.projectId === projectId && !run.archivedAt);
+      projects.push({
+        projectId,
+        workspaceId,
+        label: project.label,
+        configured: load.configured,
+        errors: load.errors,
+        agentId: agent && !agent.agent.archivedAt ? record!.agentId : null,
+        activeRuns: open.filter((run) => !isTerminal(run.status)).length,
+        needYou: open.reduce((count, run) => count + run.gates.filter(waitsForHuman).length, 0),
+      });
+    }
+    return projects;
+  }
+
+  private async ensureSidekick(project: { projectId: string; label: string; root: string }) {
+    const load = await loadSidekick(project.root);
+    if (!load.configured) throw new UserError(`this project has no Sidekick: add a sidekick/ folder to its playbooks folder (see "Create the Sidekick files")`);
+    if (!load.config) throw new UserError(`the Sidekick files have errors:\n${load.errors.join("\n")}`);
+    const known = await this.sidekickRegistry.read(project.projectId);
+    if (known) {
+      const agent = await this.api().agents.ref(known.agentId).refresh().catch(() => null);
+      if (agent && !agent.agent.archivedAt) return { projectId: project.projectId, ...known, created: false };
+    }
+    const settings = load.config;
+    const provider = settings.provider ?? DEFAULT_PROVIDER;
+    const model = settings.model ?? (provider === DEFAULT_PROVIDER ? DEFAULT_MODEL : undefined);
+    if (!model) throw new UserError(`no model for the Sidekick on provider "${provider}"; set sidekick.model in sidekick/sidekick.yaml`);
+    const config: AgentConfig = { provider: `${provider}/${model}` };
+    if (settings.mode) config.modeId = settings.mode;
+    if (settings.thinking) config.thinkingOptionId = settings.thinking;
+    preapprove(config, provider, SIDEKICK_PLUGIN_TOOLS);
+    if (config.options) {
+      config.options.allowedTools.push(...SIDEKICK_PASEO_TOOLS.map((tool) => `mcp__paseo__${tool}`));
+      config.options.disallowedTools = SIDEKICK_DISALLOWED_TOOLS;
+    }
+    // Reuse the hidden workspace while it is alive; otherwise make a new one on the project root.
+    let workspaceId = known?.workspaceId ?? null;
+    if (workspaceId && !(await this.api().workspaces.ref(workspaceId).refresh().catch(() => null))) workspaceId = null;
+    const workspace = workspaceId
+      ? this.api().workspaces.ref(workspaceId)
+      : await this.api().workspaces.create({ title: sidekickTitle(project.label), source: { kind: "directory", path: project.root }, background: true });
+    const agent = await workspace.agents.create({
+      config,
+      title: sidekickTitle(project.label),
+      labels: { [SIDEKICK_LABEL]: "true" },
+      prompt: `${sidekickPrompt({ projectId: project.projectId, label: project.label, root: project.root, watch: settings.watch }, load.instructions)}\n\n${SIDEKICK_KICKOFF}`,
+    });
+    const record = { workspaceId: workspaceId ?? workspace.id, agentId: agent.id };
+    await this.sidekickRegistry.write(project.projectId, record);
+    await this.subscribeEvents(agent.id, settings.watch, { projectId: project.projectId }, "idle").catch((error) =>
+      console.error("[playbooks] could not subscribe the Sidekick:", errorText(error)),
+    );
+    return { projectId: project.projectId, ...record, created: true };
   }
 
   /** A new workspace branched off this one's current ref, with a new Playbook Manager that starts the run there. */

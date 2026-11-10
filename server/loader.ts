@@ -575,6 +575,84 @@ export interface LoadResult {
   roots: string[];
   exists: boolean;
   entries: PlaybookEntry[];
+  /** The project's Sidekick (`sidekick/` beside the playbooks), or `configured: false` when there is none. */
+  sidekick: SidekickLoad;
+}
+
+/** The `sidekick/sidekick.yaml` block: all optional. `watch` lists the event types the Sidekick is told about. */
+const RawSidekickSchema = z
+  .object({
+    sidekick: z
+      .object({
+        provider: z.string().optional(),
+        model: z.string().optional(),
+        mode: z.string().optional(),
+        thinking: z.string().optional(),
+        /** Event types (or globs such as `gate.*`) it is subscribed to, for this project's runs. */
+        watch: z.array(z.string().min(1)).min(1).optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+
+/** Event types a Sidekick watches when `sidekick.watch` is not set. */
+export const DEFAULT_SIDEKICK_WATCH = ["gate.escalated", "run.failed", "run.manager_lost"];
+
+export interface SidekickConfig {
+  provider?: string;
+  model?: string;
+  mode?: string;
+  thinking?: string;
+  watch: string[];
+}
+
+export interface SidekickLoad {
+  /** A `sidekick/` folder exists in a playbooks folder. Without it the project has no Sidekick. */
+  configured: boolean;
+  /** Folder of the Sidekick, relative to the workspace (`.paseo/plugins/playbooks/sidekick`). */
+  dir: string | null;
+  config: SidekickConfig | null;
+  /** `sidekick/instructions.md`, trimmed; null when there is none. */
+  instructions: string | null;
+  errors: string[];
+}
+
+const NO_SIDEKICK: SidekickLoad = { configured: false, dir: null, config: null, instructions: null, errors: [] };
+
+/**
+ * The Sidekick of a project: `sidekick/sidekick.yaml` and `sidekick/instructions.md` in the first playbooks
+ * folder that has a `sidekick/` directory. A directory, so it never takes the id of a playbook (`sidekick.yaml`
+ * in the folder itself is a playbook and coexists with it).
+ */
+export async function loadSidekick(workspaceDir: string): Promise<SidekickLoad> {
+  for (const relDir of PLAYBOOKS_DIRS) {
+    const dir = path.join(workspaceDir, relDir, "sidekick");
+    if ((await listFolder(dir)) === null) continue;
+    const rel = `${relDir}/sidekick`;
+    const errors: string[] = [];
+    let config: SidekickConfig = { watch: DEFAULT_SIDEKICK_WATCH };
+    if ((await readText(path.join(dir, "sidekick.yaml"))) !== null) {
+      const raw = await readYaml(path.join(dir, "sidekick.yaml"), `${rel}/sidekick.yaml`);
+      if ("error" in raw) errors.push(raw.error);
+      else {
+        const parsed = RawSidekickSchema.safeParse(raw.value);
+        if (!parsed.success) errors.push(...formatZodError(`${rel}/sidekick.yaml`, parsed.error));
+        else {
+          const { watch, ...settings } = parsed.data.sidekick ?? {};
+          config = { ...Object.fromEntries(Object.entries(settings).filter(([, value]) => value !== undefined)), watch: watch ?? DEFAULT_SIDEKICK_WATCH };
+        }
+      }
+    }
+    let instructions: string | null = null;
+    const text = await readText(path.join(dir, "instructions.md"));
+    if (text !== null) {
+      if (text.trim() === "") errors.push(`${rel}/instructions.md: empty`);
+      else instructions = text.trim();
+    }
+    return { configured: true, dir: rel, config: errors.length > 0 ? null : config, instructions, errors };
+  }
+  return NO_SIDEKICK;
 }
 
 /** True when the workspace has at least one playbook file in any playbook folder. */
@@ -665,7 +743,7 @@ export async function loadPlaybooks(workspaceDir: string): Promise<LoadResult> {
     entry.errors.push(`${entry.file}: playbook id "${entry.id}" is also defined in ${clashes.map((other) => other.file).join(", ")}; rename one`);
     entry.playbook = null;
   }
-  return { roots, exists: roots.length > 0, entries };
+  return { roots, exists: roots.length > 0, entries, sidekick: await loadSidekick(workspaceDir) };
 }
 
 /**
