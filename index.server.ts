@@ -20,6 +20,7 @@ import {
   listWorkspaceAgents,
   markRunSeenRpc,
   nudgeStepRpc,
+  openSidekickRpc,
   restartRunRpc,
   retryStepRpc,
   startAfterTaskRpc,
@@ -160,6 +161,7 @@ export default function contribute(server: PluginServerContext) {
     await runtime.askManagerToRetry(runId, stepId);
     return { queued: true };
   });
+  handle(openSidekickRpc, () => runtime.openSidekick());
   handle(pauseRunRpc, async ({ runId }) => ({ pausedAt: (await runtime.pauseRun(runId)).pausedAt }));
   handle(resumeRunRpc, async ({ runId }) => ({ pausedAt: (await runtime.resumeRun(runId)).pausedAt }));
   handle(nudgeStepRpc, async ({ runId, stepId, message }) => {

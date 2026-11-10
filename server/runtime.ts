@@ -31,6 +31,7 @@ import { checkoutSnapshot, currentRef, defaultBranch, fastForward, freshRef, rem
 import { createWorktree, dirtyPaths, linkedSubmodules, listWorktreeDirs, pruneWorktrees, removeWorktree, repoOfWorktree, worktreeBranch, worktreePath } from "./worktree";
 import { chooseDefinition } from "./fresh";
 import { loadPlaybooks } from "./loader";
+import { SIDEKICK_DISALLOWED_TOOLS, SIDEKICK_KICKOFF, SIDEKICK_LABEL, SIDEKICK_PASEO_TOOLS, SIDEKICK_PLUGIN_TOOLS, SIDEKICK_PROMPT, SIDEKICK_TITLE, SidekickRegistry } from "./sidekick";
 import { BusError, EventBus, type BusEvent, type Notifier, type Subscription } from "./bus";
 import { OversightProducer, registerOversightTypes } from "./oversight-events";
 import { gateListing, listAttention, type GateFilter } from "./overseer";
@@ -62,7 +63,7 @@ export const MANAGER_TOOL_NAMES = [
 export const STEP_TOOL_NAMES = ["report_step_result"];
 export const GATE_TOOL_NAMES = ["report_gate_decision"];
 
-type AgentConfig = { provider: string; modeId?: string; thinkingOptionId?: string; options?: { allowedTools: string[] } };
+type AgentConfig = { provider: string; modeId?: string; thinkingOptionId?: string; options?: { allowedTools: string[]; disallowedTools?: string[] } };
 
 /** Pre-approves our own tools so unattended agents in `default` mode are not blocked on them. */
 function preapprove(config: AgentConfig, provider: string, tools: string[]): AgentConfig {
@@ -279,6 +280,9 @@ export class Runtime {
   /** Role deciders of closed gates already stopped, by agent id. */
   private readonly stoppedDeciders = new Set<string>();
 
+  private readonly sidekickRegistry: SidekickRegistry;
+  private sidekickOpening: Promise<{ workspaceId: string; agentId: string; created: boolean }> | null = null;
+
   /** The event bus (bus.ts) and its first producer, the runs (oversight-events.ts). */
   readonly bus: EventBus;
   private readonly producer: OversightProducer;
@@ -292,6 +296,7 @@ export class Runtime {
     const dir = options.dataDir ?? path.dirname(store.dir);
     this.worktreesDir = path.join(dir, "worktrees");
     this.sessions = new StaleSessions(path.join(dir, "sessions.json"));
+    this.sidekickRegistry = new SidekickRegistry(path.join(dir, "sidekick.json"));
     this.bus = new EventBus({ events: path.join(dir, "events.json"), subscriptions: path.join(dir, "subscriptions.json"), pending: path.join(dir, "pending-events.json") }, options.debounceMs === undefined ? {} : { debounceMs: options.debounceMs });
     registerOversightTypes(this.bus);
     this.bus.registerNotifier("agent", this.agentNotifier());
@@ -2732,6 +2737,61 @@ export class Runtime {
       return { status: "started" as const, workspaceId: workspace.id, managerAgentId: manager.id, runId, queued: false };
     }
     return this.startInNewWorkspace(workspaceDir, playbook, resolved.inputs);
+  }
+
+
+  /**
+   * The Sidekick: one coordinator agent per host, in a hidden background workspace of its own (an empty
+   * directory under the plugin data). Created on first use and again if it was archived; the plugin
+   * subscribes it to the escalation events. Concurrent calls share one creation.
+   */
+  openSidekick(): Promise<{ workspaceId: string; agentId: string; created: boolean }> {
+    this.sidekickOpening ??= this.ensureSidekick().finally(() => {
+      this.sidekickOpening = null;
+    });
+    return this.sidekickOpening;
+  }
+
+  private async ensureSidekick() {
+    const known = await this.sidekickRegistry.read();
+    if (known) {
+      const agent = await this.api().agents.ref(known.agentId).refresh().catch(() => null);
+      if (agent && !agent.agent.archivedAt) return { ...known, created: false };
+    }
+    const provider = DEFAULT_PROVIDER;
+    if (!DEFAULT_MODEL) throw new UserError("no default model for the Sidekick");
+    const config: AgentConfig = { provider: `${provider}/${DEFAULT_MODEL}` };
+    preapprove(config, provider, SIDEKICK_PLUGIN_TOOLS);
+    if (config.options) {
+      config.options.allowedTools.push(...SIDEKICK_PASEO_TOOLS.map((tool) => `mcp__paseo__${tool}`));
+      config.options.disallowedTools = SIDEKICK_DISALLOWED_TOOLS;
+    }
+    // Reuse the workspace while it is alive; otherwise make a new hidden one.
+    let workspaceId = known?.workspaceId ?? null;
+    if (workspaceId) {
+      const workspace = await this.api().workspaces.ref(workspaceId).refresh().catch(() => null);
+      if (!workspace) workspaceId = null;
+    }
+    const workspace = workspaceId
+      ? this.api().workspaces.ref(workspaceId)
+      : await this.api().workspaces.create({
+          title: SIDEKICK_TITLE,
+          source: { kind: "directory", path: await this.sidekickRegistry.ensureDirectory() },
+          internal: true,
+          background: true,
+        });
+    const agent = await workspace.agents.create({
+      config,
+      title: SIDEKICK_TITLE,
+      labels: { [SIDEKICK_LABEL]: "true" },
+      prompt: `${SIDEKICK_PROMPT}\n\n${SIDEKICK_KICKOFF}`,
+    });
+    const record = { workspaceId: workspaceId ?? workspace.id, agentId: agent.id };
+    await this.sidekickRegistry.write(record);
+    await this.subscribeEvents(agent.id, ["gate.escalated", "run.failed", "run.manager_lost"], {}, "idle").catch((error) =>
+      console.error("[playbooks] could not subscribe the Sidekick:", errorText(error)),
+    );
+    return { ...record, created: true };
   }
 
   /** A new workspace branched off this one's current ref, with a new Playbook Manager that starts the run there. */

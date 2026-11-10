@@ -3,7 +3,7 @@ import { Icon, ScrollView, SidebarRow, useToast } from "@getpaseo/plugin/client/
 import { useQueryClient } from "@tanstack/react-query";
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { Animated, Easing, Pressable, Text, View } from "react-native";
-import { archiveRunRpc, markRunSeenRpc } from "../shared/contracts";
+import { archiveRunRpc, markRunSeenRpc, openSidekickRpc } from "../shared/contracts";
 import { gateText } from "../shared/gates";
 import { isActive, isPaused, isPipeline, isTerminal, type Gate, type RunSummary, type StepSummary } from "../shared/types";
 import { AnalyticsView } from "./analytics";
@@ -309,6 +309,8 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
   // The sidebar badge and this screen share one store: one agent subscription, one request per change.
   const overview = useOverview(store);
   const toast = useToast();
+  const openSidekick = useRpc(openSidekickRpc);
+  const [sidekickBusy, setSidekickBusy] = useState(false);
   useEffect(() => store.watchRuns(), [store]);
   const queryClient = useQueryClient();
 
@@ -373,6 +375,25 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
               </>
             ) : null}
           </Text>
+          {navigation ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Open the Sidekick: a coordinator agent that watches the runs and improves the playbooks"
+              disabled={sidekickBusy}
+              hitSlop={8}
+              onPress={() => {
+                setSidekickBusy(true);
+                openSidekick({})
+                  .then(({ agentId }) => navigation.openAgent({ agentId }))
+                  .catch((error: unknown) => toast.error(error instanceof Error ? error.message : "Could not open the Sidekick"))
+                  .finally(() => setSidekickBusy(false));
+              }}
+              style={{ flexDirection: "row", alignItems: "center", gap: 6, opacity: sidekickBusy ? 0.5 : 1 }}
+            >
+              <Icon name="Bot" size={16} color={theme.colors.foregroundMuted} />
+              <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12, fontWeight: "600" }}>Sidekick</Text>
+            </Pressable>
+          ) : null}
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Refresh playbooks"

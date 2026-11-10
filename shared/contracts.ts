@@ -166,3 +166,10 @@ export const analyticsStateRpc = defineRpc({
   input: z.object({ days: z.number().int().positive().optional(), playbook: z.string().optional(), projectId: z.string().optional() }),
   output: AnalyticsSchema,
 });
+
+/** Opens the Sidekick: creates its hidden workspace and agent on first use, and returns the agent to open. */
+export const openSidekickRpc = defineRpc({
+  name: "sidekick.open",
+  input: z.object({}),
+  output: z.object({ workspaceId: z.string(), agentId: z.string(), created: z.boolean() }),
+});
