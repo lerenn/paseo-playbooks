@@ -51,13 +51,13 @@ function fakePaseo(errorText: string) {
   return { paseo: { agents: { ref }, workspaces: { ref: () => workspace } }, sent, created, archived };
 }
 
-async function setup(errorText: string) {
+async function setup(errorText: string, providers = "") {
   const dir = await mkdtemp(path.join(tmpdir(), "failover-"));
   temps.push(dir);
   const root = path.join(dir, ".paseo/playbooks");
   await mkdir(path.join(root, "defaults"), { recursive: true });
   await cp(path.join(EXAMPLES, ".paseo/plugins/playbooks/roles"), path.join(root, "roles"), { recursive: true });
-  await writeFile(path.join(root, "defaults/main.yaml"), DEFAULTS);
+  await writeFile(path.join(root, "defaults/main.yaml"), DEFAULTS + providers);
   await writeFile(path.join(root, "release.yaml"), PLAYBOOK);
   const entry = (await loadPlaybooks(dir)).entries.find((candidate) => candidate.id === "release")!;
   expect(entry.errors).toEqual([]);
@@ -113,6 +113,63 @@ describe("provider fallback", () => {
     expect(created).toHaveLength(0);
     expect(store.get("run_x")!.exhausted).toEqual([]);
     expect(store.get("run_x")!.steps.release!.attempts[0]!.agentId).toBe("step-1");
+  });
+
+  const WAIT = "providers: { exhausted_for: 1h, on_exhausted: wait }\n";
+  const wakeUp = (runtime: Runtime) => (runtime as unknown as { onWaitEnded: (runId: string, stepId: string, agentId: string) => Promise<void> }).onWaitEnded("run_x", "release", "step-2");
+
+  it("waits for a provider to recover when every target is out of tokens and on_exhausted is wait", async () => {
+    const { store, runtime, created, sent } = await setup("rate limit exceeded", WAIT);
+    await runtime.onTurnEnded("step-1", "failed");
+    await runtime.onTurnEnded("step-2", "failed");
+    const state = store.get("run_x")!.steps.release!;
+    expect(state.status).toBe("running");
+    expect(state.attempts).toHaveLength(1);
+    expect(state.attempts[0]!.waiting).not.toBeNull();
+    expect(created).toHaveLength(1);
+    await runtime.onManagerTurnEnded("m");
+    expect(sent.some((message) => /waits and restarts the attempt/.test(message.text))).toBe(true);
+    // the cooldown passes: the same attempt restarts on the first target that is back
+    await store.mutate("run_x", (run) => {
+      run.exhausted = run.exhausted.map((entry) => ({ ...entry, at: new Date(Date.now() - 2 * 3_600_000).toISOString() }));
+    });
+    await wakeUp(runtime);
+    expect(created).toHaveLength(2);
+    expect(created[1]!.config.provider).toBe("claude/claude-haiku-5-5");
+    const after = store.get("run_x")!.steps.release!;
+    expect(after.status).toBe("running");
+    expect(after.attempts[0]!.waiting).toBeNull();
+    expect(after.attempts[0]!.agentId).toBe("step-3");
+  });
+
+  it("waits again when the targets are still out at wake-up", async () => {
+    const { store, runtime, created } = await setup("rate limit exceeded", WAIT);
+    await runtime.onTurnEnded("step-1", "failed");
+    await runtime.onTurnEnded("step-2", "failed");
+    await wakeUp(runtime);
+    expect(created).toHaveLength(1);
+    expect(store.get("run_x")!.steps.release!.attempts[0]!.waiting).not.toBeNull();
+  });
+
+  it("fails to the manager once max_wait is spent", async () => {
+    const { store, runtime, sent } = await setup("rate limit exceeded", "providers: { on_exhausted: wait, max_wait: 30m }\n");
+    await runtime.onTurnEnded("step-1", "failed");
+    await runtime.onTurnEnded("step-2", "failed");
+    expect(store.get("run_x")!.steps.release!.attempts[0]!.waiting).not.toBeNull();
+    await store.mutate("run_x", (run) => {
+      const waiting = run.steps.release!.attempts[0]!.waiting!;
+      waiting.since = new Date(Date.now() - 31 * 60_000).toISOString();
+    });
+    await wakeUp(runtime);
+    expect(store.get("run_x")!.steps.release!.status).not.toBe("running");
+    await runtime.onManagerTurnEnded("m");
+    expect(sent.at(-1)!.text).toMatch(/ended \(failed\) without reporting/);
+  });
+
+  it("does not wait by default", async () => {
+    const { store } = await setup("rate limit exceeded");
+    expect(store.get("run_x")!.playbook.onExhausted).toBe("fail");
+    expect(store.get("run_x")!.playbook.maxWaitMs).toBeNull();
   });
 
   const pick = async (runtime: Runtime, store: RunStore) =>

@@ -81,6 +81,8 @@ manager:               # settings of the manager agent when Start creates a new 
   compact: { above_tokens: 150000 }  # when to /compact the manager: never | on_step | on_gate_decided | { above_tokens: N } (default shown)
 providers:             # provider failover
   exhausted_for: 1h    # an exhausted provider/model is skipped this long, then tried again (default 1h)
+  on_exhausted: fail   # when every provider of a role is out of tokens: fail (to the manager, default) | wait (restart by itself)
+  # max_wait: 12h      # with wait: give up and fail to the manager after this long (default: no limit)
 timeout: 1h            # default step timeout (optional)
 role:                  # defaults for agent steps, in the shape of a step's `role:` block
   silence: 30m         # remind a step agent after this long without activity (default 30m; off to disable)
@@ -108,7 +110,10 @@ primary, the rest are fallbacks. When a step agent's turn fails because its prov
 the same brief, without using a `retry`, records the exhausted `provider/model` in `run.exhausted` (`{ target, at }`) for
 `providers.exhausted_for` (default `1h`; later agents skip it until then, after which it is tried again;
 very short values re-probe a failing provider), logs a `provider_exhausted` line and tells the manager. When every entry is exhausted the failure goes
-to the manager as usual. A multi-entry tier cannot be combined with inline `provider`, `model`, `mode`
+to the manager as usual, unless `providers.on_exhausted: wait`: the step then stays running with
+`attempt.waiting { since, until }`, no retry is used, and the plugin restarts the attempt at `until` (the
+earliest end of `exhausted_for`; it waits again if the provider is still out) until `providers.max_wait`
+(default: no limit) is spent. Do not nudge or complete a waiting step. A multi-entry tier cannot be combined with inline `provider`, `model`, `mode`
 or `thinking` on the same `agent` block: define another tier. On `manager` it only picks the first
 entry when a manager is created; the manager never switches mid-run.
 

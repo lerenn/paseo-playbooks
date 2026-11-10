@@ -315,6 +315,10 @@ export const PlaybookSchema = z.object({
   managerCompact: ManagerCompactSchema.default(DEFAULT_MANAGER_COMPACT),
   /** How long an exhausted `provider/model` is skipped before it is tried again (`providers.exhausted_for`), in ms. */
   exhaustedForMs: z.number().default(DEFAULT_EXHAUSTED_FOR_MS),
+  /** What a step does when every provider of its role is out of tokens (`providers.on_exhausted`). */
+  onExhausted: z.enum(["fail", "wait"]).default("fail"),
+  /** How long a step waits at most for a provider to recover (`providers.max_wait`), in ms; null = no limit. */
+  maxWaitMs: z.number().nullable().default(null),
   /** Whether the plugin archives the workspace it created for a run once the run ends. */
   workspace: z
     .object({ archive: z.enum(["never", "on_end"]), keepFailed: z.boolean() })
@@ -459,6 +463,8 @@ export const AttemptSchema = z.object({
   /** Agent steps: the `provider/model` the attempt's agent runs on, and the prompt it was started with (to restart it on the next target). */
   target: z.string().default(""),
   prompt: z.string().default(""),
+  /** Agent steps with `providers.on_exhausted: wait`: set while every provider of the role is out of tokens; the attempt restarts at `until`. */
+  waiting: z.object({ since: z.string(), until: z.string() }).nullable().default(null),
   /** What the attempt's agent spent; null before its first turn ended, and on script and hand-off attempts. */
   usage: UsageSchema.nullable().optional(),
 });

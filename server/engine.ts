@@ -479,6 +479,7 @@ export function startAttempt(
     noRetry: false,
     target: "",
     prompt: "",
+    waiting: null,
   };
   const context = {
     inputs: Object.fromEntries(Object.entries(values).map(([name, entry]) => [name, entry.value])),
@@ -507,10 +508,15 @@ export function startAttempt(
  * The attempt's agent ran out of tokens: records its target as exhausted for the run and gives the
  * same attempt a new agent (`retries` untouched).
  */
-export function failOverAttempt(run: Run, stepId: string, input: { target: string; agentId: string; newTarget: string; now: string; reason: string }): void {
+export function failOverAttempt(run: Run, stepId: string, input: { target: string; agentId: string; newTarget: string; now: string; reason: string; resumed?: boolean }): void {
   const attempt = currentAttempt(run, stepId)!;
-  markTarget(run, input.target, input.now);
-  log(run, input.now, "provider_exhausted", stepId, `${input.target} is out of tokens (${input.reason.slice(0, 200)}); attempt ${attempt.n} moves to ${input.newTarget}`);
+  if (input.resumed) {
+    log(run, input.now, "provider_resumed", stepId, `attempt ${attempt.n} restarts on ${input.newTarget} after waiting for tokens`);
+  } else {
+    markTarget(run, input.target, input.now);
+    log(run, input.now, "provider_exhausted", stepId, `${input.target} is out of tokens (${input.reason.slice(0, 200)}); attempt ${attempt.n} moves to ${input.newTarget}`);
+  }
+  attempt.waiting = null;
   attempt.agentId = input.agentId;
   attempt.target = input.newTarget;
   attempt.reminded = false;
@@ -527,6 +533,28 @@ export function markTarget(run: Run, target: string, now: string): void {
 /** The targets still skipped at `nowMs`: marked less than the playbook's `exhaustedForMs` ago. */
 export function activeExhausted(run: Pick<Run, "exhausted"> & { playbook: Pick<Run["playbook"], "exhaustedForMs"> }, nowMs: number = Date.now()): string[] {
   return run.exhausted.filter((entry) => nowMs - Date.parse(entry.at) < run.playbook.exhaustedForMs).map((entry) => entry.target);
+}
+
+/** When the first of `targets` is tried again: the earliest end of their `exhausted_for` (null if none is marked). */
+export function exhaustedUntil(run: Pick<Run, "exhausted"> & { playbook: Pick<Run["playbook"], "exhaustedForMs"> }, targets: string[]): number | null {
+  const ends = run.exhausted.filter((entry) => targets.includes(entry.target)).map((entry) => Date.parse(entry.at) + run.playbook.exhaustedForMs);
+  return ends.length > 0 ? Math.min(...ends) : null;
+}
+
+/**
+ * Every provider of the attempt's role is out of tokens and the playbook says wait: the attempt
+ * keeps its place (the step stays running) until `until`. Returns false once `max_wait` is spent.
+ */
+export function startWaiting(run: Run, stepId: string, input: { target: string; reason: string; now: string; resetAt: number | null }): boolean {
+  const attempt = currentAttempt(run, stepId)!;
+  const since = attempt.waiting?.since ?? input.now;
+  const limit = run.playbook.maxWaitMs === null ? null : Date.parse(since) + run.playbook.maxWaitMs;
+  if (limit !== null && Date.parse(input.now) >= limit) return false;
+  const reset = input.resetAt ?? Date.parse(input.now) + run.playbook.exhaustedForMs;
+  const until = new Date(Math.max(Date.parse(input.now), limit === null ? reset : Math.min(reset, limit))).toISOString();
+  if (!attempt.waiting) log(run, input.now, "provider_waiting", stepId, `${input.target} is out of tokens (${input.reason.slice(0, 200)}) and no other provider is left; attempt ${attempt.n} waits until ${until}`);
+  attempt.waiting = { since, until };
+  return true;
 }
 
 /** Records a target as out of tokens although no agent could be moved to another one. */
