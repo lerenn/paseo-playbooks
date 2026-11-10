@@ -1,7 +1,7 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { useSyncExternalStore } from "react";
 import { needsYouRpc, overviewStateRpc } from "../shared/contracts";
-import type { Run } from "../shared/types";
+import type { RunSummary } from "../shared/types";
 import { watchAgents } from "./events";
 
 /** Agent events across every workspace are batched over this long before one refresh. */
@@ -13,7 +13,7 @@ export interface OverviewSnapshot {
   /** Gates waiting for a human on this host: the sidebar badge. */
   count: number;
   /** Runs not archived, while a Playbooks screen is open; null before the first load or when none is. */
-  runs: Run[] | null;
+  runs: RunSummary[] | null;
   error: string | null;
 }
 

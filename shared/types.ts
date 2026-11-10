@@ -542,6 +542,101 @@ export const RunSchema = z.object({
 });
 export type Run = z.infer<typeof RunSchema>;
 
+/** What the Playbooks screen needs of a step: its title, kind, dependencies and transitions, with no prompt, wiring or agent settings. */
+export const StepSummarySchema = StepSchema.pick({
+  id: true,
+  title: true,
+  shortTitle: true,
+  kind: true,
+  when: true,
+  needs: true,
+  outcomes: true,
+  on: true,
+  choices: true,
+  afterTask: true,
+});
+export type StepSummary = z.infer<typeof StepSummarySchema>;
+
+/** The part of a playbook the Playbooks screen needs: its identity, stations, block titles and step summaries. */
+export const PlaybookSummarySchema = PlaybookSchema.pick({ id: true, title: true, description: true, singleton: true, blocks: true }).extend({
+  steps: z.array(StepSummarySchema),
+});
+export type PlaybookSummary = z.infer<typeof PlaybookSummarySchema>;
+
+/**
+ * A run as the Playbooks screen and the sidebar badge see it: the fields they draw rows, badges
+ * and gate buttons from. No history, reports, outputs, attempts, inbox, step prompts or job
+ * payloads: those make a run weigh megabytes. A whole run is `runs.list`.
+ */
+export const RunSummarySchema = z.object({
+  id: z.string(),
+  playbook: PlaybookSummarySchema,
+  workspaceId: z.string(),
+  projectId: z.string(),
+  managerAgentId: z.string(),
+  name: z.string().nullable(),
+  /** The first line of the run's first text input (its request), cut short; null = none. */
+  title: z.string().nullable(),
+  status: RunStatusSchema,
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  seenAt: z.string().nullable(),
+  pausedAt: z.string().nullable(),
+  steps: z.record(z.string(), z.object({ status: StepStatusSchema })),
+  /** Open gates only (the decided ones are in the full run). */
+  gates: z.array(GateSchema),
+  /** After-tasks' statuses. */
+  after: z.record(z.string(), z.object({ status: AfterTaskStatusSchema })),
+  /** Jobs without their inputs and outputs: what the stations and the job counts show. */
+  jobs: z.array(JobSchema.pick({ id: true, label: true, status: true, waiting: true })),
+  train: RunSchema.shape.train,
+});
+export type RunSummary = z.infer<typeof RunSummarySchema>;
+
+const TITLE_MAX = 200;
+
+export function summarizeRun(run: Run): RunSummary {
+  const text = Object.values(run.inputs).find((value): value is string => typeof value === "string" && value.trim() !== "");
+  const { id, title, description, singleton, blocks } = run.playbook;
+  return {
+    id: run.id,
+    playbook: {
+      id,
+      title,
+      description,
+      singleton,
+      blocks,
+      steps: run.playbook.steps.map(({ id, title, shortTitle, kind, when, needs, outcomes, on, choices, afterTask }) => ({
+        id,
+        title,
+        shortTitle,
+        kind,
+        when,
+        needs,
+        outcomes,
+        on,
+        choices,
+        afterTask,
+      })),
+    },
+    workspaceId: run.workspaceId,
+    projectId: run.projectId,
+    managerAgentId: run.managerAgentId,
+    name: run.name,
+    title: text ? text.trim().split("\n")[0]!.slice(0, TITLE_MAX) : null,
+    status: run.status,
+    createdAt: run.createdAt,
+    updatedAt: run.updatedAt,
+    seenAt: run.seenAt,
+    pausedAt: run.pausedAt,
+    steps: Object.fromEntries(Object.entries(run.steps).map(([stepId, step]) => [stepId, { status: step.status }])),
+    gates: run.gates.filter((gate) => gate.status === "pending"),
+    after: Object.fromEntries(Object.entries(run.after).map(([taskId, task]) => [taskId, { status: task.status }])),
+    jobs: run.jobs.map(({ id, label, status, waiting }) => ({ id, label, status, waiting })),
+    train: run.train,
+  };
+}
+
 /** Exit code a script step uses to say "not done yet, run me again after `poll`" (EX_TEMPFAIL). */
 export const SCRIPT_NOT_YET = 75;
 
@@ -569,7 +664,7 @@ export function isAgentlessAttempt(agentId: string): boolean {
 }
 
 /** A singleton's pipeline run: it keeps the waiting lists and jobs; its trains are other runs. */
-export function isPipeline(run: Run): boolean {
+export function isPipeline(run: { playbook: { singleton?: unknown }; train: unknown }): boolean {
   return run.playbook.singleton !== undefined && run.train === null;
 }
 
@@ -580,7 +675,7 @@ export function isTerminal(status: RunStatus): boolean {
 }
 
 /** After-tasks of the run that are running now ("wrapping up"). */
-export function runningAfterTasks(run: Run): string[] {
+export function runningAfterTasks(run: { after: Record<string, { status: string }> }): string[] {
   return Object.entries(run.after).filter(([, task]) => task.status === "running").map(([id]) => id);
 }
 
@@ -588,12 +683,12 @@ export function runningAfterTasks(run: Run): string[] {
  * Whether the run still has work going on: its main graph, or an after-task once it ended.
  * Use `isTerminal(run.status)` for the run's result, this for "can it still change".
  */
-export function isActive(run: Run): boolean {
+export function isActive(run: { status: RunStatus; after: Record<string, { status: string }> }): boolean {
   return !isTerminal(run.status) || runningAfterTasks(run).length > 0;
 }
 
 /** Paused by a human and still active. A pause left on a run that has since ended means nothing. */
-export function isPaused(run: Run): boolean {
+export function isPaused(run: { status: RunStatus; after: Record<string, { status: string }>; pausedAt: string | null }): boolean {
   return run.pausedAt !== null && isActive(run);
 }
 
