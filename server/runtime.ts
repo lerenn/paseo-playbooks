@@ -2777,7 +2777,6 @@ export class Runtime {
       : await this.api().workspaces.create({
           title: SIDEKICK_TITLE,
           source: { kind: "directory", path: await this.sidekickRegistry.ensureDirectory() },
-          internal: true,
           background: true,
         });
     const agent = await workspace.agents.create({

@@ -62,7 +62,8 @@ describe("the Sidekick", () => {
     const { runtime, created, dir } = await setup();
     const opened = await runtime.openSidekick();
     expect(opened).toEqual({ workspaceId: "ws-1", agentId: "agent-1", created: true });
-    expect(created.workspaces[0]).toMatchObject({ internal: true, background: true, source: { kind: "directory", path: path.join(dir, "sidekick") } });
+    expect(created.workspaces[0]).not.toHaveProperty("internal");
+    expect(created.workspaces[0]).toMatchObject({ background: true, source: { kind: "directory", path: path.join(dir, "sidekick") } });
     const agent = created.agents[0] as { options: { labels: Record<string, string>; config: { options: { allowedTools: string[]; disallowedTools: string[] } }; prompt: string } };
     expect(agent.options.labels[SIDEKICK_LABEL]).toBe("true");
     expect(agent.options.config.options.disallowedTools).toEqual(expect.arrayContaining(["Bash", "Edit", "Write"]));
