@@ -354,9 +354,6 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
       <ScrollView contentContainerStyle={{ padding: pad, gap: 18 }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 10, flexWrap: "wrap", zIndex: 50 }}>
           <PreReleaseFlag theme={theme} />
-          <Text accessibilityRole="header" style={{ color: theme.colors.foreground, fontSize: 20, fontWeight: "700" }}>
-            Playbooks
-          </Text>
           <Text style={{ flex: 1, color: theme.colors.foregroundMuted, fontSize: 13 }}>
             <Text style={{ color: theme.colors.statusWarning }}>{counts.needsYou}</Text> {counts.needsYou === 1 ? "needs" : "need"} you ·{" "}
             <Text style={{ color: theme.colors.accent }}>{counts.working}</Text> working
