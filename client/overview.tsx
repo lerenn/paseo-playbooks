@@ -12,6 +12,7 @@ import { LABEL_WIDTH, labelLayout, ROW_HEIGHT } from "./layout";
 import { useOverview, type OverviewStore } from "./overview-store";
 import { GETTING_STARTED_URL } from "./panel";
 import { PreReleaseFlag } from "./pre-release";
+import { SidekickColumn } from "./sidekick/column";
 import { Button, GateActions } from "./sheet";
 import { openJobsLabel, Stations, trainName } from "./stations";
 import { stepShortTitle, stepTitle, stepTitleOf, withAlpha, type Theme } from "./theme";
@@ -311,6 +312,9 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
   const toast = useToast();
   const openSidekick = useRpc(openSidekickRpc);
   const [sidekickBusy, setSidekickBusy] = useState(false);
+  // The Sidekick column: open on wide layouts, where the agent is read once from sidekick.open. Compact layouts open the native tab.
+  const [sidekick, setSidekick] = useState<{ open: boolean; agentId: string | null; error: string | null }>({ open: false, agentId: null, error: null });
+  const openSidekickTab = (agentId: string) => navigation?.openAgent({ agentId });
   useEffect(() => store.watchRuns(), [store]);
   const queryClient = useQueryClient();
 
@@ -354,8 +358,8 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
   const onOpenAgent = navigation ? (agentId: string) => navigation.openAgent({ agentId }) : undefined;
   return (
     <StoreContext.Provider value={store}>
-    <View style={{ flex: 1, backgroundColor: theme.colors.surface0 }}>
-      <ScrollView contentContainerStyle={{ padding: pad, gap: 18 }}>
+    <View style={{ flex: 1, flexDirection: "row", backgroundColor: theme.colors.surface0 }}>
+      <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: pad, gap: 18 }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 10, flexWrap: "wrap", zIndex: 50 }}>
           <PreReleaseFlag theme={theme} />
           <Text style={{ flex: 1, color: theme.colors.foregroundMuted, fontSize: 13 }}>
@@ -382,10 +386,16 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
               disabled={sidekickBusy}
               hitSlop={8}
               onPress={() => {
+                if (!layout.compact && sidekick.open) return setSidekick({ ...sidekick, open: false });
                 setSidekickBusy(true);
+                if (!layout.compact) setSidekick({ open: true, agentId: sidekick.agentId, error: null });
                 openSidekick({})
-                  .then(({ agentId }) => navigation.openAgent({ agentId }))
-                  .catch((error: unknown) => toast.error(error instanceof Error ? error.message : "Could not open the Sidekick"))
+                  .then(({ agentId }) => (layout.compact ? openSidekickTab(agentId) : setSidekick({ open: true, agentId, error: null })))
+                  .catch((error: unknown) => {
+                    const message = error instanceof Error ? error.message : "Could not open the Sidekick";
+                    if (layout.compact) toast.error(message);
+                    else setSidekick({ open: true, agentId: null, error: message });
+                  })
                   .finally(() => setSidekickBusy(false));
               }}
               style={{ flexDirection: "row", alignItems: "center", gap: 6, opacity: sidekickBusy ? 0.5 : 1 }}
@@ -520,6 +530,15 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
           </>
         )}
       </ScrollView>
+      {!layout.compact && sidekick.open ? (
+        <SidekickColumn
+          theme={theme}
+          agentId={sidekick.agentId}
+          status={{ loading: sidekickBusy && sidekick.agentId === null, error: sidekick.error }}
+          onOpenTab={sidekick.agentId && navigation ? () => openSidekickTab(sidekick.agentId!) : undefined}
+          onClose={() => setSidekick({ ...sidekick, open: false })}
+        />
+      ) : null}
     </View>
     </StoreContext.Provider>
   );
