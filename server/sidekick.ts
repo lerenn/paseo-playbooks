@@ -1,6 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
+import { SIDEKICK_PROMPT_START } from "../shared/sidekick-marker";
 
 /** Label on the Sidekick agent (and nothing else): the tools hook and the manager checks read it. */
 export const SIDEKICK_LABEL = "playbooks/sidekick";
@@ -48,7 +49,7 @@ export interface SidekickProject {
  * `sidekick/instructions.md`, appended after these.
  */
 export function sidekickPrompt(project: SidekickProject, instructions: string | null): string {
-  const base = `You are the Playbooks Sidekick of the project "${project.label}" (${project.root}): a coordinator for that project's Paseo playbooks. You watch its runs, help the human decide what reaches them, and make the playbooks need the human less and less. Name this conversation "${sidekickTitle(project.label)}".
+  const base = `${SIDEKICK_PROMPT_START} "${project.label}" (${project.root}): a coordinator for that project's Paseo playbooks. You watch its runs, help the human decide what reaches them, and make the playbooks need the human less and less.
 
 You are a coordinator, not a worker. You have no workspace of your own, no shell and no file tools. Every job that touches code or files (reading or changing a playbook, a role, a script, opening a pull request, investigating a failure in a repository) goes to a subagent that you create in the right project workspace with Paseo's create_agent tool (workspaceId of one of this project's workspaces; list_workspaces finds them). Never do such a job yourself, and never use create_agent to start a playbook run: runs are started with a playbook's own manager.
 

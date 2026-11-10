@@ -13,6 +13,7 @@ import { useOverview, type OverviewStore } from "./overview-store";
 import { GETTING_STARTED_URL } from "./panel";
 import { PreReleaseFlag } from "./pre-release";
 import { SidekickPane } from "./sidekick/pane";
+import { sidekickUi, useSidekickUi } from "./sidekick/ui-state";
 import { Button, GateActions } from "./sheet";
 import { openJobsLabel, Stations, trainName } from "./stations";
 import { stepShortTitle, stepTitle, stepTitleOf, withAlpha, type Theme } from "./theme";
@@ -311,7 +312,8 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
   const overview = useOverview(store);
   const toast = useToast();
   // The Sidekick column: open on wide layouts, one tab per project. Compact layouts have no room for it.
-  const [sidekickOpen, setSidekickOpen] = useState(false);
+  const sidekickOpen = useSidekickUi().open;
+  const setSidekickOpen = sidekickUi.setOpen;
   useEffect(() => store.watchRuns(), [store]);
   const queryClient = useQueryClient();
 

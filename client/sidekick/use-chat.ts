@@ -3,7 +3,7 @@ import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { initialState, reduce, type PermissionRequest, type RawItem } from "./reduce";
 
 export type PermissionResponse =
-  | { behavior: "allow"; updatedInput?: Record<string, unknown> }
+  | { behavior: "allow"; updatedInput?: Record<string, unknown>; updatedPermissions?: Record<string, unknown>[] }
   | { behavior: "deny"; message?: string };
 
 export interface AgentInfo {

@@ -178,6 +178,8 @@ export const SidekickProjectSchema = z.object({
   errors: z.array(z.string()),
   agentId: z.string().nullable(),
   activeRuns: z.number(),
+  /** Open gates of the project's runs that wait for a human (absent from an older plugin). */
+  needYou: z.number().default(0),
 });
 export type SidekickProject = z.infer<typeof SidekickProjectSchema>;
 

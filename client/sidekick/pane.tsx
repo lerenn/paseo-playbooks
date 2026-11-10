@@ -7,11 +7,9 @@ import { GETTING_STARTED_URL } from "../panel";
 import { Button } from "../sheet";
 import type { Theme } from "../theme";
 import { SidekickChat } from "./column";
-import { visibleTabs } from "./tabs";
-import { clampColumnWidth, COLUMN_WIDTH } from "./width";
-
-/** The width the user dragged the column to, kept while the screen lives (the column is unmounted when closed). */
-let rememberedWidth = COLUMN_WIDTH;
+import { statusLine, visibleTabs } from "./tabs";
+import { clampColumnWidth } from "./width";
+import { resolveSelected, sidekickUi, useSidekickUi } from "./ui-state";
 
 /** How often the tabs refresh which projects have runs or a Sidekick. */
 const POLL_MS = 15_000;
@@ -37,7 +35,8 @@ interface Props {
  */
 export function SidekickPane(props: Props) {
   const { theme } = props;
-  const [width, setWidth] = useState(rememberedWidth);
+  const ui = useSidekickUi();
+  const width = ui.width;
   const startWidth = useRef(width);
   // A handle on the left edge: dragging left widens the column.
   const resizer = useMemo(
@@ -47,11 +46,10 @@ export function SidekickPane(props: Props) {
         onMoveShouldSetPanResponder: () => true,
         onPanResponderTerminationRequest: () => false,
         onPanResponderGrant: () => {
-          startWidth.current = rememberedWidth;
+          startWidth.current = sidekickUi.get().width;
         },
         onPanResponderMove: (_event, gesture) => {
-          rememberedWidth = clampColumnWidth(startWidth.current - gesture.dx);
-          setWidth(rememberedWidth);
+          sidekickUi.setWidth(clampColumnWidth(startWidth.current - gesture.dx));
         },
       }),
     [],
@@ -59,8 +57,9 @@ export function SidekickPane(props: Props) {
   const list = useRpc(listSidekicksRpc);
   const open = useRpc(openSidekickRpc);
   const [projects, setProjects] = useState<SidekickProject[]>([]);
-  const [added, setAdded] = useState<string[]>([]);
-  const [selected, setSelected] = useState<string | null>(null);
+  const added = ui.added;
+  const selected = ui.selectedProjectId;
+  const setSelected = sidekickUi.select;
   const [adding, setAdding] = useState(false);
   const [opening, setOpening] = useState<{ projectId: string; error: string | null } | null>(null);
   /** The agent of each project this pane has opened (a tab's chat), ahead of the next list. */
@@ -95,8 +94,10 @@ export function SidekickPane(props: Props) {
   // Select the first tab once the list is there; a tab that disappeared falls back to the first.
   useEffect(() => {
     if (adding) return;
-    if (!tabs.some((tab) => tab.projectId === selected)) setSelected(tabs[0]?.projectId ?? null);
-  }, [tabs, selected, adding]);
+    if (projects.length === 0) return;
+    const next = resolveSelected(selected, tabs.map((tab) => tab.projectId));
+    if (next !== selected) setSelected(next);
+  }, [tabs, selected, adding, projects.length]);
 
   // A configured project's tab opens (creates or reuses) its Sidekick agent.
   const agentId = current ? (agents[current.projectId] ?? current.agentId) : null;
@@ -152,6 +153,12 @@ export function SidekickPane(props: Props) {
         <TabButton theme={theme} label="+" accessibilityLabel="Add a Sidekick for another project" active={adding} onPress={() => setAdding(!adding)} />
       </ScrollView>
 
+      {!adding && current && statusLine(current) ? (
+        <Text accessibilityLabel={`Status of ${current.label}: ${statusLine(current)}`} style={{ color: current.needYou > 0 ? theme.colors.statusWarning : muted, fontSize: 12, paddingHorizontal: 12, paddingVertical: 6, borderBottomWidth: 1, borderColor: theme.colors.border }}>
+          {statusLine(current)}
+        </Text>
+      ) : null}
+
       {adding ? (
         <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 12, gap: 8 }}>
           <Text style={{ color: muted, fontSize: 12 }}>{others.length > 0 ? "Add a Sidekick for a project:" : "Every project already has a tab."}</Text>
@@ -160,7 +167,7 @@ export function SidekickPane(props: Props) {
               key={project.projectId}
               accessibilityRole="button"
               onPress={() => {
-                setAdded((all) => [...all, project.projectId]);
+                sidekickUi.addProject(project.projectId);
                 setSelected(project.projectId);
                 setAdding(false);
               }}
@@ -191,6 +198,7 @@ export function SidekickPane(props: Props) {
           key={agentId ?? current.projectId}
           theme={theme}
           agentId={agentId}
+          projectId={current.projectId}
           status={{ loading: opening?.projectId === current.projectId && !opening.error, error: opening?.projectId === current.projectId ? opening.error : null }}
           onOpenTab={agentId && props.openAgent ? () => props.openAgent!(agentId) : undefined}
         />
@@ -204,7 +212,8 @@ function TabButton(props: { theme: Theme; label: string; active: boolean; dot?: 
   return (
     <Pressable
       accessibilityRole="tab"
-      accessibilityLabel={props.accessibilityLabel ?? props.label}
+      accessibilityLabel={props.accessibilityLabel ?? (props.dot ? `${props.label}, this project has active runs` : props.label)}
+      {...({ title: props.dot ? "This project has active runs" : undefined } as object)}
       accessibilityState={{ selected: props.active }}
       onPress={props.onPress}
       style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 10, paddingVertical: 8, borderBottomWidth: 2, borderColor: props.active ? theme.colors.accent : "transparent" }}
@@ -212,7 +221,7 @@ function TabButton(props: { theme: Theme; label: string; active: boolean; dot?: 
       <Text style={{ color: props.active ? theme.colors.foreground : theme.colors.foregroundMuted, fontSize: 13, fontWeight: props.active ? "700" : "500" }} numberOfLines={1}>
         {props.label}
       </Text>
-      {props.dot ? <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: theme.colors.accent }} /> : null}
+      {props.dot ? <View accessibilityLabel="This project has active runs" style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: theme.colors.accent }} /> : null}
     </Pressable>
   );
 }

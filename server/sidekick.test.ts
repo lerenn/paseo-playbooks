@@ -1,9 +1,10 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_SIDEKICK_WATCH, loadPlaybooks, loadSidekick } from "./loader";
 import { Runtime } from "./runtime";
+import { SIDEKICK_PROMPT_START } from "../shared/sidekick-marker";
 import { SIDEKICK_LABEL, sidekickPrompt } from "./sidekick";
 import { createSidekickStarter } from "./starter";
 import { RunStore } from "./store";
@@ -92,6 +93,12 @@ describe("the Sidekick prompt", () => {
     expect(text.endsWith("Never merge on Friday.")).toBe(true);
     expect(sidekickPrompt({ projectId: "p1", label: "Shop", root: "/work/shop", watch: [] }, null)).not.toContain("Instructions of this repository");
   });
+
+  it("starts with the marker the chat recognises it by and does not ask the agent to rename itself", () => {
+    const text = sidekickPrompt({ projectId: "p1", label: "Shop", root: "/work/shop", watch: [] }, null);
+    expect(text.startsWith(SIDEKICK_PROMPT_START)).toBe(true);
+    expect(text).not.toContain("Name this conversation");
+  });
 });
 
 function fakePaseo(roots: Record<string, string>) {
@@ -145,7 +152,7 @@ async function setup(projects: Record<string, boolean>) {
   const runtime = new Runtime(store);
   runtimes.push(runtime);
   await runtime.attach(fake.paseo as never);
-  return { runtime, dir, roots, ...fake };
+  return { runtime, store, dir, roots, ...fake };
 }
 
 describe("a project's Sidekick", () => {
@@ -204,6 +211,21 @@ describe("a project's Sidekick", () => {
       { projectId: "shop", configured: true, agentId: "agent-1", activeRuns: 0 },
       { projectId: "blog", configured: false, agentId: null, activeRuns: 0 },
     ]);
+  });
+});
+
+describe("needYou", () => {
+  it("counts the gates of the project's open runs that wait for a human", async () => {
+    const { runtime, store } = await setup({ shop: true });
+    const gate = (status: string, decider: unknown = { by: "human" }, escalated: unknown = null) => ({ status, decider, escalated });
+    const run = (projectId: string, gates: unknown[], over: Record<string, unknown> = {}) => ({ projectId, status: "running", archivedAt: null, gates, ...over });
+    vi.spyOn(store, "list").mockReturnValue([
+      run("shop", [gate("pending"), gate("approved"), gate("pending", { by: "role", role: "r" }, null)]),
+      run("shop", [gate("pending")], { archivedAt: "2026-01-01" }),
+      run("blog", [gate("pending")]),
+    ] as never);
+    const [shop] = await runtime.sidekickProjects([{ projectId: "shop", workspaceId: "ws-shop" }]);
+    expect(shop).toMatchObject({ activeRuns: 1, needYou: 1 });
   });
 });
 

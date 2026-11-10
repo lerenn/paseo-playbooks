@@ -2786,6 +2786,7 @@ export class Runtime {
       const load = await loadSidekick(project.root);
       const record = registry[projectId];
       const agent = record ? await this.api().agents.ref(record.agentId).refresh().catch(() => null) : null;
+      const open = this.store.list().filter((run) => run.projectId === projectId && !run.archivedAt);
       projects.push({
         projectId,
         workspaceId,
@@ -2793,7 +2794,8 @@ export class Runtime {
         configured: load.configured,
         errors: load.errors,
         agentId: agent && !agent.agent.archivedAt ? record!.agentId : null,
-        activeRuns: this.store.list().filter((run) => run.projectId === projectId && !run.archivedAt && !isTerminal(run.status)).length,
+        activeRuns: open.filter((run) => !isTerminal(run.status)).length,
+        needYou: open.reduce((count, run) => count + run.gates.filter(waitsForHuman).length, 0),
       });
     }
     return projects;

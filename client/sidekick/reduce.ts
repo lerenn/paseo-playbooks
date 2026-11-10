@@ -4,6 +4,8 @@
  * tested without a host. Ideas from the reducer of paseo-bytheway (MIT), written for this plugin.
  */
 
+import { markInstructions } from "./instructions";
+
 export interface PermissionRequest {
   id: string;
   name?: string;
@@ -11,10 +13,12 @@ export interface PermissionRequest {
   title?: string;
   description?: string;
   input?: unknown;
+  /** What the host offers to remember ("allow always"): sent back as updatedPermissions. */
+  suggestions?: Record<string, unknown>[];
 }
 
 export type Item =
-  | { kind: "user"; key: string; text: string }
+  | { kind: "user"; key: string; text: string; instructions?: boolean }
   | { kind: "assistant"; key: string; text: string; streaming: boolean }
   | { kind: "reasoning"; key: string; text: string; streaming: boolean }
   | { kind: "tool"; key: string; callId: string; name: string; status: "running" | "completed" | "failed" | "canceled"; detail: Record<string, unknown> | null; error: string | null }
@@ -108,7 +112,7 @@ function applyItem(state: ChatState, raw: RawItem): ChatState {
   const key = `live:${state.nextSeq}`;
   const item = toItem(raw, key, true);
   if (!item) return state;
-  return { ...state, items: [...close(state.items), item], nextSeq: state.nextSeq + 1 };
+  return { ...state, items: markInstructions([...close(state.items), item]), nextSeq: state.nextSeq + 1 };
 }
 
 export function reduce(state: ChatState, action: ChatAction): ChatState {
@@ -134,7 +138,7 @@ export function reduce(state: ChatState, action: ChatAction): ChatState {
         }
         deduped.push(item);
       }
-      return { ...state, items: deduped };
+      return { ...state, items: markInstructions(deduped) };
     }
     case "event": {
       const event = action.event;
