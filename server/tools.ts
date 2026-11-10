@@ -522,7 +522,7 @@ export function defaultRunToCancel(runs: Run[], agentId: string, workspaceId: st
   );
 }
 
-/** Tools for every agent except step agents: find runs, cancel and restart them, e.g. when the human asks in any chat. */
+/** Tools for every agent except step agents: find runs, cancel, archive and restart them, e.g. when the human asks in any chat. */
 export function runTools(runtime: Runtime): AgentToolDefinition[] {
   return [
     defineAgentTool({
@@ -656,6 +656,20 @@ export function runTools(runtime: Runtime): AgentToolDefinition[] {
             isTerminal(run.status) && run.status !== "canceled" ? `After-tasks of run ${run.id} canceled; the run stays ${run.status}.` : `Run ${run.id} canceled.`,
             isManager ? runChange(run) : runListing(run),
           );
+        }),
+    }),
+    defineAgentTool({
+      name: "archive_run",
+      description:
+        "Archive a run that has ended (completed, failed or canceled), exactly like the archive button on its row in the Playbooks panel: it is hidden from the panel and from list_runs (unless archived: true); its state and agents are kept, and restart_run can still reopen it. Use it to clean up after a run is canceled or finished and its job is settled (e.g. after cancel_run, once the human no longer needs it). Refused while the run is active, running, paused or waiting at a gate (cancel_run it first), and while a job it handed to a pipeline is still open at a station or train, unless force: true. Archiving twice is fine. Works on any run, like cancel_run.",
+      input: z.object({
+        runId: IdArg,
+        force: z.boolean().default(false).describe("Archive even though a job the run handed to a pipeline is still open (not settled)"),
+      }),
+      execute: ({ runId, force }) =>
+        guard(async () => {
+          const { run, already } = await runtime.archiveRunByAgent(runId, force);
+          return ok(already ? `Run ${run.id} was already archived.` : `Run ${run.id} archived.`, runListing(run));
         }),
     }),
     defineAgentTool({
