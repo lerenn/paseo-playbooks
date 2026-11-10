@@ -267,19 +267,42 @@ export class Runtime {
     const dir = options.dataDir ?? path.dirname(store.dir);
     this.worktreesDir = path.join(dir, "worktrees");
     this.sessions = new StaleSessions(path.join(dir, "sessions.json"));
-    this.bus = new EventBus({ events: path.join(dir, "events.json"), subscriptions: path.join(dir, "subscriptions.json") }, options.debounceMs === undefined ? {} : { debounceMs: options.debounceMs });
+    this.bus = new EventBus({ events: path.join(dir, "events.json"), subscriptions: path.join(dir, "subscriptions.json"), pending: path.join(dir, "pending-events.json") }, options.debounceMs === undefined ? {} : { debounceMs: options.debounceMs });
     registerOversightTypes(this.bus);
     this.bus.registerNotifier("agent", this.agentNotifier());
     this.producer = new OversightProducer(this.bus);
   }
 
-  /** Sends a subscription's events as a plain-text message to its agent; an archived or missing agent is "gone". */
+  /**
+   * Sends a subscription's events as a plain-text message to its agent; an archived or missing
+   * agent is "gone". With `delivery: "idle"` (the default) a message waits ("held") while the agent
+   * is in a turn, so it never lands in the middle of one (an interactive question, say), and goes
+   * out as one message once the turn ends. The plugin's send is not an agent's, so on an idle agent
+   * it starts a normal turn. Busy is `busyManagers` (turn hooks, sends the plugin made), and for an
+   * agent we have not seen yet (after a restart) its status.
+   */
   private agentNotifier(): Notifier {
     return {
       deliver: async (subscription: Subscription, _events: BusEvent[], text: string) => {
-        const agent = await this.api().agents.ref(subscription.sink.target).refresh().catch(() => null);
-        if (!agent || agent.agent.archivedAt) return "gone";
-        await this.api().agents.ref(subscription.sink.target).send(text, { activeTurnBehavior: "steer" });
+        const id = subscription.sink.target;
+        const steer = subscription.delivery === "steer";
+        if (!steer && this.busyManagers.has(id)) return "held";
+        const agent = await this.api().agents.ref(id).refresh().catch(() => null);
+        if (!agent || agent.agent.archivedAt) {
+          console.warn(`[playbooks] dropping event subscriptions of ${id}: agent ${agent ? "is archived" : "no longer exists"}`);
+          return "gone";
+        }
+        if (!steer && agent.agent.status === "running") {
+          this.busyManagers.add(id);
+          return "held";
+        }
+        if (!steer) this.busyManagers.add(id);
+        try {
+          await this.api().agents.ref(id).send(text, { activeTurnBehavior: "steer" });
+        } catch (error) {
+          if (!steer) this.busyManagers.delete(id);
+          throw error;
+        }
         return "delivered";
       },
     };
@@ -424,10 +447,10 @@ export class Runtime {
 
   // ---------------------------------------------------------------- events
 
-  async subscribeEvents(agentId: string, types: string[], filter: Record<string, string | number | boolean>): Promise<Subscription> {
+  async subscribeEvents(agentId: string, types: string[], filter: Record<string, string | number | boolean>, delivery: "idle" | "steer" = "idle"): Promise<Subscription> {
     try {
       if (typeof filter.runId === "string" && !this.store.get(filter.runId)) throw new UserError(`unknown run "${filter.runId}"`);
-      return await this.bus.subscribe(agentId, { kind: "agent", target: agentId }, types, filter);
+      return await this.bus.subscribe(agentId, { kind: "agent", target: agentId }, types, filter, delivery);
     } catch (error) {
       throw error instanceof BusError ? new UserError(error.message) : error;
     }
@@ -527,6 +550,8 @@ export class Runtime {
     if (this.retiredManagers.has(agentId)) return this.archiveStepAgent(agentId);
     for (const run of this.runsOfManager(agentId)) await this.deliver(run.id);
     await this.compactManager(agentId);
+    // Event notices held while this agent was in its turn (unless the above started a new one).
+    if (!this.busyManagers.has(agentId)) await this.bus.flush();
   }
 
   /**
