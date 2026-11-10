@@ -225,9 +225,11 @@ export const IsolationSchema = z.object({
   submodules: z.union([z.enum(["none", "all"]), z.array(z.string())]),
   /** Branch the worktree starts from (fresh origin copy); default: the project's default branch. */
   base: z.string().nullable(),
+  /** false (default): a step whose branch deletes a submodule entry (gitlink, mode 160000) present in the base fails. */
+  allowGitlinkRemoval: z.boolean().default(false),
 });
 export type Isolation = z.infer<typeof IsolationSchema>;
-export const DEFAULT_ISOLATION: Isolation = { mode: "none", submodules: "none", base: null };
+export const DEFAULT_ISOLATION: Isolation = { mode: "none", submodules: "none", base: null, allowGitlinkRemoval: false };
 
 /** The private worktree of an isolated run, kept in run state. */
 export const RunWorktreeSchema = z.object({

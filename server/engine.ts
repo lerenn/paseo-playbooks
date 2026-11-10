@@ -1359,12 +1359,17 @@ export function resumeRun(run: Run, now: string): boolean {
 }
 
 /** Marks a failed or timed-out readonly check on the current attempt. */
-export function markReadonlyViolation(run: Run, stepId: string, detail: string, now: string, kind: "readonly" | "isolation" = "readonly"): void {
+export function markReadonlyViolation(run: Run, stepId: string, detail: string, now: string, kind: "readonly" | "isolation" | "gitlink" = "readonly"): void {
   const attempt = currentAttempt(run, stepId);
   if (!attempt) return;
   if (kind === "isolation") {
     attempt.report = { outcome: "failure", summary: `isolation guard: the step changed the workspace checkout instead of the run's worktree (${run.worktree?.path ?? "?"}): ${detail}`, outputs: {} };
     log(run, now, "isolation_violation", stepId, detail);
+    return;
+  }
+  if (kind === "gitlink") {
+    attempt.report = { outcome: "failure", summary: `gitlink guard: the step's branch deletes submodule entries (mode 160000): ${detail}. Restore them (git restore --staged --worktree --source=${run.worktree?.baseSha ?? "<base>"} -- <path>) or set isolation.allow_gitlink_removal: true`, outputs: {} };
+    log(run, now, "gitlink_violation", stepId, detail);
     return;
   }
   attempt.report = { outcome: "failure", summary: `readonly role modified the checkout: ${detail}`, outputs: {} };

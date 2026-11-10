@@ -80,6 +80,9 @@ How to run a playbook:
 Rules: create step agents only with start_step (never with Paseo's create_agent tool), do
 not do the steps' work yourself, and never edit files in this workspace.`;
 
+/** Staging rule given to every step agent: a blanket add in a worktree with empty submodule directories stages their deletion. */
+export const GIT_STAGING_RULE = `Never run \`git add -A\`, \`git add .\` or \`git commit -a\`/\`-am\`: stage files explicitly by path (\`git add <path>\`) and check \`git diff --cached --stat\` before committing. Never stage the removal of a submodule entry (mode 160000): in a worktree where submodule directories are empty or absent a blanket add stages their deletion; if \`git diff --cached --summary\` shows \`delete mode 160000\`, run \`git restore --staged\` on it before committing.`;
+
 /**
  * What every agent of an isolated run is told first: it works in the run's private git worktree, never
  * in the workspace checkout it was started in (Paseo pins an agent's directory to its workspace).
@@ -94,6 +97,7 @@ Your shell starts in ${run.workspaceDir}, the original workspace checkout: do no
 - Use absolute paths under ${wt.path} for Read, Edit and Write. A relative path in your instructions means a path inside the worktree.
 - Never edit, create or delete files in ${run.workspaceDir}, and never commit there or switch its branch. Never run \`git checkout\`, \`git reset\` or \`git pull\` in it. The plugin checks that checkout when you finish and fails the step if it changed.
 - Never use \`git stash\`: the stash stack is shared with the original checkout and every other worktree, so you could take or bury someone else's changes. Set work aside with a temporary WIP commit on the run's branch instead.
+- ${GIT_STAGING_RULE} The plugin also fails a step whose branch deletes a submodule entry.
 - A submodule directory that is empty in the worktree is not initialised: run \`git -C ${wt.path} submodule update --init -- <path>\` for the ones you need.`;
 }
 
@@ -166,7 +170,8 @@ export function stepSystemPrompt(playbook: Playbook, step: Step, role: Role, run
     : "";
   const instructions = run ? withWorktree(role.instructions, run) : role.instructions;
   const preamble = run ? worktreePreamble(run) : "";
-  return `${preamble ? `${preamble}\n\n` : ""}${instructions}${readonly}
+  const staging = preamble ? "" : `\n\n${GIT_STAGING_RULE}`;
+  return `${preamble ? `${preamble}\n\n` : ""}${instructions}${readonly}${staging}
 
 You are running step "${step.id}" (${role.title}) of the playbook "${playbook.title}", started by a
 Playbook Manager agent. Other steps may share this checkout.

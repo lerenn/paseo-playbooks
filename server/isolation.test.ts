@@ -5,8 +5,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
+import { removedGitlinks } from "./git";
 import { loadPlaybooks } from "./loader";
-import { worktreePreamble, withWorktree } from "./prompts";
+import { GIT_STAGING_RULE, stepSystemPrompt, worktreePreamble, withWorktree } from "./prompts";
 import { Runtime } from "./runtime";
 import { RunStore } from "./store";
 import { createWorktree, removeWorktree, hasUnpushedCommits } from "./worktree";
@@ -73,18 +74,27 @@ describe("isolation: loading", () => {
   it("defaults to none, so existing playbooks are unchanged", async () => {
     const entry = await load(`title: P\n${STEP}`);
     expect(entry.errors).toEqual([]);
-    expect(entry.playbook!.isolation).toEqual({ mode: "none", submodules: "none", base: null });
+    expect(entry.playbook!.isolation).toEqual({ mode: "none", submodules: "none", base: null, allowGitlinkRemoval: false });
   });
 
   it("accepts the short form, the block, and defaults merged field by field", async () => {
-    expect((await load(`title: P\nisolation: worktree\n${STEP}`)).playbook!.isolation).toEqual({ mode: "worktree", submodules: "none", base: null });
+    expect((await load(`title: P\nisolation: worktree\n${STEP}`)).playbook!.isolation).toEqual({ mode: "worktree", submodules: "none", base: null, allowGitlinkRemoval: false });
     const block = await load(`title: P\nisolation: { mode: worktree, submodules: [ops/a, ops/b], base: develop }\n${STEP}`);
-    expect(block.playbook!.isolation).toEqual({ mode: "worktree", submodules: ["ops/a", "ops/b"], base: "develop" });
+    expect(block.playbook!.isolation).toEqual({ mode: "worktree", submodules: ["ops/a", "ops/b"], base: "develop", allowGitlinkRemoval: false });
     const merged = await load(`title: P\nisolation: { submodules: all }\n${STEP}`, "isolation: { mode: worktree, base: trunk }\n");
     expect(merged.errors).toEqual([]);
-    expect(merged.playbook!.isolation).toEqual({ mode: "worktree", submodules: "all", base: "trunk" });
+    expect(merged.playbook!.isolation).toEqual({ mode: "worktree", submodules: "all", base: "trunk", allowGitlinkRemoval: false });
     const off = await load(`title: P\nisolation: none\n${STEP}`, "isolation: worktree\n");
     expect(off.playbook!.isolation.mode).toBe("none");
+  });
+
+  it("reads isolation.allow_gitlink_removal (default false)", async () => {
+    const on = await load(`title: P\nisolation: { mode: worktree, allow_gitlink_removal: true }\n${STEP}`);
+    expect(on.errors).toEqual([]);
+    expect(on.playbook!.isolation.allowGitlinkRemoval).toBe(true);
+    const viaDefault = await load(`title: P\nisolation: worktree\n${STEP}`, "isolation: { allow_gitlink_removal: true }\n");
+    expect(viaDefault.playbook!.isolation.allowGitlinkRemoval).toBe(true);
+    expect((await load(`title: P\nisolation: { mode: worktree, allow_gitlink_removal: yes please }\n${STEP}`)).errors.join("\n")).toMatch(/isolation/);
   });
 
   it("refuses a mistyped key, an unknown mode and a singleton that asks for a worktree; a default never reaches a singleton", async () => {
@@ -111,12 +121,46 @@ describe("worktree preamble", () => {
     expect(text).toContain("ops/x");
     expect(text).toMatch(/Never use `git stash`.*temporary WIP commit/s);
     expect(text).toMatch(/Never run `git checkout`, `git reset` or `git pull`/);
+    expect(text).toMatch(/Never run `git add -A`, `git add \.` or `git commit -a`\/`-am`.*git add <path>.*git diff --cached --stat/s);
+    expect(text).toMatch(/delete mode 160000.*git restore --staged/s);
     expect(worktreePreamble({ workspaceDir: "/ws", worktree: null })).toBe("");
+  });
+
+  it("gives step agents the staging rule once: in the preamble when isolated, on its own otherwise", () => {
+    const playbook = { title: "P" } as never;
+    const step = { id: "a", outcomes: ["success"], outputs: {} } as never;
+    const role = { title: "R", instructions: "Do it.", readonly: false } as never;
+    const plain = stepSystemPrompt(playbook, step, role);
+    expect(plain).toContain(GIT_STAGING_RULE);
+    const isolated = stepSystemPrompt(playbook, step, role, run);
+    expect(isolated.split(GIT_STAGING_RULE).length - 1).toBe(1);
   });
 
   it("renders {{ worktree }}: the worktree, else the workspace; other placeholders stay", () => {
     expect(withWorktree("cd {{ worktree }} {{ inputs.x }}", run)).toBe("cd /data/worktrees/run_a {{ inputs.x }}");
     expect(withWorktree("cd {{ worktree }}", { workspaceDir: "/ws", worktree: null })).toBe("cd /ws");
+  });
+});
+
+describe("removedGitlinks (real git)", () => {
+  it("names submodule entries the index deletes relative to the base, committed or staged; ignores plain files", async () => {
+    const dir = await tmp("gitlink");
+    await git(dir, "init", "-q", "-b", "main");
+    await git(dir, "config", "user.email", "a@b.c");
+    await git(dir, "config", "user.name", "t");
+    await writeFile(path.join(dir, "keep.txt"), "x");
+    await git(dir, "add", "keep.txt");
+    await git(dir, "update-index", "--add", "--cacheinfo", "160000,1111111111111111111111111111111111111111,ops/sub");
+    await git(dir, "commit", "-qm", "base");
+    const base = await git(dir, "rev-parse", "HEAD");
+    expect(await removedGitlinks(dir, base)).toEqual([]);
+    await git(dir, "rm", "-q", "--cached", "keep.txt");
+    expect(await removedGitlinks(dir, base)).toEqual([]);
+    await git(dir, "rm", "-q", "--cached", "ops/sub");
+    expect(await removedGitlinks(dir, base)).toEqual(["ops/sub"]);
+    await git(dir, "commit", "-qm", "delete");
+    expect(await removedGitlinks(dir, base)).toEqual(["ops/sub"]);
+    expect(await removedGitlinks(dir, "deadbeef")).toEqual([]);
   });
 });
 
@@ -261,11 +305,12 @@ steps:
     role: { name: implementer }
 `;
 
-async function runtimeSetup() {
-  const files: Record<string, string> = { ".gitignore": "node_modules\n", ".paseo/plugins/playbooks/iso.yaml": ISO_PLAYBOOK, ".paseo/plugins/playbooks/plain.yaml": PLAIN_PLAYBOOK, ".paseo/plugins/playbooks/iso2.yaml": FAILKEEP_PLAYBOOK };
+async function runtimeSetup(opts: { gitlink?: boolean; extraFiles?: Record<string, string> } = {}) {
+  const files: Record<string, string> = { ...opts.extraFiles, ".gitignore": "node_modules\n", ".paseo/plugins/playbooks/iso.yaml": ISO_PLAYBOOK, ".paseo/plugins/playbooks/plain.yaml": PLAIN_PLAYBOOK, ".paseo/plugins/playbooks/iso2.yaml": FAILKEEP_PLAYBOOK };
   const ws = await workspace(files);
   await cp(path.join(EXAMPLES, ".paseo/plugins/playbooks/roles"), path.join(ws.dir, ".paseo/plugins/playbooks/roles"), { recursive: true });
   await git(ws.dir, "add", "-A");
+  if (opts.gitlink) await git(ws.dir, "update-index", "--add", "--cacheinfo", "160000,1111111111111111111111111111111111111111,ops/sub");
   await git(ws.dir, "commit", "-qm", "roles");
   await git(ws.dir, "push", "-q", "origin", "main");
   const sent: Array<{ agentId: string; text: string }> = [];
@@ -350,6 +395,30 @@ describe("isolated runs", () => {
     expect(attempt.report!.summary).toMatch(/isolation guard.*stray\.txt/);
     expect(after.history.some((event) => event.type === "isolation_violation" && event.detail.includes("stray.txt"))).toBe(true);
     expect(ctx.sent.filter((entry) => entry.agentId === "m1").map((entry) => entry.text).join("\n")).toMatch(/Isolation guard failed.*stray\.txt/);
+  });
+
+  it("fails the step, naming the path, when its branch deletes a submodule entry; isolation.allow_gitlink_removal turns the guard off", async () => {
+    const ctx = await runtimeSetup({ gitlink: true, extraFiles: { ".paseo/plugins/playbooks/iso-ok.yaml": ISO_PLAYBOOK.replace("isolation: worktree", "isolation: { mode: worktree, allow_gitlink_removal: true }") } });
+    const run = await ctx.runtime.startPlaybook(mgr("m1", ctx.dir), "iso", {});
+    const { agentId } = await ctx.runtime.startStep("m1", run.id, "work", "");
+    await git(run.worktree!.path, "rm", "-q", "--cached", "ops/sub");
+    await git(run.worktree!.path, "commit", "-qm", "oops");
+    await ctx.runtime.report(agentId, { outcome: "success", summary: "done", outputs: {} });
+    await ctx.runtime.onTurnEnded(agentId, "completed");
+    const after = ctx.store.get(run.id)!;
+    expect(after.steps.work!.attempts[0]!.report!.outcome).toBe("failure");
+    expect(after.steps.work!.attempts[0]!.report!.summary).toMatch(/gitlink guard.*ops\/sub/);
+    expect(after.history.some((event) => event.type === "gitlink_violation" && event.detail.includes("ops/sub"))).toBe(true);
+    expect(ctx.sent.filter((entry) => entry.agentId === "m1").map((entry) => entry.text).join("\n")).toMatch(/Gitlink guard failed.*ops\/sub/);
+
+    await ctx.runtime.cancelRun(run.id, "x", null);
+    const ok = await ctx.runtime.startPlaybook(mgr("m2", ctx.dir), "iso-ok", {});
+    const started = await ctx.runtime.startStep("m2", ok.id, "work", "");
+    await git(ok.worktree!.path, "rm", "-q", "--cached", "ops/sub");
+    await git(ok.worktree!.path, "commit", "-qm", "intended");
+    await ctx.runtime.report(started.agentId, { outcome: "success", summary: "done", outputs: {} });
+    await ctx.runtime.onTurnEnded(started.agentId, "completed");
+    expect(ctx.store.get(ok.id)!.steps.work!.attempts[0]!.report!.outcome).toBe("success");
   });
 
   it("passes a step that left the workspace alone and edited the worktree", async () => {
