@@ -728,7 +728,7 @@ export function validateTool(runtime: Runtime): AgentToolDefinition {
       guard(async () => {
         const dir = path ?? agent.cwd;
         const loaded = await loadPlaybooks(dir);
-        if (!loaded.exists) return ok(`No playbooks folder: create .paseo/plugins/playbooks/ or .paseo/playbooks/ in ${dir}.`, { exists: false });
+        if (!loaded.exists) return ok(`No playbooks folder: create .paseo/plugins/playbooks/ or .paseo/playbooks/ in ${dir}.`, { exists: false, sidekick: { configured: false, errors: [] } });
         // What a new run would load: isolated playbooks come from their fresh base branch, not the checkout.
         const resolved = await resolveForNewRun(dir, loaded);
         const described = describeEntries(resolved.map((item) => item.entry), view, playbookId) as Array<{ id: string; valid: boolean }>;
@@ -738,7 +738,9 @@ export function validateTool(runtime: Runtime): AgentToolDefinition {
         });
         const invalid = results.filter((result) => !result.valid).length;
         const head = loaded.entries.length === 0 ? "No playbook files found." : invalid === 0 ? `All ${results.length} playbook(s) are valid.` : `${invalid} of ${results.length} playbook(s) have errors.`;
-        return ok(`${head}\n${JSON.stringify(results, null, 2)}`, { exists: true, results });
+        const { sidekick } = loaded;
+        const sidekickLine = !sidekick.configured ? "" : sidekick.errors.length === 0 ? `\nSidekick (${sidekick.dir}): valid.` : `\nSidekick (${sidekick.dir}) has errors:\n${sidekick.errors.join("\n")}`;
+        return ok(`${head}${sidekickLine}\n${JSON.stringify(results, null, 2)}`, { exists: true, results, sidekick: { configured: sidekick.configured, errors: sidekick.errors } });
       }),
   });
 }

@@ -1,0 +1,5 @@
+# This project's Sidekick: a coordinator agent beside the Playbooks screen. Every field is optional.
+sidekick:
+  mode: plan
+  # Events it is told about, for this project's runs.
+  watch: [gate.escalated, run.failed, run.manager_lost]

@@ -50,7 +50,19 @@ How the Playbook Manager drives steps, human gates and nested playbooks:
 | `shared/` | Zod types, RPC contracts, graph and template helpers |
 | `examples/.paseo/plugins/playbooks/` | Example playbooks (PR, Release to dev, and Capability, which combines them as sub-playbooks) and their roles (not loaded by the plugin) |
 | `.paseo/plugins/playbooks/` | This repository's own Docs check playbook (`docs.yaml`), which checks its docs, and its roles |
+| `examples/.paseo/plugins/playbooks/sidekick/` | A starter Sidekick (`sidekick.yaml`, `instructions.md`) |
 | `skills/paseo-playbooks/SKILL.md` | Agent skill for writing playbooks; copy or symlink it into a repo's `.agents/skills/` or `.claude/skills/` |
+
+## The Sidekick
+
+The Playbooks screen has a **Sidekick** button that opens a chat column on its right, with one tab per project
+that has active runs or a Sidekick, and a **+** tab to add another project. A project's Sidekick is a
+coordinator agent defined by a `sidekick/` folder beside its playbooks (`sidekick/sidekick.yaml` for provider,
+model, mode, thinking and the events it `watch`es; `sidekick/instructions.md` for the repository's rules). It
+runs in a hidden background workspace on the project root, watches the project's runs, judges which decisions
+could be automated, and sends subagents to change the playbooks in pull requests that you merge. It has no
+shell or file tools of its own. A project without the folder shows a short tutorial and a button that writes
+starter files. The `sidekick/` folder is not a playbook, so a playbook named `sidekick` still works.
 
 ## Develop
 

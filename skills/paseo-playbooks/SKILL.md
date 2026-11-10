@@ -30,6 +30,9 @@ Everything lives in the repository, under `.paseo/plugins/playbooks/` or the sho
 │   └── reviewer/
 │       ├── role.yaml          # title, readonly, agent
 │       └── instructions.md    # the role's system prompt (required, non-empty)
+├── sidekick/                  # optional: this project's Sidekick (see "The Sidekick")
+│   ├── sidekick.yaml          # sidekick: { provider, model, mode, thinking, watch }
+│   └── instructions.md        # repo-specific instructions added to its built-in rules
 └── scripts/
     └── wait-pr-merged.sh      # optional: executables for script steps
 ```
@@ -41,6 +44,25 @@ Everything lives in the repository, under `.paseo/plugins/playbooks/` or the sho
 - Ids (playbooks, roles, steps, inputs, outputs) use lowercase letters, digits, `-` and `_`,
   and start with a letter.
 - A playbook refers to a role by its directory name. Roles are shared by playbooks.
+
+## The Sidekick
+
+A project may have one Sidekick: a coordinator agent shown in a column beside the Playbooks screen (one tab
+per project). It watches the project's runs, judges which decisions could be automated, and sends
+subagents to change the playbooks in pull requests that a human merges. It has no shell or file tools.
+It is defined by the `sidekick/` folder (a folder, so it never takes a playbook id: a playbook named
+`sidekick.yaml` and `sidekick/sidekick.yaml` coexist). Without that folder the project has no Sidekick, and
+its tab offers "Create the Sidekick files".
+
+```yaml
+# sidekick/sidekick.yaml (all fields optional)
+sidekick:
+  model: claude-opus-5-5        # provider, model, mode, thinking: as an agent block
+  watch: [gate.escalated, run.failed, run.manager_lost]   # event types or globs, for this project's runs
+```
+
+`sidekick/instructions.md` holds the repository's rules for it; they add to its built-in rules and never
+replace them. `validate_playbooks` reports errors in both files.
 
 ## defaults/main.yaml
 

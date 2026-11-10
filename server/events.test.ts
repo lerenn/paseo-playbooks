@@ -333,6 +333,7 @@ describe("gate.escalated", () => {
     });
     expect(event!.payload.choices).toHaveLength(2);
     expect(event!.payload.workspaceDir).toBeTruthy();
+    expect(event!.payload.projectId).toBeTruthy();
     expect(toAgent(sent, "watcher")).toMatch(/gate.escalated: role reviewer left the gate at step approve[\s\S]*It touches billing\.[\s\S]*approved \| rejected[\s\S]*Now waiting for a human[\s\S]*list_gates[\s\S]*get_run/);
     expect(toAgent(sent, decider)).not.toMatch(/gate.escalated/);
     await runtime.watchEvents();

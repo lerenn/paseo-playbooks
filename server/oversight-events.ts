@@ -9,7 +9,7 @@ import { failedListing, gateListing, type GateListing } from "./overseer";
 export const DEFAULT_STALE_MINUTES = 30;
 const SOURCE = "runs";
 
-const runFields = { runId: z.string(), playbook: z.string(), runName: z.string().nullable(), workspaceDir: z.string() };
+const runFields = { runId: z.string(), playbook: z.string(), runName: z.string().nullable(), projectId: z.string(), workspaceDir: z.string() };
 const gateFields = {
   ...runFields,
   gateId: z.string(),
@@ -152,7 +152,7 @@ export class OversightProducer {
           const holder = gateListing(run, gate, now);
           await this.bus.emit(
             "gate.decided",
-            { runId: run.id, playbook: run.playbook.id, runName: run.name ?? null, workspaceDir: run.workspaceDir, gateId: gate.id, stepId: gate.stepId, kind: gate.kind, deciderBy: holder.decider, decision: gate.status, decidedBy: gate.decidedBy, decidedVia: gate.decidedVia, comment: gate.comment },
+            { runId: run.id, playbook: run.playbook.id, runName: run.name ?? null, projectId: run.projectId, workspaceDir: run.workspaceDir, gateId: gate.id, stepId: gate.stepId, kind: gate.kind, deciderBy: holder.decider, decision: gate.status, decidedBy: gate.decidedBy, decidedVia: gate.decidedVia, comment: gate.comment },
             { runId: run.id, source: SOURCE, actors: actorsOf(run, gate) },
           );
         }
@@ -161,8 +161,8 @@ export class OversightProducer {
         this.failures.add(run.id);
         if (seeding || run.train) continue;
         const lost = (run.failure ?? "").startsWith("manager lost");
-        const { runId, playbook, runName: name, workspaceDir, failure, restartableFrom } = failedListing(run);
-        await this.bus.emit(lost ? "run.manager_lost" : "run.failed", { runId, playbook, runName: name, workspaceDir, failure, restartableFrom }, { runId: run.id, source: SOURCE });
+        const { runId, playbook, runName: name, projectId, workspaceDir, failure, restartableFrom } = failedListing(run);
+        await this.bus.emit(lost ? "run.manager_lost" : "run.failed", { runId, playbook, runName: name, projectId, workspaceDir, failure, restartableFrom }, { runId: run.id, source: SOURCE });
       }
     }
     for (const key of [...this.known.keys()]) if (!open.has(key)) this.known.delete(key);

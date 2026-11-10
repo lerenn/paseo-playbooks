@@ -3,7 +3,7 @@ import { Icon, ScrollView, SidebarRow, useToast } from "@getpaseo/plugin/client/
 import { useQueryClient } from "@tanstack/react-query";
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { Animated, Easing, Pressable, Text, View } from "react-native";
-import { archiveRunRpc, markRunSeenRpc, openSidekickRpc } from "../shared/contracts";
+import { archiveRunRpc, markRunSeenRpc } from "../shared/contracts";
 import { gateText } from "../shared/gates";
 import { isActive, isPaused, isPipeline, isTerminal, type Gate, type RunSummary, type StepSummary } from "../shared/types";
 import { AnalyticsView } from "./analytics";
@@ -12,7 +12,7 @@ import { LABEL_WIDTH, labelLayout, ROW_HEIGHT } from "./layout";
 import { useOverview, type OverviewStore } from "./overview-store";
 import { GETTING_STARTED_URL } from "./panel";
 import { PreReleaseFlag } from "./pre-release";
-import { SidekickColumn } from "./sidekick/column";
+import { SidekickPane } from "./sidekick/pane";
 import { Button, GateActions } from "./sheet";
 import { openJobsLabel, Stations, trainName } from "./stations";
 import { stepShortTitle, stepTitle, stepTitleOf, withAlpha, type Theme } from "./theme";
@@ -310,11 +310,8 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
   // The sidebar badge and this screen share one store: one agent subscription, one request per change.
   const overview = useOverview(store);
   const toast = useToast();
-  const openSidekick = useRpc(openSidekickRpc);
-  const [sidekickBusy, setSidekickBusy] = useState(false);
-  // The Sidekick column: open on wide layouts, where the agent is read once from sidekick.open. Compact layouts open the native tab.
-  const [sidekick, setSidekick] = useState<{ open: boolean; agentId: string | null; error: string | null }>({ open: false, agentId: null, error: null });
-  const openSidekickTab = (agentId: string) => navigation?.openAgent({ agentId });
+  // The Sidekick column: open on wide layouts, one tab per project. Compact layouts have no room for it.
+  const [sidekickOpen, setSidekickOpen] = useState(false);
   useEffect(() => store.watchRuns(), [store]);
   const queryClient = useQueryClient();
 
@@ -379,29 +376,17 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
               </>
             ) : null}
           </Text>
-          {navigation ? (
+          {!layout.compact ? (
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel="Open the Sidekick: a coordinator agent that watches the runs and improves the playbooks"
-              disabled={sidekickBusy}
+              accessibilityLabel={`${sidekickOpen ? "Close" : "Open"} the Sidekick: a coordinator agent per project that watches the runs and improves the playbooks`}
+              accessibilityState={{ expanded: sidekickOpen }}
               hitSlop={8}
-              onPress={() => {
-                if (!layout.compact && sidekick.open) return setSidekick({ ...sidekick, open: false });
-                setSidekickBusy(true);
-                if (!layout.compact) setSidekick({ open: true, agentId: sidekick.agentId, error: null });
-                openSidekick({})
-                  .then(({ agentId }) => (layout.compact ? openSidekickTab(agentId) : setSidekick({ open: true, agentId, error: null })))
-                  .catch((error: unknown) => {
-                    const message = error instanceof Error ? error.message : "Could not open the Sidekick";
-                    if (layout.compact) toast.error(message);
-                    else setSidekick({ open: true, agentId: null, error: message });
-                  })
-                  .finally(() => setSidekickBusy(false));
-              }}
-              style={{ flexDirection: "row", alignItems: "center", gap: 6, opacity: sidekickBusy ? 0.5 : 1 }}
+              onPress={() => setSidekickOpen(!sidekickOpen)}
+              style={{ flexDirection: "row", alignItems: "center", gap: 6 }}
             >
-              <Icon name="Bot" size={16} color={theme.colors.foregroundMuted} />
-              <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12, fontWeight: "600" }}>Sidekick</Text>
+              <Icon name="Bot" size={16} color={sidekickOpen ? theme.colors.accent : theme.colors.foregroundMuted} />
+              <Text style={{ color: sidekickOpen ? theme.colors.accent : theme.colors.foregroundMuted, fontSize: 12, fontWeight: "600" }}>Sidekick</Text>
             </Pressable>
           ) : null}
           <Pressable
@@ -530,13 +515,12 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
           </>
         )}
       </ScrollView>
-      {!layout.compact && sidekick.open ? (
-        <SidekickColumn
+      {!layout.compact && sidekickOpen ? (
+        <SidekickPane
           theme={theme}
-          agentId={sidekick.agentId}
-          status={{ loading: sidekickBusy && sidekick.agentId === null, error: sidekick.error }}
-          onOpenTab={sidekick.agentId && navigation ? () => openSidekickTab(sidekick.agentId!) : undefined}
-          onClose={() => setSidekick({ ...sidekick, open: false })}
+          workspaces={workspaces}
+          openAgent={onOpenAgent}
+          onClose={() => setSidekickOpen(false)}
         />
       ) : null}
     </View>

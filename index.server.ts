@@ -20,6 +20,8 @@ import {
   listWorkspaceAgents,
   markRunSeenRpc,
   nudgeStepRpc,
+  createSidekickFilesRpc,
+  listSidekicksRpc,
   openSidekickRpc,
   restartRunRpc,
   retryStepRpc,
@@ -29,7 +31,8 @@ import {
 import { summarizeRun } from "./shared/types";
 import { hasPlaybooks, loadPlaybooks } from "./server/loader";
 import { GATE_LABEL, Runtime, STEP_LABEL, UserError } from "./server/runtime";
-import { createStarter } from "./server/starter";
+import { SIDEKICK_LABEL } from "./server/sidekick";
+import { createSidekickStarter, createStarter } from "./server/starter";
 import { defaultRunsDir, RunStore } from "./server/store";
 import { gateTool, managerTools, runTools, stepTool, validateTool } from "./server/tools";
 
@@ -69,6 +72,8 @@ export default function contribute(server: PluginServerContext) {
     await runtime.sessions.noteOpened(request.agentId);
     if (request.labels[STEP_LABEL]) return { ...request, tools: [...request.tools, tools.step] };
     if (request.labels[GATE_LABEL]) return { ...request, tools: [...request.tools, tools.gate] };
+    // The Sidekick sits on its project's root, which has playbooks: it still gets only the common tools, never a manager's.
+    if (request.labels[SIDEKICK_LABEL]) return { ...request, tools: [...request.tools, ...tools.common] };
     const manages = runtime.runsOfManager(request.agentId).length > 0 || request.labels["playbooks/manager"] === "true";
     const extra = manages || runtime.hasReservation(request.workspaceId) || (await hasPlaybooks(request.cwd)) ? tools.manager : [];
     return { ...request, tools: [...request.tools, ...tools.common, ...extra] };
@@ -161,7 +166,9 @@ export default function contribute(server: PluginServerContext) {
     await runtime.askManagerToRetry(runId, stepId);
     return { queued: true };
   });
-  handle(openSidekickRpc, () => runtime.openSidekick());
+  handle(listSidekicksRpc, async ({ workspaces }) => ({ projects: await runtime.sidekickProjects(workspaces) }));
+  handle(openSidekickRpc, ({ workspaceId }) => runtime.openSidekick(workspaceId));
+  handle(createSidekickFilesRpc, async ({ workspaceId }) => ({ files: await createSidekickStarter(await runtime.projectRootOf(workspaceId)) }));
   handle(pauseRunRpc, async ({ runId }) => ({ pausedAt: (await runtime.pauseRun(runId)).pausedAt }));
   handle(resumeRunRpc, async ({ runId }) => ({ pausedAt: (await runtime.resumeRun(runId)).pausedAt }));
   handle(nudgeStepRpc, async ({ runId, stepId, message }) => {

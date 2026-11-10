@@ -167,9 +167,37 @@ export const analyticsStateRpc = defineRpc({
   output: AnalyticsSchema,
 });
 
-/** Opens the Sidekick: creates its hidden workspace and agent on first use, and returns the agent to open. */
+/** One project of the Sidekick column: its Sidekick files, agent (if created) and active runs. */
+export const SidekickProjectSchema = z.object({
+  projectId: z.string(),
+  /** A workspace of the project, to address it with. */
+  workspaceId: z.string(),
+  label: z.string(),
+  /** The project has a `sidekick/` folder in its playbooks folder. */
+  configured: z.boolean(),
+  errors: z.array(z.string()),
+  agentId: z.string().nullable(),
+  activeRuns: z.number(),
+});
+export type SidekickProject = z.infer<typeof SidekickProjectSchema>;
+
+/** The given projects (each by one of its workspaces) with their Sidekick state. */
+export const listSidekicksRpc = defineRpc({
+  name: "sidekick.list",
+  input: z.object({ workspaces: z.array(z.object({ projectId: z.string(), workspaceId: z.string() })) }),
+  output: z.object({ projects: z.array(SidekickProjectSchema) }),
+});
+
+/** Opens a project's Sidekick: creates its hidden workspace and agent on first use, and returns the agent to chat with. */
 export const openSidekickRpc = defineRpc({
   name: "sidekick.open",
-  input: z.object({}),
-  output: z.object({ workspaceId: z.string(), agentId: z.string(), created: z.boolean() }),
+  input: z.object({ workspaceId: z.string() }),
+  output: z.object({ projectId: z.string(), workspaceId: z.string(), agentId: z.string(), created: z.boolean() }),
+});
+
+/** Writes the starter `sidekick/` files into the project of a workspace that has none. */
+export const createSidekickFilesRpc = defineRpc({
+  name: "sidekick.create-files",
+  input: z.object({ workspaceId: z.string() }),
+  output: z.object({ files: z.array(z.string()) }),
 });

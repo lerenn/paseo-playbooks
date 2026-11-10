@@ -5,20 +5,17 @@ import type { Theme } from "../theme";
 import type { Item, PermissionRequest } from "./reduce";
 import { useSidekickChat, type PermissionResponse } from "./use-chat";
 
-export const COLUMN_WIDTH = 400;
-
 interface Props {
   theme: Theme;
   agentId: string | null;
-  /** Opens the agent as a native tab, where everything the column lacks (attachments, model, mode) lives. */
+  /** Opens the agent as a native tab, where everything the chat lacks (attachments, model, mode) lives. */
   onOpenTab?: (() => void) | undefined;
-  onClose: () => void;
   /** Set while the Sidekick is being created or its RPC failed. */
   status: { loading: boolean; error: string | null };
 }
 
-/** The Sidekick's chat, in a column beside the Playbooks screen: a plain chat over the agent's timeline. */
-export function SidekickColumn(props: Props) {
+/** The chat of one project's Sidekick, inside the column's frame (pane.tsx): a plain chat over the agent's timeline. */
+export function SidekickChat(props: Props) {
   const { theme, agentId, status } = props;
   const chat = useSidekickChat(agentId);
   const toast = useToast();
@@ -44,20 +41,19 @@ export function SidekickColumn(props: Props) {
 
   const muted = theme.colors.foregroundMuted;
   return (
-    <View style={{ width: COLUMN_WIDTH, borderLeftWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface0 }}>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 8, padding: 12, borderBottomWidth: 1, borderColor: theme.colors.border }}>
-        <Icon name="Bot" size={16} color={theme.colors.foreground} />
-        <Text style={{ color: theme.colors.foreground, fontWeight: "700", flex: 1 }}>Sidekick</Text>
-        {chat.info.model ? <Text style={{ color: muted, fontSize: 11 }}>{chat.info.model}{chat.info.mode ? ` · ${chat.info.mode}` : ""}</Text> : null}
-        {props.onOpenTab ? (
-          <Pressable accessibilityRole="button" accessibilityLabel="Open the Sidekick as an agent tab" hitSlop={8} onPress={props.onOpenTab}>
-            <Icon name="ExternalLink" size={15} color={muted} />
-          </Pressable>
-        ) : null}
-        <Pressable accessibilityRole="button" accessibilityLabel="Close the Sidekick" hitSlop={8} onPress={props.onClose}>
-          <Icon name="X" size={16} color={muted} />
-        </Pressable>
-      </View>
+    <View style={{ flex: 1 }}>
+      {chat.info.model || props.onOpenTab ? (
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, paddingVertical: 6, borderBottomWidth: 1, borderColor: theme.colors.border }}>
+          <Text style={{ color: muted, fontSize: 11, flex: 1 }} numberOfLines={1}>
+            {chat.info.model ? `${chat.info.model}${chat.info.mode ? ` · ${chat.info.mode}` : ""}` : ""}
+          </Text>
+          {props.onOpenTab ? (
+            <Pressable accessibilityRole="button" accessibilityLabel="Open the Sidekick as an agent tab" hitSlop={8} onPress={props.onOpenTab}>
+              <Icon name="ExternalLink" size={15} color={muted} />
+            </Pressable>
+          ) : null}
+        </View>
+      ) : null}
 
       <ScrollView ref={scroller as never} style={{ flex: 1 }} contentContainerStyle={{ padding: 12, gap: 10 }}>
         {status.loading ? <Text style={{ color: muted }}>Starting the Sidekick…</Text> : null}

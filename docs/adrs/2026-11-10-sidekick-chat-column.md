@@ -2,7 +2,7 @@
 
 Status: Accepted
 
-Refines `2026-11-10-sidekick.md` (it is not superseded: the Sidekick agent, its hidden workspace and the native tab stay).
+Refines `2026-11-10-sidekick.md`, which `2026-11-10-sidekick-per-project.md` supersedes: the column and the native tab stay, the Sidekick becomes one per project and the column gets a tab for each.
 
 ## Context
 

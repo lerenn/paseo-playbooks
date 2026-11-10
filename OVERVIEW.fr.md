@@ -66,6 +66,11 @@ steps:
   de Paseo, avec en badge le nombre de validations qui vous attendent, liste les exécutions de
   tous les workspaces par playbook, chacune avec sa progression d'étape en étape. Vous pouvez
   y trancher une validation sans ouvrir le workspace.
+- **Un Sidekick par projet** : une colonne de discussion sur l'écran Playbooks, un onglet par
+  projet, avec un agent coordinateur défini par un dossier `sidekick/` à côté des playbooks. Il
+  surveille les exécutions, juge quelles décisions pourraient être automatisées et envoie des
+  sous-agents modifier les playbooks dans des pull requests que vous fusionnez. Il n'a ni shell
+  ni outils de fichiers.
 
 ## Pour commencer
 

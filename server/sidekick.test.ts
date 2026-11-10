@@ -1,9 +1,11 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { DEFAULT_SIDEKICK_WATCH, loadPlaybooks, loadSidekick } from "./loader";
 import { Runtime } from "./runtime";
-import { SIDEKICK_LABEL, SIDEKICK_PROMPT } from "./sidekick";
+import { SIDEKICK_LABEL, sidekickPrompt } from "./sidekick";
+import { createSidekickStarter } from "./starter";
 import { RunStore } from "./store";
 
 const temps: string[] = [];
@@ -13,18 +15,102 @@ afterEach(async () => {
   await Promise.all(temps.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
-function fakePaseo() {
+const PLAYBOOKS = ".paseo/plugins/playbooks";
+
+async function tempDir(prefix: string): Promise<string> {
+  const dir = await mkdtemp(path.join(tmpdir(), prefix));
+  temps.push(dir);
+  return dir;
+}
+
+async function write(dir: string, rel: string, text: string) {
+  await mkdir(path.dirname(path.join(dir, rel)), { recursive: true });
+  await writeFile(path.join(dir, rel), text);
+}
+
+describe("loading the Sidekick files", () => {
+  it("has no Sidekick without a sidekick/ folder", async () => {
+    const dir = await tempDir("sk-none-");
+    await write(dir, `${PLAYBOOKS}/hello.yaml`, "steps: []\n");
+    expect((await loadSidekick(dir)).configured).toBe(false);
+  });
+
+  it("reads sidekick.yaml and instructions.md, with the default events to watch", async () => {
+    const dir = await tempDir("sk-ok-");
+    await write(dir, `${PLAYBOOKS}/sidekick/sidekick.yaml`, "sidekick: { model: claude-sonnet-5-5, mode: plan }\n");
+    await write(dir, `${PLAYBOOKS}/sidekick/instructions.md`, "  Always ask before touching release.  \n");
+    const load = await loadSidekick(dir);
+    expect(load).toMatchObject({ configured: true, errors: [], instructions: "Always ask before touching release.", dir: `${PLAYBOOKS}/sidekick` });
+    expect(load.config).toEqual({ model: "claude-sonnet-5-5", mode: "plan", watch: DEFAULT_SIDEKICK_WATCH });
+  });
+
+  it("accepts a folder with no files, and an explicit watch list", async () => {
+    const dir = await tempDir("sk-empty-");
+    await mkdir(path.join(dir, PLAYBOOKS, "sidekick"), { recursive: true });
+    expect(await loadSidekick(dir)).toMatchObject({ configured: true, errors: [], config: { watch: DEFAULT_SIDEKICK_WATCH } });
+    await write(dir, `${PLAYBOOKS}/sidekick/sidekick.yaml`, "sidekick: { watch: [gate.*] }\n");
+    expect((await loadSidekick(dir)).config?.watch).toEqual(["gate.*"]);
+  });
+
+  it("refuses unknown keys, bad YAML and an empty instructions.md", async () => {
+    const dir = await tempDir("sk-bad-");
+    await write(dir, `${PLAYBOOKS}/sidekick/sidekick.yaml`, "sidekick: { modle: plan }\n");
+    await write(dir, `${PLAYBOOKS}/sidekick/instructions.md`, "  \n");
+    const load = await loadSidekick(dir);
+    expect(load.config).toBeNull();
+    expect(load.errors.join("\n")).toMatch(/sidekick\.yaml.*modle|Unrecognized key/);
+    expect(load.errors.join("\n")).toContain("instructions.md: empty");
+    await write(dir, `${PLAYBOOKS}/sidekick/sidekick.yaml`, "sidekick: [unclosed\n");
+    expect((await loadSidekick(dir)).errors.join("\n")).toContain("invalid YAML");
+  });
+
+  it("coexists with a playbook named sidekick", async () => {
+    const dir = await tempDir("sk-coexist-");
+    await write(dir, `${PLAYBOOKS}/sidekick.yaml`, "title: Sidekick playbook\nsteps:\n  - id: a\n    gate: { question: ok? }\n");
+    await write(dir, `${PLAYBOOKS}/sidekick/sidekick.yaml`, "sidekick: { watch: [run.failed] }\n");
+    const loaded = await loadPlaybooks(dir);
+    expect(loaded.entries.map((entry) => [entry.id, entry.errors])).toEqual([["sidekick", []]]);
+    expect(loaded.sidekick).toMatchObject({ configured: true, config: { watch: ["run.failed"] } });
+  });
+
+  it("is written by the starter, once, without overwriting", async () => {
+    const dir = await tempDir("sk-starter-");
+    const files = await createSidekickStarter(dir);
+    expect(files).toEqual([`${PLAYBOOKS}/sidekick/sidekick.yaml`, `${PLAYBOOKS}/sidekick/instructions.md`]);
+    expect((await loadSidekick(dir)).errors).toEqual([]);
+    expect(await readFile(path.join(dir, files[0]!), "utf8")).toContain("sidekick:");
+    await expect(createSidekickStarter(dir)).rejects.toThrow(/already has Sidekick files/);
+  });
+});
+
+describe("the Sidekick prompt", () => {
+  it("is scoped to the project, lists what it watches and ends with the repository's instructions", () => {
+    const text = sidekickPrompt({ projectId: "p1", label: "Shop", root: "/work/shop", watch: ["gate.escalated"] }, "Never merge on Friday.");
+    expect(text).toContain('Sidekick of the project "Shop" (/work/shop)');
+    expect(text).toContain("gate.escalated");
+    expect(text).toContain('projectId: "p1"');
+    expect(text.endsWith("Never merge on Friday.")).toBe(true);
+    expect(sidekickPrompt({ projectId: "p1", label: "Shop", root: "/work/shop", watch: [] }, null)).not.toContain("Instructions of this repository");
+  });
+});
+
+function fakePaseo(roots: Record<string, string>) {
   const archivedAt: Record<string, string | null> = {};
-  const created = { workspaces: [] as unknown[], agents: [] as unknown[] };
+  const created = { workspaces: [] as Array<Record<string, unknown>>, agents: [] as Array<{ workspaceId: string; options: Record<string, any> }> };
   const ref = (agentId: string) => ({
     refresh: async () => (agentId in archivedAt ? { agent: { id: agentId, status: "idle", archivedAt: archivedAt[agentId] } } : null),
     send: async () => undefined,
   });
   const workspace = (id: string) => ({
     id,
-    refresh: async () => ({ id }),
+    refresh: async () => {
+      // "ws-<project>" are the users' workspaces, the others are the hidden ones created below.
+      const projectId = id.startsWith("ws-") ? id.slice(3) : id.replace(/^side-/, "");
+      const root = roots[projectId];
+      return root ? { id, projectId, projectDisplayName: projectId.toUpperCase(), projectRootPath: root, workspaceDirectory: root } : null;
+    },
     agents: {
-      create: async (options: unknown) => {
+      create: async (options: Record<string, any>) => {
         created.agents.push({ workspaceId: id, options });
         const agentId = `agent-${created.agents.length}`;
         archivedAt[agentId] = null;
@@ -33,54 +119,97 @@ function fakePaseo() {
     },
   });
   const paseo = {
-    agents: { ref },
+    agents: { ref, list: async () => ({ entries: [] }) },
     workspaces: {
       ref: (id: string) => workspace(id),
-      create: async (options: unknown) => {
+      create: async (options: Record<string, any>) => {
         created.workspaces.push(options);
-        return workspace(`ws-${created.workspaces.length}`);
+        return workspace(`side-${Object.entries(roots).find(([, root]) => root === options.source.path)![0]}`);
       },
     },
   };
   return { paseo, created, archive: (id: string) => (archivedAt[id] = new Date().toISOString()) };
 }
 
-async function setup() {
-  const dir = await mkdtemp(path.join(tmpdir(), "sidekick-"));
-  temps.push(dir);
-  const store = new RunStore(path.join(dir, "runs"));
+async function setup(projects: Record<string, boolean>) {
+  const dir = await tempDir("sidekick-");
+  const roots: Record<string, string> = {};
+  for (const [name, configured] of Object.entries(projects)) {
+    roots[name] = path.join(dir, name);
+    if (configured) await write(roots[name]!, `${PLAYBOOKS}/sidekick/instructions.md`, `Rules of ${name}.\n`);
+    else await mkdir(roots[name]!, { recursive: true });
+  }
+  const store = new RunStore(path.join(dir, "data", "runs"));
   await store.init();
-  const fake = fakePaseo();
+  const fake = fakePaseo(roots);
   const runtime = new Runtime(store);
   runtimes.push(runtime);
   await runtime.attach(fake.paseo as never);
-  return { runtime, dir, ...fake };
+  return { runtime, dir, roots, ...fake };
 }
 
-describe("the Sidekick", () => {
-  it("is created in a hidden background workspace with no code tools, subscribed to escalations", async () => {
-    const { runtime, created, dir } = await setup();
-    const opened = await runtime.openSidekick();
-    expect(opened).toEqual({ workspaceId: "ws-1", agentId: "agent-1", created: true });
+describe("a project's Sidekick", () => {
+  it("is created in a hidden background workspace on the project root, with no code tools, subscribed to its project's events", async () => {
+    const { runtime, created, roots } = await setup({ shop: true });
+    const opened = await runtime.openSidekick("ws-shop");
+    expect(opened).toEqual({ projectId: "shop", workspaceId: "side-shop", agentId: "agent-1", created: true });
+    expect(created.workspaces[0]).toMatchObject({ background: true, source: { kind: "directory", path: roots.shop } });
     expect(created.workspaces[0]).not.toHaveProperty("internal");
-    expect(created.workspaces[0]).toMatchObject({ background: true, source: { kind: "directory", path: path.join(dir, "sidekick") } });
-    const agent = created.agents[0] as { options: { labels: Record<string, string>; config: { options: { allowedTools: string[]; disallowedTools: string[] } }; prompt: string } };
-    expect(agent.options.labels[SIDEKICK_LABEL]).toBe("true");
-    expect(agent.options.config.options.disallowedTools).toEqual(expect.arrayContaining(["Bash", "Edit", "Write"]));
-    expect(agent.options.config.options.allowedTools).toEqual(expect.arrayContaining(["mcp__paseo__create_agent", "mcp__paseo__list_gates"]));
-    expect(agent.options.prompt).toContain(SIDEKICK_PROMPT);
-    const subscriptions = await runtime.bus.list("agent-1");
-    expect(JSON.stringify(subscriptions)).toContain("gate.escalated");
+    const { options } = created.agents[0]!;
+    expect(options.labels[SIDEKICK_LABEL]).toBe("true");
+    expect(options.title).toBe("Playbooks Sidekick · SHOP");
+    expect(options.config.options.disallowedTools).toEqual(expect.arrayContaining(["Bash", "Edit", "Write"]));
+    expect(options.config.options.allowedTools).toEqual(expect.arrayContaining(["mcp__paseo__create_agent", "mcp__paseo__list_gates"]));
+    expect(options.prompt).toContain('Sidekick of the project "SHOP"');
+    expect(options.prompt).toContain("Rules of shop.");
+    const [subscription] = await runtime.bus.list("agent-1");
+    expect(subscription).toMatchObject({ types: DEFAULT_SIDEKICK_WATCH, filter: { projectId: "shop" } });
   });
 
   it("is reused while alive, shared by concurrent opens, and recreated in the same workspace once archived", async () => {
-    const { runtime, created, archive } = await setup();
-    const [a, b] = await Promise.all([runtime.openSidekick(), runtime.openSidekick()]);
+    const { runtime, created, archive } = await setup({ shop: true });
+    const [a, b] = await Promise.all([runtime.openSidekick("ws-shop"), runtime.openSidekick("ws-shop")]);
     expect(b).toEqual(a);
     expect(created.agents).toHaveLength(1);
-    expect(await runtime.openSidekick()).toMatchObject({ agentId: "agent-1", created: false });
+    expect(await runtime.openSidekick("ws-shop")).toMatchObject({ agentId: "agent-1", created: false });
     archive("agent-1");
-    expect(await runtime.openSidekick()).toEqual({ workspaceId: "ws-1", agentId: "agent-2", created: true });
+    expect(await runtime.openSidekick("ws-shop")).toEqual({ projectId: "shop", workspaceId: "side-shop", agentId: "agent-2", created: true });
     expect(created.workspaces).toHaveLength(1);
+  });
+
+  it("is one per project", async () => {
+    const { runtime, created } = await setup({ shop: true, blog: true });
+    const shop = await runtime.openSidekick("ws-shop");
+    const blog = await runtime.openSidekick("ws-blog");
+    expect(shop.agentId).not.toBe(blog.agentId);
+    expect(created.workspaces).toHaveLength(2);
+    expect((await runtime.bus.list(blog.agentId))[0]?.filter).toEqual({ projectId: "blog" });
+  });
+
+  it("is refused for a project without sidekick/ files, or with invalid ones", async () => {
+    const { runtime, roots } = await setup({ shop: false });
+    await expect(runtime.openSidekick("ws-shop")).rejects.toThrow(/has no Sidekick/);
+    await write(roots.shop!, `${PLAYBOOKS}/sidekick/sidekick.yaml`, "sidekick: { nope: 1 }\n");
+    await expect(runtime.openSidekick("ws-shop")).rejects.toThrow(/have errors/);
+  });
+
+  it("is listed per project with its config state and agent", async () => {
+    const { runtime } = await setup({ shop: true, blog: false });
+    await runtime.openSidekick("ws-shop");
+    const projects = await runtime.sidekickProjects([
+      { projectId: "shop", workspaceId: "ws-shop" },
+      { projectId: "blog", workspaceId: "ws-blog" },
+    ]);
+    expect(projects).toMatchObject([
+      { projectId: "shop", configured: true, agentId: "agent-1", activeRuns: 0 },
+      { projectId: "blog", configured: false, agentId: null, activeRuns: 0 },
+    ]);
+  });
+});
+
+describe("the example Sidekick", () => {
+  it("is valid", async () => {
+    const examples = path.resolve(__dirname, "..", "examples");
+    expect(await loadSidekick(examples)).toMatchObject({ configured: true, errors: [], config: { mode: "plan" } });
   });
 });

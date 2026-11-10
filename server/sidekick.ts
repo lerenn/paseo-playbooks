@@ -29,16 +29,31 @@ export const SIDEKICK_PLUGIN_TOOLS = ["list_runs", "get_run", "list_gates", "lis
 /** Tools the Sidekick never gets (Claude): it coordinates, subagents do the work. */
 export const SIDEKICK_DISALLOWED_TOOLS = ["Bash", "Edit", "Write", "NotebookEdit"];
 
+/** The Sidekick's name in the UI: the agent's title and the hidden workspace's title. */
+export function sidekickTitle(projectLabel: string): string {
+  return `${SIDEKICK_TITLE} · ${projectLabel}`;
+}
+
+export interface SidekickProject {
+  projectId: string;
+  label: string;
+  /** The project's root directory: the Sidekick's own (hidden) workspace is this directory. */
+  root: string;
+  watch: string[];
+}
+
 /**
  * The Sidekick's system prompt: written for any repository that uses the plugin, so it names no
- * organisation, ticket system or release process. A repository adds its own rules in its playbooks.
+ * organisation, ticket system or release process. The repository adds its own rules in
+ * `sidekick/instructions.md`, appended after these.
  */
-export const SIDEKICK_PROMPT = `You are the Playbooks Sidekick: a coordinator for the Paseo playbooks of every project on this host. You watch the runs, help the human decide what reaches them, and make the playbooks need the human less and less. Name this conversation "${SIDEKICK_TITLE}".
+export function sidekickPrompt(project: SidekickProject, instructions: string | null): string {
+  const base = `You are the Playbooks Sidekick of the project "${project.label}" (${project.root}): a coordinator for that project's Paseo playbooks. You watch its runs, help the human decide what reaches them, and make the playbooks need the human less and less. Name this conversation "${sidekickTitle(project.label)}".
 
-You are a coordinator, not a worker. You have no workspace of your own, no shell and no file tools. Every job that touches code or files (reading or changing a playbook, a role, a script, opening a pull request, investigating a failure in a repository) goes to a subagent that you create in the right project workspace with Paseo's create_agent tool (workspaceId of that project; list_workspaces finds it). Never do such a job yourself, and never use create_agent to start a playbook run: runs are started with a playbook's own manager.
+You are a coordinator, not a worker. You have no workspace of your own, no shell and no file tools. Every job that touches code or files (reading or changing a playbook, a role, a script, opening a pull request, investigating a failure in a repository) goes to a subagent that you create in the right project workspace with Paseo's create_agent tool (workspaceId of one of this project's workspaces; list_workspaces finds them). Never do such a job yourself, and never use create_agent to start a playbook run: runs are started with a playbook's own manager.
 
 **Listen**
-- Subscribe once, narrowly, with subscribe_events to gate.escalated, run.failed and run.manager_lost (the plugin has usually done it for you: call list_subscriptions first). Add gate.decided only when the human asks. Between tasks call list_gates and list_runs (with includeFailed) to see what is waiting.
+- The plugin has subscribed you to ${project.watch.join(", ")} for this project's runs (call list_subscriptions to check; subscribe_events with filter { projectId: "${project.projectId}" } restores it). Add gate.decided only when the human asks. Between tasks call list_gates and list_runs (with includeFailed) to see what is waiting; they list every project's runs, so only act on the runs whose workspaceDir or projectId belongs to this project.
 - Event notices reach you as a message once you are idle. React to them together.
 
 **For every decision that reaches the human** (a gate held by a human, a question a manager relays, a failed run, a stuck agent):
@@ -70,6 +85,8 @@ You are a coordinator, not a worker. You have no workspace of your own, no shell
 
 **Always**
 - Never print secrets or the environment. Answer in 1-3 sentences of plain prose, conclusion first, no headers or bullets unless asked for detail. Repeat unanswered questions at the end of your message.`;
+  return instructions ? `${base}\n\nInstructions of this repository (they add to the rules above, never replace them):\n${instructions}` : base;
+}
 
 /** The kickoff message of a new Sidekick. */
 export const SIDEKICK_KICKOFF =
@@ -77,33 +94,62 @@ export const SIDEKICK_KICKOFF =
 
 const RecordSchema = z.object({ workspaceId: z.string(), agentId: z.string() });
 export type SidekickRecord = z.infer<typeof RecordSchema>;
+/** projectId -> its Sidekick. A file from before Sidekicks were per project (one record) reads as empty. */
+const RegistrySchema = z.record(z.string(), RecordSchema);
 
-/** `sidekick.json` next to the runs: the hidden workspace and the agent of this host's Sidekick. */
+/** `sidekick.json` next to the runs: the hidden workspace and the agent of each project's Sidekick. */
 export class SidekickRegistry {
+  private queue: Promise<unknown> = Promise.resolve();
+
   constructor(private readonly file: string) {}
 
-  /** The directory of the Sidekick's workspace: it holds nothing, it only anchors the agent. */
-  get directory(): string {
-    return path.join(path.dirname(this.file), "sidekick");
-  }
-
-  async read(): Promise<SidekickRecord | null> {
+  private async load(): Promise<Record<string, SidekickRecord>> {
     try {
-      return RecordSchema.parse(JSON.parse(await readFile(this.file, "utf8")));
+      const parsed = RegistrySchema.safeParse(JSON.parse(await readFile(this.file, "utf8")));
+      return parsed.success ? parsed.data : {};
     } catch {
-      return null;
+      return {};
     }
   }
 
-  async write(record: SidekickRecord): Promise<void> {
-    await mkdir(path.dirname(this.file), { recursive: true });
-    const temp = `${this.file}.tmp`;
-    await writeFile(temp, JSON.stringify(record, null, 2));
-    await rename(temp, this.file);
+  async read(projectId: string): Promise<SidekickRecord | null> {
+    return (await this.load())[projectId] ?? null;
   }
 
-  async ensureDirectory(): Promise<string> {
-    await mkdir(this.directory, { recursive: true });
-    return this.directory;
+  async all(): Promise<Record<string, SidekickRecord>> {
+    return this.load();
+  }
+
+  /** Writes one project's record, atomically; writes are serialized. */
+  write(projectId: string, record: SidekickRecord): Promise<void> {
+    const next = this.queue.then(async () => {
+      const all = await this.load();
+      all[projectId] = record;
+      await mkdir(path.dirname(this.file), { recursive: true });
+      const temp = `${this.file}.tmp`;
+      await writeFile(temp, JSON.stringify(all, null, 2));
+      await rename(temp, this.file);
+    });
+    this.queue = next.catch(() => undefined);
+    return next;
   }
 }
+
+/** Starter files written by "Create the Sidekick files", relative to the playbooks folder. */
+export const SIDEKICK_STARTER_FILES: Record<string, string> = {
+  "sidekick/sidekick.yaml": `# This project's Sidekick: a coordinator agent beside the Playbooks screen.
+# Every field is optional. Without a model it uses the same default as the playbook managers.
+sidekick:
+  # provider: claude
+  # model: claude-opus-5-5
+  # mode: default
+  # thinking: medium
+  # Events it is told about, for this project's runs (globs such as "gate.*" work).
+  watch: [gate.escalated, run.failed, run.manager_lost]
+`,
+  "sidekick/instructions.md": `Rules of this repository for the Sidekick. They add to its built-in rules, never replace them.
+
+- Describe here what the Sidekick should know about this project: which decisions are always for a human,
+  which kinds of failure it may propose a playbook fix for, how pull requests are named and reviewed.
+`,
+};
