@@ -16,11 +16,18 @@ export const VarDefSchema = z.object({
 });
 export type VarDef = z.infer<typeof VarDefSchema>;
 
-export const AgentSettingsSchema = z.object({
+/** One provider/model an agent may run on. */
+export const AgentTargetSchema = z.object({
   provider: z.string().optional(),
   model: z.string().optional(),
   mode: z.string().optional(),
   thinking: z.string().optional(),
+});
+export type AgentTarget = z.infer<typeof AgentTargetSchema>;
+
+export const AgentSettingsSchema = AgentTargetSchema.extend({
+  /** Targets tried, in order, after this one when its provider is out of tokens (the rest of a multi-entry tier). */
+  fallback: z.array(AgentTargetSchema).optional(),
 });
 export type AgentSettings = z.infer<typeof AgentSettingsSchema>;
 
@@ -36,6 +43,16 @@ export const ManagerCompactSchema = z.union([
 export type ManagerCompact = z.infer<typeof ManagerCompactSchema>;
 /** Used when neither the playbook nor `defaults/main.yaml` sets `manager.compact`. */
 export const DEFAULT_MANAGER_COMPACT: ManagerCompact = { above_tokens: 150_000 };
+
+/** How long a `provider/model` that ran out of tokens stays skipped (`providers.exhausted_for`). */
+export const DEFAULT_EXHAUSTED_FOR_MS = 60 * 60 * 1000;
+
+/** A `provider/model` that ran out of tokens, and when it was marked. A bare string (older run files) is marked at load time. */
+export const ExhaustedEntrySchema = z.preprocess(
+  (value) => (typeof value === "string" ? { target: value, at: new Date().toISOString() } : value),
+  z.object({ target: z.string(), at: z.string() }),
+);
+export type ExhaustedEntry = z.infer<typeof ExhaustedEntrySchema>;
 
 /** A button on a human gate. Its id is the outcome; where it leads comes from the step's `on`. */
 export const GateChoiceSchema = z.object({
@@ -289,6 +306,8 @@ export const PlaybookSchema = z.object({
   manager: AgentSettingsSchema,
   /** When the manager is compacted (`manager.compact`). Unset on runs from before it. */
   managerCompact: ManagerCompactSchema.default(DEFAULT_MANAGER_COMPACT),
+  /** How long an exhausted `provider/model` is skipped before it is tried again (`providers.exhausted_for`), in ms. */
+  exhaustedForMs: z.number().default(DEFAULT_EXHAUSTED_FOR_MS),
   /** Whether the plugin archives the workspace it created for a run once the run ends. */
   workspace: z
     .object({ archive: z.enum(["never", "on_end"]), keepFailed: z.boolean() })
@@ -400,6 +419,9 @@ export const AttemptSchema = z.object({
   job: z.object({ runId: z.string(), jobId: z.string() }).nullable().default(null),
   /** Hand-off steps: the job passed every station, so a failure here is never retried (its work shipped). */
   noRetry: z.boolean().default(false),
+  /** Agent steps: the `provider/model` the attempt's agent runs on, and the prompt it was started with (to restart it on the next target). */
+  target: z.string().default(""),
+  prompt: z.string().default(""),
 });
 export type Attempt = z.infer<typeof AttemptSchema>;
 
@@ -519,6 +541,8 @@ export const RunSchema = z.object({
   workspaceCreated: z.boolean().default(false),
   /** Once the run ended: `done` (workspace archived) or `skipped` (kept; the history says why). */
   workspaceArchive: z.enum(["done", "skipped"]).nullable().default(null),
+  /** `provider/model` targets that ran out of tokens in this run: later agents skip them for the next target of their chain. */
+  exhausted: z.array(ExhaustedEntrySchema).default([]),
   /** The run's private git worktree (`isolation: worktree`); null when it works in the workspace checkout. */
   worktree: RunWorktreeSchema.nullable().default(null),
   /** Where the playbook definition came from (isolated runs); null on other runs and runs from before. */

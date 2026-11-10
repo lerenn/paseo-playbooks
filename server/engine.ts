@@ -170,6 +170,7 @@ function createRun(input: NewRunInput, inputs: Record<string, VarValue>, kind: "
     updatedAt: input.now,
     workspaceCreated: input.workspaceCreated ?? false,
     workspaceArchive: null,
+    exhausted: [],
     worktree: input.worktree ?? null,
     definition: input.definition ?? null,
     archivedAt: null,
@@ -429,6 +430,8 @@ export function startAttempt(
     nextCheckAt: null,
     job: null,
     noRetry: false,
+    target: "",
+    prompt: "",
   };
   const context = {
     inputs: Object.fromEntries(Object.entries(values).map(([name, entry]) => [name, entry.value])),
@@ -449,7 +452,40 @@ export function startAttempt(
   state.status = "running";
   state.feedback = null;
   log(run, input.now, "step_started", stepId, `attempt ${n}, agent ${input.agentId}`);
-  return { attempt, prompt: sections.join("\n\n") };
+  attempt.prompt = sections.join("\n\n");
+  return { attempt, prompt: attempt.prompt };
+}
+
+/**
+ * The attempt's agent ran out of tokens: records its target as exhausted for the run and gives the
+ * same attempt a new agent (`retries` untouched).
+ */
+export function failOverAttempt(run: Run, stepId: string, input: { target: string; agentId: string; newTarget: string; now: string; reason: string }): void {
+  const attempt = currentAttempt(run, stepId)!;
+  markTarget(run, input.target, input.now);
+  log(run, input.now, "provider_exhausted", stepId, `${input.target} is out of tokens (${input.reason.slice(0, 200)}); attempt ${attempt.n} moves to ${input.newTarget}`);
+  attempt.agentId = input.agentId;
+  attempt.target = input.newTarget;
+  attempt.reminded = false;
+  attempt.silenceReminded = false;
+  // The new agent gets the whole timeout and silence window.
+  attempt.reopenedAt = input.now;
+}
+
+/** Marks a target exhausted as of `now`, replacing an older (possibly expired) entry. */
+export function markTarget(run: Run, target: string, now: string): void {
+  run.exhausted = [...run.exhausted.filter((entry) => entry.target !== target), { target, at: now }];
+}
+
+/** The targets still skipped at `nowMs`: marked less than the playbook's `exhaustedForMs` ago. */
+export function activeExhausted(run: Pick<Run, "exhausted"> & { playbook: Pick<Run["playbook"], "exhaustedForMs"> }, nowMs: number = Date.now()): string[] {
+  return run.exhausted.filter((entry) => nowMs - Date.parse(entry.at) < run.playbook.exhaustedForMs).map((entry) => entry.target);
+}
+
+/** Records a target as out of tokens although no agent could be moved to another one. */
+export function markExhausted(run: Run, stepId: string, target: string, now: string, reason: string): void {
+  markTarget(run, target, now);
+  log(run, now, "provider_exhausted", stepId, `${target} is out of tokens (${reason.slice(0, 200)}); no other provider is left for this role`);
 }
 
 export function currentAttempt(run: Run, stepId: string): Attempt | null {

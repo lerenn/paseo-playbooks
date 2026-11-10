@@ -1,10 +1,13 @@
 # Local test setup: cheap step agents, a stronger manager.
 tiers:
-  cheap: { provider: claude, model: claude-haiku-5-5 }
+  cheap:
+    - { provider: claude, model: claude-haiku-5-5, mode: default }
+    - { provider: codex, model: gpt-5-mini }
   worker: { provider: claude, model: claude-sonnet-5-5 }
+providers:
+  exhausted_for: 1h            # retry an exhausted provider/model after this long (default 1h)
 agent:
-  tier: cheap
-  mode: default                # read-only roles only read files: no permission prompts
+  tier: cheap                  # its claude entry runs in mode default: read-only roles read files without permission prompts
 manager:
   tier: worker
   mode: default

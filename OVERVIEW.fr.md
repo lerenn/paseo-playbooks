@@ -55,6 +55,10 @@ steps:
   qu'un playbook n'autorise pas, vérifie les rôles en lecture seule avec git et conserve
   l'état des exécutions malgré les redémarrages du daemon. Voir
   [le fonctionnement](https://playbooks.paseo.lerenn.dev/how-it-works.html).
+- **Repli entre fournisseurs** : un niveau de `defaults/main.yaml` peut lister plusieurs
+  fournisseurs. Quand l'agent d'une étape n'a plus de tokens, la même tentative repart sur
+  le suivant, et le fournisseur épuisé est réessayé après `providers: { exhausted_for }`
+  (1 h par défaut).
 - **Graphe en direct** : le panneau Playbooks, dans la barre latérale du workspace, montre
   chaque exécution au fil de l'eau. Depuis ce panneau, vous pouvez lancer, mettre en pause,
   reprendre ou annuler une exécution, ou la relancer depuis une étape.

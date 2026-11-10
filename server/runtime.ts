@@ -6,7 +6,7 @@ import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 
 /** The daemon API handed to plugin handlers (typed via the SDK, so the build needs no @getpaseo/client). */
 type PaseoApi = PluginHandlerContext["paseo"];
-import type { Attempt, Gate, Job, Playbook, Run, RunWorktree, Step, VarValue } from "../shared/types";
+import type { AgentSettings, AgentTarget, Attempt, Gate, Job, Playbook, Run, RunWorktree, Step, VarValue } from "../shared/types";
 import {
   SCRIPT_NOT_YET,
   attemptTimeoutMs,
@@ -23,6 +23,7 @@ import {
   scriptAttemptId,
 } from "../shared/types";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "./defaults";
+import { isQuotaError } from "./quota";
 import * as engine from "./engine";
 import { checkoutSnapshot, currentRef, defaultBranch, fastForward, freshRef, removedGitlinks, snapshotDiff } from "./git";
 import { createWorktree, dirtyPaths, linkedSubmodules, listWorktreeDirs, pruneWorktrees, removeWorktree, repoOfWorktree, worktreeBranch, worktreePath } from "./worktree";
@@ -72,6 +73,12 @@ export const STEP_LABEL = "playbooks/step";
 export const RUN_LABEL = "playbooks/run";
 /** On a gate's role decider agent: the gate id. */
 export const GATE_LABEL = "playbooks/gate";
+
+/** `90m`-style text for a delay in ms. */
+function humanDuration(ms: number): string {
+  const minutes = Math.round(ms / 60_000);
+  return minutes >= 60 && minutes % 60 === 0 ? `${minutes / 60}h` : `${minutes}m`;
+}
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -186,6 +193,21 @@ function lastAssistantText(entries: ReadonlyArray<{ item: { type: string; text?:
     if (item.type === "assistant_message" && item.text) return item.text.slice(-4000);
   }
   return null;
+}
+
+/** What a failed turn says went wrong: its error entries, else its last assistant text. Defensive: entry shapes vary by provider. */
+function failureText(entries: ReadonlyArray<{ item?: Record<string, unknown> }>): string {
+  const errors: string[] = [];
+  for (const { item } of entries) {
+    if (!item || typeof item.type !== "string" || !/error|fail/i.test(item.type)) continue;
+    for (const key of ["message", "text", "error", "detail"]) {
+      const value = item[key];
+      if (typeof value === "string") errors.push(value);
+      else if (value && typeof value === "object" && typeof (value as { message?: unknown }).message === "string") errors.push((value as { message: string }).message);
+    }
+  }
+  if (errors.length > 0) return errors.join("\n").slice(-4000);
+  return lastAssistantText(entries as never) ?? "";
 }
 
 /** The manager's line for a step agent's report. */
@@ -1263,7 +1285,7 @@ export class Runtime {
     if (jobs.length === 0) return;
     const playbook = engine.stationPlaybook(pipeline.playbook, stationId);
     const manager = await this.api().workspaces.ref(pipeline.workspaceId).agents.create({
-      config: this.managerConfig(playbook),
+      config: this.managerConfig(playbook, engine.activeExhausted(pipeline)),
       title: `Playbook Manager · ${playbook.title}`,
       labels: { [MANAGER_LABEL]: "true" },
     });
@@ -1674,6 +1696,7 @@ export class Runtime {
     const started = await this.store.mutate(run.id, (current) =>
       engine.startAttempt(current, stepId, { agentId: agent.id, brief, now: nowIso(), readonlySnapshot: snapshot }),
     );
+    await this.store.mutate(run.id, (current) => void (engine.currentAttempt(current, stepId)!.target = config.provider ?? ""));
     await agent.send(withPreamble(started.prompt, run));
     this.armTimeout(this.store.get(run.id)!, stepId);
     // The previous attempt's agent is done: the step's history keeps its outcome.
@@ -1683,13 +1706,26 @@ export class Runtime {
 
   private async stepAgentConfig(run: Run, step: Pick<Step, "id" | "agent">, tools = STEP_TOOL_NAMES) {
     const manager = await this.api().agents.ref(run.managerAgentId).refresh().catch(() => null);
-    const provider = step.agent.provider ?? manager?.agent.provider ?? DEFAULT_PROVIDER;
-    const model =
-      step.agent.model ?? (manager?.agent.provider === provider ? manager?.agent.model ?? undefined : undefined) ?? (provider === DEFAULT_PROVIDER ? DEFAULT_MODEL : undefined);
+    const [first, ...rest] = [
+      { ...step.agent, fallback: undefined } as AgentTarget,
+      ...(step.agent.fallback ?? []),
+    ];
+    const skipped = engine.activeExhausted(run);
+    // The first target not out of tokens (or whose delay has passed); if all are, the primary (the failure goes to the manager as before).
+    const candidates = [first!, ...rest].map((target, index) => {
+      const provider = target.provider ?? (index === 0 ? manager?.agent.provider : undefined) ?? DEFAULT_PROVIDER;
+      const model =
+        target.model ??
+        (index === 0 && manager?.agent.provider === provider ? manager?.agent.model ?? undefined : undefined) ??
+        (provider === DEFAULT_PROVIDER ? DEFAULT_MODEL : undefined);
+      return { target, provider, model };
+    });
+    const chosen = candidates.find((candidate) => candidate.model && !skipped.includes(`${candidate.provider}/${candidate.model}`)) ?? candidates[0]!;
+    const { target, provider, model } = chosen;
     if (!model) throw new UserError(`step "${step.id}": no model for provider "${provider}"; set agent.model in the playbook`);
     const config: AgentConfig = { provider: `${provider}/${model}` };
-    if (step.agent.mode) config.modeId = step.agent.mode;
-    if (step.agent.thinking) config.thinkingOptionId = step.agent.thinking;
+    if (target.mode) config.modeId = target.mode;
+    if (target.thinking) config.thinkingOptionId = target.thinking;
     return preapprove(config, provider, tools);
   }
 
@@ -2199,6 +2235,9 @@ export class Runtime {
     if (!found.attempt.report) {
       const page = await this.api().agents.ref(agentId).timeline.refetch({ direction: "tail", limit: 30 }).catch(() => null);
       lastMessage = page ? lastAssistantText(page.entries as never) : null;
+      if (turnEnd === "failed" && page && !isPaused(run) && isQuotaError(failureText(page.entries as never))) {
+        if (await this.failOverStep(runId, found.stepId, agentId, failureText(page.entries as never))) return;
+      }
       if (turnEnd === "completed" && !found.attempt.reminded && !isPaused(run) && (await this.remindToReport(runId, found.stepId, agentId))) return;
     }
     const violation = await this.checkoutViolation(run, found.attempt);
@@ -2226,6 +2265,58 @@ export class Runtime {
       others.length > 0 ? `Still running: ${others.join(", ")}.` : "",
     ].filter(Boolean));
     await this.deliver(runId);
+  }
+
+  /**
+   * A step agent's turn failed because its provider is out of tokens: the same attempt restarts
+   * on the next target of its chain, with the same prompt and without using a retry. False if no
+   * target is left or the new agent could not start (the failure then goes to the manager).
+   */
+  private async failOverStep(runId: string, stepId: string, agentId: string, reason: string): Promise<boolean> {
+    const run = this.store.get(runId);
+    const attempt = run?.steps[stepId]?.attempts.at(-1);
+    if (!run || !attempt || attempt.agentId !== agentId || !attempt.target || isAgentlessAttempt(agentId)) return false;
+    const step = engine.stepDef(run, stepId);
+    if (step.kind !== "agent" || !step.role) return false;
+    const exhausted = attempt.target;
+    const probe = structuredClone(run);
+    engine.markTarget(probe, exhausted, nowIso());
+    let config: AgentConfig;
+    try {
+      config = await this.stepAgentConfig(probe, step);
+    } catch {
+      config = { provider: exhausted };
+    }
+    if (engine.activeExhausted(probe).includes(config.provider ?? exhausted)) {
+      await this.store.mutate(runId, (current) => engine.markExhausted(current, stepId, exhausted, nowIso(), reason));
+      return false;
+    }
+    const role = run.playbook.roles[step.role]!;
+    let agent;
+    try {
+      agent = await this.api()
+        .workspaces.ref(run.workspaceId)
+        .agents.create({
+          config: { ...config, systemPrompt: stepSystemPrompt(run.playbook, step, role, probe) },
+          parent: run.managerAgentId,
+          title: `${run.playbook.title} · ${role.title} #${attempt.n}`,
+          labels: { [RUN_LABEL]: run.id, [STEP_LABEL]: stepId, "playbooks/attempt": String(attempt.n) },
+        });
+    } catch (error) {
+      console.error(`[playbooks] could not restart step "${stepId}" of ${runId} on ${config.provider}:`, errorText(error));
+      await this.store.mutate(runId, (current) => engine.markExhausted(current, stepId, exhausted, nowIso(), reason));
+      return false;
+    }
+    this.clearTimeout(agentId);
+    await this.store.mutate(runId, (current) =>
+      engine.failOverAttempt(current, stepId, { target: exhausted, agentId: agent.id, newTarget: config.provider ?? "", now: nowIso(), reason }),
+    );
+    await agent.send(withPreamble(attempt.prompt, this.store.get(runId)!)).catch((error: unknown) => console.error(`[playbooks] could not brief ${agent.id}:`, errorText(error)));
+    this.armTimeout(this.store.get(runId)!, stepId);
+    await this.archiveStepAgent(agentId);
+    await this.enqueue(runId, [`step "${stepId}" attempt ${attempt.n}: ${exhausted} is out of tokens; the plugin restarted the attempt on ${config.provider} with the same brief (no retry used); ${exhausted} is tried again after ${humanDuration(run.playbook.exhaustedForMs)}. Nothing to do: it will report as usual.`]);
+    await this.deliver(runId);
+    return true;
   }
 
   /**
@@ -2540,13 +2631,18 @@ export class Runtime {
   }
 
   /** Agent config of a new Playbook Manager for this playbook. */
-  private managerConfig(playbook: Playbook): AgentConfig {
-    const provider = playbook.manager.provider ?? DEFAULT_PROVIDER;
-    const model = playbook.manager.model ?? (provider === DEFAULT_PROVIDER ? DEFAULT_MODEL : undefined);
+  private managerConfig(playbook: Playbook, exhausted: string[] = []): AgentConfig {
+    // A multi-entry tier: the first target not out of tokens at creation (the manager never switches mid-run).
+    const targets: AgentSettings[] = [playbook.manager, ...(playbook.manager.fallback ?? [])];
+    const resolved = targets.map((target) => {
+      const provider = target.provider ?? DEFAULT_PROVIDER;
+      return { target, provider, model: target.model ?? (provider === DEFAULT_PROVIDER ? DEFAULT_MODEL : undefined) };
+    });
+    const { target, provider, model } = resolved.find((candidate) => candidate.model && !exhausted.includes(`${candidate.provider}/${candidate.model}`)) ?? resolved[0]!;
     if (!model) throw new UserError(`no model for the manager on provider "${provider}"; set manager.model in defaults/main.yaml`);
     const config: AgentConfig = { provider: `${provider}/${model}` };
-    if (playbook.manager.mode) config.modeId = playbook.manager.mode;
-    if (playbook.manager.thinking) config.thinkingOptionId = playbook.manager.thinking;
+    if (target.mode) config.modeId = target.mode;
+    if (target.thinking) config.thinkingOptionId = target.thinking;
     preapprove(config, provider, MANAGER_TOOL_NAMES);
     return config;
   }

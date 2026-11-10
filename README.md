@@ -109,6 +109,15 @@ submission) with that tag.
   never one waiting on a permission or question. Turn off with `reload_stale_sessions: false` in
   `defaults/main.yaml`. Agents from before v0.51.0 are reloaded only if they belong to a run
   (see `docs/adrs/2026-11-09-reload-stale-sessions.md`).
+- A `tiers:` entry in `defaults/main.yaml` may be a list of providers: when a step agent runs out of tokens
+  (quota, rate or usage limit, no credits), the same attempt restarts on the next entry, without using a
+  retry, and the exhausted `provider/model` is skipped for `providers: { exhausted_for: 1h }` (default 1h; limits
+  reset, so it is tried again after that; very short values re-probe a failing provider). Run state keeps
+  `run.exhausted` as `{ target, at }`. Error texts are matched by pattern, so an unusual provider message
+  may not be recognized and the failure then goes to the manager. A multi-entry tier cannot be combined
+  with inline `provider`, `model`, `mode` or `thinking` on the same `agent` block. Each entry has its own
+  `mode` and `thinking`. The run log gets a `provider_exhausted` line.
+  The manager itself never switches mid-run (see `docs/adrs/2026-11-10-provider-fallback-tiers.md`).
 - `list_playbooks` and `validate_playbooks` return a compact view by default (`results[].id`, `.valid`, `.errors`); `view: "full"` and `playbookId` give the detail.
 - Loop feedback (a `goto` back) goes in `complete_step`'s `summary`, not in `outputs`.
 - `isolation: worktree` is prompt-directed: Paseo pins an agent's directory to its workspace, so agents
