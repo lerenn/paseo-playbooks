@@ -5,7 +5,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import type { Playbook, Run } from "../shared/types";
 import { completeStep, endTurn, newRun, recordReport, startAttempt } from "./engine";
 import { loadPlaybooks } from "./loader";
-import { COMPACT_SUMMARY_MAX, defaultRunToCancel, runChange, runCompact, runFull } from "./tools";
+import { COMPACT_SUMMARY_MAX, defaultRunToCancel, describeEntries, gateSummaryMissing, runChange, runCompact, runFull } from "./tools";
 
 /** Only the fields defaultRunToCancel reads. */
 function run(id: string, managerAgentId: string, workspaceId: string, status: Run["status"] = "running"): Run {
@@ -112,5 +112,28 @@ describe("manager views", () => {
       after: [{ id: "retro", trigger: "manual", status: "pending", detail: null }],
     });
     expect(runChange(run)).not.toHaveProperty("step");
+  });
+});
+
+describe("playbook views", () => {
+  it("compact by default keeps id, valid and errors; full keeps the detail; playbookId filters", async () => {
+    await viewsRun();
+    const loaded = await loadPlaybooks(dir);
+    const compact = describeEntries(loaded.entries, "compact") as Array<Record<string, unknown>>;
+    expect(compact.find((c) => c.id === "views")).toMatchObject({ id: "views", valid: true, errors: [], steps: ["investigate", "implement", "retro"], after: ["retro"] });
+    expect(compact.find((c) => c.id === "views")).not.toHaveProperty("roles");
+    expect(JSON.stringify(describeEntries(loaded.entries, "full")).length).toBeGreaterThan(JSON.stringify(compact).length);
+    expect(describeEntries(loaded.entries, "full", "views")[0]).toHaveProperty("steps.0.needs");
+    expect(describeEntries(loaded.entries, "compact", "views")).toHaveLength(1);
+    expect(() => describeEntries(loaded.entries, "compact", "nope")).toThrow(/No playbook "nope" \(known: views\)/);
+  });
+
+  it("an invalid playbook is valid:false with its errors in both views", () => {
+    const entry = { id: "bad", file: "bad.yaml", title: "bad", hidden: false, errors: ["steps: required"], playbook: null };
+    for (const view of ["compact", "full"] as const) expect(describeEntries([entry], view)).toEqual([expect.objectContaining({ id: "bad", valid: false, errors: ["steps: required"] })]);
+  });
+
+  it("request_gate without a summary says what to give and where loop feedback goes", () => {
+    expect(gateSummaryMissing("approve")).toMatch(/"summary".*complete_step's "summary"/s);
   });
 });

@@ -10,7 +10,9 @@ step runs as a subagent, the plugin enforces the graph, and humans approve gates
 Playbooks panel. You write the playbooks; the plugin validates them.
 
 **Always finish by calling the `validate_playbooks` tool and fixing every error it reports.**
-It uses the same checks as the Playbooks panel.
+It uses the same checks as the Playbooks panel. Its result is compact (`results[]`: `id`, `valid`, `errors`,
+input names, step ids); pass `view: "full"` for every playbook in detail (large: add `playbookId`) or
+`playbookId` for one. `list_playbooks` takes the same two options.
 
 ## Layout
 
@@ -237,6 +239,10 @@ A gate's outcomes are the keys of its `choices` (default: `approved` with label 
 one full-width button per choice with where it leads (→ End, → End Release inside a block,
 → Implement, → Fail run). A choice with `comment: optional` or `required` opens a text box with Send; the comment goes
 to the manager and, on a `goto`, to the target step as feedback.
+
+Feedback for a loop (a `goto` back to an earlier step) travels in the `summary` of the manager's
+`complete_step` call (or the gate comment), never in `outputs`: `outputs` only accepts the outputs the step
+declares (`unknown output "fix" (declared: ...)` otherwise). `request_gate` also needs its own `summary`.
 
 ### Outcomes
 
@@ -700,8 +706,9 @@ isolation: { mode: worktree, submodules: [ops/api, ops/web], base: main }   # bl
   links each as a detached worktree of the workspace's own clone of it, at the commit the worktree pins
   (fast, shares objects; a submodule the workspace never initialised is initialised in place).
 - **Cleanup**: when the run completes or is canceled (and its after-tasks end), the plugin removes the worktree
-  and its branch, and the history says so. It keeps the worktree, with a `worktree_kept` history entry, when the
-  run failed and `workspace.keep_failed` is true, when it has uncommitted changes, or when the guard fired; it
+  and its branch, and the history says so. A canceled run is an intentional end, so `keep_failed` does not apply
+  to it: it is removed like a completed one. It keeps the worktree, with a `worktree_kept` history entry, when the
+  run failed and `workspace.keep_failed` is true, when it has uncommitted changes (also after a cancel), or when the guard fired; it
   keeps the branch (not the directory) when the branch has commits on no remote. Restarting a run brings the
   worktree back on its branch. At daemon start the plugin deletes worktree directories whose run no longer
   exists. It never deletes outside its worktrees directory.

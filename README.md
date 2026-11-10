@@ -109,6 +109,8 @@ submission) with that tag.
   never one waiting on a permission or question. Turn off with `reload_stale_sessions: false` in
   `defaults/main.yaml`. Agents from before v0.51.0 are reloaded only if they belong to a run
   (see `docs/adrs/2026-11-09-reload-stale-sessions.md`).
+- `list_playbooks` and `validate_playbooks` return a compact view by default (`results[].id`, `.valid`, `.errors`); `view: "full"` and `playbookId` give the detail.
+- Loop feedback (a `goto` back) goes in `complete_step`'s `summary`, not in `outputs`.
 - `isolation: worktree` is prompt-directed: Paseo pins an agent's directory to its workspace, so agents
   start in the workspace and are told (and, by the guard, checked) to work only in the run's worktree.
   An agent that ignores the prompt fails its step; it is not prevented.
