@@ -1,15 +1,18 @@
 import { openExternalUrl, useRpc } from "@getpaseo/plugin/client";
 import { Icon, ScrollView, useToast } from "@getpaseo/plugin/client/ui";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Pressable, Text, View } from "react-native";
+import { PanResponder, Pressable, Text, View } from "react-native";
 import { createSidekickFilesRpc, listSidekicksRpc, openSidekickRpc, type SidekickProject } from "../../shared/contracts";
 import { GETTING_STARTED_URL } from "../panel";
 import { Button } from "../sheet";
 import type { Theme } from "../theme";
 import { SidekickChat } from "./column";
 import { visibleTabs } from "./tabs";
+import { clampColumnWidth, COLUMN_WIDTH } from "./width";
 
-export const COLUMN_WIDTH = 400;
+/** The width the user dragged the column to, kept while the screen lives (the column is unmounted when closed). */
+let rememberedWidth = COLUMN_WIDTH;
+
 /** How often the tabs refresh which projects have runs or a Sidekick. */
 const POLL_MS = 15_000;
 
@@ -34,6 +37,25 @@ interface Props {
  */
 export function SidekickPane(props: Props) {
   const { theme } = props;
+  const [width, setWidth] = useState(rememberedWidth);
+  const startWidth = useRef(width);
+  // A handle on the left edge: dragging left widens the column.
+  const resizer = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onMoveShouldSetPanResponder: () => true,
+        onPanResponderTerminationRequest: () => false,
+        onPanResponderGrant: () => {
+          startWidth.current = rememberedWidth;
+        },
+        onPanResponderMove: (_event, gesture) => {
+          rememberedWidth = clampColumnWidth(startWidth.current - gesture.dx);
+          setWidth(rememberedWidth);
+        },
+      }),
+    [],
+  );
   const list = useRpc(listSidekicksRpc);
   const open = useRpc(openSidekickRpc);
   const [projects, setProjects] = useState<SidekickProject[]>([]);
@@ -98,7 +120,13 @@ export function SidekickPane(props: Props) {
   const others = projects.filter((project) => !tabs.some((tab) => tab.projectId === project.projectId));
   const muted = theme.colors.foregroundMuted;
   return (
-    <View style={{ width: COLUMN_WIDTH, borderLeftWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface0 }}>
+    <View style={{ width, borderLeftWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface0 }}>
+      <View
+        accessibilityRole="adjustable"
+        accessibilityLabel="Resize the Sidekick column"
+        {...resizer.panHandlers}
+        style={[{ position: "absolute", left: -3, top: 0, bottom: 0, width: 6, zIndex: 10 }, { cursor: "col-resize" } as object]}
+      />
       <View style={{ flexDirection: "row", alignItems: "center", gap: 8, padding: 12, paddingBottom: 8 }}>
         <Icon name="Bot" size={16} color={theme.colors.foreground} />
         <Text style={{ color: theme.colors.foreground, fontWeight: "700", flex: 1 }}>Sidekick</Text>
