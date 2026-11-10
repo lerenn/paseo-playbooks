@@ -805,6 +805,8 @@ steps that completed:
      Manager is created there; the history records the move. `create_workspace` makes a
      workspace; check out the run's branch in it first if the work lives there.
 
+`archive_run` (`runId`, optional `force`) archives a run that has ended, like the panel's archive button: after `cancel_run` or a finished run, once its job is settled. It hides the run from the panel and from `list_runs` (without `archived: true`); `restart_run` still reopens it. It refuses an active run, and a run whose hand-off job is still open at a pipeline station or train unless `force: true`; archiving twice is fine.
+
 `restart_run` refuses an active run (cancel it first), a step whose needs did not complete,
 and a workspace that is gone or already has another active run (the message names that run and
 suggests `workspaceId`). A new run cannot start mid-way: to

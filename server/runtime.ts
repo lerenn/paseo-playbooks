@@ -57,6 +57,7 @@ export const MANAGER_TOOL_NAMES = [
   "list_runs",
   "cancel_run",
   "restart_run",
+  "archive_run",
   "validate_playbooks",
   "settle_job",
 ];
@@ -1849,6 +1850,27 @@ export class Runtime {
       run.archivedAt ??= nowIso();
       return run.archivedAt;
     });
+  }
+
+  /**
+   * archive_run: the panel's archive, for an agent. Idempotent. A run whose hand-off job is still
+   * open in a pipeline (waiting or riding a train) is refused unless `force`: archiving hides it
+   * while its result is still coming.
+   */
+  async archiveRunByAgent(runId: string, force: boolean): Promise<{ run: Run; already: boolean }> {
+    const existing = this.store.get(runId);
+    if (!existing) throw new UserError(`unknown run "${runId}"`);
+    if (existing.archivedAt) return { run: existing, already: true };
+    if (!force) {
+      const open = this.store.list().flatMap((candidate) => candidate.jobs.filter((job) => candidate.id !== runId && job.fromRunId === runId && job.status === "open").map((job) => ({ job, at: candidate })));
+      const pipelineJobs = open.filter(({ at }) => !at.train);
+      if (pipelineJobs.length > 0) {
+        const where = pipelineJobs.map(({ job, at }) => `${job.id} at ${job.riding.map((r) => `train ${r.runId}`).concat(job.waiting.map((w) => `station "${w.station}"`)).join(", ") || `pipeline ${at.id}`}`).join("; ");
+        throw new UserError(`run ${runId} has a job that is not settled yet (${where}): wait for it to settle (settle_job, or the train ends), or pass force: true to archive anyway`);
+      }
+    }
+    await this.archiveRun(runId);
+    return { run: this.store.get(runId)!, already: false };
   }
 
   /** Marks a finished run as seen by a human; an active run stays unseen (it can still change). */
