@@ -753,6 +753,14 @@ outputs:
 5. Run `validate_playbooks`; fix everything; commit the files (Start in a new workspace
    branches a worktree from the current commit; Start and Start on a new agent run in this checkout).
 
+## Improve a playbook from its token spend
+
+`get_analytics` (read-only; `days`, `playbook`, `projectId`, `limit`) sums what agents spent, by playbook, step
+(with its role and model), role and model: tokens, cost, peak context, and wasted attempts (retried, or whose
+agent did not finish) with their tokens. Look for steps that cost the most, retry the most or fill their context,
+and for a big model on a simple step; then propose a change to the playbook, role or model. `overhead` is the
+managers' and gate deciders' share. Usage exists only for runs that ended turns after v0.58.0.
+
 ## Recover a run
 
 A run that was canceled partway, failed (including "manager lost" when its manager was

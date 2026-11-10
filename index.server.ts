@@ -14,6 +14,7 @@ import {
   headerStateRpc,
   needsYouRpc,
   overviewStateRpc,
+  analyticsStateRpc,
   listPlaybooks,
   listRuns,
   listWorkspaceAgents,
@@ -128,6 +129,7 @@ export default function contribute(server: PluginServerContext) {
       .map((run) => run.workspaceId);
     return { withPlaybooks, waiting: [...new Set(waiting)] };
   });
+  handle(analyticsStateRpc, async ({ days, playbook, projectId }) => runtime.analytics({ days, playbook, projectId }));
   handle(overviewStateRpc, async () => ({ runs: store.list().filter((run) => !run.archivedAt).map(summarizeRun) }));
   handle(markRunSeenRpc, async ({ runId }) => ({ seenAt: await runtime.markSeen(runId) }));
   handle(needsYouRpc, async () => ({

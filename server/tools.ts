@@ -560,6 +560,22 @@ export function runTools(runtime: Runtime): AgentToolDefinition[] {
         }),
     }),
     defineAgentTool({
+      name: "get_analytics",
+      description:
+        "Where the tokens went, summed over the runs on this daemon (archived ones too), to find how to make playbooks cheaper or better: totals, and breakdowns by playbook, step (with its role and model), role and model, each with attempts, wasted attempts (retried, or whose agent did not finish) and their tokens, input / cached input / output tokens, cost, and peak context. overhead is the managers' and gate deciders' share. Read-only. Use it to spot steps that cost the most, retry the most, or run a bigger model than they need, then propose a change to the playbook, role or model.",
+      input: z.object({
+        days: z.number().int().positive().optional().describe("Only runs created in the last N days (default: all)"),
+        playbook: z.string().optional().describe("Only runs of this playbook name"),
+        projectId: z.string().optional().describe("Only runs of this project"),
+        limit: z.number().int().positive().max(200).optional().describe("Rows per breakdown (default 25, the most expensive first)"),
+      }),
+      execute: (input) =>
+        guard(async () => {
+          const result = runtime.analytics(input);
+          return ok(JSON.stringify(result, null, 2), result);
+        }),
+    }),
+    defineAgentTool({
       name: "list_gates",
       description:
         "List what waits for a decision across all playbook runs, oldest first: every open gate and ask (run, playbook, workspace, step, kind, question, choices, decider, who holds it now, opened-at and age in minutes). With includeFailed, also the runs that failed or lost their manager, with the reason and restartableFrom. Read-only; compact and stable, so a scheduled agent can call it and compare. Decide a gate with resume (its run's manager or a human in the panel), not here.",

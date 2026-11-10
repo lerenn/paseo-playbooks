@@ -6,6 +6,7 @@ import { Animated, Easing, Pressable, Text, View } from "react-native";
 import { archiveRunRpc, markRunSeenRpc } from "../shared/contracts";
 import { gateText } from "../shared/gates";
 import { isActive, isPaused, isPipeline, isTerminal, type Gate, type RunSummary, type StepSummary } from "../shared/types";
+import { AnalyticsView } from "./analytics";
 import { useReduceMotion } from "./graph";
 import { LABEL_WIDTH, labelLayout, ROW_HEIGHT } from "./layout";
 import { useOverview, type OverviewStore } from "./overview-store";
@@ -304,6 +305,7 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
   const [projectFilter, setProjectFilter] = useState<string | null>(null);
   const [workspaceFilter, setWorkspaceFilter] = useState<string | null>(null);
   const [showDone, setShowDone] = useState(false);
+  const [tab, setTab] = useState<"runs" | "analytics">("runs");
   // The sidebar badge and this screen share one store: one agent subscription, one request per change.
   const overview = useOverview(store);
   const toast = useToast();
@@ -384,6 +386,15 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
           </Pressable>
         </View>
 
+        <View style={{ flexDirection: "row", gap: 8 }}>
+          <Chip theme={theme} label="Runs" selected={tab === "runs"} onPress={() => setTab("runs")} />
+          <Chip theme={theme} label="Analytics" selected={tab === "analytics"} onPress={() => setTab("analytics")} />
+        </View>
+
+        {tab === "analytics" ? (
+          <AnalyticsView theme={theme} />
+        ) : (
+          <>
         <View style={{ gap: 8 }}>
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
             <Chip
@@ -485,6 +496,8 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
             )}
           </View>
         ) : null}
+          </>
+        )}
       </ScrollView>
     </View>
     </StoreContext.Provider>
