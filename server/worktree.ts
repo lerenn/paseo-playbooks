@@ -3,7 +3,7 @@ import { lstat, mkdir, readdir, readFile, realpath, rm } from "node:fs/promises"
 import path from "node:path";
 import { promisify } from "node:util";
 import type { Isolation } from "../shared/types";
-import { checkoutSnapshot, defaultBranch, freshRef } from "./git";
+import { checkoutSnapshot, defaultBranch, freshRef, freshRefInfo } from "./git";
 
 const exec = promisify(execFile);
 
@@ -29,6 +29,8 @@ export interface CreatedWorktree {
   baseSha: string;
   linked: string[];
   workspaceSnapshot: string | null;
+  /** Why the fetch of the base failed (the worktree is then off whatever origin/<base> held), else null. */
+  fetchError: string | null;
 }
 
 /** Submodule paths declared by `.gitmodules` of a checkout. */
@@ -53,7 +55,7 @@ export async function createWorktree(input: { workspaceDir: string; worktreesDir
   const workspaceSnapshot = await checkoutSnapshot(input.workspaceDir);
   const base = input.isolation.base ?? (await defaultBranch(input.workspaceDir));
   if (!base) throw new Error(`cannot create a worktree: no base branch in ${input.workspaceDir}`);
-  const ref = await freshRef(input.workspaceDir, base);
+  const { ref, fetchError } = await freshRefInfo(input.workspaceDir, base);
   await mkdir(input.worktreesDir, { recursive: true });
   const linked: string[] = [];
   try {
@@ -78,7 +80,7 @@ export async function createWorktree(input: { workspaceDir: string; worktreesDir
       }
       linked.push(sub);
     }
-    return { path: dir, branch: input.branch, base: ref, baseSha, linked, workspaceSnapshot };
+    return { path: dir, branch: input.branch, base: ref, baseSha, linked, workspaceSnapshot, fetchError };
   } catch (error) {
     await removeWorktree({ repo: input.workspaceDir, dir, worktreesDir: input.worktreesDir, branch: input.branch, linked, force: true }).catch(() => undefined);
     throw error;

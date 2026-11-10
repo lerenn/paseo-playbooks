@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 
 const run = promisify(execFile);
@@ -83,17 +83,47 @@ export async function defaultBranch(cwd: string): Promise<string | null> {
  * origin has it (a local branch of the same name may be far behind); else `branch` itself.
  */
 export async function freshRef(cwd: string, branch: string): Promise<string> {
+  return (await freshRefInfo(cwd, branch)).ref;
+}
+
+/** Like `freshRef`, and says whether the fetch failed (offline, no origin): `fetchError` is its message. */
+export async function freshRefInfo(cwd: string, branch: string): Promise<{ ref: string; fetchError: string | null }> {
+  let fetchError: string | null = null;
   try {
     await git(cwd, ["fetch", "--quiet", "origin", branch]);
-  } catch {
+  } catch (error) {
     // Offline or no origin: whatever the remote-tracking ref already holds, if any.
+    fetchError = (error instanceof Error ? error.message : String(error)).split("\n").find((line) => line.trim() && !line.startsWith("Command failed"))?.trim() ?? "git fetch failed";
   }
   try {
     await git(cwd, ["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${branch}`]);
-    return `origin/${branch}`;
+    return { ref: `origin/${branch}`, fetchError };
   } catch {
-    return branch;
+    return { ref: branch, fetchError };
   }
+}
+
+/**
+ * Copies `paths` of `ref` (a commit-ish of `cwd`'s repository) into `dest`, without a checkout.
+ * Paths the ref does not have are skipped.
+ */
+export async function exportPaths(cwd: string, ref: string, paths: readonly string[], dest: string): Promise<void> {
+  const present: string[] = [];
+  for (const rel of paths) {
+    if ((await git(cwd, ["ls-tree", "--name-only", ref, "--", rel]).catch(() => "")).trim()) present.push(rel);
+  }
+  if (present.length === 0) return;
+  await new Promise<void>((resolve, reject) => {
+    const archive = spawn("git", ["-C", cwd, "archive", "--format=tar", ref, "--", ...present], { stdio: ["ignore", "pipe", "pipe"] });
+    const untar = spawn("tar", ["-x", "-C", dest], { stdio: ["pipe", "ignore", "pipe"] });
+    archive.stdout.pipe(untar.stdin);
+    let failure = "";
+    archive.stderr.on("data", (chunk) => (failure += String(chunk)));
+    untar.stderr.on("data", (chunk) => (failure += String(chunk)));
+    archive.on("error", reject);
+    untar.on("error", reject);
+    untar.on("close", (code) => (code === 0 ? resolve() : reject(new Error(failure.trim() || `tar exited with ${code}`))));
+  });
 }
 
 /** Best effort: fetches `branch` from origin and fast-forwards the checkout to it. Never fails. */

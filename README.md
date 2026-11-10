@@ -114,6 +114,12 @@ submission) with that tag.
 - `isolation: worktree` is prompt-directed: Paseo pins an agent's directory to its workspace, so agents
   start in the workspace and are told (and, by the guard, checked) to work only in the run's worktree.
   An agent that ignores the prompt fails its step; it is not prevented.
+- A run with `isolation: worktree` reads its playbook and roles from its own worktree, off a freshly fetched
+  `origin/<base>`, so merged rules reach new runs without fast-forwarding the workspace checkout. If the fetch fails
+  (or the playbook is missing or invalid on origin) the workspace checkout's copy is used and `start_playbook` says so.
+  The definition is frozen at start; `restart_run` reuses it. `validate_playbooks` shows what a new run would load
+  (`results[].source`). Only a playbook that already exists, valid and isolated, in the workspace checkout can be started.
+  See `docs/adrs/2026-11-10-playbooks-from-fresh-main.md`.
 - Plain Start picks the workspace's most recently used agent (the one you last sent a
   message to, skipping agents that already manage a run), because the panel cannot see
   which tab has focus. To pick a specific agent, send it a message first, or use "Start on

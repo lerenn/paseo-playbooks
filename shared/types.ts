@@ -247,6 +247,18 @@ export const RunWorktreeSchema = z.object({
 });
 export type RunWorktree = z.infer<typeof RunWorktreeSchema>;
 
+/** Where an isolated run's playbook definition (and roles) came from: see ADR 2026-11-10-playbooks-from-fresh-main. */
+export const RunDefinitionSchema = z.object({
+  /** `origin`: read from the run's worktree, off a freshly fetched origin/<base>; `workspace`: the shared checkout. */
+  source: z.enum(["origin", "workspace"]),
+  /** The ref and commit the definition was read at (origin only). */
+  ref: z.string().nullable().default(null),
+  sha: z.string().nullable().default(null),
+  /** Why the workspace checkout was used instead (workspace only). */
+  note: z.string().nullable().default(null),
+});
+export type RunDefinition = z.infer<typeof RunDefinitionSchema>;
+
 export const PlaybookSchema = z.object({
   id: z.string(),
   title: z.string(),
@@ -509,6 +521,8 @@ export const RunSchema = z.object({
   workspaceArchive: z.enum(["done", "skipped"]).nullable().default(null),
   /** The run's private git worktree (`isolation: worktree`); null when it works in the workspace checkout. */
   worktree: RunWorktreeSchema.nullable().default(null),
+  /** Where the playbook definition came from (isolated runs); null on other runs and runs from before. */
+  definition: RunDefinitionSchema.nullable().default(null),
   /** A short name the Playbook Manager gave the run (e.g. "login-redirect-fix"): its tab label. */
   name: z.string().nullable().default(null),
   inputs: z.record(z.string(), VarValueSchema),

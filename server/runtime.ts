@@ -26,6 +26,7 @@ import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "./defaults";
 import * as engine from "./engine";
 import { checkoutSnapshot, currentRef, defaultBranch, fastForward, freshRef, removedGitlinks, snapshotDiff } from "./git";
 import { createWorktree, dirtyPaths, linkedSubmodules, listWorktreeDirs, pruneWorktrees, removeWorktree, repoOfWorktree, worktreeBranch, worktreePath } from "./worktree";
+import { chooseDefinition } from "./fresh";
 import { loadPlaybooks } from "./loader";
 import { BusError, EventBus, type BusEvent, type Notifier, type Subscription } from "./bus";
 import { OversightProducer, registerOversightTypes } from "./oversight-events";
@@ -786,7 +787,11 @@ export class Runtime {
     if (playbook.singleton) return this.startPipeline(workspaceDir, workspace.projectId, playbook);
     this.checkConcurrency(playbook, workspace.projectId);
     const runId = reservation?.runId ?? `run_${shortId()}`;
-    const worktree = playbook.isolation.mode === "worktree" ? await this.createRunWorktree(runId, playbook, workspaceDir, reservation?.branch ?? null) : undefined;
+    const created = playbook.isolation.mode === "worktree" ? await this.createRunWorktree(runId, playbook, workspaceDir, reservation?.branch ?? null) : undefined;
+    const worktree = created?.worktree;
+    // The run's rules are the base branch's as of now, read from its own worktree: no need to fast-forward the workspace.
+    const chosen = created ? await chooseDefinition({ playbook, worktreeDir: created.worktree.path, baseRef: created.worktree.base, baseSha: created.worktree.baseSha, fetchError: created.fetchError }) : undefined;
+    if (chosen) playbook = chosen.playbook;
     let run: Run;
     try {
       run = engine.newRun({
@@ -799,6 +804,7 @@ export class Runtime {
         managerAgentId: manager.id,
         workspaceCreated: reservation?.created === true,
         ...(worktree ? { worktree } : {}),
+        ...(chosen ? { definition: chosen.definition } : {}),
         name: runName(options.name),
         inputs,
         now: nowIso(),
@@ -840,14 +846,15 @@ export class Runtime {
   }
 
   /** `git worktree add` for the run, under the plugin's data directory; the guard's baseline is taken here. */
-  private async createRunWorktree(runId: string, playbook: Playbook, workspaceDir: string, takenBranch: string | null): Promise<RunWorktree> {
+  private async createRunWorktree(runId: string, playbook: Playbook, workspaceDir: string, takenBranch: string | null): Promise<{ worktree: RunWorktree; fetchError: string | null }> {
     const id = runId.replace(/^run_/, "");
     let branch = worktreeBranch(playbook.id, id);
     if (branch === takenBranch) branch = `${branch}-wt`;
     this.creatingWorktrees.add(runId);
     try {
       const created = await createWorktree({ workspaceDir, worktreesDir: this.worktreesDir, runId, branch, isolation: playbook.isolation });
-      return { ...created, state: "active" };
+      const { fetchError, ...worktree } = created;
+      return { worktree: { ...worktree, state: "active" }, fetchError };
     } catch (error) {
       this.creatingWorktrees.delete(runId);
       throw new UserError(`could not create the run's worktree (isolation: worktree): ${errorText(error)}`);
@@ -867,7 +874,8 @@ export class Runtime {
     this.creatingWorktrees.add(run.id);
     try {
       const created = await createWorktree({ workspaceDir, worktreesDir: this.worktreesDir, runId: run.id, branch: wt.branch, isolation: run.playbook.isolation, reuseBranch: true });
-      return { ...created, base: wt.base, baseSha: wt.baseSha, state: "active" };
+      const { fetchError: _fetchError, ...recreated } = created;
+      return { ...recreated, base: wt.base, baseSha: wt.baseSha, state: "active" };
     } catch (error) {
       throw new UserError(`could not recreate the run's worktree: ${errorText(error)}`);
     } finally {
