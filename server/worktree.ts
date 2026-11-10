@@ -48,7 +48,7 @@ async function submodulePaths(dir: string): Promise<string[]> {
  * objects), else initialised in place. Anything else is left for the agents to init lazily.
  * On failure nothing is left behind.
  */
-export async function createWorktree(input: { workspaceDir: string; worktreesDir: string; runId: string; branch: string; isolation: Isolation; reuseBranch?: boolean }): Promise<CreatedWorktree> {
+export async function createWorktree(input: { workspaceDir: string; worktreesDir: string; runId: string; branch: string; isolation: Omit<Isolation, "allowGitlinkRemoval">; reuseBranch?: boolean }): Promise<CreatedWorktree> {
   const dir = worktreePath(input.worktreesDir, input.runId);
   const workspaceSnapshot = await checkoutSnapshot(input.workspaceDir);
   const base = input.isolation.base ?? (await defaultBranch(input.workspaceDir));

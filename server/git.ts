@@ -8,6 +8,22 @@ async function git(cwd: string, args: string[]): Promise<string> {
   return stdout;
 }
 
+/**
+ * Submodule entries (mode 160000) that the index of `cwd` deletes relative to `baseSha`: committed on the
+ * branch or staged. Empty when `baseSha` cannot be read.
+ */
+export async function removedGitlinks(cwd: string, baseSha: string): Promise<string[]> {
+  try {
+    const out = await git(cwd, ["-c", "core.quotepath=off", "diff", "--cached", "--raw", "--no-renames", baseSha]);
+    return out
+      .split("\n")
+      .map((line) => /^:160000 000000 \S+ \S+ D\t(.+)$/.exec(line)?.[1])
+      .filter((path): path is string => Boolean(path));
+  } catch {
+    return [];
+  }
+}
+
 /** HEAD plus `git status --porcelain` (ignored files excluded). Null outside a git checkout. */
 export async function checkoutSnapshot(cwd: string): Promise<string | null> {
   try {

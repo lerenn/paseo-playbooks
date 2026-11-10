@@ -666,7 +666,7 @@ error.
 - prompts use only `inputs`, `run.id`, `run.jobs`, `worktree`, `attempt` and `loop` (after-tasks also `run.status` and
   `run.failure`); inputs only reference ancestors (after-tasks also main steps and `run.*`)
 - after-tasks have no `needs`, and only after-tasks have `trigger`
-- `isolation` is `none`, `worktree`, or a block `{ mode, submodules, base }` (mistyped keys fail); a singleton cannot ask for `worktree`
+- `isolation` is `none`, `worktree`, or a block `{ mode, submodules, base, allow_gitlink_removal }` (mistyped keys fail); a singleton cannot ask for `worktree`
 - a `script` names an existing, executable file of `scripts/`; `poll` goes in the `script:` block
 - a `handoff` names a singleton playbook of the same folder, and does not lead back to its
   own playbook; a singleton is never a sub-playbook or an after-task, its steps never wire a
@@ -712,6 +712,7 @@ isolation: { mode: worktree, submodules: [ops/api, ops/web], base: main }   # bl
   keeps the branch (not the directory) when the branch has commits on no remote. Restarting a run brings the
   worktree back on its branch. At daemon start the plugin deletes worktree directories whose run no longer
   exists. It never deletes outside its worktrees directory.
+- **Gitlink guard**: after each step the plugin fails the step, naming the paths, if the run's branch deletes a submodule entry (mode 160000) present in its base; `isolation: { allow_gitlink_removal: true }` turns it off (default `false`). Agents are also told never to `git add -A`/`git add .`/`git commit -a`.
 - **Concurrency**: isolated runs share a workspace freely; a run without isolation still needs the workspace to
   itself and is refused while an isolated run is active there (and the other way round). Singletons and release
   trains are never isolated.

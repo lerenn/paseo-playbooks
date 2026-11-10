@@ -24,7 +24,7 @@ import {
 } from "../shared/types";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "./defaults";
 import * as engine from "./engine";
-import { checkoutSnapshot, currentRef, defaultBranch, fastForward, freshRef, snapshotDiff } from "./git";
+import { checkoutSnapshot, currentRef, defaultBranch, fastForward, freshRef, removedGitlinks, snapshotDiff } from "./git";
 import { createWorktree, dirtyPaths, linkedSubmodules, listWorktreeDirs, pruneWorktrees, removeWorktree, repoOfWorktree, worktreeBranch, worktreePath } from "./worktree";
 import { loadPlaybooks } from "./loader";
 import { BusError, EventBus, type BusEvent, type Notifier, type Subscription } from "./bus";
@@ -90,11 +90,14 @@ export function runName(name: string | undefined): string | null {
 }
 
 interface Violation {
-  kind: "readonly" | "isolation";
+  kind: "readonly" | "isolation" | "gitlink";
   detail: string;
 }
 
 function violationLine(violation: Violation): string {
+  if (violation.kind === "gitlink") {
+    return `Gitlink guard failed: the run's branch deletes submodule entries (${violation.detail}); complete the step with "failure" and have it restore them (\`git restore --staged --worktree --source=<base> -- <path>\`, or \`git checkout <base> -- <path>\`). Set \`isolation.allow_gitlink_removal: true\` if the removal is intended.`;
+  }
   return violation.kind === "readonly"
     ? `Readonly check failed (${violation.detail}); complete it with "failure".`
     : `Isolation guard failed: the original workspace checkout changed (${violation.detail}) although the run works in its worktree; complete the step with "failure" and nudge or restart it so it works only in the worktree.`;
@@ -2124,6 +2127,11 @@ export class Runtime {
     if (baseline) {
       const detail = snapshotDiff(baseline, await checkoutSnapshot(run.workspaceDir));
       if (detail) return { kind: "isolation", detail };
+    }
+    const wt = run.worktree;
+    if (wt && !run.playbook.isolation.allowGitlinkRemoval) {
+      const removed = await removedGitlinks(wt.path, wt.baseSha);
+      if (removed.length > 0) return { kind: "gitlink", detail: removed.join(", ") };
     }
     return null;
   }

@@ -263,6 +263,8 @@ const RawIsolationSchema = z.union([
       submodules: z.union([z.enum(["none", "all"]), z.array(z.string().min(1))]).optional(),
       /** Branch the worktree starts from (its fresh origin copy). Default: the project's default branch. */
       base: z.string().min(1).optional(),
+      /** `false` (default): a step whose branch deletes a submodule entry (gitlink) fails; `true` turns that guard off. */
+      allow_gitlink_removal: z.boolean().optional(),
     })
     .strict(),
 ]);
@@ -271,8 +273,8 @@ type RawIsolation = z.infer<typeof RawIsolationSchema>;
 /** A playbook's isolation over the defaults': the playbook's own fields win, field by field. */
 function resolveIsolation(own: RawIsolation | undefined, fallback: RawIsolation | undefined): Isolation {
   const fields = (raw: RawIsolation | undefined) => (typeof raw === "string" ? { mode: raw } : (raw ?? {}));
-  const merged = { ...fields(fallback), ...fields(own) } as { mode?: Isolation["mode"]; submodules?: Isolation["submodules"]; base?: string };
-  return { mode: merged.mode ?? "none", submodules: merged.submodules ?? "none", base: merged.base ?? null };
+  const merged = { ...fields(fallback), ...fields(own) } as { mode?: Isolation["mode"]; submodules?: Isolation["submodules"]; base?: string; allow_gitlink_removal?: boolean };
+  return { mode: merged.mode ?? "none", submodules: merged.submodules ?? "none", base: merged.base ?? null, allowGitlinkRemoval: merged.allow_gitlink_removal ?? false };
 }
 
 const RawPlaybookSchema = z.object({
