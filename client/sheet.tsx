@@ -5,7 +5,7 @@ import { useState, type ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
 import { decideGateRpc, nudgeStepRpc, restartRunRpc, retryStepRpc } from "../shared/contracts";
 import { askChoices, askTransitionOf, choicesOfGate, destinationOf, gateText, linkify } from "../shared/gates";
-import { attemptTimeoutMs, isPaused, isStepLive, restartBlocker, type Gate, type GateChoice, type Playbook, type Run } from "../shared/types";
+import { attemptTimeoutMs, isPaused, isStepLive, restartBlocker, type Gate, type GateChoice, type Playbook, type Run, type RunSummary } from "../shared/types";
 import { stepTitle, stepTitleOf, type Theme } from "./theme";
 
 /** A poll interval as people say it: 30 s, 1 min, 2 h. */
@@ -80,7 +80,7 @@ function choiceColors(theme: Theme, color: NonNullable<GateChoice["color"]>): { 
 }
 
 /** Where a choice leads, for its button: "→ End", "→ End Release" (inside a block), "→ Write", "→ Fail run". */
-function destinationLabel(run: Run, gate: Gate, choiceId: string): string {
+function destinationLabel(run: Pick<RunSummary, "playbook">, gate: Gate, choiceId: string): string {
   const step = run.playbook.steps.find((candidate) => candidate.id === gate.stepId);
   let outcome = choiceId;
   if (gate.kind === "ask") {
@@ -100,7 +100,7 @@ function destinationLabel(run: Run, gate: Gate, choiceId: string): string {
 }
 
 /** A pending gate: its summary, collapsed details, and one full-width button per choice. Choices that take a comment open a text box with Send. */
-export function GateActions(props: { theme: Theme; run: Run; gate: Gate; hostLabel: string; onDecided?: () => void }) {
+export function GateActions(props: { theme: Theme; run: Pick<RunSummary, "id" | "playbook">; gate: Gate; hostLabel: string; onDecided?: () => void }) {
   const { theme, run, gate } = props;
   const decide = useRpc(decideGateRpc);
   const queryClient = useQueryClient();

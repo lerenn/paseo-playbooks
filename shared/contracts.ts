@@ -1,6 +1,6 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
-import { PlaybookEntrySchema, RunSchema, VarValueSchema } from "./types";
+import { PlaybookEntrySchema, RunSchema, RunSummarySchema, VarValueSchema } from "./types";
 
 export const listPlaybooks = defineRpc({
   name: "playbooks.list",
@@ -135,11 +135,14 @@ export const restartRunRpc = defineRpc({
   output: z.object({ status: z.string() }),
 });
 
-/** For the Playbooks screen: the runs of every workspace on this host that are not archived, whatever their status. */
+/**
+ * For the Playbooks screen: a summary of the runs of every workspace on this host that are not
+ * archived, whatever their status. Summaries, not runs: see RunSummarySchema.
+ */
 export const overviewStateRpc = defineRpc({
   name: "overview.state",
   input: z.object({}),
-  output: z.object({ runs: z.array(RunSchema) }),
+  output: z.object({ runs: z.array(RunSummarySchema) }),
 });
 
 /** Marks a finished run as seen (opened from the Playbooks screen). */

@@ -13,7 +13,7 @@ export const LOOP_LIMIT_CHOICES: GateChoice[] = [
   { id: "rejected", label: "Stop and fail the run", comment: "optional", color: "danger" },
 ];
 
-export function gateChoices(step: Step): GateChoice[] {
+export function gateChoices(step: Pick<Step, "choices">): GateChoice[] {
   return step.choices.length > 0 ? step.choices : DEFAULT_GATE_CHOICES;
 }
 
@@ -29,7 +29,7 @@ export function askChoices(transition: AskTransition): AskChoice[] {
 }
 
 /** The `ask` transition that opened an ask gate: by its outcome, else (older gates) by its target. */
-export function askTransitionOf(gate: Gate, step: Step | undefined): AskTransition | null {
+export function askTransitionOf(gate: Gate, step: Pick<Step, "on"> | undefined): AskTransition | null {
   if (!step) return null;
   const byOutcome = gate.outcome ? step.on[gate.outcome] : undefined;
   if (byOutcome?.kind === "ask") return byOutcome;
@@ -38,7 +38,7 @@ export function askTransitionOf(gate: Gate, step: Step | undefined): AskTransiti
 }
 
 /** The choices of an open gate: its step's, the fixed ones of loop-limit gates, or the ask's. */
-export function choicesOfGate(gate: Gate, step: Step | undefined): GateChoice[] {
+export function choicesOfGate(gate: Gate, step: Pick<Step, "on" | "choices"> | undefined): GateChoice[] {
   if (gate.kind === "loop_limit") return LOOP_LIMIT_CHOICES;
   if (gate.kind === "ask") {
     const transition = askTransitionOf(gate, step);
@@ -87,11 +87,11 @@ export interface Destination {
  * validator requires an `on` entry for every other choice, except the default gate's
  * `rejected` (and loop-limit rejects), which fail the run: the fallback below.
  */
-export function outcomeTransition(step: Step, outcome: string) {
+export function outcomeTransition(step: Pick<Step, "on" | "outcomes">, outcome: string) {
   return step.on[outcome] ?? (outcome === step.outcomes[0] ? ({ kind: "complete" } as const) : ({ kind: "fail" } as const));
 }
 
-export function destinationOf(playbook: Playbook, step: Step, outcome: string): Destination {
+export function destinationOf(playbook: Pick<Playbook, "blocks"> & { steps: Array<Pick<Step, "id" | "needs">> }, step: Pick<Step, "id" | "on" | "outcomes">, outcome: string): Destination {
   const transition = outcomeTransition(step, outcome);
   switch (transition.kind) {
     case "goto":

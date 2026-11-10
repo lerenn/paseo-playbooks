@@ -17,7 +17,7 @@ export function blockEntrySteps(playbook: Playbook, prefix: string): string[] {
 }
 
 /** The innermost block a step belongs to ("release.deploy" before "release"), or null at top level. */
-export function innermostBlock(playbook: Playbook, stepId: string): string | null {
+export function innermostBlock(playbook: Pick<Playbook, "blocks">, stepId: string): string | null {
   let found: string | null = null;
   for (const prefix of Object.keys(playbook.blocks)) {
     if (stepId.startsWith(`${prefix}.`) && (found === null || prefix.length > found.length)) found = prefix;
