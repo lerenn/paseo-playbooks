@@ -367,6 +367,42 @@ approved loop-limit gate) sent the run back through the step; 0 on the first pas
 (equals), a comparison (`">=2"`, `"<3"`, `"==1"`) or a list (any holds). An input named `loop` wins over
 it. It does not apply to a playbook step. Prompts read the same count as `{{ loop }}`.
 
+`when` also tests what earlier steps found: `steps.<id>.outputs.<name>` or `steps.<id>.outcome` (the step
+must come before it through `needs`). A test is a value, a list (any of), or `{ empty: true }` / `{ empty: false }`
+(output unset or empty / set); all tests of a `when` must hold.
+
+#### Branches: if / else-if / else
+
+A `branch` step lists cases in order. The plugin takes the first case whose `if` holds (the last has no `if`: the
+`else`, required) and completes the step with that case's name as its outcome. Steps of a case test it in `when`;
+the others are skipped, and a skipped step counts as done, so a later step that needs all of them is the join.
+
+```yaml
+steps:
+  - id: route
+    needs: [approve]
+    branch:
+      cases:
+        - { name: service, if: { steps.prs.outputs.kind: service } }
+        - { name: infra, if: { steps.prs.outputs.kind: [infra, docs], env: prd } }
+        - { name: other }                      # the else
+  - id: trains
+    needs: [route]
+    when: { steps.route.outcome: service }
+    role: { name: releaser }
+  - id: by_hand
+    needs: [route]
+    when: { steps.route.outcome: [infra, other] }
+    gate: { question: Merge and apply by hand? }
+  - id: done
+    needs: [trains, by_hand]
+    gate: { question: Done? }
+```
+
+`validate_playbooks` refuses a missing or misplaced `else`, an unreachable case (an earlier case holds whenever it
+does), duplicate names, and unknown steps, outputs, outcomes or values. A branch does not apply to after-tasks or
+singleton stations. `get_run` shows the case taken (`chosen`) and why a step was skipped.
+
 ### Singleton playbooks and hand-off steps
 
 A **singleton playbook** is a pipeline that takes work (**jobs**) from other runs: one

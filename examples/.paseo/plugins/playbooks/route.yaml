@@ -1,0 +1,43 @@
+title: Route a change
+description: Classify a change, then take the branch that fits it (if / else-if / else on a step's output), and join.
+
+inputs:
+  request:
+    type: string
+    required: true
+    description: The change to route
+
+steps:
+  - id: classify
+    role: { name: investigator }
+    outputs:
+      kind: { type: enum, values: [service, infra, docs], description: What the change touches }
+      plan: { type: string, description: The plan for the change }
+
+  # The first case whose `if` holds wins; the last one, with no `if`, is the else.
+  - id: route
+    needs: [classify]
+    branch:
+      cases:
+        - { name: service, if: { steps.classify.outputs.kind: service } }
+        - { name: infra, if: { steps.classify.outputs.kind: infra } }
+        - { name: other }
+
+  # Exactly one of these runs; the others are skipped, which counts as done for `needs`.
+  - id: ship
+    needs: [route]
+    when: { steps.route.outcome: service }
+    gate: { question: Hand this service change to the release train? }
+  - id: apply
+    needs: [route]
+    when: { steps.route.outcome: infra }
+    gate: { question: Merge and apply this infrastructure change by hand? }
+  - id: review
+    needs: [route]
+    when: { steps.route.outcome: other }
+    gate: { question: Nothing to ship. Close it? }
+
+  # The join: it starts once the one branch that ran is done.
+  - id: done
+    needs: [ship, apply, review]
+    gate: { question: All done? }

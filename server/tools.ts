@@ -1,7 +1,7 @@
 import { defineAgentTool, type AgentToolDefinition, type AgentToolResult } from "@getpaseo/plugin/server";
 import { askHumanText, choicesOfGate, GATE_SUMMARY_MAX } from "../shared/gates";
 import { z } from "zod";
-import type { PlaybookEntry, Run } from "../shared/types";
+import type { PlaybookEntry, Run, When } from "../shared/types";
 import { repairReport } from "./malformed";
 import { isActive, isAgentlessAttempt, isPaused, isPipeline, isTerminal, restartBlocker, runningAfterTasks, VarValueSchema } from "../shared/types";
 import * as engine from "./engine";
@@ -172,6 +172,8 @@ export function runFull(run: Run, only?: string[]) {
             agentId: attempt && !isAgentlessAttempt(attempt.agentId) ? attempt.agentId : null,
             ...(step.kind === "handoff" ? { handoff: step.handoff, job: attempt?.job ?? null } : {}),
             ...(step.kind === "script" ? { script: step.script, checks: attempt?.checks ?? 0, nextCheckAt: attempt?.nextCheckAt ?? null } : {}),
+            ...(step.kind === "branch" ? { chosen: state.branch } : {}),
+            ...(state.status === "skipped" ? { skipped: run.history.findLast((event) => event.type === "step_skipped" && event.stepId === id)?.detail ?? null } : {}),
             report: attempt?.report ?? null,
             lastMessage: attempt?.report ? null : attempt?.lastMessage ?? null,
             turnEnd: attempt?.turnEnd ?? null,
@@ -201,6 +203,13 @@ export function afterText(run: Run): string {
   }Ready: ${ready.join(", ") || "none"}.${gates.length ? ` Gate(s) to open with request_gate: ${gates.join(", ")}.` : ""}`;
 }
 
+/** A step's conditions as the agent tools show them: operand → values, or `{ empty }`. */
+function whenView(conditions: When[]) {
+  return Object.fromEntries(
+    conditions.map((condition) => [condition.input, condition.empty !== undefined ? { empty: condition.empty } : condition.loop ? condition.loop.map((test) => `${test.op}${test.value}`) : condition.values]),
+  );
+}
+
 function describeEntry(entry: PlaybookEntry) {
   if (!entry.playbook) return { id: entry.id, file: entry.file, valid: false, errors: entry.errors };
   const pb = entry.playbook;
@@ -225,7 +234,8 @@ function describeEntry(entry: PlaybookEntry) {
       gate: step.gate ?? null,
       ...(step.kind === "script" ? { script: step.script, poll: step.pollMs ? `${step.pollMs / 1000}s` : null } : {}),
       ...(step.kind === "handoff" ? { handoff: step.handoff, ...(step.handoffWait === false ? { wait: false } : {}) } : {}),
-      ...(step.when ? { when: Object.fromEntries(step.when.map((condition) => [condition.input, condition.values])) } : {}),
+      ...(step.when ? { when: whenView(step.when) } : {}),
+      ...(step.branch ? { branch: step.branch.cases.map((candidate) => (candidate.when ? { case: candidate.name, if: whenView(candidate.when) } : { case: candidate.name, else: true })) } : {}),
       afterTask: step.afterTask ?? null,
       needs: step.needs,
       inputs: Object.fromEntries(Object.entries(step.inputs).map(([name, wiring]) => [name, `${wiring.label}${wiring.auto ? " (auto)" : ""}`])),

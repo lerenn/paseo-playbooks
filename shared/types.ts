@@ -149,6 +149,8 @@ export const WhenSchema = z.object({
   values: z.array(z.string()),
   /** The step's own loop count (`when: { loop: ">=2" }`): it holds when any of these tests does. Then `source` and `values` are unused. */
   loop: z.array(z.object({ op: z.enum(["==", ">=", "<=", ">", "<"]), value: z.number().int().min(0) })).optional(),
+  /** `{ empty: true }` / `{ empty: false }`: holds when the value is unset or "" (true) / set (false). Then `values` is unused. */
+  empty: z.boolean().optional(),
 });
 export type When = z.infer<typeof WhenSchema>;
 
@@ -158,7 +160,7 @@ export const StepSchema = z.object({
   title: z.string().optional(),
   /** Name in the Playbooks screen columns. Unset = the title. */
   shortTitle: z.string().optional(),
-  kind: z.enum(["agent", "gate", "script", "handoff"]),
+  kind: z.enum(["agent", "gate", "script", "handoff", "branch"]),
   role: z.string().optional(),
   gate: z.string().optional(),
   /** Script steps: the executable, relative to the workspace (`<playbooks folder>/scripts/<name>`). */
@@ -169,6 +171,11 @@ export const StepSchema = z.object({
   handoffWait: z.literal(false).optional(),
   /** Runs the step only when every condition holds; otherwise it is skipped. Unset = always. */
   when: z.array(WhenSchema).optional(),
+  /**
+   * Branch steps: ordered cases, the first whose conditions hold wins (a case without `when` is the
+   * `else`, always last). The step completes at once with the winning case as its outcome.
+   */
+  branch: z.object({ cases: z.array(z.object({ name: z.string(), when: z.array(WhenSchema).optional() })) }).optional(),
   /** On a train of a singleton pipeline: the plugin settles its jobs from this output when the step completes. */
   settle: z.object({ output: z.string() }).optional(),
   /** Script steps: rerun the script this often while it exits with SCRIPT_NOT_YET. Unset = run it once. */
@@ -468,6 +475,8 @@ export const RunStepSchema = z.object({
   /** How many times a goto has sent the run back through this step (0 on its first pass). Runs from before it start at 0. */
   loop: z.number().int().min(0).default(0),
   completedSeq: z.number().int().nullable(),
+  /** Branch steps: the case that won (also the step's outcome); null before it ran. */
+  branch: z.string().nullable().default(null),
   /** When the step started waiting for a free `concurrency` slot of its block (orders the queue). */
   queuedAt: z.string().nullable().default(null),
 });
@@ -623,6 +632,7 @@ export const StepSummarySchema = StepSchema.pick({
   shortTitle: true,
   kind: true,
   when: true,
+  branch: true,
   needs: true,
   outcomes: true,
   on: true,
@@ -680,12 +690,13 @@ export function summarizeRun(run: Run): RunSummary {
       description,
       singleton,
       blocks,
-      steps: run.playbook.steps.map(({ id, title, shortTitle, kind, when, needs, outcomes, on, choices, afterTask }) => ({
+      steps: run.playbook.steps.map(({ id, title, shortTitle, kind, when, branch, needs, outcomes, on, choices, afterTask }) => ({
         id,
         title,
         shortTitle,
         kind,
         when,
+        branch,
         needs,
         outcomes,
         on,

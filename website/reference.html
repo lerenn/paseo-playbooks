@@ -180,6 +180,27 @@ on:
     needs: [go]               # on dev, starts at once
     role: { name: env_releaser }</code></pre>
 
+<h3 id="branches">Branches: if / else-if / else</h3>
+<p><code>when</code> also tests what earlier steps found: <code>steps.&lt;id&gt;.outputs.&lt;name&gt;</code> or <code>steps.&lt;id&gt;.outcome</code> (the step must come before it through <code>needs</code>). A test is a value, a list (any of), or <code>{ empty: true }</code> / <code>{ empty: false }</code>; all tests of one <code>when</code> must hold.</p>
+<p>A <code>branch</code> step lists cases in order. The plugin takes the first case whose <code>if</code> holds (the last has no <code>if</code>: the required <code>else</code>) and completes the step with that case's name as its outcome. Steps of a case test it in <code>when</code>; the others are skipped, and a skipped step counts as done, so a later step that needs all of them is the join. The validator refuses a missing or misplaced else, an unreachable case, duplicate names, and unknown steps, outputs, outcomes or values; a branch does not apply to after-tasks or singleton stations.</p>
+<pre><code>steps:
+  - id: route
+    needs: [approve]
+    branch:
+      cases:
+        - { name: service, if: { steps.prs.outputs.kind: service } }
+        - { name: other }                    # the else
+  - id: trains
+    needs: [route]
+    when: { steps.route.outcome: service }
+    role: { name: releaser }
+  - id: by_hand
+    needs: [route]
+    when: { steps.route.outcome: other }
+    gate: { question: Merge and apply by hand? }
+  - id: done
+    needs: [trains, by_hand]               # the join</code></pre>
+
 <h2 id="singletons">Singleton playbooks and hand-offs</h2>
 <p>A <strong>singleton playbook</strong> is a pipeline that takes work (<em>jobs</em>) from other runs: one long-lived run per project, in one shared workspace. Its top-level steps are <strong>stations</strong>, ordered by <code>needs</code>; jobs move through them. Its inputs, outputs and outcomes are each job's.</p>
 <pre><code>title: Release trains
@@ -301,7 +322,7 @@ steps:
 <ul>
 <li>YAML syntax errors and values of the wrong type (unknown keys are ignored, except inside a step's <code>role</code>, <code>gate</code>, <code>script</code> or <code>playbook</code> block)</li>
 <li>duplicate step ids, reserved ids, invalid names</li>
-<li>a step with none or more than one of <code>role</code>, <code>gate</code>, <code>script</code>, <code>playbook</code> and <code>handoff</code>, a kind written as a plain string, a block without its required key (<code>name</code>, <code>question</code> or <code>run</code>), or a field on the wrong kind or outside its block, with the form to write</li>
+<li>a step with none or more than one of <code>role</code>, <code>gate</code>, <code>script</code>, <code>playbook</code>, <code>handoff</code> and <code>branch</code>, a kind written as a plain string, a block without its required key (<code>name</code>, <code>question</code> or <code>run</code>), or a field on the wrong kind or outside its block, with the form to write</li>
 <li>missing roles (<code>role.yaml</code> or <code>instructions.md</code>), unknown <code>needs</code>, cycles in <code>needs</code></li>
 <li><code>on</code> keys that are not outcomes, extra outcomes without an <code>on</code> entry, <code>goto</code> targets that are not earlier steps</li>
 <li>two steps that can run together and both edit files</li>

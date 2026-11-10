@@ -15,11 +15,12 @@
 <main>
 
 <h1>Examples</h1>
-<p class="lead">Four complete playbooks: Pull request, Release to dev and Capability are in <code>examples/</code>, and Docs check is at the root of this repository. Copy a folder into your repository as <code>.paseo/plugins/playbooks/</code> or <code>.paseo/playbooks/</code>, adjust it, then run <code>validate_playbooks</code>.</p>
+<p class="lead">Five complete playbooks: Pull request, Release to dev, Route a change and Capability are in <code>examples/</code>, and Docs check is at the root of this repository. Copy a folder into your repository as <code>.paseo/plugins/playbooks/</code> or <code>.paseo/playbooks/</code>, adjust it, then run <code>validate_playbooks</code>.</p>
 <ul>
 <li><a href="#pr">Pull request</a>: investigate runs first, then implement, then review and local QA run in parallel, and babysit the PR until it is green.</li>
 <li><a href="#capability">Capability</a>: the Pull request playbook, a human gate, then the Release to dev playbook, as <a href="reference.html#subplaybooks">sub-playbooks</a>.</li>
 <li><a href="#release">Release to dev</a>: deploy the change to the development environment, check it there, and redeploy when the check asks for it.</li>
+<li><a href="#route">Route a change</a>: classify a change, then take the branch that fits it (<a href="reference.html#branches">if / else-if / else</a> on a step's output), and join.</li>
 <li><a href="#docs">Docs check</a>: compare the docs with the code, fix them, review and check in parallel, loop until clean, human gate. It needs no shell commands.</li>
 </ul>
 
@@ -240,6 +241,53 @@ steps:
   - id: release
     needs: [approve]
     playbook: { name: release }  # pr_url comes from the pr block
+</code></pre>
+<h2 id="route">Route a change</h2>
+<p>From <a href="https://github.com/lerenn/paseo-playbooks/tree/main/examples/.paseo/plugins/playbooks"><code>examples/.paseo/plugins/playbooks/</code></a>. A <code>branch</code> step takes the first case whose <code>if</code> holds; only the steps of that case run, and the join runs after it.</p>
+<p class="file">route.yaml</p>
+<pre><code>title: Route a change
+description: Classify a change, then take the branch that fits it (if / else-if / else on a step's output), and join.
+
+inputs:
+  request:
+    type: string
+    required: true
+    description: The change to route
+
+steps:
+  - id: classify
+    role: { name: investigator }
+    outputs:
+      kind: { type: enum, values: [service, infra, docs], description: What the change touches }
+      plan: { type: string, description: The plan for the change }
+
+  # The first case whose `if` holds wins; the last one, with no `if`, is the else.
+  - id: route
+    needs: [classify]
+    branch:
+      cases:
+        - { name: service, if: { steps.classify.outputs.kind: service } }
+        - { name: infra, if: { steps.classify.outputs.kind: infra } }
+        - { name: other }
+
+  # Exactly one of these runs; the others are skipped, which counts as done for `needs`.
+  - id: ship
+    needs: [route]
+    when: { steps.route.outcome: service }
+    gate: { question: Hand this service change to the release train? }
+  - id: apply
+    needs: [route]
+    when: { steps.route.outcome: infra }
+    gate: { question: Merge and apply this infrastructure change by hand? }
+  - id: review
+    needs: [route]
+    when: { steps.route.outcome: other }
+    gate: { question: Nothing to ship. Close it? }
+
+  # The join: it starts once the one branch that ran is done.
+  - id: done
+    needs: [ship, apply, review]
+    gate: { question: All done? }
 </code></pre>
 <h2 id="release">Release to dev</h2>
 <p>From <a href="https://github.com/lerenn/paseo-playbooks/tree/main/examples/.paseo/plugins/playbooks"><code>examples/.paseo/plugins/playbooks/</code></a>. It deploys the change named by <code>pr_url</code> to the development environment, then checks it there. Used on its own, or as the second block of the Capability playbook.</p>
