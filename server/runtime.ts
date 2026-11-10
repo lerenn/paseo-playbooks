@@ -7,6 +7,8 @@ import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 /** The daemon API handed to plugin handlers (typed via the SDK, so the build needs no @getpaseo/client). */
 type PaseoApi = PluginHandlerContext["paseo"];
 import type { AgentSettings, AgentTarget, Attempt, Gate, Job, Playbook, Run, RunWorktree, Step, VarValue } from "../shared/types";
+import { addUsage } from "../shared/types";
+import { analyze, type Analytics } from "../shared/analytics";
 import {
   SCRIPT_NOT_YET,
   attemptTimeoutMs,
@@ -2360,6 +2362,7 @@ export class Runtime {
   async onTurnEnded(agentId: string, outcome: "completed" | "failed" | "canceled"): Promise<void> {
     // First, while the agent is idle: what follows may send it a new turn.
     await this.sessions.reloadIfStale(this.api(), agentId, { known: this.isRunAgent(agentId) });
+    await this.recordUsage(agentId);
     const decider = this.deciderOf(agentId);
     if (decider) return this.onDeciderTurnEnded(decider.run.id, decider.gate.id, agentId, outcome);
     const step = this.stepRunOf(agentId);
@@ -2374,6 +2377,38 @@ export class Runtime {
     await this.onManagerTurnEnded(agentId);
     await this.cleanupEndedWorktrees().catch((error) => console.error("[playbooks] worktree cleanup failed:", errorText(error)));
     await this.archiveEndedWorkspaces().catch((error) => console.error("[playbooks] workspace archive check failed:", errorText(error)));
+  }
+
+  /** Where the tokens went (see shared/analytics.ts), over the runs on disk. */
+  analytics(options: { days?: number | undefined; playbook?: string | undefined; projectId?: string | undefined; limit?: number | undefined } = {}): Analytics {
+    const since = options.days ? new Date(Date.now() - options.days * 86_400_000).toISOString() : null;
+    return analyze(this.store.list(), { since, playbook: options.playbook ?? null, projectId: options.projectId ?? null, ...(options.limit ? { limit: options.limit } : {}) });
+  }
+
+  /** Adds the usage of the turn that just ended to the step attempt, gate decider or manager run it belongs to. */
+  private async recordUsage(agentId: string): Promise<void> {
+    try {
+      const target = this.deciderOf(agentId)?.run ?? this.stepRunOf(agentId)?.run ?? this.activeRunOfManager(agentId) ?? this.runsOfManager(agentId)[0];
+      if (!target) return;
+      const reading = (await this.api().agents.ref(agentId).refresh())?.agent.lastUsage;
+      if (!reading) return;
+      await this.store.mutate(target.id, (run) => {
+        const gate = run.gates.find((candidate) => candidate.deciderAgentId === agentId);
+        if (gate) {
+          gate.usage = addUsage(gate.usage, reading);
+          return;
+        }
+        const found = engine.findAttemptByAgent(run, agentId);
+        if (found) {
+          const attempt = run.steps[found.stepId]!.attempts.at(-1)!;
+          attempt.usage = addUsage(attempt.usage, reading);
+          return;
+        }
+        if (run.managerAgentId === agentId) run.managerUsage = addUsage(run.managerUsage, reading);
+      });
+    } catch (error) {
+      console.error(`[playbooks] could not record usage of ${agentId}:`, errorText(error));
+    }
   }
 
   async onAgentArchived(agentId: string, parentAgentId: string | null = null): Promise<void> {

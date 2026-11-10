@@ -389,6 +389,36 @@ export const ReportSchema = z.object({
 });
 export type Report = z.infer<typeof ReportSchema>;
 
+/**
+ * What an agent spent, summed over the turns it ended (each turn's `lastUsage` reading). `contextPeak`
+ * is the largest context window seen at a turn end, not a sum. Absent on runs from before.
+ */
+export const UsageSchema = z.object({
+  turns: z.number().int().min(0).default(0),
+  inputTokens: z.number().min(0).default(0),
+  cachedInputTokens: z.number().min(0).default(0),
+  outputTokens: z.number().min(0).default(0),
+  costUsd: z.number().min(0).default(0),
+  contextPeak: z.number().min(0).default(0),
+});
+export type Usage = z.infer<typeof UsageSchema>;
+
+/** Adds one turn's usage reading to a running total. */
+export function addUsage(
+  total: Usage | null | undefined,
+  reading: { inputTokens?: number; cachedInputTokens?: number; outputTokens?: number; totalCostUsd?: number; contextWindowUsedTokens?: number },
+): Usage {
+  const base = total ?? UsageSchema.parse({});
+  return {
+    turns: base.turns + 1,
+    inputTokens: base.inputTokens + (reading.inputTokens ?? 0),
+    cachedInputTokens: base.cachedInputTokens + (reading.cachedInputTokens ?? 0),
+    outputTokens: base.outputTokens + (reading.outputTokens ?? 0),
+    costUsd: base.costUsd + (reading.totalCostUsd ?? 0),
+    contextPeak: Math.max(base.contextPeak, reading.contextWindowUsedTokens ?? 0),
+  };
+}
+
 export const AttemptSchema = z.object({
   n: z.number().int().positive(),
   agentId: z.string(),
@@ -422,6 +452,8 @@ export const AttemptSchema = z.object({
   /** Agent steps: the `provider/model` the attempt's agent runs on, and the prompt it was started with (to restart it on the next target). */
   target: z.string().default(""),
   prompt: z.string().default(""),
+  /** What the attempt's agent spent; null before its first turn ended, and on script and hand-off attempts. */
+  usage: UsageSchema.nullable().optional(),
 });
 export type Attempt = z.infer<typeof AttemptSchema>;
 
@@ -466,6 +498,8 @@ export const GateSchema = z.object({
   decider: GateDeciderSchema.default({ by: "human" }),
   /** With a role decider: the agent deciding it, once started. */
   deciderAgentId: z.string().nullable().default(null),
+  /** What the role decider's agent spent. */
+  usage: UsageSchema.nullable().optional(),
   /** Set when the manager or role decider left the gate to a human: its reason. */
   escalated: z.string().nullable().default(null),
   /** When it was escalated. */
@@ -537,6 +571,8 @@ export const RunSchema = z.object({
   projectId: z.string(),
   branch: z.string().nullable(),
   managerAgentId: z.string(),
+  /** What the manager's agent spent while this run was its active one. */
+  managerUsage: UsageSchema.nullable().optional(),
   /** The plugin created this run's workspace (`newWorkspace`), so it may archive it. Never set for a pipeline's or a moved run's. */
   workspaceCreated: z.boolean().default(false),
   /** Once the run ended: `done` (workspace archived) or `skipped` (kept; the history says why). */

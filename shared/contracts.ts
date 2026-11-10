@@ -1,5 +1,6 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
+import { AnalyticsSchema } from "./analytics";
 import { PlaybookEntrySchema, RunSchema, RunSummarySchema, VarValueSchema } from "./types";
 
 export const listPlaybooks = defineRpc({
@@ -157,4 +158,11 @@ export const needsYouRpc = defineRpc({
   name: "overview.needs-you",
   input: z.object({}),
   output: z.object({ count: z.number().int() }),
+});
+
+/** Where the tokens went, summed over the runs on disk (archived ones too): by playbook, step, role and model. */
+export const analyticsStateRpc = defineRpc({
+  name: "analytics.state",
+  input: z.object({ days: z.number().int().positive().optional(), playbook: z.string().optional(), projectId: z.string().optional() }),
+  output: AnalyticsSchema,
 });
