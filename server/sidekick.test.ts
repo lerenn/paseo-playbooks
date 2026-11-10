@@ -235,3 +235,12 @@ describe("the example Sidekick", () => {
     expect(await loadSidekick(examples)).toMatchObject({ configured: true, errors: [], config: { mode: "plan" } });
   });
 });
+
+describe("this repository's own Sidekick", () => {
+  it("loads without errors", async () => {
+    const repo = path.resolve(__dirname, "..");
+    const load = await loadSidekick(repo);
+    expect(load).toMatchObject({ configured: true, errors: [], config: { model: "claude-sonnet-5-5", watch: DEFAULT_SIDEKICK_WATCH } });
+    expect(load.instructions).toContain("extend-playbook-format");
+  });
+});
