@@ -23,7 +23,7 @@ import type {
   VarValue,
   When,
 } from "../shared/types";
-import { AgentSettingsSchema, DEFAULT_MANAGER_COMPACT, ManagerCompactSchema, type Isolation, VarTypeSchema, VarValueSchema } from "../shared/types";
+import { AgentSettingsSchema, DEFAULT_EXHAUSTED_FOR_MS, DEFAULT_MANAGER_COMPACT, ManagerCompactSchema, type Isolation, VarTypeSchema, VarValueSchema } from "../shared/types";
 import { coerceValue, parseDuration, replaceRefs, singleRef, templateRefs, typeCompatible } from "../shared/vars";
 
 /** Folders searched for playbooks, relative to the workspace. Each folder is self-contained. */
@@ -53,7 +53,7 @@ const RawAgentSchema = AgentSettingsSchema.extend({ tier: z.string().min(1).opti
 type RawAgent = z.infer<typeof RawAgentSchema>;
 
 /** A named bundle of agent settings in `defaults/main.yaml`. */
-const RawTierSchema = z
+const RawTierEntrySchema = z
   .object({
     provider: z.string().optional(),
     model: z.string().optional(),
@@ -61,6 +61,8 @@ const RawTierSchema = z
     thinking: z.string().optional(),
   })
   .strict();
+/** One target, or an ordered list of targets: the next is used when the previous one is out of tokens. */
+const RawTierSchema = z.union([RawTierEntrySchema, z.array(RawTierEntrySchema).min(1)]);
 
 /** Who decides a gate besides a human in the panel; absent = a human. */
 const RawDeciderSchema = z
@@ -334,6 +336,14 @@ const RawDefaultsSchema = z.object({
     manager: RawAgentSchema.extend({ compact: ManagerCompactSchema.optional() }).optional(),
     workspace: RawWorkspaceSchema.optional(),
     isolation: RawIsolationSchema.optional(),
+    /** Provider failover (a tier listing several targets). */
+    providers: z
+      .object({
+        /** How long a `provider/model` that ran out of tokens is skipped before it is tried again (`1h`). Default 1h. */
+        exhausted_for: z.string().optional(),
+      })
+      .strict()
+      .optional(),
     /** Reload agent sessions that hold the tools of an older plugin generation once idle. Default true. */
     reload_stale_sessions: z.boolean().optional(),
     timeout: z.string().optional(),
@@ -351,7 +361,7 @@ const RawDefaultsSchema = z.object({
     silence: z.unknown().optional(),
     archive_agents: z.unknown().optional(),
   });
-type RawDefaults = z.infer<typeof RawDefaultsSchema> & { managerCompact?: ManagerCompact };
+type RawDefaults = Omit<z.infer<typeof RawDefaultsSchema>, "tiers"> & { tiers?: Tiers; managerCompact?: ManagerCompact };
 
 function formatZodError(file: string, error: z.ZodError): string[] {
   return error.issues.map((issue) => {
@@ -383,8 +393,10 @@ function mergeAgent(...layers: Array<AgentSettings | undefined>): AgentSettings 
   const merged: AgentSettings = {};
   for (const layer of layers) {
     if (!layer) continue;
+    // A layer that picks its own provider or model starts its own chain: the inherited fallback no longer fits.
+    if (layer.provider !== undefined || layer.model !== undefined) delete merged.fallback;
     for (const [key, value] of Object.entries(layer)) {
-      if (value !== undefined) (merged as Record<string, string>)[key] = value;
+      if (value !== undefined) (merged as Record<string, unknown>)[key] = value;
     }
   }
   return merged;
@@ -401,6 +413,10 @@ function resolveAgent(raw: RawAgent | undefined, tiers: Tiers, at: string, fail:
   const { tier, ...own } = raw;
   if (tier === undefined) return own;
   const found = tiers[tier];
+  if (found && found.fallback && Object.values(own).some((value) => value !== undefined)) {
+    fail(`${at}: tier "${tier}" lists several providers and cannot be combined with ${codeList(Object.keys(own).filter((key) => (own as Record<string, unknown>)[key] !== undefined))}: define another tier for that`);
+    return mergeAgent(found);
+  }
   if (!found) {
     const known = Object.keys(tiers);
     fail(`${at}: unknown tier "${tier}"${known.length ? ` (defined in defaults/main.yaml: ${known.join(", ")})` : "; define it under `tiers:` in defaults/main.yaml"}`);
@@ -486,7 +502,10 @@ async function loadDefaults(root: string, relDir: string): Promise<{ defaults: R
   const tiers: Tiers = {};
   for (const [name, tier] of Object.entries(parsed.data.tiers ?? {})) {
     if (!ID.test(name)) errors.push(`${rel}: tiers.${name}: invalid name (lowercase letters, digits, - and _)`);
-    tiers[name] = tier;
+    if (Array.isArray(tier)) {
+      const [first, ...rest] = tier;
+      tiers[name] = rest.length > 0 ? { ...first, fallback: rest } : { ...first };
+    } else tiers[name] = tier;
   }
   const fail = (message: string) => errors.push(`${rel}: ${message}`);
   const defaults: RawDefaults = { ...parsed.data, tiers };
@@ -498,6 +517,9 @@ async function loadDefaults(root: string, relDir: string): Promise<{ defaults: R
   }
   if (parsed.data.timeout && parseDuration(parsed.data.timeout) === null) {
     errors.push(`${rel}: timeout: expected a duration such as 30m or 2h`);
+  }
+  if (parsed.data.providers?.exhausted_for !== undefined && parseDuration(parsed.data.providers.exhausted_for) === null) {
+    errors.push(`${rel}: providers.exhausted_for: expected a duration such as 30m or 2h`);
   }
   if (parsed.data.role?.silence && parseSilence(parsed.data.role.silence) === null) {
     errors.push(`${rel}: role.silence: expected a duration such as 30m, or off`);
@@ -1293,6 +1315,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     roles,
     manager,
     managerCompact: pb.manager?.compact ?? defaults.managerCompact ?? DEFAULT_MANAGER_COMPACT,
+    exhaustedForMs: (defaults.providers?.exhausted_for ? parseDuration(defaults.providers.exhausted_for) : null) ?? DEFAULT_EXHAUSTED_FOR_MS,
     managerInstructions: managerInstructions(folder.managerText, id, pb.manager?.prompt, [...blocks.values()]),
     outcomes: playbookOutcomes,
     workspace: {

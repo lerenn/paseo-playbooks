@@ -86,3 +86,77 @@ describe("model tiers", () => {
     expect(entry!.playbook!.steps[0]!.agent).toEqual({ provider: "claude", model: "m" });
   });
 });
+
+describe("provider fallback tiers", () => {
+  const CHAIN = `tiers:
+  cheap:
+    - { provider: claude, model: claude-haiku-5-5, thinking: low }
+    - { provider: codex, model: gpt-5-mini }
+    - { provider: ollama, model: "qwen3:8b" }
+  solo: [ { provider: claude, model: claude-sonnet-5-5 } ]
+`;
+  const STEPS = `title: P
+steps:
+  - id: a
+    role: { name: investigator, agent: { tier: cheap } }
+  - id: b
+    role: { name: implementer, agent: { tier: solo } }
+  - id: c
+    needs: [b]
+    role: { name: implementer }
+  - id: ok
+    needs: [a, c]
+    gate: { question: "Ship?", decider: { by: role, role: reviewer, agent: { tier: cheap } } }
+`;
+
+  it("lists targets in order: the first is the agent's, the rest its fallback", async () => {
+    const [entry] = await load({ "p.yaml": STEPS }, `${CHAIN}manager: { tier: cheap }\nagent: { tier: solo }\n`);
+    expect(entry!.errors).toEqual([]);
+    const pb = entry!.playbook!;
+    expect(pb.steps.find((step) => step.id === "a")!.agent).toEqual({
+      provider: "claude",
+      model: "claude-haiku-5-5",
+      thinking: "low",
+      fallback: [
+        { provider: "codex", model: "gpt-5-mini" },
+        { provider: "ollama", model: "qwen3:8b" },
+      ],
+    });
+    // a single-entry list is a plain block; a step without its own tier keeps the defaults' single tier
+    expect(pb.steps.find((step) => step.id === "b")!.agent).toEqual({ provider: "claude", model: "claude-sonnet-5-5" });
+    expect(pb.steps.find((step) => step.id === "c")!.agent).toEqual({ provider: "claude", model: "claude-sonnet-5-5" });
+    expect(pb.steps.find((step) => step.id === "ok")!.decider).toMatchObject({ agent: { fallback: [{ provider: "codex" }, { provider: "ollama" }] } });
+    expect(pb.manager.fallback).toHaveLength(2);
+  });
+
+  it("does not inherit a fallback into a layer that picks its own provider or model", async () => {
+    const [entry] = await load({ "p.yaml": STEPS }, `${CHAIN}agent: { tier: cheap }\n`);
+    const agent = (id: string) => entry!.playbook!.steps.find((step) => step.id === id)!.agent;
+    expect(agent("c").fallback).toHaveLength(2);
+    expect(agent("b")).toEqual({ provider: "claude", model: "claude-sonnet-5-5", thinking: "low" });
+  });
+
+  it("refuses an empty list, an unknown key, and a multi-entry tier combined with inline settings", async () => {
+    const [empty] = await load({ "p.yaml": STEPS }, "tiers:\n  cheap: []\n  solo: { provider: x }\n");
+    expect(empty!.errors.join("\n")).toMatch(/tiers/);
+    const [typo] = await load({ "p.yaml": STEPS }, "tiers:\n  cheap: [ { modle: x } ]\n  solo: { provider: x }\n");
+    expect(typo!.errors.join("\n")).toMatch(/modle|Unrecognized key/);
+    const [mixed] = await load({ "p.yaml": STEPS.replace("agent: { tier: cheap } }\n  - id: b", "agent: { tier: cheap, model: opus } }\n  - id: b") }, CHAIN);
+    expect(mixed!.errors.join("\n")).toMatch(/tier "cheap" lists several providers and cannot be combined with `model`: define another tier/);
+    // a single-entry tier may still be tweaked
+    const [single] = await load({ "p.yaml": STEPS.replace("agent: { tier: solo }", "agent: { tier: solo, thinking: high }") }, CHAIN);
+    expect(single!.errors).toEqual([]);
+  });
+
+  it("reads `providers: { exhausted_for }`: a duration, 1h when absent, strict", async () => {
+    const [none] = await load({ "p.yaml": STEPS }, CHAIN);
+    expect(none!.playbook!.exhaustedForMs).toBe(3_600_000);
+    const [ok] = await load({ "p.yaml": STEPS }, `${CHAIN}providers: { exhausted_for: 30m }\n`);
+    expect(ok!.errors).toEqual([]);
+    expect(ok!.playbook!.exhaustedForMs).toBe(1_800_000);
+    const [bad] = await load({ "p.yaml": STEPS }, `${CHAIN}providers: { exhausted_for: soon }\n`);
+    expect(bad!.errors.join("\n")).toMatch(/providers\.exhausted_for: expected a duration/);
+    const [typo] = await load({ "p.yaml": STEPS }, `${CHAIN}providers: { exhausted_aftr: 1h }\n`);
+    expect(typo!.errors.join("\n")).toMatch(/exhausted_aftr|Unrecognized key/);
+  });
+});

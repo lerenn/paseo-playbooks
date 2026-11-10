@@ -46,7 +46,9 @@ Everything lives in the repository, under `.paseo/plugins/playbooks/` or the sho
 
 ```yaml
 tiers:                 # named agent settings, referenced by `agent: { tier: <name> }`
-  cheap: { provider: claude, model: claude-haiku-5-5 }
+  cheap:               # a list is a chain: when claude is out of tokens, the step moves to the next entry
+    - { provider: claude, model: claude-haiku-5-5 }
+    - { provider: codex, model: gpt-5-mini }
   worker: { provider: claude, model: claude-opus-5-5 }
   advisor: { provider: claude, model: claude-opus-5-5, thinking: high }
 agent:                 # defaults for every step
@@ -55,6 +57,8 @@ agent:                 # defaults for every step
 manager:               # settings of the manager agent when Start creates a new one
   mode: default
   compact: { above_tokens: 150000 }  # when to /compact the manager: never | on_step | on_gate_decided | { above_tokens: N } (default shown)
+providers:             # provider failover
+  exhausted_for: 1h    # an exhausted provider/model is skipped this long, then tried again (default 1h)
 timeout: 1h            # default step timeout (optional)
 role:                  # defaults for agent steps, in the shape of a step's `role:` block
   silence: 30m         # remind a step agent after this long without activity (default 30m; off to disable)
@@ -75,6 +79,16 @@ Any `agent` block (in `defaults/main.yaml`, its `manager`, a playbook, a role's 
 fields come first, the block's own fields override them, and the layers then merge as above (a field a
 layer leaves unset still comes from a lower layer). An unknown tier is an error. Switching provider is
 one edit of the tiers.
+
+A tier may also be a list of targets (`provider`, `model`, `mode`, `thinking` each): the first is the
+primary, the rest are fallbacks. When a step agent's turn fails because its provider is out of tokens
+(quota, rate or usage limit, no credits), the plugin restarts the same attempt on the next entry with
+the same brief, without using a `retry`, records the exhausted `provider/model` in `run.exhausted` (`{ target, at }`) for
+`providers.exhausted_for` (default `1h`; later agents skip it until then, after which it is tried again;
+very short values re-probe a failing provider), logs a `provider_exhausted` line and tells the manager. When every entry is exhausted the failure goes
+to the manager as usual. A multi-entry tier cannot be combined with inline `provider`, `model`, `mode`
+or `thinking` on the same `agent` block: define another tier. On `manager` it only picks the first
+entry when a manager is created; the manager never switches mid-run.
 
 ## Manager instructions
 
