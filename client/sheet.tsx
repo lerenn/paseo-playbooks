@@ -300,7 +300,7 @@ export function StepSheet(props: {
   return (
     <Modal title={`${stepTitle(step)}${role ? ` · ${role.title}` : step.kind === "gate" ? " · Gate" : step.kind === "script" ? " · Script" : step.kind === "handoff" ? " · Hand-off" : step.kind === "branch" ? " · Branch" : ""}`} open onOpenChange={(open) => !open && props.onClose()}>
       <Modal.Content>
-        {state ? <Line theme={theme}>Status: {state.status}{latest ? ` · attempt ${latest.n}` : ""}</Line> : null}
+        {state ? <Line theme={theme}>Status: {state.status}{latest ? ` · attempt ${latest.n}` : ""}{latest?.waiting && state.status === "running" ? ` · waiting for tokens until ${new Date(latest.waiting.until).toLocaleString()}` : ""}</Line> : null}
         {step.kind === "agent" ? (
           <Section theme={theme} title="Agent">
             <Line theme={theme} muted>

@@ -369,6 +369,10 @@ const RawDefaultsSchema = z.object({
       .object({
         /** How long a `provider/model` that ran out of tokens is skipped before it is tried again (`1h`). Default 1h. */
         exhausted_for: z.string().optional(),
+        /** What a step does when every provider of its role is out of tokens: `fail` (to the manager) or `wait` until one recovers. Default fail. */
+        on_exhausted: z.enum(["fail", "wait"]).optional(),
+        /** With `on_exhausted: wait`: the longest a step waits (`12h`) before it fails to the manager. Default: no limit. */
+        max_wait: z.string().optional(),
       })
       .strict()
       .optional(),
@@ -548,6 +552,10 @@ async function loadDefaults(root: string, relDir: string): Promise<{ defaults: R
   }
   if (parsed.data.providers?.exhausted_for !== undefined && parseDuration(parsed.data.providers.exhausted_for) === null) {
     errors.push(`${rel}: providers.exhausted_for: expected a duration such as 30m or 2h`);
+  }
+  if (parsed.data.providers?.max_wait !== undefined) {
+    if (parsed.data.providers.on_exhausted !== "wait") errors.push(`${rel}: providers.max_wait only applies with providers.on_exhausted: wait`);
+    if (parseDuration(parsed.data.providers.max_wait) === null) errors.push(`${rel}: providers.max_wait: expected a duration such as 30m or 2h`);
   }
   if (parsed.data.role?.silence && parseSilence(parsed.data.role.silence) === null) {
     errors.push(`${rel}: role.silence: expected a duration such as 30m, or off`);
@@ -1482,6 +1490,8 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     manager,
     managerCompact: pb.manager?.compact ?? defaults.managerCompact ?? DEFAULT_MANAGER_COMPACT,
     exhaustedForMs: (defaults.providers?.exhausted_for ? parseDuration(defaults.providers.exhausted_for) : null) ?? DEFAULT_EXHAUSTED_FOR_MS,
+    onExhausted: defaults.providers?.on_exhausted ?? "fail",
+    maxWaitMs: (defaults.providers?.max_wait ? parseDuration(defaults.providers.max_wait) : null) ?? null,
     managerInstructions: managerInstructions(folder.managerText, id, pb.manager?.prompt, [...blocks.values()]),
     outcomes: playbookOutcomes,
     workspace: {

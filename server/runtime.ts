@@ -403,6 +403,10 @@ export class Runtime {
           this.armTimeout(run, stepId);
           continue;
         }
+        if (attempt.waiting) {
+          this.armWait(run, stepId);
+          continue;
+        }
         const agent = await this.api().agents.ref(attempt.agentId).refresh().catch(() => null);
         if (agent?.agent.status === "running") {
           this.armTimeout(run, stepId);
@@ -1712,15 +1716,14 @@ export class Runtime {
     return { agentId: agent.id, attempt: started.attempt.n };
   }
 
-  private async stepAgentConfig(run: Run, step: Pick<Step, "id" | "agent">, tools = STEP_TOOL_NAMES) {
+  /** The targets of a step's chain (primary first) with their resolved provider and model. */
+  private async stepCandidates(run: Run, step: Pick<Step, "id" | "agent">) {
     const manager = await this.api().agents.ref(run.managerAgentId).refresh().catch(() => null);
     const [first, ...rest] = [
       { ...step.agent, fallback: undefined } as AgentTarget,
       ...(step.agent.fallback ?? []),
     ];
-    const skipped = engine.activeExhausted(run);
-    // The first target not out of tokens (or whose delay has passed); if all are, the primary (the failure goes to the manager as before).
-    const candidates = [first!, ...rest].map((target, index) => {
+    return [first!, ...rest].map((target, index) => {
       const provider = target.provider ?? (index === 0 ? manager?.agent.provider : undefined) ?? DEFAULT_PROVIDER;
       const model =
         target.model ??
@@ -1728,6 +1731,12 @@ export class Runtime {
         (provider === DEFAULT_PROVIDER ? DEFAULT_MODEL : undefined);
       return { target, provider, model };
     });
+  }
+
+  private async stepAgentConfig(run: Run, step: Pick<Step, "id" | "agent">, tools = STEP_TOOL_NAMES) {
+    const skipped = engine.activeExhausted(run);
+    // The first target not out of tokens (or whose delay has passed); if all are, the primary (the failure goes to the manager as before).
+    const candidates = await this.stepCandidates(run, step);
     const chosen = candidates.find((candidate) => candidate.model && !skipped.includes(`${candidate.provider}/${candidate.model}`)) ?? candidates[0]!;
     const { target, provider, model } = chosen;
     if (!model) throw new UserError(`step "${step.id}": no model for provider "${provider}"; set agent.model in the playbook`);
@@ -2254,7 +2263,7 @@ export class Runtime {
     await this.deliver(runId);
   }
 
-  async onStepTurnEnded(runId: string, agentId: string, turnEnd: "completed" | "failed" | "canceled" | "lost" | "timeout"): Promise<void> {
+  async onStepTurnEnded(runId: string, agentId: string, turnEnd: "completed" | "failed" | "canceled" | "lost" | "timeout", canWait = true): Promise<void> {
     const run = this.store.get(runId);
     if (!run) return;
     const found = engine.findAttemptByAgent(run, agentId);
@@ -2265,7 +2274,7 @@ export class Runtime {
       const page = await this.api().agents.ref(agentId).timeline.refetch({ direction: "tail", limit: 30 }).catch(() => null);
       lastMessage = page ? lastAssistantText(page.entries as never) : null;
       if (turnEnd === "failed" && page && !isPaused(run) && isQuotaError(failureText(page.entries as never))) {
-        if (await this.failOverStep(runId, found.stepId, agentId, failureText(page.entries as never))) return;
+        if (await this.failOverStep(runId, found.stepId, agentId, failureText(page.entries as never), { canWait })) return;
       }
       if (turnEnd === "completed" && !found.attempt.reminded && !isPaused(run) && (await this.remindToReport(runId, found.stepId, agentId))) return;
     }
@@ -2301,7 +2310,7 @@ export class Runtime {
    * on the next target of its chain, with the same prompt and without using a retry. False if no
    * target is left or the new agent could not start (the failure then goes to the manager).
    */
-  private async failOverStep(runId: string, stepId: string, agentId: string, reason: string): Promise<boolean> {
+  private async failOverStep(runId: string, stepId: string, agentId: string, reason: string, options: { canWait?: boolean; resuming?: boolean } = {}): Promise<boolean> {
     const run = this.store.get(runId);
     const attempt = run?.steps[stepId]?.attempts.at(-1);
     if (!run || !attempt || attempt.agentId !== agentId || !attempt.target || isAgentlessAttempt(agentId)) return false;
@@ -2309,7 +2318,7 @@ export class Runtime {
     if (step.kind !== "agent" || !step.role) return false;
     const exhausted = attempt.target;
     const probe = structuredClone(run);
-    engine.markTarget(probe, exhausted, nowIso());
+    if (!options.resuming) engine.markTarget(probe, exhausted, nowIso());
     let config: AgentConfig;
     try {
       config = await this.stepAgentConfig(probe, step);
@@ -2317,7 +2326,29 @@ export class Runtime {
       config = { provider: exhausted };
     }
     if (engine.activeExhausted(probe).includes(config.provider ?? exhausted)) {
-      await this.store.mutate(runId, (current) => engine.markExhausted(current, stepId, exhausted, nowIso(), reason));
+      if (run.playbook.onExhausted === "wait" && options.canWait !== false) {
+        const chain = (await this.stepCandidates(probe, step)).map((candidate) => `${candidate.provider}/${candidate.model}`);
+        const resetAt = engine.exhaustedUntil(probe, chain);
+        const first = !attempt.waiting;
+        const waiting = await this.store.mutate(runId, (current) => {
+          if (!options.resuming) engine.markTarget(current, exhausted, nowIso());
+          return engine.startWaiting(current, stepId, { target: exhausted, reason, now: nowIso(), resetAt });
+        });
+        if (waiting) {
+          this.armWait(this.store.get(runId)!, stepId);
+          const until = this.store.get(runId)!.steps[stepId]!.attempts.at(-1)!.waiting!.until;
+          if (first) {
+            await this.enqueue(runId, [`step "${stepId}" attempt ${attempt.n}: every provider of its role is out of tokens; the plugin waits and restarts the attempt with the same brief at ${new Date(until).toLocaleString()} (no retry used)${run.playbook.maxWaitMs ? `, giving up after ${humanDuration(run.playbook.maxWaitMs)} in all` : ""}. Nothing to do: do not nudge or complete it; you are woken when it reports or fails.`]);
+            await this.deliver(runId);
+          }
+          return true;
+        }
+      }
+      await this.store.mutate(runId, (current) => {
+        engine.markExhausted(current, stepId, exhausted, nowIso(), reason);
+        const last = engine.currentAttempt(current, stepId);
+        if (last) last.waiting = null;
+      });
       return false;
     }
     const role = run.playbook.roles[step.role]!;
@@ -2338,14 +2369,52 @@ export class Runtime {
     }
     this.clearTimeout(agentId);
     await this.store.mutate(runId, (current) =>
-      engine.failOverAttempt(current, stepId, { target: exhausted, agentId: agent.id, newTarget: config.provider ?? "", now: nowIso(), reason }),
+      engine.failOverAttempt(current, stepId, { target: exhausted, agentId: agent.id, newTarget: config.provider ?? "", now: nowIso(), reason, resumed: options.resuming === true }),
     );
     await agent.send(withPreamble(attempt.prompt, this.store.get(runId)!)).catch((error: unknown) => console.error(`[playbooks] could not brief ${agent.id}:`, errorText(error)));
     this.armTimeout(this.store.get(runId)!, stepId);
     await this.archiveStepAgent(agentId);
+    if (options.resuming) {
+      await this.enqueue(runId, [`step "${stepId}" attempt ${attempt.n}: waited for tokens; the plugin restarted the attempt on ${config.provider} with the same brief (no retry used). Nothing to do: it will report as usual.`]);
+      await this.deliver(runId);
+      return true;
+    }
     await this.enqueue(runId, [`step "${stepId}" attempt ${attempt.n}: ${exhausted} is out of tokens; the plugin restarted the attempt on ${config.provider} with the same brief (no retry used); ${exhausted} is tried again after ${humanDuration(run.playbook.exhaustedForMs)}. Nothing to do: it will report as usual.`]);
     await this.deliver(runId);
     return true;
+  }
+
+  /** Schedules the restart of an attempt that waits for tokens (`attempt.waiting.until`). */
+  private armWait(run: Run, stepId: string): void {
+    const attempt = run.steps[stepId]?.attempts.at(-1);
+    if (!attempt?.waiting) return;
+    this.clearTimeout(attempt.agentId);
+    const due = Date.parse(attempt.waiting.until) - Date.now();
+    const timer = setTimeout(() => void this.onWaitEnded(run.id, stepId, attempt.agentId), Math.max(0, due));
+    (timer as unknown as { unref?: () => void }).unref?.();
+    this.timers.set(attempt.agentId, timer);
+  }
+
+  /** The wait is over: restart the attempt on the first provider that is back, wait again if none is, or fail once `max_wait` is spent. */
+  private async onWaitEnded(runId: string, stepId: string, agentId: string): Promise<void> {
+    this.timers.delete(agentId);
+    const run = this.store.get(runId);
+    const attempt = run?.steps[stepId]?.attempts.at(-1);
+    if (!run || attempt?.agentId !== agentId || !attempt.waiting || run.steps[stepId]!.status !== "running") return;
+    // A paused run starts nothing: look again in a minute.
+    if (isPaused(run)) {
+      const timer = setTimeout(() => void this.onWaitEnded(runId, stepId, agentId), 60_000);
+      (timer as unknown as { unref?: () => void }).unref?.();
+      this.timers.set(agentId, timer);
+      return;
+    }
+    if (await this.failOverStep(runId, stepId, agentId, "tokens still out", { resuming: true })) return;
+    // No wait left (max_wait spent, or the new agent could not start): the failure goes to the manager.
+    await this.store.mutate(runId, (current) => {
+      const last = engine.currentAttempt(current, stepId);
+      if (last?.agentId === agentId) last.waiting = null;
+    });
+    await this.onStepTurnEnded(runId, agentId, "failed", false);
   }
 
   /**
@@ -2529,6 +2598,8 @@ export class Runtime {
     const step = engine.stepDef(run, stepId);
     const attempt = run.steps[stepId]!.attempts.at(-1);
     if (!attempt) return;
+    // An attempt waiting for tokens has no timeout or silence check: its new agent gets them whole.
+    if (attempt.waiting) return;
     this.clearTimeout(attempt.agentId);
     this.armWatch(run, stepId, Date.parse(attempt.reopenedAt ?? attempt.startedAt));
     const timeoutMs = attemptTimeoutMs(step, attempt);
