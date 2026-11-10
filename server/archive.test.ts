@@ -123,3 +123,38 @@ describe("step agents the run no longer needs", () => {
     expect(archived).toEqual([]);
   });
 });
+
+describe("archive_run (archiveRunByAgent)", () => {
+  it("refuses an active run, archives an ended one, and is idempotent", async () => {
+    const { store, runtime } = await setup();
+    await expect(runtime.archiveRunByAgent("run_x", false)).rejects.toThrow(/cancel it before archiving/);
+    await runtime.cancelRun("run_x", "done", null);
+    const first = await runtime.archiveRunByAgent("run_x", false);
+    expect(first.already).toBe(false);
+    expect(store.get("run_x")!.archivedAt).not.toBeNull();
+    const again = await runtime.archiveRunByAgent("run_x", false);
+    expect(again.already).toBe(true);
+    expect(again.run.archivedAt).toBe(first.run.archivedAt);
+  });
+
+  it("refuses an unknown run", async () => {
+    const { runtime } = await setup();
+    await expect(runtime.archiveRunByAgent("nope", false)).rejects.toThrow(/unknown run/);
+  });
+
+  it("refuses a run whose job is still open at a pipeline unless forced", async () => {
+    const { store, runtime } = await setup();
+    await runtime.cancelRun("run_x", "done", null);
+    const base = store.get("run_x")!;
+    const job = {
+      id: "job_1", fromRunId: "run_x", fromStepId: "a", attempt: 1, label: "x", inputs: {}, status: "open" as const, outcome: null, summary: null, outputs: {},
+      createdAt: new Date().toISOString(), endedAt: null, passed: [], waiting: [{ station: "dev", since: new Date().toISOString() }], riding: [], failedRides: {}, detached: false,
+    };
+    await store.create({ ...structuredClone(base), id: "run_pipe", archivedAt: null, jobs: [job] });
+    await expect(runtime.archiveRunByAgent("run_x", false)).rejects.toThrow(/not settled yet.*job_1/);
+    expect(store.get("run_x")!.archivedAt).toBeNull();
+    const forced = await runtime.archiveRunByAgent("run_x", true);
+    expect(forced.already).toBe(false);
+    expect(store.get("run_x")!.archivedAt).not.toBeNull();
+  });
+});
