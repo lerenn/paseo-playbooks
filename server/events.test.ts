@@ -12,18 +12,19 @@ const runtimes: Runtime[] = [];
 afterEach(async () => {
   faults.failCreate = false;
   faults.gone.clear();
+  faults.running.clear();
   await Promise.all(runtimes.splice(0).map((runtime) => runtime.dispose()));
   await Promise.all(temps.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
-const faults = { failCreate: false, gone: new Set<string>() };
+const faults = { failCreate: false, gone: new Set<string>(), running: new Set<string>() };
 
 function fakePaseo(dir: string) {
   const sent: Array<{ agentId: string; text: string }> = [];
   const archived = new Set<string>();
   let agents = 0;
   const ref = (agentId: string) => ({
-    refresh: async () => (faults.gone.has(agentId) ? null : { agent: { id: agentId, status: "idle", provider: "claude", model: null, archivedAt: archived.has(agentId) ? "now" : null, pendingPermissions: [] } }),
+    refresh: async () => (faults.gone.has(agentId) ? null : { agent: { id: agentId, status: faults.running.has(agentId) ? "running" : "idle", provider: "claude", model: null, archivedAt: archived.has(agentId) ? "now" : null, pendingPermissions: [] } }),
     send: async (text: string) => void sent.push({ agentId, text }),
     reload: async () => undefined,
     archive: async () => void archived.add(agentId),
@@ -322,6 +323,7 @@ describe("gate.escalated", () => {
     const { runtime, store, sent, run, gate } = await roleGate();
     const decider = gate.deciderAgentId!;
     await runtime.subscribeEvents(decider, ["gate.escalated"], {});
+    await runtime.onTurnEnded("watcher", "completed"); // the watcher's turn on the gate.opened message ends
     await runtime.reportGateDecision(decider, { decision: "escalate", comment: "It touches billing." });
     await runtime.watchEvents();
     const [event] = await escalations(runtime);
@@ -427,5 +429,92 @@ describe("gate.escalated", () => {
     const again = await setup({}, { dir: first.dir, file: "" });
     await again.runtime.watchEvents();
     expect(await escalations(again.runtime)).toHaveLength(1);
+  });
+});
+
+describe("delivery: idle", () => {
+  async function opened(ctx: Awaited<ReturnType<typeof setup>>, manager: string) {
+    await ctx.runtime.watchEvents(); // seeds
+    const run = await ctx.runtime.startPlaybook(mgr(manager), "human", {});
+    await ctx.runtime.requestGate(manager, run.id, "approve", "Ship it?", "");
+    await ctx.runtime.watchEvents();
+    return run;
+  }
+
+  it("sends at once to an idle subscriber, and idle is the default", async () => {
+    const ctx = await setup();
+    const sub = await ctx.runtime.subscribeEvents("watcher", ["gate.opened"], {});
+    expect(sub.delivery).toBe("idle");
+    await opened(ctx, "m1");
+    expect(toAgent(ctx.sent, "watcher")).toContain("Ship it?");
+  });
+
+  it("holds events while the subscriber is in a turn and sends one merged message, in order, when it ends", async () => {
+    const ctx = await setup();
+    await ctx.runtime.subscribeEvents("watcher", ["gate.*"], {});
+    ctx.runtime.onTurnStarted("watcher");
+    const run = await opened(ctx, "m1");
+    const gate = ctx.store.get(run.id)!.gates[0]!;
+    await ctx.runtime.decideGate(run.id, gate.id, { decision: "approved", comment: "ok", by: "U1", via: "panel", now: now() });
+    await ctx.runtime.watchEvents();
+    await ctx.runtime.watchEvents();
+    expect(toAgent(ctx.sent, "watcher")).toBe("");
+
+    await ctx.runtime.onTurnEnded("watcher", "completed");
+    const messages = ctx.sent.filter((entry) => entry.agentId === "watcher");
+    expect(messages).toHaveLength(1);
+    expect(messages[0]!.text).toContain("2 events");
+    expect(messages[0]!.text.indexOf("gate.opened")).toBeGreaterThanOrEqual(0);
+    expect(messages[0]!.text.indexOf("Ship it?")).toBeLessThan(messages[0]!.text.indexOf("approved"));
+  });
+
+  it("holds while a subscriber we have not seen (after a restart) reports running, then sends once idle", async () => {
+    const ctx = await setup();
+    await ctx.runtime.subscribeEvents("watcher", ["gate.opened"], {});
+    faults.running.add("watcher");
+    await opened(ctx, "m1");
+    expect(toAgent(ctx.sent, "watcher")).toBe("");
+    faults.running.delete("watcher");
+    await ctx.runtime.onTurnEnded("watcher", "completed");
+    expect(toAgent(ctx.sent, "watcher")).toContain("Ship it?");
+  });
+
+  it("steer keeps sending into a running turn", async () => {
+    const ctx = await setup();
+    const sub = await ctx.runtime.subscribeEvents("watcher", ["gate.opened"], {}, "steer");
+    expect(sub.delivery).toBe("steer");
+    ctx.runtime.onTurnStarted("watcher");
+    await opened(ctx, "m1");
+    expect(toAgent(ctx.sent, "watcher")).toContain("Ship it?");
+  });
+
+  it("drops a held subscription when the subscriber is archived meanwhile", async () => {
+    const ctx = await setup();
+    await ctx.runtime.subscribeEvents("watcher", ["gate.opened"], {});
+    ctx.runtime.onTurnStarted("watcher");
+    await opened(ctx, "m1");
+    ctx.archived.add("watcher");
+    await ctx.runtime.onTurnEnded("watcher", "completed");
+    expect(toAgent(ctx.sent, "watcher")).toBe("");
+    expect(await ctx.runtime.bus.list("watcher")).toEqual([]);
+  });
+
+  it("keeps held events across a restart and caps a long wait", async () => {
+    const first = await setup();
+    await first.runtime.subscribeEvents("watcher", ["gate.opened"], {});
+    await first.runtime.watchEvents(); // seeds
+    first.runtime.onTurnStarted("watcher");
+    for (let i = 0; i < 53; i++) {
+      const run = await first.runtime.startPlaybook(mgr(`m${i}`), "human", {});
+      await first.runtime.requestGate(`m${i}`, run.id, "approve", `Ship ${i}?`, "");
+    }
+    await first.runtime.watchEvents();
+    await first.runtime.dispose();
+
+    const again = await setup({}, { dir: first.dir, file: "" });
+    await again.runtime.onTurnEnded("watcher", "completed");
+    const text = toAgent(again.sent, "watcher");
+    expect(text).toContain("50 events");
+    expect(text).toContain("3 earlier events were dropped");
   });
 });

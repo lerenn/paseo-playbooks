@@ -540,7 +540,7 @@ after:
   a main step.
 - Step agents cannot call `get_run`. Other agents can read any run with it (read-only), and
   `list_gates` lists every open gate and ask across runs (a gate a decider left to a human shows `waitingForHuman`, `escalatedAt` and
-  `escalationReason`; `subscribe_events` on `gate.escalated` tells agents when that happens). A retro step that reviews the whole run gets it from
+  `escalationReason`; `subscribe_events` on `gate.escalated` tells agents when that happens; its `delivery` is `idle` by default, which holds the notice until the subscriber's turn ends, or `steer` to inject it into the running turn). A retro step that reviews the whole run gets it from
   the manager: tell the manager (in the playbook `description`) to put `get_run` with
   `view: "full"` in the step's brief. The default `get_run` view is compact (per step: status,
   outcome, attempts, turn end and the first 300 characters of the summary), without reports

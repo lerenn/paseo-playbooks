@@ -72,7 +72,7 @@ How to run a playbook:
 11. Overseeing: get_run reads any run, not only yours (writes stay with the run's manager).
    list_gates shows every open gate and ask across runs and who holds each; with
    includeFailed it adds failed runs and runs that lost their manager. subscribe_events
-   asks the plugin to message you on events (types such as gate.opened, gate.stale,
+   asks the plugin to message you on events (held until your turn ends unless delivery is "steer") (types such as gate.opened, gate.stale,
    gate.decided, run.failed, run.manager_lost; globs like "gate.*" work) and list_events
    replays what you missed: use them only when a human asks you to watch the runs. None of this lets you
    decide another run's gate.

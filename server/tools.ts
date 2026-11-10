@@ -566,14 +566,15 @@ export function runTools(runtime: Runtime): AgentToolDefinition[] {
     defineAgentTool({
       name: "subscribe_events",
       description:
-        'Get a plain-text message from the plugin when events happen on the daemon. types: exact names or globs ("gate.*", "run.failed", "*"). Types today: gate.opened (a gate step, ask or loop-limit gate opened: question, choices, decider and who holds it), gate.stale (still open after filter.olderThanMinutes, default 30; once per gate), gate.decided (who, via panel/chat/manager/role, and the comment; not sent to the manager or role agent that decided it), run.failed (reason and restartableFrom), run.manager_lost. filter: payload fields that must equal a value (e.g. { playbook: "release", deciderBy: "role" }, { runId }), plus olderThanMinutes for gate.stale. Bursts are merged into one message. The subscriber is you; it survives daemon restarts and ends when you are archived. Returns the subscription id. list_events replays what you missed.',
+        'Get a plain-text message from the plugin when events happen on the daemon. types: exact names or globs ("gate.*", "run.failed", "*"). Types today: gate.opened (a gate step, ask or loop-limit gate opened: question, choices, decider and who holds it), gate.stale (still open after filter.olderThanMinutes, default 30; once per gate), gate.decided (who, via panel/chat/manager/role, and the comment; not sent to the manager or role agent that decided it), run.failed (reason and restartableFrom), run.manager_lost. filter: payload fields that must equal a value (e.g. { playbook: "release", deciderBy: "role" }, { runId }), plus olderThanMinutes for gate.stale. Bursts are merged into one message. delivery: "idle" (default) holds the message until your current turn has ended, then sends it as one new message, so it never interrupts you (an interactive question, say); "steer" sends it into your running turn at once. Held messages survive restarts (at most 50 per subscription; older ones are dropped, list_events replays them). The subscriber is you; it survives daemon restarts and ends when you are archived. Returns the subscription id. list_events replays what you missed.',
       input: z.object({
         types: z.array(z.string()).min(1).describe('Event types or globs, e.g. ["gate.*", "run.failed"]'),
         filter: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).default({}).describe("Payload fields to match by equality; olderThanMinutes picks the delay of a stale event"),
+        delivery: z.enum(["idle", "steer"]).default("idle").describe('"idle" (default): held until your turn ends; "steer": injected into your running turn'),
       }),
-      execute: ({ types, filter }, { agent }) =>
+      execute: ({ types, filter, delivery }, { agent }) =>
         guard(async () => {
-          const sub = await runtime.subscribeEvents(agent.id, types, filter);
+          const sub = await runtime.subscribeEvents(agent.id, types, filter, delivery);
           return ok(`Subscribed (${sub.id}) to ${sub.types.join(", ")}. You get a "[playbooks]" message when one happens; list_gates shows what is open now, list_events what happened.`, { subscription: sub });
         }),
     }),
@@ -589,7 +590,7 @@ export function runTools(runtime: Runtime): AgentToolDefinition[] {
     }),
     defineAgentTool({
       name: "list_subscriptions",
-      description: "List your event subscriptions (subscribe_events): id, types, filter and sink.",
+      description: "List your event subscriptions (subscribe_events): id, types, filter, delivery and sink.",
       input: z.object({}),
       execute: (_input, { agent }) =>
         guard(async () => {

@@ -52,7 +52,7 @@ generic tools any agent can use.
   per agent; only the owner removes one.
 - Delivery is a `Notifier` (`deliver(subscription, events, text) -> "delivered" | "gone"`),
   chosen by the subscription's `sink: { kind, target }`. Today there is one kind, `agent`: a
-  plain-text message to the calling agent, sent with `steer` like manager wake-ups, naming the
+  plain-text message to the calling agent, sent with `steer` like manager wake-ups (refined by `2026-11-10-event-delivery-when-idle.md`: held until the subscriber is idle by default), naming the
   run and the tools to call. A webhook or Slack sink adds a notifier, not a producer or a
   subscription change. `gone` (the agent is archived or missing) drops its subscriptions, as
   does the `agent.archived` hook.

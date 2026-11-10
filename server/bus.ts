@@ -47,18 +47,39 @@ export const SubscriptionSchema = z.object({
   types: z.array(z.string()).min(1),
   /** Payload fields that must equal these values; `olderThanMinutes` picks a threshold event's delay. */
   filter: z.record(z.string(), FilterValueSchema).default({}),
+  /**
+   * When the sink is an agent: "idle" holds messages until its turn has ended (then sends them as
+   * one), "steer" sends them into the running turn at once. Subscriptions saved before this field
+   * existed read as "idle".
+   */
+  delivery: z.enum(["idle", "steer"]).default("idle"),
   createdAt: z.string(),
 });
 export type Subscription = z.infer<typeof SubscriptionSchema>;
 
-/** A delivery sink. "gone" tells the bus the target no longer exists: its subscriptions are dropped. */
+/**
+ * A delivery sink. "gone" tells the bus the target no longer exists: its subscriptions are dropped.
+ * "held" says the target cannot take it now (an agent in the middle of a turn): the bus keeps the
+ * events, merges later ones into them, and offers them again at the next flush.
+ */
 export interface Notifier {
-  deliver(subscription: Subscription, events: BusEvent[], text: string): Promise<"delivered" | "gone">;
+  deliver(subscription: Subscription, events: BusEvent[], text: string): Promise<"delivered" | "gone" | "held">;
 }
 
 export const MAX_SUBSCRIPTIONS = 20;
 export const DEFAULT_CAPACITY = 500;
 export const DEFAULT_DEBOUNCE_MS = 5000;
+/** Most events waiting for one subscription; older ones are dropped (list_events replays them). */
+export const MAX_PENDING = 50;
+
+interface PendingQueue {
+  events: BusEvent[];
+  /** When the oldest waited from, ms since epoch. */
+  since: number;
+  /** Events dropped from the front because the queue hit MAX_PENDING. */
+  dropped: number;
+}
+const PendingSchema = z.record(z.string(), z.object({ events: z.array(BusEventSchema), since: z.number(), dropped: z.number().default(0) }));
 
 export class BusError extends Error {}
 
@@ -72,9 +93,10 @@ export function matchesType(patterns: string[], type: string): boolean {
 }
 
 /** The text of a message: the events' lines, then how to catch up or stop. */
-export function eventsMessage(lines: string[], lastSeq: number): string {
+export function eventsMessage(lines: string[], lastSeq: number, dropped = 0): string {
   return [
     `[playbooks] ${lines.length} event${lines.length === 1 ? "" : "s"} you subscribed to:`,
+    ...(dropped > 0 ? [`(${dropped} earlier event${dropped === 1 ? " was" : "s were"} dropped while you were busy: list_events replays them.)`] : []),
     ...lines,
     "",
     `list_events { since: ${lastSeq} } replays what comes after; unsubscribe_events stops these messages.`,
@@ -105,12 +127,12 @@ export class EventBus {
   private seq = 0;
   private loaded: Promise<void> | null = null;
   /** Events waiting out the debounce, per subscription id: delivery coalesces, producers do not. */
-  private readonly queues = new Map<string, { events: BusEvent[]; since: number }>();
+  private readonly queues = new Map<string, PendingQueue>();
   private writing: Promise<void> = Promise.resolve();
   private flushing = false;
 
   constructor(
-    private readonly files: { events: string; subscriptions: string },
+    private readonly files: { events: string; subscriptions: string; pending?: string },
     private readonly options: { capacity?: number; debounceMs?: number } = {},
   ) {}
 
@@ -139,6 +161,13 @@ export class EventBus {
       }
       const subs = z.array(SubscriptionSchema).safeParse(await readJson(this.files.subscriptions));
       if (subs.success) this.subscriptions = subs.data;
+      // Events held for a busy subscriber survive a restart.
+      if (this.files.pending) {
+        const pending = PendingSchema.safeParse(await readJson(this.files.pending));
+        if (pending.success) {
+          for (const [id, queue] of Object.entries(pending.data)) if (this.subscriptions.some((subscription) => subscription.id === id) && queue.events.length > 0) this.queues.set(id, queue);
+        }
+      }
     })();
     return this.loaded;
   }
@@ -153,6 +182,10 @@ export class EventBus {
       }
     });
     return this.writing;
+  }
+
+  private savePending(): void {
+    if (this.files.pending) void this.write(this.files.pending, Object.fromEntries(this.queues));
   }
 
   /** Resolves once what was written is on disk. */
@@ -175,11 +208,20 @@ export class EventBus {
     void this.write(this.files.events, this.log);
     for (const subscription of this.subscriptions) {
       if (!this.wants(subscription, event, def) || meta.actors?.includes(subscription.owner)) continue;
-      const queue = this.queues.get(subscription.id) ?? { events: [], since: Date.parse(event.at) };
+      const queue = this.queues.get(subscription.id) ?? { events: [], since: Date.parse(event.at), dropped: 0 };
       queue.events.push(event);
+      this.cap(queue);
       this.queues.set(subscription.id, queue);
     }
+    this.savePending();
     return event;
+  }
+
+  private cap(queue: PendingQueue): void {
+    const extra = queue.events.length - MAX_PENDING;
+    if (extra <= 0) return;
+    queue.events.splice(0, extra);
+    queue.dropped += extra;
   }
 
   private wants(subscription: Subscription, event: BusEvent, def: EventTypeDef): boolean {
@@ -215,14 +257,25 @@ export class EventBus {
         const notifier = subscription && this.notifiers.get(subscription.sink.kind);
         if (!subscription || !notifier) continue;
         const lines = queue.events.map((event) => this.types.get(event.type)?.line(event) ?? `- ${event.type} (${event.id})`);
-        const outcome = await notifier.deliver(subscription, queue.events, eventsMessage(lines, queue.events.at(-1)!.seq)).catch((error: unknown) => {
+        const outcome = await notifier.deliver(subscription, queue.events, eventsMessage(lines, queue.events.at(-1)!.seq, queue.dropped)).catch((error: unknown) => {
           console.error(`[playbooks] could not deliver events to ${subscription.sink.kind} ${subscription.sink.target}:`, error instanceof Error ? error.message : error);
           return "delivered" as const;
         });
+        if (outcome === "held") {
+          // Keep them, oldest first, ahead of anything queued while this was in flight.
+          const later = this.queues.get(id);
+          if (later) {
+            queue.events.push(...later.events);
+            queue.dropped += later.dropped;
+          }
+          this.cap(queue);
+          this.queues.set(id, queue);
+        }
         if (outcome === "gone") await this.dropTarget(subscription.sink.kind, subscription.sink.target);
       }
     } finally {
       this.flushing = false;
+      this.savePending();
     }
   }
 
@@ -241,12 +294,12 @@ export class EventBus {
     }
   }
 
-  async subscribe(owner: string, sink: { kind: string; target: string }, types: string[], filter: Record<string, string | number | boolean> = {}): Promise<Subscription> {
+  async subscribe(owner: string, sink: { kind: string; target: string }, types: string[], filter: Record<string, string | number | boolean> = {}, delivery: "idle" | "steer" = "idle"): Promise<Subscription> {
     await this.ready();
     if (!this.notifiers.has(sink.kind)) throw new BusError(`no notifier for "${sink.kind}"`);
     this.check(types, filter);
     if (this.subscriptions.filter((subscription) => subscription.owner === owner).length >= MAX_SUBSCRIPTIONS) throw new BusError(`you already hold ${MAX_SUBSCRIPTIONS} subscriptions: unsubscribe_events one first (see list_subscriptions)`);
-    const subscription: Subscription = { id: `sub-${Math.random().toString(36).slice(2, 8)}`, owner, sink, types: [...new Set(types)], filter, createdAt: new Date().toISOString() };
+    const subscription: Subscription = { id: `sub-${Math.random().toString(36).slice(2, 8)}`, owner, sink, types: [...new Set(types)], filter, delivery, createdAt: new Date().toISOString() };
     this.subscriptions.push(subscription);
     await this.write(this.files.subscriptions, this.subscriptions);
     return subscription;
@@ -258,6 +311,7 @@ export class EventBus {
     if (at < 0) throw new BusError(`you have no subscription "${id}" (see list_subscriptions)`);
     this.subscriptions.splice(at, 1);
     this.queues.delete(id);
+    this.savePending();
     await this.write(this.files.subscriptions, this.subscriptions);
   }
 
@@ -281,6 +335,7 @@ export class EventBus {
     if (kept.length === this.subscriptions.length) return;
     for (const subscription of this.subscriptions) if (match(subscription)) this.queues.delete(subscription.id);
     this.subscriptions = kept;
+    this.savePending();
     await this.write(this.files.subscriptions, this.subscriptions);
   }
 
