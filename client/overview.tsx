@@ -386,9 +386,9 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
           </Pressable>
         </View>
 
-        <View style={{ flexDirection: "row", gap: 8 }}>
-          <Chip theme={theme} label="Runs" selected={tab === "runs"} onPress={() => setTab("runs")} />
-          <Chip theme={theme} label="Analytics" selected={tab === "analytics"} onPress={() => setTab("analytics")} />
+        <View accessibilityRole="tablist" style={{ flexDirection: "row", gap: 16, borderBottomWidth: 1, borderBottomColor: theme.colors.border }}>
+          <Tab theme={theme} label="Runs" selected={tab === "runs"} onPress={() => setTab("runs")} />
+          <Tab theme={theme} label="Analytics" selected={tab === "analytics"} onPress={() => setTab("analytics")} />
         </View>
 
         {tab === "analytics" ? (
@@ -520,6 +520,20 @@ function chipsOf(runs: RunSummary[], key: (run: RunSummary) => string, label: (r
     chips.set(id, chip);
   }
   return [...chips.values()].sort((a, b) => a.label.localeCompare(b.label));
+}
+
+function Tab(props: { theme: Theme; label: string; selected: boolean; onPress(): void }) {
+  const { theme, selected } = props;
+  return (
+    <Pressable
+      accessibilityRole="tab"
+      accessibilityState={{ selected }}
+      onPress={props.onPress}
+      style={{ paddingVertical: 8, marginBottom: -1, borderBottomWidth: 2, borderBottomColor: selected ? theme.colors.foreground : "transparent" }}
+    >
+      <Text style={{ color: selected ? theme.colors.foreground : theme.colors.foregroundMuted, fontSize: 13, fontWeight: selected ? "700" : "500" }}>{props.label}</Text>
+    </Pressable>
+  );
 }
 
 function Chip(props: { theme: Theme; label: string; selected: boolean; onPress(): void; count?: number; icon?: string; small?: boolean }) {
