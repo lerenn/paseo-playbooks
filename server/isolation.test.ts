@@ -6,6 +6,8 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { removedGitlinks } from "./git";
+import { definitionNote } from "./tools";
+import { resolveForNewRun } from "./fresh";
 import { loadPlaybooks } from "./loader";
 import { GIT_STAGING_RULE, stepSystemPrompt, worktreePreamble, withWorktree } from "./prompts";
 import { Runtime } from "./runtime";
@@ -529,5 +531,81 @@ describe("isolated runs", () => {
     await ctx.runtime.onWorkspaceArchived("ws");
     expect(ctx.store.get(run.id)).toBeUndefined();
     expect(existsSync(run.worktree!.path)).toBe(false);
+  });
+});
+
+describe("playbooks from fresh main", () => {
+  /** Pushes a change to the playbook files to origin/main from another clone; the workspace checkout stays behind. */
+  async function pushToOrigin(ctx: Awaited<ReturnType<typeof runtimeSetup>>, files: Record<string, string>) {
+    const other = path.join(ctx.base, "other");
+    if (existsSync(other)) await git(other, "pull", "-q", "origin", "main");
+    else await git(ctx.base, "clone", "-q", ctx.origin, other);
+    for (const [name, body] of Object.entries(files)) await writeFile(path.join(other, name), body);
+    await git(other, "add", "--", ...Object.keys(files));
+    await git(other, "commit", "-qm", "new rules");
+    await git(other, "push", "-q", "origin", "main");
+    return git(other, "rev-parse", "HEAD");
+  }
+  const NEWER = ISO_PLAYBOOK.replace("title: Iso", "title: Iso v2").replace("Work in", "New rule, work in");
+  const PATH = ".paseo/plugins/playbooks/iso.yaml";
+
+  it("starts an isolated run on origin's playbook without touching the workspace checkout", async () => {
+    const ctx = await runtimeSetup();
+    const head = await git(ctx.dir, "rev-parse", "HEAD");
+    const sha = await pushToOrigin(ctx, { [PATH]: NEWER });
+    const run = await ctx.runtime.startPlaybook(mgr("m1", ctx.dir), "iso", {});
+    expect(run.playbook.title).toBe("Iso v2");
+    expect(run.definition).toEqual({ source: "origin", ref: "origin/main", sha, note: null });
+    expect(run.worktree!.baseSha).toBe(sha);
+    expect(await git(ctx.dir, "rev-parse", "HEAD")).toBe(head);
+    expect(definitionNote(run)).toContain("not from the workspace checkout");
+    const { agentId } = await ctx.runtime.startStep("m1", run.id, "work", "");
+    expect(ctx.sent.find((entry) => entry.agentId === agentId)!.text).toContain("New rule, work in");
+  });
+
+  it("falls back to the workspace checkout, and says so, when the fetch fails", async () => {
+    const ctx = await runtimeSetup();
+    await pushToOrigin(ctx, { [PATH]: NEWER });
+    await git(ctx.dir, "remote", "set-url", "origin", path.join(ctx.base, "gone.git"));
+    const run = await ctx.runtime.startPlaybook(mgr("m1", ctx.dir), "iso", {});
+    expect(run.playbook.title).toBe("Iso");
+    expect(run.definition).toMatchObject({ source: "workspace", sha: null });
+    expect(run.definition!.note).toMatch(/could not fetch origin\/main/);
+    expect(definitionNote(run)).toMatch(/WARNING.*workspace checkout/);
+  });
+
+  it("falls back when the playbook is invalid on origin or no longer isolated", async () => {
+    const ctx = await runtimeSetup();
+    await pushToOrigin(ctx, { [PATH]: "title: Iso\nisolation: worktree\nsteps: nope\n" });
+    const broken = await ctx.runtime.startPlaybook(mgr("m1", ctx.dir), "iso", {});
+    expect(broken.playbook.title).toBe("Iso");
+    expect(broken.definition!.note).toMatch(/invalid on origin\/main/);
+    await ctx.runtime.cancelRun(broken.id, "x", null);
+    await pushToOrigin(ctx, { [PATH]: PLAIN_PLAYBOOK });
+    const plain = await ctx.runtime.startPlaybook(mgr("m2", ctx.dir), "iso", {});
+    expect(plain.definition!.note).toMatch(/no longer an isolated/);
+  });
+
+  it("leaves runs without isolation on the workspace checkout", async () => {
+    const ctx = await runtimeSetup();
+    await pushToOrigin(ctx, { ".paseo/plugins/playbooks/plain.yaml": PLAIN_PLAYBOOK.replace("Plain", "Plain v2") });
+    const run = await ctx.runtime.startPlaybook(mgr("m1", ctx.dir), "plain", {});
+    expect(run.playbook.title).toBe("Plain");
+    expect(run.definition).toBeNull();
+  });
+
+  it("validates what a new run would load: origin's copy for isolated playbooks, the checkout's for the rest", async () => {
+    const ctx = await runtimeSetup();
+    await pushToOrigin(ctx, { [PATH]: NEWER, ".paseo/plugins/playbooks/plain.yaml": PLAIN_PLAYBOOK.replace("Plain", "Plain v2") });
+    const resolved = await resolveForNewRun(ctx.dir, await loadPlaybooks(ctx.dir));
+    const by = (id: string) => resolved.find((item) => item.entry.id === id)!;
+    expect(by("iso")).toMatchObject({ source: "origin", ref: "origin/main" });
+    expect(by("iso").entry.playbook!.title).toBe("Iso v2");
+    expect(by("plain")).toMatchObject({ source: "workspace" });
+    expect(by("plain").entry.playbook!.title).toBe("Plain");
+
+    await git(ctx.dir, "remote", "set-url", "origin", path.join(ctx.base, "gone.git"));
+    const offline = await resolveForNewRun(ctx.dir, await loadPlaybooks(ctx.dir));
+    expect(offline.find((item) => item.entry.id === "iso")).toMatchObject({ source: "workspace", note: expect.stringMatching(/could not fetch/) });
   });
 });

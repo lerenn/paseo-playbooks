@@ -6,7 +6,7 @@ import { descendantsOf } from "../shared/graph";
 import { blockEntrySteps, blockStepIds, holdsBlock, innermostBlock } from "../shared/slots";
 import { askChoices, askHumanText, askTransitionOf, choicesOfGate, outcomeTransition } from "../shared/gates";
 import { parse as parseYaml, stringify as toYaml } from "yaml";
-import type { AfterTask, AskChoice, Attempt, Gate, GateDecider, Job, Playbook, Run, RunStep, RunWorktree, Step, Transition, VarValue } from "../shared/types";
+import type { AfterTask, AskChoice, Attempt, Gate, GateDecider, Job, Playbook, Run, RunDefinition, RunStep, RunWorktree, Step, Transition, VarValue } from "../shared/types";
 import { isActive, isAgentlessAttempt, isPaused, isPipeline, isStepDone, isStepLive, isTerminal, restartBlocker, runningAfterTasks } from "../shared/types";
 import { coerceValue, formatValue, parseDuration, renderTemplate, replaceRefs, resolveValue, templateRefs } from "../shared/vars";
 
@@ -77,6 +77,7 @@ export interface NewRunInput {
   workspaceCreated?: boolean;
   /** The run's private git worktree (`isolation: worktree`), already created. */
   worktree?: RunWorktree;
+  definition?: RunDefinition;
   inputs: Record<string, unknown>;
   now: string;
 }
@@ -170,6 +171,7 @@ function createRun(input: NewRunInput, inputs: Record<string, VarValue>, kind: "
     workspaceCreated: input.workspaceCreated ?? false,
     workspaceArchive: null,
     worktree: input.worktree ?? null,
+    definition: input.definition ?? null,
     archivedAt: null,
     seenAt: null,
     pausedAt: null,

@@ -5,6 +5,7 @@ import type { PlaybookEntry, Run } from "../shared/types";
 import { repairReport } from "./malformed";
 import { isActive, isAgentlessAttempt, isPaused, isPipeline, isTerminal, restartBlocker, runningAfterTasks, VarValueSchema } from "../shared/types";
 import * as engine from "./engine";
+import { resolveForNewRun } from "./fresh";
 import { hasPlaybooks, loadPlaybooks } from "./loader";
 import { attentionText } from "./overseer";
 import { MANAGER_PROTOCOL, managerInstructionsText, worktreePreamble } from "./prompts";
@@ -89,7 +90,10 @@ export function runChange(run: Run, stepId?: string) {
 
 /** An isolated run's worktree (`isolation: worktree`); nothing for a run in the workspace checkout. */
 function worktreeView(run: Run) {
-  return run.worktree ? { worktree: { path: run.worktree.path, branch: run.worktree.branch, state: run.worktree.state } } : {};
+  return {
+    ...(run.worktree ? { worktree: { path: run.worktree.path, branch: run.worktree.branch, state: run.worktree.state } } : {}),
+    ...(run.definition ? { definition: run.definition } : {}),
+  };
 }
 
 /** The default get_run view: one short line of state per step, no reports, outputs or inputs. */
@@ -265,6 +269,14 @@ export function gateSummaryMissing(stepId: string): string {
 
 const IdArg = z.string().describe("Run id returned by start_playbook");
 
+/** One line on where an isolated run's playbook came from; a warning when it is the workspace checkout's. */
+export function definitionNote(run: Pick<Run, "definition">): string {
+  const def = run.definition;
+  if (!def) return "";
+  if (def.source === "origin") return `\nPlaybook definition and roles: read from ${def.ref} at ${def.sha?.slice(0, 10) ?? "?"} (fetched at start), not from the workspace checkout.`;
+  return `\nWARNING: playbook definition and roles come from the workspace checkout, which may be behind origin: ${def.note ?? "no fresh copy was used"}.`;
+}
+
 export function managerTools(runtime: Runtime): AgentToolDefinition[] {
   return [
     defineAgentTool({
@@ -316,7 +328,7 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
           }
           const instructions = managerInstructionsText(run.playbook);
           return ok(
-            `Run ${run.id} started on branch ${run.branch ?? "(unknown)"}. Ready: ${engine.readySteps(run).join(", ") || "none"}. Start them with start_step.${run.worktree ? `\n\n${worktreePreamble(run)}\n` : ""}${engine.queuedSteps(run).length ? ` Queued for a free concurrency slot of another run: ${engine.queuedSteps(run).join(", ")}; you are woken when they are ready.` : ""}${instructions ? `\n\n${instructions}` : ""}`,
+            `Run ${run.id} started on branch ${run.branch ?? "(unknown)"}. Ready: ${engine.readySteps(run).join(", ") || "none"}. Start them with start_step.${run.worktree ? `\n\n${worktreePreamble(run)}\n` : ""}${definitionNote(run)}${engine.queuedSteps(run).length ? ` Queued for a free concurrency slot of another run: ${engine.queuedSteps(run).join(", ")}; you are woken when they are ready.` : ""}${instructions ? `\n\n${instructions}` : ""}`,
             runChange(run),
           );
         }),
@@ -698,9 +710,16 @@ export function validateTool(runtime: Runtime): AgentToolDefinition {
     }),
     execute: ({ path, view, playbookId }, { agent }) =>
       guard(async () => {
-        const loaded = await loadPlaybooks(path ?? agent.cwd);
-        if (!loaded.exists) return ok(`No playbooks folder: create .paseo/plugins/playbooks/ or .paseo/playbooks/ in ${path ?? agent.cwd}.`, { exists: false });
-        const results = describeEntries(loaded.entries, view, playbookId) as Array<{ valid: boolean }>;
+        const dir = path ?? agent.cwd;
+        const loaded = await loadPlaybooks(dir);
+        if (!loaded.exists) return ok(`No playbooks folder: create .paseo/plugins/playbooks/ or .paseo/playbooks/ in ${dir}.`, { exists: false });
+        // What a new run would load: isolated playbooks come from their fresh base branch, not the checkout.
+        const resolved = await resolveForNewRun(dir, loaded);
+        const described = describeEntries(resolved.map((item) => item.entry), view, playbookId) as Array<{ id: string; valid: boolean }>;
+        const results = described.map((result) => {
+          const item = resolved.find((candidate) => candidate.entry.id === result.id)!;
+          return { ...result, source: item.source, ...(item.ref ? { ref: item.ref } : {}), ...(item.note ? { note: item.note } : {}) };
+        });
         const invalid = results.filter((result) => !result.valid).length;
         const head = loaded.entries.length === 0 ? "No playbook files found." : invalid === 0 ? `All ${results.length} playbook(s) are valid.` : `${invalid} of ${results.length} playbook(s) have errors.`;
         return ok(`${head}\n${JSON.stringify(results, null, 2)}`, { exists: true, results });
