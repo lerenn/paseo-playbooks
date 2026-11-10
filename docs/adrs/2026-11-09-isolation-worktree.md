@@ -50,7 +50,7 @@ the run itself and tells every agent to work only in it.
   detached from their clones first, then `git worktree remove --force`, then, if git refuses, a
   delete after making directories writable, never outside the plugin's worktrees directory
   (checked by real path). The directory is kept, with `worktree_kept` in the history, when the
-  run failed and `workspace.keep_failed` is true, when it has uncommitted changes, or when the
+  run FAILED (not canceled) and `workspace.keep_failed` is true, when it has uncommitted changes, or when the
   guard fired. The branch is deleted unless it holds commits on no remote. A restart recreates
   the worktree on the run's branch (local, else origin, else fresh).
 - **Sweep**: at daemon start, directories of the worktrees folder whose run is gone (or says

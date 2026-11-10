@@ -481,7 +481,7 @@ export function validateOutputs(
     else errors.push(`output "${name}": ${coerced.error}`);
   }
   for (const name of Object.keys(outputs)) {
-    if (!step.outputs[name]) errors.push(`unknown output "${name}" (declared: ${Object.keys(step.outputs).join(", ") || "none"})`);
+    if (!step.outputs[name]) errors.push(`unknown output "${name}" (declared: ${Object.keys(step.outputs).join(", ") || "none"}). Loop feedback is not an output: put it in complete_step's "summary".`);
   }
   return errors.length > 0 ? { ok: false, errors } : { ok: true, outputs: result };
 }

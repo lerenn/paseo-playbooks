@@ -234,18 +234,51 @@ function describeEntry(entry: PlaybookEntry) {
   };
 }
 
+/**
+ * `list_playbooks` and `validate_playbooks` views. The full description of every playbook easily passes the
+ * 100K-character tool-result limit, so the default is compact; `results[].valid` and `results[].id` are in both.
+ */
+export const PlaybookViewSchema = z
+  .enum(["compact", "full"])
+  .default("compact")
+  .describe('"compact" (default): per playbook id, valid, title, errors, inputs and step ids. "full": everything (steps, roles, wiring), which can be very large; combine with playbookId.');
+
+export function describeEntries(entries: PlaybookEntry[], view: "compact" | "full", playbookId?: string): unknown[] {
+  const picked = playbookId ? entries.filter((entry) => entry.id === playbookId) : entries;
+  if (playbookId && picked.length === 0) throw new UserError(`No playbook "${playbookId}" (known: ${entries.map((entry) => entry.id).join(", ") || "none"}).`);
+  return picked.map((entry) => {
+    if (view === "full") return describeEntry(entry);
+    const pb = entry.playbook;
+    return {
+      id: entry.id,
+      valid: pb !== null,
+      errors: entry.errors,
+      ...(pb ? { title: pb.title, hidden: entry.hidden, inputs: Object.keys(pb.inputs), steps: pb.steps.map((step) => step.id), after: pb.after.map((task) => task.id) } : {}),
+    };
+  });
+}
+
+/** Error for a `request_gate` call without `summary`. */
+export function gateSummaryMissing(stepId: string): string {
+  return `request_gate needs a "summary" for gate "${stepId}": one short sentence (at most ${GATE_SUMMARY_MAX} characters) saying what the human decides. Put what was done, links and risks in "details". (Feedback for a loop goes in complete_step's "summary", not here.)`;
+}
+
 const IdArg = z.string().describe("Run id returned by start_playbook");
 
 export function managerTools(runtime: Runtime): AgentToolDefinition[] {
   return [
     defineAgentTool({
       name: "list_playbooks",
-      description: "List the playbooks of this workspace (inputs, steps, roles, validation errors) and explain how a Playbook Manager runs them.",
-      input: z.object({}),
-      execute: (_input, { agent }) =>
+      description:
+        'List the playbooks of this workspace and explain how a Playbook Manager runs them. Compact by default (id, valid, title, errors, input names, step ids); pass playbookId, or view "full", for inputs, steps, roles and wiring in detail.',
+      input: z.object({
+        view: PlaybookViewSchema,
+        playbookId: z.string().optional().describe("Only this playbook"),
+      }),
+      execute: ({ view, playbookId }, { agent }) =>
         guard(async () => {
           const loaded = await loadPlaybooks(agent.cwd);
-          const playbooks = loaded.entries.map(describeEntry);
+          const playbooks = describeEntries(loaded.entries, playbookId ? "full" : view, playbookId);
           return ok(`${MANAGER_PROTOCOL}\n\nPlaybooks:\n${JSON.stringify(playbooks, null, 2)}`, { playbooks });
         }),
     }),
@@ -308,7 +341,7 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
         runId: IdArg,
         stepId: z.string(),
         outcome: z.string().describe("One of the step's outcomes"),
-        summary: z.string().optional().describe("Overrides the step's summary (also used as loop feedback)"),
+        summary: z.string().optional().describe("Overrides the step's summary. On a transition that loops back (goto), this summary is the feedback the target step receives: put loop feedback here, not in outputs (outputs only accept the step's declared ones)"),
         outputs: z.record(z.string(), VarValueSchema).optional().describe("Corrections to reported outputs"),
       }),
       execute: ({ runId, stepId, ...rest }, { agent }) =>
@@ -342,14 +375,17 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
       input: z.object({
         runId: IdArg,
         stepId: z.string(),
+        // Optional in the schema so a call that lost it gets a specific error rather than "expected string, received undefined".
         summary: z
           .string()
           .max(GATE_SUMMARY_MAX, `One short sentence (at most ${GATE_SUMMARY_MAX} characters); put everything else in details`)
-          .describe(`One short sentence (at most ${GATE_SUMMARY_MAX} characters): what the human decides, e.g. "PR #3 is green and ready to merge."`),
+          .optional()
+          .describe(`Required: one short sentence (at most ${GATE_SUMMARY_MAX} characters): what the human decides, e.g. "PR #3 is green and ready to merge."`),
         details: z.string().default("").describe("What was done, links, risks, follow-ups (collapsed under the summary)"),
       }),
       execute: ({ runId, stepId, summary, details }, { agent }) =>
         guard(async () => {
+          if (!summary) throw new UserError(gateSummaryMissing(stepId));
           const gate = await runtime.requestGate(agent.id, runId, stepId, summary, details);
           const step = runtime.ownedRun(agent.id, runId).playbook.steps.find((candidate) => candidate.id === gate.stepId);
           return ok(`Gate ${gate.id} is open in the Paseo panel. ${askHumanText(gate, choicesOfGate(gate, step))}`, gate);
@@ -653,13 +689,17 @@ export function validateTool(runtime: Runtime): AgentToolDefinition {
   return defineAgentTool({
     name: "validate_playbooks",
     description:
-      "Validate the playbooks in <workspace>/.paseo/plugins/playbooks/ and <workspace>/.paseo/playbooks/ (or in the given workspace folder) with the same checks as the Playbooks panel. Writes nothing.",
-    input: z.object({ path: z.string().optional().describe("Workspace folder to check; defaults to yours") }),
-    execute: ({ path }, { agent }) =>
+      'Validate the playbooks in <workspace>/.paseo/plugins/playbooks/ and <workspace>/.paseo/playbooks/ (or in the given workspace folder) with the same checks as the Playbooks panel. Writes nothing. Compact by default (results[]: id, valid, errors); view "full" returns every playbook in detail (can exceed the tool-result limit: use playbookId with it).',
+    input: z.object({
+      path: z.string().optional().describe("Workspace folder to check; defaults to yours"),
+      view: PlaybookViewSchema,
+      playbookId: z.string().optional().describe("Only this playbook"),
+    }),
+    execute: ({ path, view, playbookId }, { agent }) =>
       guard(async () => {
         const loaded = await loadPlaybooks(path ?? agent.cwd);
         if (!loaded.exists) return ok(`No playbooks folder: create .paseo/plugins/playbooks/ or .paseo/playbooks/ in ${path ?? agent.cwd}.`, { exists: false });
-        const results = loaded.entries.map(describeEntry);
+        const results = describeEntries(loaded.entries, view, playbookId) as Array<{ valid: boolean }>;
         const invalid = results.filter((result) => !result.valid).length;
         const head = loaded.entries.length === 0 ? "No playbook files found." : invalid === 0 ? `All ${results.length} playbook(s) are valid.` : `${invalid} of ${results.length} playbook(s) have errors.`;
         return ok(`${head}\n${JSON.stringify(results, null, 2)}`, { exists: true, results });

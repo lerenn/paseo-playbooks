@@ -109,6 +109,8 @@ describe("worktree preamble", () => {
     expect(text).toMatch(/absolute paths/);
     expect(text).toMatch(/Never edit, create or delete files in \/ws/);
     expect(text).toContain("ops/x");
+    expect(text).toMatch(/Never use `git stash`.*temporary WIP commit/s);
+    expect(text).toMatch(/Never run `git checkout`, `git reset` or `git pull`/);
     expect(worktreePreamble({ workspaceDir: "/ws", worktree: null })).toBe("");
   });
 
@@ -370,6 +372,17 @@ describe("isolated runs", () => {
     expect(existsSync(run.worktree!.path)).toBe(false);
     expect(await git(ctx.dir, "branch", "--list", run.branch!)).toBe("");
     expect(ended.history.some((event) => event.type === "worktree_removed")).toBe(true);
+  });
+
+  it("removes the worktree of a canceled run (an intentional end) unless it is dirty; only failure is kept by keep_failed", async () => {
+    const ctx = await runtimeSetup();
+    const canceled = await ctx.runtime.startPlaybook(mgr("m1", ctx.dir), "iso", {});
+    expect(canceled.playbook.workspace.keepFailed).toBe(true);
+    await ctx.runtime.cancelRun(canceled.id, "stop", null);
+    await ctx.runtime.onTurnEnded("m1", "completed");
+    expect(ctx.store.get(canceled.id)!.status).toBe("canceled");
+    expect(ctx.store.get(canceled.id)!.worktree!.state).toBe("removed");
+    expect(existsSync(canceled.worktree!.path)).toBe(false);
   });
 
   it("waits while an agent of the run is still running", async () => {

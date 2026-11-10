@@ -92,7 +92,8 @@ export function worktreePreamble(run: Pick<Run, "worktree" | "workspaceDir">): s
 Your shell starts in ${run.workspaceDir}, the original workspace checkout: do not use it.
 - Run every command from the worktree: \`cd ${wt.path} && <command>\` in the same command, or \`git -C ${wt.path} ...\`; the shell resets to the workspace directory between commands, so a bare \`cd\` does not stick.
 - Use absolute paths under ${wt.path} for Read, Edit and Write. A relative path in your instructions means a path inside the worktree.
-- Never edit, create or delete files in ${run.workspaceDir}, and never commit there or switch its branch. The plugin checks that checkout when you finish and fails the step if it changed.
+- Never edit, create or delete files in ${run.workspaceDir}, and never commit there or switch its branch. Never run \`git checkout\`, \`git reset\` or \`git pull\` in it. The plugin checks that checkout when you finish and fails the step if it changed.
+- Never use \`git stash\`: the stash stack is shared with the original checkout and every other worktree, so you could take or bury someone else's changes. Set work aside with a temporary WIP commit on the run's branch instead.
 - A submodule directory that is empty in the worktree is not initialised: run \`git -C ${wt.path} submodule update --init -- <path>\` for the ones you need.`;
 }
 
