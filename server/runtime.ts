@@ -848,7 +848,7 @@ export class Runtime {
     const reservation = this.reservationFor(workspace.id, playbookId, inputs);
     let playbook: Playbook | null = options.playbook ?? (reservation && reservation.playbook.id === playbookId ? reservation.playbook : null);
     if (!playbook) {
-      const loaded = await loadPlaybooks(workspaceDir);
+      const loaded = await loadPlaybooks(workspaceDir, { projectId: workspace.projectId });
       const found = findEntry(loaded.entries, playbookId);
       if ("error" in found) throw new UserError(found.error);
       const entry = found.entry;
@@ -863,7 +863,7 @@ export class Runtime {
     const created = playbook.isolation.mode === "worktree" ? await this.createRunWorktree(runId, playbook, workspaceDir, reservation?.branch ?? null) : undefined;
     const worktree = created?.worktree;
     // The run's rules are the base branch's as of now, read from its own worktree: no need to fast-forward the workspace.
-    const chosen = created ? await chooseDefinition({ playbook, worktreeDir: created.worktree.path, baseRef: created.worktree.base, baseSha: created.worktree.baseSha, fetchError: created.fetchError }) : undefined;
+    const chosen = created ? await chooseDefinition({ projectId: workspace.projectId, playbook, worktreeDir: created.worktree.path, baseRef: created.worktree.base, baseSha: created.worktree.baseSha, fetchError: created.fetchError }) : undefined;
     if (chosen) playbook = chosen.playbook;
     let run: Run;
     try {
@@ -1200,7 +1200,7 @@ export class Runtime {
   private async queueJob(runId: string, stepId: string, attemptId: string): Promise<true> {
     const run = this.store.get(runId)!;
     const step = engine.stepDef(run, stepId);
-    const loaded = await loadPlaybooks(run.workspaceDir);
+    const loaded = await loadPlaybooks(run.workspaceDir, { projectId: run.projectId });
     const entry = loaded.entries.find((candidate) => candidate.id === step.handoff);
     if (!entry?.playbook) throw new UserError(entry ? `playbook "${step.handoff}" is invalid: ${entry.errors[0] ?? ""}` : `no playbook "${step.handoff}" in ${run.workspaceDir}`);
     if (!entry.playbook.singleton) throw new UserError(`playbook "${entry.playbook.id}" is not a singleton`);
@@ -1274,7 +1274,7 @@ export class Runtime {
     });
     const workspace = await this.api().workspaces.ref(created.id).refresh();
     const workspaceDir = workspace?.workspaceDirectory ?? sourceDir;
-    const entry = (await loadPlaybooks(workspaceDir)).entries.find((candidate) => candidate.id === playbook.id);
+    const entry = (await loadPlaybooks(workspaceDir, { projectId })).entries.find((candidate) => candidate.id === playbook.id);
     if (!entry?.playbook?.singleton) {
       // Nothing will run there: do not leave an empty workspace behind.
       await this.api().workspaces.ref(created.id).archive().catch((error) => console.error(`[playbooks] could not archive workspace ${created.id}:`, errorText(error)));
@@ -1317,7 +1317,7 @@ export class Runtime {
     const pipeline = this.store.get(pipelineId)!;
     const ref = pipeline.playbook.singleton?.branch ?? (await defaultBranch(pipeline.workspaceDir));
     if (ref) await fastForward(pipeline.workspaceDir, ref);
-    const entry = (await loadPlaybooks(pipeline.workspaceDir)).entries.find((candidate) => candidate.id === pipeline.playbook.id);
+    const entry = (await loadPlaybooks(pipeline.workspaceDir, { projectId: pipeline.projectId })).entries.find((candidate) => candidate.id === pipeline.playbook.id);
     if (!entry?.playbook?.singleton) return;
     const playbook = entry.playbook;
     const ended = await this.store.mutate(pipelineId, (current) => {
@@ -2935,7 +2935,7 @@ export class Runtime {
     const workspace = await this.api().workspaces.ref(input.workspaceId).refresh();
     if (!workspace) throw new UserError("workspace not found");
     const workspaceDir = workspace.workspaceDirectory ?? workspace.projectRootPath;
-    const loaded = await loadPlaybooks(workspaceDir);
+    const loaded = await loadPlaybooks(workspaceDir, { projectId: workspace.projectId });
     const entry = loaded.entries.find((candidate) => candidate.id === input.playbook);
     if (!entry?.playbook) throw new UserError(entry ? `playbook "${input.playbook}" is invalid:\n${entry.errors.join("\n")}` : `no playbook "${input.playbook}"`);
     const playbook = entry.playbook;
@@ -3006,6 +3006,12 @@ export class Runtime {
 
   private async withProject<T>(workspaceId: string, fn: (project: { projectId: string; label: string; root: string }) => Promise<T>): Promise<T> {
     return fn(await this.projectOf(workspaceId));
+  }
+
+  /** The project of a workspace (null when it is unknown): for callers that load the playbooks a project has turned profiles on for. */
+  async projectIdOf(workspaceId: string | null | undefined): Promise<string | null> {
+    if (!workspaceId) return null;
+    return (await this.projectOf(workspaceId).catch(() => null))?.projectId ?? null;
   }
 
   /** The project root of a workspace, for callers that act on the project's files. */
@@ -3180,7 +3186,7 @@ export class Runtime {
         projectId = workspace.projectId;
       }
     }
-    const loaded = await loadPlaybooks(workspaceDir);
+    const loaded = await loadPlaybooks(workspaceDir, projectId ? { projectId } : {});
     const found = findEntry(loaded.entries, playbookId);
     if ("error" in found) throw new UserError(found.error);
     const entry = found.entry;

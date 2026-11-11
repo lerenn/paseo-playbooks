@@ -4,11 +4,12 @@ import { Icon, ScrollView, useToast } from "@getpaseo/plugin/client/ui";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Animated, Pressable, Text, View } from "react-native";
-import { archiveRunRpc, cancelRunRpc, createExampleRpc, listPlaybooks, listRuns, pauseRunRpc, resumeRunRpc, setProfileRpc } from "../shared/contracts";
+import { archiveRunRpc, cancelRunRpc, createExampleRpc, listPlaybooks, listRuns, pauseRunRpc, resumeRunRpc } from "../shared/contracts";
 import { isActive, isPaused, isPipeline, isTerminal, type Playbook, type PlaybookEntry, type Run } from "../shared/types";
 import { useAgentEvents } from "./events";
 import { Graph, useReduceMotion } from "./graph";
 import { PreReleaseFlag } from "./pre-release";
+import { ProfilePicker, useSetProjectProfile } from "./profiles";
 import { Button, StepSheet } from "./sheet";
 import { StartForm, type StartTarget } from "./start-form";
 import { dotGroups, isRead, runTone, splitTabs, type DotGroup, type RunTone } from "./run-tabs";
@@ -40,16 +41,7 @@ export function PlaybooksPanel(props: PluginWorkspacePanelProps) {
     refetchOnWindowFocus: "always",
   });
   const queryClient = useQueryClient();
-  const setProfile = useRpc(setProfileRpc);
-  const toast = useToast();
-  const toggleProfile = async (profile: string, active: boolean) => {
-    try {
-      await setProfile({ profile, active });
-    } catch (error) {
-      toast.show((error as Error).message);
-    }
-    await queryClient.invalidateQueries({ queryKey: ["playbooks"] });
-  };
+  const setProjectProfile = useSetProjectProfile();
   useAgentEvents(workspaceId, () => void queryClient.invalidateQueries({ queryKey: ["playbooks", "runs", workspaceId] }));
   /** Completed runs whose tab was opened: they turn from green to grey, like read conversations in Paseo. */
   const [readRuns, setReadRuns] = useTabState(props.tab, z.array(z.string()), []);
@@ -107,7 +99,7 @@ export function PlaybooksPanel(props: PluginWorkspacePanelProps) {
           <Icon name="RefreshCw" size={16} color={theme.colors.foregroundMuted} />
         </Pressable>
       </View>
-      <ProfileBar theme={theme} profiles={playbooks.data?.profiles ?? []} diagnostics={playbooks.data?.diagnostics ?? []} pad={pad} onToggle={(profile, active) => void toggleProfile(profile, active)} />
+      <ProfileBar theme={theme} projectId={playbooks.data?.projectId ?? ""} profiles={playbooks.data?.profiles ?? []} diagnostics={playbooks.data?.diagnostics ?? []} pad={pad} onToggle={(projectId, profile, active) => void setProjectProfile(projectId, profile, active)} />
       {playbooks.data && total === 0 ? (
         <EmptyState theme={theme} compact={layout.compact} workspaceId={workspaceId} />
       ) : (
@@ -143,42 +135,25 @@ export function PlaybooksPanel(props: PluginWorkspacePanelProps) {
   );
 }
 
-/** The repositories: Default (always on) and a checkbox per profile found in `profiles/`. Hidden when there are no profiles. */
+/** The project's profiles, as in the Profiles tab: a multi-select bound to the project-wide setting. Hidden when the project has none. */
 function ProfileBar(props: {
   theme: Theme;
+  projectId: string;
   profiles: Array<{ id: string; active: boolean; playbooks: number; errors: string[] }>;
   diagnostics: string[];
   pad: number;
-  onToggle: (profile: string, active: boolean) => void;
+  onToggle: (projectId: string, profile: string, active: boolean) => void;
 }) {
   const { theme, profiles } = props;
-  if (profiles.length === 0) return null;
-  const muted = theme.colors.foregroundMuted;
+  if (profiles.length === 0 || !props.projectId) return null;
   return (
-    <View style={{ paddingHorizontal: props.pad, paddingBottom: 8, gap: 6 }}>
+    <View style={{ paddingHorizontal: props.pad, paddingBottom: 8, gap: 6, zIndex: 40 }}>
       <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
-        <View accessibilityLabel="Default repository, always active" style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
-          <Icon name="Lock" size={12} color={muted} />
-          <Text style={{ color: theme.colors.foreground, fontSize: 12, fontWeight: "600" }}>Default</Text>
-          <Text style={{ color: muted, fontSize: 11 }}>always active</Text>
-        </View>
-        <Text style={{ color: muted, fontSize: 11 }}>Profiles:</Text>
-        {profiles.map((profile) => (
-          <Pressable
-            key={profile.id}
-            accessibilityRole="checkbox"
-            accessibilityState={{ checked: profile.active }}
-            accessibilityLabel={`Profile ${profile.id}`}
-            onPress={() => props.onToggle(profile.id, !profile.active)}
-            style={{ flexDirection: "row", alignItems: "center", gap: 4 }}
-          >
-            <Icon name={profile.active ? "SquareCheck" : "Square"} size={14} color={profile.active ? theme.colors.accent : muted} />
-            <Text style={{ color: theme.colors.foreground, fontSize: 12 }}>{profile.id}</Text>
-          </Pressable>
-        ))}
+        <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>Profiles (whole project):</Text>
+        <ProfilePicker theme={theme} label="this project" profiles={profiles} onToggle={(profile, active) => props.onToggle(props.projectId, profile, active)} zIndex={40} />
       </View>
       {props.diagnostics.map((note) => (
-        <Text key={note} style={{ color: muted, fontSize: 11 }}>
+        <Text key={note} style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>
           {note}
         </Text>
       ))}

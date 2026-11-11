@@ -1,3 +1,4 @@
+import path from "node:path";
 import { waitsForHuman } from "./shared/gates";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 
@@ -16,6 +17,7 @@ import {
   overviewStateRpc,
   analyticsStateRpc,
   listPlaybooks,
+  listProjectProfilesRpc,
   setProfileRpc,
   listRuns,
   listWorkspaceAgents,
@@ -31,8 +33,8 @@ import {
   startRun,
 } from "./shared/contracts";
 import { summarizeRun } from "./shared/types";
-import { setProfileActive } from "./server/config";
-import { hasPlaybooks, loadPlaybooks } from "./server/loader";
+import { setProjectProfile } from "./server/config";
+import { hasPlaybooks, loadPlaybooks, projectProfiles } from "./server/loader";
 import { GATE_LABEL, Runtime, STEP_LABEL, UserError } from "./server/runtime";
 import { saveAttachment } from "./server/attachments";
 import { SIDEKICK_LABEL } from "./server/sidekick";
@@ -121,9 +123,21 @@ export default function contribute(server: PluginServerContext) {
   handle(listPlaybooks, async ({ workspaceId }, { paseo }) => {
     const workspace = await paseo.workspaces.ref(workspaceId).refresh();
     if (!workspace) throw new UserError("workspace not found");
-    return loadPlaybooks(workspace.workspaceDirectory ?? workspace.projectRootPath);
+    const loaded = await loadPlaybooks(workspace.workspaceDirectory ?? workspace.projectRootPath, { projectId: workspace.projectId });
+    // The profiles on offer come from the project's main checkout, the same for every workspace of the project.
+    const offered = await projectProfiles(workspace.projectRootPath, workspace.projectId);
+    return { ...loaded, projectId: workspace.projectId, profiles: offered.profiles, diagnostics: [...offered.diagnostics, ...loaded.diagnostics.filter((note) => !offered.diagnostics.includes(note))] };
   });
-  handle(setProfileRpc, async ({ profile, active }) => ({ active: await setProfileActive(profile, active) }));
+  handle(setProfileRpc, async ({ projectId, profile, active }) => ({ active: await setProjectProfile(projectId, profile, active) }));
+  handle(listProjectProfilesRpc, async ({ workspaces }, { paseo }) => {
+    const projects = new Map<string, { projectId: string; label: string; root: string }>();
+    for (const { projectId, workspaceId } of workspaces) {
+      if (projects.has(projectId)) continue;
+      const workspace = await paseo.workspaces.ref(workspaceId).refresh().catch(() => null);
+      if (workspace) projects.set(projectId, { projectId, label: workspace.projectDisplayName || path.basename(workspace.projectRootPath), root: workspace.projectRootPath });
+    }
+    return { projects: await Promise.all([...projects.values()].map(async ({ projectId, label, root }) => ({ projectId, label, ...(await projectProfiles(root, projectId)) }))) };
+  });
   handle(createExampleRpc, async ({ workspaceId }, { paseo }) => {
     const workspace = await paseo.workspaces.ref(workspaceId).refresh();
     if (!workspace) throw new UserError("workspace not found");

@@ -12,6 +12,7 @@ import { LABEL_WIDTH, labelLayout, ROW_HEIGHT } from "./layout";
 import { useOverview, type OverviewStore } from "./overview-store";
 import { GETTING_STARTED_URL } from "./panel";
 import { PreReleaseFlag } from "./pre-release";
+import { ProfilesView } from "./profiles";
 import { SidekickPane } from "./sidekick/pane";
 import { sidekickUi, useSidekickUi } from "./sidekick/ui-state";
 import { Button, GateActions } from "./sheet";
@@ -307,7 +308,7 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
   const [projectFilter, setProjectFilter] = useState<string | null>(null);
   const [workspaceFilter, setWorkspaceFilter] = useState<string | null>(null);
   const [showDone, setShowDone] = useState(false);
-  const [tab, setTab] = useState<"runs" | "analytics">("runs");
+  const [tab, setTab] = useState<"runs" | "analytics" | "profiles">("runs");
   // The sidebar badge and this screen share one store: one agent subscription, one request per change.
   const overview = useOverview(store);
   const toast = useToast();
@@ -407,10 +408,13 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
         <View accessibilityRole="tablist" style={{ flexDirection: "row", gap: 16, borderBottomWidth: 1, borderBottomColor: theme.colors.border }}>
           <Tab theme={theme} label="Runs" selected={tab === "runs"} onPress={() => setTab("runs")} />
           <Tab theme={theme} label="Analytics" selected={tab === "analytics"} onPress={() => setTab("analytics")} />
+          <Tab theme={theme} label="Profiles" selected={tab === "profiles"} onPress={() => setTab("profiles")} />
         </View>
 
         {tab === "analytics" ? (
           <AnalyticsView theme={theme} />
+        ) : tab === "profiles" ? (
+          <ProfilesView theme={theme} workspaces={workspaces} />
         ) : (
           <>
         <View style={{ gap: 8 }}>

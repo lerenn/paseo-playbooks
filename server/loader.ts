@@ -25,7 +25,7 @@ import type {
   When,
 } from "../shared/types";
 import { AgentSettingsSchema, DEFAULT_EXHAUSTED_FOR_MS, DEFAULT_MANAGER_COMPACT, ManagerCompactSchema, type Isolation, VarTypeSchema, VarValueSchema } from "../shared/types";
-import { readActiveProfiles } from "./config";
+import { readProjectProfiles } from "./config";
 import { bareId, DEFAULT_REPO, qualified } from "../shared/repos";
 import { coerceValue, parseDuration, replaceRefs, singleRef, templateRefs, typeCompatible } from "../shared/vars";
 
@@ -801,9 +801,40 @@ async function loadRepo(repo: string, root: string, relDir: string, names: strin
   return entries;
 }
 
+/** The valid profile folders of a checkout (sorted), and a note for each folder that is not one. */
+async function scanProfiles(dir: string): Promise<{ found: Array<{ name: string; root: string; files: string[] }>; diagnostics: string[] }> {
+  const found: Array<{ name: string; root: string; files: string[] }> = [];
+  const diagnostics: string[] = [];
+  const profilesRel = `${PLAYBOOKS_DIRS[0]}/${PROFILES_DIR}`;
+  for (const name of ((await listFolder(path.join(dir, profilesRel))) ?? []).sort()) {
+    if (name.startsWith(".")) continue;
+    const root = path.join(dir, profilesRel, name);
+    const files = await listFolder(root);
+    if (files === null) continue; // a stray file, not a profile
+    if (name === DEFAULT_REPO || !ID.test(name)) {
+      diagnostics.push(`${profilesRel}/${name}: not a profile (${name === DEFAULT_REPO ? "`default` is the main repository" : "profile folder names use lowercase letters, digits, - and _"}); ignored`);
+      continue;
+    }
+    found.push({ name, root, files });
+  }
+  return { found, diagnostics };
+}
+
+/** The profiles a project offers, read from its main checkout (`root`), with the project's setting applied. */
+export async function projectProfiles(root: string, projectId: string): Promise<{ profiles: ProfileInfo[]; diagnostics: string[] }> {
+  const active = await readProjectProfiles(projectId);
+  const { found, diagnostics } = await scanProfiles(root);
+  return {
+    profiles: found.map(({ name, files }) => ({ id: name, active: active.includes(name), playbooks: files.filter((file) => /\.ya?ml$/.test(file)).length, errors: [] })),
+    diagnostics,
+  };
+}
+
 export interface LoadOptions {
-  /** Profiles to activate; by default `profiles.active` of the user config. */
+  /** Profiles to activate; overrides the project's setting. */
   activeProfiles?: string[];
+  /** The project whose profile setting (`profiles.projects.<project>.active` of the user config) applies. Without it, and without `activeProfiles`, no profile is active. */
+  projectId?: string;
 }
 
 /**
@@ -833,20 +864,14 @@ export async function loadPlaybooks(workspaceDir: string, options: LoadOptions =
   }
   if (roots.length > 1) diagnostics.push(`${PLAYBOOKS_DIRS[1]}/ is the legacy location: it is read as part of the default repository, next to ${PLAYBOOKS_DIRS[0]}/ (move its files there when convenient)`);
 
-  // Profiles: each direct subfolder of profiles/ in the primary folder, active only when the user turned it on.
+  // Profiles: each direct subfolder of profiles/ in the primary folder, active only when the project turned it on.
   const profiles: ProfileInfo[] = [];
   const profilesRel = `${PLAYBOOKS_DIRS[0]}/${PROFILES_DIR}`;
-  const requested = options.activeProfiles ?? (await readActiveProfiles());
-  const profileDirs = (await listFolder(path.join(workspaceDir, profilesRel))) ?? [];
-  for (const name of profileDirs.sort()) {
-    if (name.startsWith(".")) continue;
-    const root = path.join(workspaceDir, profilesRel, name);
-    const files = await listFolder(root);
-    if (files === null) continue; // a stray file, not a profile
-    if (name === DEFAULT_REPO || !ID.test(name)) {
-      diagnostics.push(`${profilesRel}/${name}: not a profile (${name === DEFAULT_REPO ? "`default` is the main repository" : "profile folder names use lowercase letters, digits, - and _"}); ignored`);
-      continue;
-    }
+  const requested = options.activeProfiles ?? (options.projectId ? await readProjectProfiles(options.projectId) : []);
+  const scan = await scanProfiles(workspaceDir);
+  diagnostics.push(...scan.diagnostics);
+  // An id with no folder here (it may live in the project's main checkout only) is ignored.
+  for (const { name, root, files } of scan.found) {
     const active = requested.includes(name);
     const info: ProfileInfo = { id: name, active, playbooks: files.filter((file) => /\.ya?ml$/.test(file)).length, errors: [] };
     profiles.push(info);
@@ -859,9 +884,6 @@ export async function loadPlaybooks(workspaceDir: string, options: LoadOptions =
       info.errors.push(`could not load: ${error instanceof Error ? error.message : String(error)}`);
       diagnostics.push(`${profilesRel}/${name}: could not load: ${info.errors[0]}`);
     }
-  }
-  for (const id of requested) {
-    if (!profiles.some((profile) => profile.id === id)) diagnostics.push(`profile "${id}" is active in the config but has no folder in ${profilesRel}/; ignored`);
   }
   // Same bare id in several repositories: both stay (qualified), but a bare reference to it is ambiguous.
   const byBare = new Map<string, PlaybookEntry[]>();

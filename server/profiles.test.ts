@@ -3,9 +3,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { findEntry } from "../shared/repos";
-import { readActiveProfiles, setProfileActive } from "./config";
+import { readProjectProfiles, setProjectProfile } from "./config";
 import { newRun, readySteps } from "./engine";
-import { hasPlaybooks, loadPlaybooks } from "./loader";
+import { hasPlaybooks, loadPlaybooks, projectProfiles } from "./loader";
 
 const temps: string[] = [];
 const BASE = ".paseo/plugins/playbooks";
@@ -96,27 +96,72 @@ describe("profiles", () => {
     expect(result.profiles.filter((profile) => profile.active).map((profile) => profile.id)).toEqual(["coding", "louis"]);
   });
 
-  it("6. persists the activation in the user config, never listing default", async () => {
+  it("6. persists the activation per project in the user config, never listing default", async () => {
     const dir = await tempDir();
     const file = path.join(dir, "config.yaml");
     await writeFile(file, "other: keep\n");
-    expect(await setProfileActive("louis", true, file)).toEqual(["louis"]);
-    expect(await setProfileActive("coding", true, file)).toEqual(["louis", "coding"]);
-    expect(await setProfileActive("louis", true, file)).toEqual(["louis", "coding"]);
-    expect(await setProfileActive("default", true, file)).toEqual(["louis", "coding"]);
-    expect(await readActiveProfiles(file)).toEqual(["louis", "coding"]);
+    expect(await setProjectProfile("shop", "louis", true, file)).toEqual(["louis"]);
+    expect(await setProjectProfile("shop", "coding", true, file)).toEqual(["louis", "coding"]);
+    expect(await setProjectProfile("shop", "louis", true, file)).toEqual(["louis", "coding"]);
+    expect(await setProjectProfile("shop", "default", true, file)).toEqual(["louis", "coding"]);
+    expect(await readProjectProfiles("shop", file)).toEqual(["louis", "coding"]);
     expect(await readFile(file, "utf8")).toContain("other: keep");
-    expect(await setProfileActive("louis", false, file)).toEqual(["coding"]);
-    await writeFile(file, "profiles:\n  active: [default, 3, louis, louis]\n");
-    expect(await readActiveProfiles(file)).toEqual(["louis"]);
+    expect(await setProjectProfile("shop", "louis", false, file)).toEqual(["coding"]);
+    await writeFile(file, "profiles:\n  projects:\n    shop:\n      active: [default, 3, louis, louis]\n");
+    expect(await readProjectProfiles("shop", file)).toEqual(["louis"]);
     await writeFile(file, "::: not yaml [");
-    expect(await readActiveProfiles(file)).toEqual([]);
+    expect(await readProjectProfiles("shop", file)).toEqual([]);
+  });
+
+  it("6b. keeps projects apart: each has its own list, and a project without an entry has none", async () => {
+    const dir = await tempDir();
+    const file = path.join(dir, "config.yaml");
+    await setProjectProfile("shop", "louis", true, file);
+    await setProjectProfile("blog", "coding", true, file);
+    await setProjectProfile("shop", "coding", true, file);
+    expect(await readProjectProfiles("shop", file)).toEqual(["louis", "coding"]);
+    expect(await readProjectProfiles("blog", file)).toEqual(["coding"]);
+    expect(await readProjectProfiles("other", file)).toEqual([]);
+    expect(await readProjectProfiles("constructor", file)).toEqual([]);
+    expect(await readFile(file, "utf8")).toMatch(/projects:\s+shop:\s+active:/);
+  });
+
+  it("6c. ignores the legacy global profiles.active", async () => {
+    const dir = await tempDir();
+    const file = path.join(dir, "config.yaml");
+    await writeFile(file, "profiles:\n  active: [louis, coding]\n");
+    expect(await readProjectProfiles("shop", file)).toEqual([]);
+    // Writing a project's list leaves the legacy key alone and does not turn it into a setting.
+    expect(await setProjectProfile("shop", "coding", true, file)).toEqual(["coding"]);
+    expect(await readProjectProfiles("blog", file)).toEqual([]);
+  });
+
+  it("6d. two workspaces of one project share the setting; another project does not see it", async () => {
+    const home = await tempDir();
+    const main = await workspace();
+    const worktree = await workspace();
+    const old = process.env.PASEO_HOME;
+    process.env.PASEO_HOME = home;
+    try {
+      await setProjectProfile("shop", "louis", true, path.join(home, "plugin-data", "paseo-playbooks", "config.yaml"));
+      expect(ids(await loadPlaybooks(main, { projectId: "shop" }))).toEqual(["deploy", "louis:deploy", "louis:personal", "review"]);
+      expect(ids(await loadPlaybooks(worktree, { projectId: "shop" }))).toEqual(["deploy", "louis:deploy", "louis:personal", "review"]);
+      expect(ids(await loadPlaybooks(main, { projectId: "blog" }))).toEqual(["deploy", "review"]);
+      // Without a project nothing is active.
+      expect(ids(await loadPlaybooks(main))).toEqual(["deploy", "review"]);
+      // The profiles on offer are the main checkout's, with the project's setting applied.
+      const offered = await projectProfiles(main, "shop");
+      expect(offered.profiles.map((profile) => [profile.id, profile.active])).toEqual([["coding", false], ["louis", true]]);
+    } finally {
+      if (old === undefined) delete process.env.PASEO_HOME;
+      else process.env.PASEO_HOME = old;
+    }
   });
 
   it("7. ignores unknown profile identifiers", async () => {
     const result = await loadPlaybooks(await workspace(), { activeProfiles: ["ghost", "coding"] });
     expect(ids(result)).toEqual(["coding:build", "deploy", "review"]);
-    expect(result.diagnostics.join("\n")).toMatch(/profile "ghost" is active in the config but has no folder/);
+    expect(result.profiles.map((profile) => profile.id)).toEqual(["coding", "louis"]);
   });
 
   it("8. keeps both resources on an id collision, reports it, and refuses an ambiguous bare id", async () => {

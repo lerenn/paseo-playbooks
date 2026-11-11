@@ -10,18 +10,36 @@ export const listPlaybooks = defineRpc({
     roots: z.array(z.string()),
     exists: z.boolean(),
     entries: z.array(PlaybookEntrySchema),
-    /** Profiles found in the workspace, active or not. */
+    /** The workspace's project, whose profile setting applies to it. */
+    projectId: z.string().default(""),
+    /** Profiles of the project's main checkout, active or not. */
     profiles: z.array(ProfileInfoSchema).default([]),
     /** Layout notes (legacy folder, ambiguous ids...). */
     diagnostics: z.array(z.string()).default([]),
   }),
 });
 
-/** Turns a profile on or off. The choice is the user's, global to every workspace. */
+/** Turns a profile on or off for a project: the choice is the user's and applies to every workspace of the project. */
 export const setProfileRpc = defineRpc({
   name: "playbooks.set-profile",
-  input: z.object({ profile: z.string(), active: z.boolean() }),
+  input: z.object({ projectId: z.string(), profile: z.string(), active: z.boolean() }),
   output: z.object({ active: z.array(z.string()) }),
+});
+
+export const ProjectProfilesSchema = z.object({
+  projectId: z.string(),
+  label: z.string(),
+  /** Profiles of the project's main checkout, active or not. `default` is not listed: it is always active. */
+  profiles: z.array(ProfileInfoSchema),
+  diagnostics: z.array(z.string()).default([]),
+});
+export type ProjectProfiles = z.infer<typeof ProjectProfilesSchema>;
+
+/** The given projects (each by one of its workspaces) with the profiles their main checkout offers and which are active. */
+export const listProjectProfilesRpc = defineRpc({
+  name: "playbooks.list-profiles",
+  input: z.object({ workspaces: z.array(z.object({ projectId: z.string(), workspaceId: z.string() })) }),
+  output: z.object({ projects: z.array(ProjectProfilesSchema) }),
 });
 
 /** Writes the starter playbook into a workspace that has none. */
