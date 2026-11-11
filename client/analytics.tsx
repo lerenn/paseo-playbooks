@@ -110,8 +110,8 @@ function Summary(props: { theme: Theme; data: Analytics }) {
   const cacheBase = total.inputTokens + total.cachedInputTokens;
   return (
     <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 10 }}>
-      <Stat theme={theme} label="Runs" value={String(data.runs)} hint={data.runsWithoutUsage ? `${data.runsWithoutUsage} without usage` : undefined} />
-      <Stat theme={theme} label="Tokens" value={compactNumber(tokensOf(total))} hint={`${compactNumber(total.inputTokens)} in · ${compactNumber(total.outputTokens)} out`} />
+      <Stat theme={theme} label="Runs" value={String(data.runs)} hint={[data.runsWithoutUsage ? `${data.runsWithoutUsage} without usage` : "", data.runsWithInvalidManagerUsage ? `manager cost of ${data.runsWithInvalidManagerUsage} older runs hidden (inflated)` : ""].filter(Boolean).join(" · ") || undefined} />
+      <Stat theme={theme} label="Tokens (excl. cache)" value={compactNumber(tokensOf(total))} hint={`${compactNumber(total.inputTokens)} in · ${compactNumber(total.outputTokens)} out · ${compactNumber(total.cachedInputTokens)} cached`} />
       <Stat theme={theme} label="Cost" value={dollars(total.costUsd)} />
       <Stat theme={theme} label="Wasted on retries" value={compactNumber(wasted)} hint="tokens of redone attempts" />
       <Stat theme={theme} label="Cache hits" value={cacheBase > 0 ? `${Math.round((total.cachedInputTokens / cacheBase) * 100)}%` : "–"} />
