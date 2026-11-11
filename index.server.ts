@@ -39,6 +39,7 @@ import { GATE_LABEL, Runtime, STEP_LABEL, UserError } from "./server/runtime";
 import { saveAttachment } from "./server/attachments";
 import { SIDEKICK_LABEL } from "./server/sidekick";
 import { createSidekickStarter, createStarter } from "./server/starter";
+import { migrateDataDir } from "./server/data-dir";
 import { defaultRunsDir, RunStore } from "./server/store";
 import { gateTool, managerTools, runTools, sidekickTool, stepTool, validateTool } from "./server/tools";
 
@@ -53,6 +54,7 @@ function installSafetyNet(): void {
 
 export default function contribute(server: PluginServerContext) {
   installSafetyNet();
+  migrateDataDir();
   const store = new RunStore(defaultRunsDir());
   const ready = store.init();
   const runtime = new Runtime(store);

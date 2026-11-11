@@ -1,13 +1,12 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import path from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import { pluginDataDir } from "./data-dir";
 import { DEFAULT_REPO } from "../shared/repos";
 
-/** `$PASEO_HOME/plugin-data/paseo-playbooks/config.yaml`: the user's settings (profile activation is per project). */
+/** `<plugin data dir>/config.yaml` (data-dir.ts): the user's settings (profile activation is per project). */
 export function userConfigFile(): string {
-  const home = process.env.PASEO_HOME || path.join(homedir(), ".paseo");
-  return path.join(home, "plugin-data", "paseo-playbooks", "config.yaml");
+  return path.join(pluginDataDir(), "config.yaml");
 }
 
 async function readConfig(file: string): Promise<Record<string, unknown>> {
