@@ -75,6 +75,15 @@ until it is idle. It saves a short decision ledger with `sidekick_handoff`. When
 `sidekick.session.restart_above_tokens` (default 300000) it is asked to hand off and is replaced by a new
 session that starts from the ledger.
 
+The Sidekick can start playbook runs with `start_playbook` (`workspaceId` of a visible workspace of its project, or
+that with `newWorkspace`; never its own hidden workspace), and `list_playbooks` shows what is on offer. When you ask
+it to merge a pull request, it starts the project's merging playbook (for example `pr-to-prod`), whose manager
+merges; the Sidekick itself never merges. For bulk work ("do all tickets of project XYZ") it creates a coordinator
+subagent that lists the tickets with its own MCP tools (the Sidekick has none) and starts one run per ticket.
+`sidekick.runs: { max_concurrent, confirm_bulk }` sets limits: `max_concurrent` (unset: unlimited) is how many runs
+of the project may be active at once, and `confirm_bulk: true` (default `false`) makes it ask you before launching
+more than one run in a batch. Both are rules in its prompt, not enforced by the plugin.
+
 You can paste or drop images and files (web) in the Sidekick's message box (up to 8 per message; images 5 MB,
 other files 10 MB, 25 MB in total; executables are refused). Each shows as a removable chip, with a thumbnail
 for images. Images reach the agent as image content blocks, the way Paseo's own composer sends them. Other

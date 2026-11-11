@@ -2942,6 +2942,28 @@ export class Runtime {
     return config;
   }
 
+  /**
+   * start_playbook called with `workspaceId`, or by a Sidekick: the run starts in that existing workspace (a new Playbook
+   * Manager there) or, with `newWorkspace`, in a new workspace branched off it. The caller is not the manager. A Sidekick
+   * must name a workspace of its own project, and never its own hidden one.
+   */
+  async isSidekick(agentId: string): Promise<boolean> {
+    return (await this.sidekickRegistry.findByAgent(agentId)) !== null;
+  }
+
+  async startPlaybookInWorkspace(caller: { id: string; workspaceId: string | null }, input: { playbook: string; inputs: Record<string, VarValue>; workspaceId: string | undefined; newWorkspace: boolean }) {
+    const isSidekick = await this.isSidekick(caller.id);
+    if (!input.workspaceId) throw new UserError(isSidekick ? "name the workspace: pass workspaceId (list_workspaces) of a visible workspace of this project; you have no workspace of your own to run in" : "workspaceId is missing");
+    if (input.workspaceId === caller.workspaceId && isSidekick) throw new UserError("that is your own hidden workspace: pick a visible workspace of this project (list_workspaces), with newWorkspace to start the run in a new one");
+    const workspace = await this.api().workspaces.ref(input.workspaceId).refresh();
+    if (!workspace) throw new UserError(`workspace "${input.workspaceId}" not found (list_workspaces lists them)`);
+    const callerProject = await this.projectIdOf(caller.workspaceId);
+    if (callerProject && workspace.projectId !== callerProject) throw new UserError("that workspace belongs to another project");
+    const started = await this.startFromPanel({ workspaceId: workspace.id, playbook: input.playbook, inputs: input.inputs, force: false, sameWorkspace: !input.newWorkspace });
+    if (started.status === "duplicate") throw new UserError(`${started.message} Not started again.`);
+    return started;
+  }
+
   async startFromPanel(input: {
     workspaceId: string;
     playbook: string;
@@ -3125,7 +3147,7 @@ export class Runtime {
       config,
       title: sidekickTitle(project.label),
       labels: { [SIDEKICK_LABEL]: "true", [SIDEKICK_PROJECT_LABEL]: project.projectId },
-      prompt: `${sidekickPrompt({ projectId: project.projectId, label: project.label, root: project.root, watch: settings.watch, subagent }, load.instructions)}\n\n${sidekickKickoff(handoff)}`,
+      prompt: `${sidekickPrompt({ projectId: project.projectId, label: project.label, root: project.root, watch: settings.watch, subagent, ...(settings.runs ? { runs: settings.runs } : {}) }, load.instructions)}\n\n${sidekickKickoff(handoff)}`,
     });
     const record = { workspaceId: workspaceId ?? workspace.id, agentId: agent.id };
     await this.sidekickRegistry.write(project.projectId, record);

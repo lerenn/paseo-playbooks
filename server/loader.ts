@@ -645,6 +645,16 @@ const RawSidekickSchema = z
         /** Provider and model of the subagents the Sidekick creates (default: claude / claude-sonnet-5-5). */
         subagents: z.object({ provider: z.string().min(1).optional(), model: z.string().min(1).optional(), mode: z.unknown().optional() }).strict().optional(),
         session: z.object({ restart_above_tokens: z.number().int().positive().optional() }).strict().optional(),
+        /** Rules for the runs the Sidekick starts. Enforced by its prompt only. */
+        runs: z
+          .object({
+            /** At most this many runs of the project active at once (default: unlimited). */
+            max_concurrent: z.number().int().positive().optional(),
+            /** Ask the human before launching more than one run in a batch (default false). */
+            confirm_bulk: z.boolean().optional(),
+          })
+          .strict()
+          .optional(),
       })
       .strict()
       .optional(),
@@ -663,6 +673,8 @@ export interface SidekickConfig {
   /** Context size above which the Sidekick is restarted with a hand-off; default 300000. */
   restartAboveTokens?: number;
   subagents?: { provider?: string; model?: string; mode?: string };
+  /** `sidekick.runs`: rules for the runs it starts; unset means unlimited and no confirmation. */
+  runs?: { maxConcurrent?: number; confirmBulk?: boolean };
 }
 
 export interface SidekickLoad {
@@ -703,7 +715,7 @@ export async function loadSidekick(workspaceDir: string): Promise<SidekickLoad> 
         const parsed = RawSidekickSchema.safeParse(raw.value);
         if (!parsed.success) errors.push(...formatZodError(`${rel}/sidekick.yaml`, parsed.error));
         else {
-          const { watch, session, subagents: rawSubagents, ...settings } = parsed.data.sidekick ?? {};
+          const { watch, session, runs, subagents: rawSubagents, ...settings } = parsed.data.sidekick ?? {};
           let subagents: { provider?: string; model?: string; mode?: string } | undefined;
           if (rawSubagents) {
             const { mode, ...rest } = rawSubagents;
@@ -718,6 +730,9 @@ export async function loadSidekick(workspaceDir: string): Promise<SidekickLoad> 
             watch: watch ?? DEFAULT_SIDEKICK_WATCH,
             ...(subagents && (subagents.provider || subagents.model || subagents.mode) ? { subagents: Object.fromEntries(Object.entries(subagents).filter(([, value]) => value !== undefined)) } : {}),
             ...(session?.restart_above_tokens ? { restartAboveTokens: session.restart_above_tokens } : {}),
+            ...(runs && (runs.max_concurrent !== undefined || runs.confirm_bulk !== undefined)
+              ? { runs: { ...(runs.max_concurrent !== undefined ? { maxConcurrent: runs.max_concurrent } : {}), ...(runs.confirm_bulk !== undefined ? { confirmBulk: runs.confirm_bulk } : {}) } }
+              : {}),
           };
         }
       }
