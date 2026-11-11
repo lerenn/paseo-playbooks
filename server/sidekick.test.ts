@@ -188,6 +188,17 @@ describe("a project's Sidekick", () => {
     expect(created.workspaces).toHaveLength(1);
   });
 
+  it("restarts on request: the old agent is archived and the new one starts from the saved hand-off", async () => {
+    const { runtime, created } = await setup({ shop: true });
+    const first = await runtime.openSidekick("ws-shop");
+    await runtime.sidekickHandoff(first.agentId, "LEDGER-42", false);
+    const next = await runtime.restartSidekick("ws-shop");
+    expect(next).toMatchObject({ projectId: "shop", workspaceId: "side-shop", agentId: "agent-2", created: true });
+    expect(created.agents[1]!.options.prompt).toContain("LEDGER-42");
+    expect(await runtime.openSidekick("ws-shop")).toMatchObject({ agentId: "agent-2", created: false });
+    expect(created.workspaces).toHaveLength(1);
+  });
+
   it("is one per project", async () => {
     const { runtime, created } = await setup({ shop: true, blog: true });
     const shop = await runtime.openSidekick("ws-shop");

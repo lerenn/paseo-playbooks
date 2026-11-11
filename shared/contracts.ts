@@ -42,6 +42,13 @@ export const listProjectProfilesRpc = defineRpc({
   output: z.object({ projects: z.array(ProjectProfilesSchema) }),
 });
 
+/** The human restarts a project's Sidekick: the old agent is archived and a new one starts from its saved hand-off. */
+export const restartSidekickRpc = defineRpc({
+  name: "sidekick.restart",
+  input: z.object({ workspaceId: z.string() }),
+  output: z.object({ projectId: z.string(), workspaceId: z.string(), agentId: z.string(), created: z.boolean() }),
+});
+
 /** Writes the starter playbook into a workspace that has none. */
 export const createExampleRpc = defineRpc({
   name: "playbooks.create-example",

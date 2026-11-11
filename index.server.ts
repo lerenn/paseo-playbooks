@@ -26,6 +26,7 @@ import {
   createSidekickFilesRpc,
   listSidekicksRpc,
   openSidekickRpc,
+  restartSidekickRpc,
   saveSidekickAttachmentRpc,
   restartRunRpc,
   retryStepRpc,
@@ -199,6 +200,7 @@ export default function contribute(server: PluginServerContext) {
   });
   handle(listSidekicksRpc, async ({ workspaces }) => ({ projects: await runtime.sidekickProjects(workspaces) }));
   handle(openSidekickRpc, ({ workspaceId }) => runtime.openSidekick(workspaceId));
+  handle(restartSidekickRpc, ({ workspaceId }) => runtime.restartSidekick(workspaceId));
   handle(saveSidekickAttachmentRpc, async (input) => ({ path: await saveAttachment(input) }));
   handle(createSidekickFilesRpc, async ({ workspaceId }) => ({ files: await createSidekickStarter(await runtime.projectRootOf(workspaceId)) }));
   handle(pauseRunRpc, async ({ runId }) => ({ pausedAt: (await runtime.pauseRun(runId)).pausedAt }));
