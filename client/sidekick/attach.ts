@@ -37,7 +37,7 @@ export function filesOf(transfer: DataTransfer | null): File[] {
 }
 
 /**
- * The composer's attachments: pasted or dropped on `container` (a DOM element, web only) or added by `add`.
+ * The composer's attachments: pasted or dropped on `container` (a DOM element, web only) or added by `add`; on mobile, where there is no such element, nothing can be attached.
  * Each is checked against the limits of shared/attachments.ts; a refused one is reported through `onError`.
  */
 export function useAttachments(container: { current: unknown }, onError: (message: string) => void) {
@@ -77,16 +77,6 @@ export function useAttachments(container: { current: unknown }, onError: (messag
     setItems([]);
   }, []);
 
-  /** Opens the system file picker (web). */
-  const pick = useCallback(() => {
-    if (typeof document === "undefined") return;
-    const input = document.createElement("input");
-    input.type = "file";
-    input.multiple = true;
-    input.onchange = () => void add(Array.from(input.files ?? []));
-    input.click();
-  }, [add]);
-
   const [dragging, setDragging] = useState(false);
   useEffect(() => {
     const node = container.current as HTMLElement | null;
@@ -122,5 +112,5 @@ export function useAttachments(container: { current: unknown }, onError: (messag
     };
   }, [container, add]);
 
-  return { items, add, remove, clear, pick, dragging };
+  return { items, add, remove, clear, dragging };
 }

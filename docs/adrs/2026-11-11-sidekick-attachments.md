@@ -11,7 +11,7 @@ screenshot or hand it a file, which today means opening the agent as a native ta
 
 ## Decision
 
-- The composer accepts files pasted, dropped (web) or picked with a paperclip button, with a chip per
+- The composer accepts files pasted or dropped (web only), with a chip per
   attachment (thumbnail for images) and a remove button. Limits live in `shared/attachments.ts`: 8 per
   message, 5 MB per image, 10 MB per other file, 25 MB total, no executables or installers.
 - Images (png, jpeg, gif, webp) use the same path as Paseo's own composer and `paseo send --image`:
@@ -24,6 +24,8 @@ screenshot or hand it a file, which today means opening the agent as a native ta
 
 ## Consequences
 
+- No file picker: the mobile audit (CI) forbids DOM APIs in `client/`, and the picker needs one. Paste and
+  drop use listeners on the composer's element and do nothing where there is none (mobile).
 - Attachments live in the composer's state: they are lost when the tab is closed before sending.
 - Files are readable by the agent only if its tools can read the temp folder.
 - If the plugin API later exposes Paseo's `uploadFile`, the RPC can be replaced by `uploaded_file`

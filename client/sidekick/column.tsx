@@ -101,7 +101,7 @@ export function SidekickChat(props: Props) {
         <TextInput
           value={draft}
           onChangeText={setDraft}
-          placeholder={agentId ? (state.running ? "Message (sent into the running turn)" : "Message the Sidekick") : "Starting…"}
+          placeholder={agentId ? (state.running ? "Message (sent into the running turn)" : "Message the Sidekick (paste or drop files)") : "Starting…"}
           placeholderTextColor={muted}
           editable={agentId !== null}
           multiline
@@ -114,10 +114,7 @@ export function SidekickChat(props: Props) {
           }}
           style={{ minHeight: 40, maxHeight: 140, color: theme.colors.foreground, borderWidth: 1, borderColor: theme.colors.border, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8 }}
         />
-        <View style={{ flexDirection: "row", justifyContent: "flex-end", alignItems: "center", gap: 8 }}>
-          <Pressable accessibilityRole="button" accessibilityLabel="Attach files or images (you can also paste or drop them)" hitSlop={8} onPress={attachments.pick} disabled={agentId === null} style={{ marginRight: "auto" }}>
-            <Icon name="Paperclip" size={16} color={muted} />
-          </Pressable>
+        <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 8 }}>
           {state.running ? <ColumnButton theme={theme} label="Stop" onPress={stop} tone="danger" /> : null}
           <ColumnButton theme={theme} label="Send" onPress={submit} disabled={(!draft.trim() && attachments.items.length === 0) || sending || agentId === null} tone="primary" />
         </View>
