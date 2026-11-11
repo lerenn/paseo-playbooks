@@ -622,7 +622,7 @@ export function runTools(runtime: Runtime): AgentToolDefinition[] {
     defineAgentTool({
       name: "get_analytics",
       description:
-        "Where the tokens went, summed over the runs on this daemon (archived ones too), to find how to make playbooks cheaper or better: totals, and breakdowns by playbook, step (with its role and model), role and model, each with attempts, wasted attempts (retried, or whose agent did not finish) and their tokens, input / cached input / output tokens, cost, and peak context. overhead is the managers' and gate deciders' share. Read-only. Use it to spot steps that cost the most, retry the most, or run a bigger model than they need, then propose a change to the playbook, role or model.",
+        "Where the tokens went, summed over the runs on this daemon (archived ones too), to find how to make playbooks cheaper or better: totals, and breakdowns by playbook, step (with its role and model), role and model, each with attempts, wasted attempts (retried, or whose agent did not finish) and their tokens, input / cached input / output tokens, cost, and peak context. overhead is the managers' and gate deciders' share. topAgents lists the agents that spent the most (cost first; id, title, kind: step, decider, manager, sidekick or other such as a coordinator or the Meta-Manager; role, model, turns, input / cached / output tokens, peak context), to find the real drains. Read-only. Use it to spot steps that cost the most, retry the most, or run a bigger model than they need, then propose a change to the playbook, role or model.",
       input: z.object({
         days: z.number().int().positive().optional().describe("Only runs created in the last N days (default: all)"),
         playbook: z.string().optional().describe("Only runs of this playbook name"),
@@ -631,7 +631,7 @@ export function runTools(runtime: Runtime): AgentToolDefinition[] {
       }),
       execute: (input) =>
         guard(async () => {
-          const result = runtime.analytics(input);
+          const result = await runtime.analytics(input);
           return ok(JSON.stringify(result, null, 2), result);
         }),
     }),

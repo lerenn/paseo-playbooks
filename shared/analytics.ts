@@ -16,6 +16,33 @@ export const UsageRowSchema = z.object({
 });
 export type UsageRow = z.infer<typeof UsageRowSchema>;
 
+/** What one agent spent over its life (a manager, a step agent, a decider, a coordinator, the Meta-Manager...). */
+export const AgentUsageSchema = z.object({
+  agentId: z.string(),
+  title: z.string(),
+  /** step, decider, manager, sidekick or other (a coordinator, the Meta-Manager, any agent outside the runs). */
+  kind: z.string(),
+  role: z.string().nullable(),
+  model: z.string().nullable(),
+  /** The run it served, if it served one. */
+  runId: z.string().nullable(),
+  /** Last turn end (ISO). */
+  at: z.string(),
+  /** Summed per-turn deltas of the agent's cumulative usage; `contextPeak` is its largest context. */
+  usage: UsageSchema,
+  /** The last cumulative reading, to compute the next delta. */
+  last: z.object({
+    inputTokens: z.number().optional(),
+    cachedInputTokens: z.number().optional(),
+    outputTokens: z.number().optional(),
+    totalCostUsd: z.number().optional(),
+    contextWindowUsedTokens: z.number().optional(),
+  }),
+});
+export type AgentUsage = z.infer<typeof AgentUsageSchema>;
+export const AgentRowSchema = AgentUsageSchema.omit({ last: true });
+export type AgentRow = z.infer<typeof AgentRowSchema>;
+
 export const AnalyticsSchema = z.object({
   /** Only runs created at or after this ISO time; null = all runs on disk. */
   since: z.string().nullable(),
@@ -29,6 +56,8 @@ export const AnalyticsSchema = z.object({
   byModel: z.array(UsageRowSchema),
   /** Managers and gate deciders: spend outside the steps. */
   overhead: z.object({ manager: UsageSchema, deciders: UsageSchema }),
+  /** The agents that spent the most (by cost, then tokens), whatever they are; unknown for agents before this was recorded. */
+  topAgents: z.array(AgentRowSchema).default([]),
 });
 export type Analytics = z.infer<typeof AnalyticsSchema>;
 
@@ -89,6 +118,8 @@ export interface AnalyticsOptions {
   projectId?: string | null;
   /** Rows kept per breakdown (default 25). */
   limit?: number;
+  /** The per-agent ledger (see server/usage-ledger.ts); the top consumers are drawn from it. */
+  agents?: AgentUsage[];
 }
 
 /** Sums the usage recorded in the runs, by playbook, step, role and model. Pure: the caller picks the runs. */
@@ -138,6 +169,13 @@ export function analyze(runs: Run[], options: AnalyticsOptions = {}): Analytics 
     if (!any) withoutUsage += 1;
     byPlaybook.add(playbook, null, run.id, runUsage, false);
   }
+  const pickedIds = new Set(picked.map((run) => run.id));
+  const filtered = Boolean(options.playbook || options.projectId);
+  const topAgents = (options.agents ?? [])
+    .filter((agent) => (!since || agent.at >= since) && (!filtered || (agent.runId !== null && pickedIds.has(agent.runId))))
+    .map(({ last: _last, ...row }): AgentRow => row)
+    .sort((a, b) => b.usage.costUsd - a.usage.costUsd || b.usage.cachedInputTokens + tokensOf(b.usage) - (a.usage.cachedInputTokens + tokensOf(a.usage)))
+    .slice(0, limit);
   return {
     since,
     runs: picked.length,
@@ -148,5 +186,6 @@ export function analyze(runs: Run[], options: AnalyticsOptions = {}): Analytics 
     byRole: byRole.rows(limit),
     byModel: byModel.rows(limit),
     overhead: { manager, deciders },
+    topAgents,
   };
 }

@@ -31,4 +31,15 @@ describe("analyze", () => {
     expect(analyze([old]).runsWithoutUsage).toBe(1);
     expect(analyze([old], { since: "2026-06-01T00:00:00Z" }).runs).toBe(0);
   });
+
+  it("lists the top agents by cost, within the window, with their runs filtered like the rest", () => {
+    const entry = (agentId: string, cost: number, at: string, runId: string | null) => ({
+      agentId, title: agentId, kind: "other", role: null, model: "claude/opus", runId, at, usage: { ...addUsage(null, { totalCostUsd: cost, contextWindowUsedTokens: 9 }) }, last: {},
+    });
+    const agents = [entry("cheap", 1, "2026-11-10T00:00:00Z", "r1"), entry("drain", 50, "2026-11-10T00:00:00Z", null), entry("old", 99, "2026-01-01T00:00:00Z", null)];
+    const all = analyze([run("r1", [])], { agents, since: "2026-06-01T00:00:00Z" });
+    expect(all.topAgents.map((row) => row.agentId)).toEqual(["drain", "cheap"]);
+    expect(all.topAgents[0]).not.toHaveProperty("last");
+    expect(analyze([run("r1", [])], { agents, playbook: "pb" }).topAgents.map((row) => row.agentId)).toEqual(["cheap"]);
+  });
 });

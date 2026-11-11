@@ -417,7 +417,7 @@ export const ReportSchema = z.object({
 export type Report = z.infer<typeof ReportSchema>;
 
 /**
- * What an agent spent, summed over the turns it ended (each turn's `lastUsage` reading). `contextPeak`
+ * What an agent spent, summed over the turns it ended (the change in `lastUsage` since the previous turn, which is cumulative). `contextPeak`
  * is the largest context window seen at a turn end, not a sum. Absent on runs from before.
  */
 export const UsageSchema = z.object({
@@ -430,10 +430,39 @@ export const UsageSchema = z.object({
 });
 export type Usage = z.infer<typeof UsageSchema>;
 
-/** Adds one turn's usage reading to a running total. */
+/** What the daemon reports as an agent's `lastUsage`: cumulative for the session (cost surely, the token counts too on some providers). */
+export interface UsageReading {
+  inputTokens?: number;
+  cachedInputTokens?: number;
+  outputTokens?: number;
+  totalCostUsd?: number;
+  contextWindowUsedTokens?: number;
+}
+
+/**
+ * What an agent spent since its previous reading. The readings are cumulative, so each counter is the
+ * difference; a counter that went down (the session was restarted or compacted) starts over from its
+ * new value. Without a previous reading the whole reading counts. The context size is a gauge, kept as is.
+ */
+export function usageDelta(previous: UsageReading | null | undefined, reading: UsageReading): UsageReading {
+  const step = (now: number | undefined, before: number | undefined): number => {
+    const value = now ?? 0;
+    const base = before ?? 0;
+    return value >= base ? value - base : value;
+  };
+  return {
+    inputTokens: step(reading.inputTokens, previous?.inputTokens),
+    cachedInputTokens: step(reading.cachedInputTokens, previous?.cachedInputTokens),
+    outputTokens: step(reading.outputTokens, previous?.outputTokens),
+    totalCostUsd: step(reading.totalCostUsd, previous?.totalCostUsd),
+    contextWindowUsedTokens: reading.contextWindowUsedTokens ?? 0,
+  };
+}
+
+/** Adds one turn's usage (a `usageDelta`, not the raw cumulative reading) to a running total. */
 export function addUsage(
   total: Usage | null | undefined,
-  reading: { inputTokens?: number; cachedInputTokens?: number; outputTokens?: number; totalCostUsd?: number; contextWindowUsedTokens?: number },
+  reading: UsageReading,
 ): Usage {
   const base = total ?? UsageSchema.parse({});
   return {
