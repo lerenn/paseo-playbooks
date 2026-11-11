@@ -29,7 +29,7 @@ export const setProfileRpc = defineRpc({
 export const ProjectProfilesSchema = z.object({
   projectId: z.string(),
   label: z.string(),
-  /** Profiles of the project's main checkout, active or not. `default` is not listed: it is always active. */
+  /** Profiles of the project's main checkout, active or not. `default` comes first (active unless turned off). */
   profiles: z.array(ProfileInfoSchema),
   diagnostics: z.array(z.string()).default([]),
 });

@@ -49,14 +49,14 @@ export interface ResolvedEntry {
 }
 
 /** The playbooks of `ref` (origin's copy, fetched), read without a checkout; or why not. */
-async function loadAtRef(dir: string, base: string, activeProfiles: string[]): Promise<{ ref: string; sha: string; loaded: LoadResult } | { error: string }> {
+async function loadAtRef(dir: string, base: string, activeProfiles: string[], defaultActive: boolean): Promise<{ ref: string; sha: string; loaded: LoadResult } | { error: string }> {
   const { ref, fetchError } = await freshRefInfo(dir, base);
   if (fetchError) return { error: `could not fetch ${ref} (${fetchError})` };
   const tmp = await mkdtemp(path.join(tmpdir(), "playbooks-fresh-"));
   try {
     await exportPaths(dir, ref, PLAYBOOKS_DIRS, tmp);
     const sha = (await exec("git", ["-C", dir, "rev-parse", ref])).stdout.trim();
-    return { ref, sha, loaded: await loadPlaybooks(tmp, { activeProfiles }) };
+    return { ref, sha, loaded: await loadPlaybooks(tmp, { activeProfiles, defaultActive }) };
   } catch (error) {
     return { error: `could not read the playbooks of ${ref} (${error instanceof Error ? error.message : String(error)})` };
   } finally {
@@ -84,7 +84,7 @@ export async function resolveForNewRun(workspaceDir: string, workspace: LoadResu
       out.push({ entry, source: "workspace" });
       continue;
     }
-    if (!cache.has(base)) cache.set(base, await loadAtRef(workspaceDir, base, activeProfiles));
+    if (!cache.has(base)) cache.set(base, await loadAtRef(workspaceDir, base, activeProfiles, workspace.defaultActive));
     const fresh = cache.get(base)!;
     if ("error" in fresh) {
       out.push({ entry, source: "workspace", note: `${fresh.error}; a new run would use the workspace checkout's playbook` });

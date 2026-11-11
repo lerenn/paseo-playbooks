@@ -1,6 +1,6 @@
 # Profile activation is per project, with a Profiles tab
 
-Status: Accepted
+Status: Accepted. The rule that `default` is always active and locked is superseded by `2026-11-11-default-repository-toggle.md`.
 
 Supersedes the activation part of `2026-11-11-profiles.md` (the global `profiles.active`, the RPC's
 input and the panel's checkbox bar). Everything else in that ADR stands.

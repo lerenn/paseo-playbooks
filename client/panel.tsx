@@ -145,7 +145,8 @@ function ProfileBar(props: {
   onToggle: (projectId: string, profile: string, active: boolean) => void;
 }) {
   const { theme, profiles } = props;
-  if (profiles.length === 0 || !props.projectId) return null;
+  // Nothing to choose while the project has no profile and `default` is on.
+  if (!props.projectId || profiles.every((profile) => profile.id === "default" && profile.active)) return null;
   return (
     <View style={{ paddingHorizontal: props.pad, paddingBottom: 8, gap: 6, zIndex: 40 }}>
       <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>

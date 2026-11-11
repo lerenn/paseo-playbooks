@@ -25,7 +25,7 @@ import type {
   When,
 } from "../shared/types";
 import { AgentSettingsSchema, DEFAULT_EXHAUSTED_FOR_MS, DEFAULT_MANAGER_COMPACT, ManagerCompactSchema, type Isolation, VarTypeSchema, VarValueSchema } from "../shared/types";
-import { readProjectProfiles } from "./config";
+import { readProjectDefault, readProjectProfiles } from "./config";
 import { bareId, DEFAULT_REPO, qualified } from "../shared/repos";
 import { coerceValue, parseDuration, replaceRefs, singleRef, templateRefs, typeCompatible } from "../shared/vars";
 
@@ -623,6 +623,8 @@ export interface LoadResult {
   sidekick: SidekickLoad;
   /** The profiles found in `profiles/`, active or not. */
   profiles: ProfileInfo[];
+  /** Whether the `default` repository was loaded (the project can turn it off). */
+  defaultActive: boolean;
   /** Notes about the layout (legacy folder, ignored folders, shared ids); not errors of a playbook. */
   diagnostics: string[];
 }
@@ -820,12 +822,17 @@ async function scanProfiles(dir: string): Promise<{ found: Array<{ name: string;
   return { found, diagnostics };
 }
 
-/** The profiles a project offers, read from its main checkout (`root`), with the project's setting applied. */
+/**
+ * The repositories a project offers, read from its main checkout (`root`), with the project's setting applied:
+ * `default` first (its playbook files, active unless the project turned it off), then each profile.
+ */
 export async function projectProfiles(root: string, projectId: string): Promise<{ profiles: ProfileInfo[]; diagnostics: string[] }> {
   const active = await readProjectProfiles(projectId);
   const { found, diagnostics } = await scanProfiles(root);
+  let defaultPlaybooks = 0;
+  for (const relDir of PLAYBOOKS_DIRS) defaultPlaybooks += ((await listFolder(path.join(root, relDir))) ?? []).filter((file) => /\.ya?ml$/.test(file)).length;
   return {
-    profiles: found.map(({ name, files }) => ({ id: name, active: active.includes(name), playbooks: files.filter((file) => /\.ya?ml$/.test(file)).length, errors: [] })),
+    profiles: [{ id: DEFAULT_REPO, active: await readProjectDefault(projectId), playbooks: defaultPlaybooks, errors: [] }].concat(found.map(({ name, files }) => ({ id: name, active: active.includes(name), playbooks: files.filter((file) => /\.ya?ml$/.test(file)).length, errors: [] }))),
     diagnostics,
   };
 }
@@ -835,11 +842,13 @@ export interface LoadOptions {
   activeProfiles?: string[];
   /** The project whose profile setting (`profiles.projects.<project>.active` of the user config) applies. Without it, and without `activeProfiles`, no profile is active. */
   projectId?: string;
+  /** Whether to load the `default` repository; overrides the project's setting (on unless the project turned it off, and on without a project). */
+  defaultActive?: boolean;
 }
 
 /**
  * Loads and validates the playbooks of the workspace: the default repository (`.paseo/plugins/playbooks/` and
- * `.paseo/playbooks/`, always) plus each active profile (`.paseo/plugins/playbooks/profiles/<id>/`, same layout).
+ * `.paseo/playbooks/`, unless the project turned it off) plus each active profile (`.paseo/plugins/playbooks/profiles/<id>/`, same layout).
  * Each repository uses its own roles/ and defaults/, so a playbook never resolves anything from another one.
  * A playbook of a profile goes by `<profile>:<id>`; the same bare id in two repositories is allowed (and reported),
  * the same id in both default folders is an error.
@@ -848,12 +857,13 @@ export async function loadPlaybooks(workspaceDir: string, options: LoadOptions =
   const roots: string[] = [];
   const entries: PlaybookEntry[] = [];
   const diagnostics: string[] = [];
+  const defaultActive = options.defaultActive ?? (options.projectId ? await readProjectDefault(options.projectId) : true);
   for (const relDir of PLAYBOOKS_DIRS) {
     const root = path.join(workspaceDir, relDir);
     const names = await listFolder(root);
     if (names === null) continue;
     roots.push(root);
-    entries.push(...(await loadRepo(DEFAULT_REPO, root, relDir, names)));
+    if (defaultActive) entries.push(...(await loadRepo(DEFAULT_REPO, root, relDir, names)));
   }
   // The same id twice in the default repository would be a silent pick: refuse both.
   for (const entry of entries) {
@@ -862,7 +872,7 @@ export async function loadPlaybooks(workspaceDir: string, options: LoadOptions =
     entry.errors.push(`${entry.file}: playbook id "${entry.id}" is also defined in ${clashes.map((other) => other.file).join(", ")}; rename one`);
     entry.playbook = null;
   }
-  if (roots.length > 1) diagnostics.push(`${PLAYBOOKS_DIRS[1]}/ is the legacy location: it is read as part of the default repository, next to ${PLAYBOOKS_DIRS[0]}/ (move its files there when convenient)`);
+  if (defaultActive && roots.length > 1) diagnostics.push(`${PLAYBOOKS_DIRS[1]}/ is the legacy location: it is read as part of the default repository, next to ${PLAYBOOKS_DIRS[0]}/ (move its files there when convenient)`);
 
   // Profiles: each direct subfolder of profiles/ in the primary folder, active only when the project turned it on.
   const profiles: ProfileInfo[] = [];
@@ -892,7 +902,7 @@ export async function loadPlaybooks(workspaceDir: string, options: LoadOptions =
     const repos = new Set(group.map((entry) => entry.repo));
     if (repos.size > 1) diagnostics.push(`playbook id "${id}" exists in ${[...repos].map((repo) => `\`${repo}\``).join(" and ")}: refer to it as ${group.map((entry) => `\`${qualified(entry)}\``).join(" or ")} (a bare "${id}" is ambiguous)`);
   }
-  return { roots, exists: roots.length > 0 || profiles.length > 0, entries, sidekick: await loadSidekick(workspaceDir), profiles, diagnostics };
+  return { roots, exists: roots.length > 0 || profiles.length > 0, entries, sidekick: await loadSidekick(workspaceDir), profiles, defaultActive, diagnostics };
 }
 
 /**
