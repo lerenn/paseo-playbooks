@@ -1,0 +1,7 @@
+title: Notes
+description: Example profile playbook: summarise a topic into notes. Turn the `personal` profile on in the Playbooks panel to see it as `personal:notes`.
+inputs:
+  topic: { type: string, required: true }
+steps:
+  - id: write
+    role: { name: note_taker, prompt: "Write short notes about: {{ playbook.inputs.topic }}" }

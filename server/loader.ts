@@ -14,6 +14,7 @@ import type {
   InputWiring,
   Playbook,
   PlaybookEntry,
+  ProfileInfo,
   Role,
   Step,
   Transition,
@@ -24,6 +25,8 @@ import type {
   When,
 } from "../shared/types";
 import { AgentSettingsSchema, DEFAULT_EXHAUSTED_FOR_MS, DEFAULT_MANAGER_COMPACT, ManagerCompactSchema, type Isolation, VarTypeSchema, VarValueSchema } from "../shared/types";
+import { readActiveProfiles } from "./config";
+import { bareId, DEFAULT_REPO, qualified } from "../shared/repos";
 import { coerceValue, parseDuration, replaceRefs, singleRef, templateRefs, typeCompatible } from "../shared/vars";
 
 /** Folders searched for playbooks, relative to the workspace. Each folder is self-contained. */
@@ -577,7 +580,13 @@ export interface LoadResult {
   entries: PlaybookEntry[];
   /** The project's Sidekick (`sidekick/` beside the playbooks), or `configured: false` when there is none. */
   sidekick: SidekickLoad;
+  /** The profiles found in `profiles/`, active or not. */
+  profiles: ProfileInfo[];
+  /** Notes about the layout (legacy folder, ignored folders, shared ids); not errors of a playbook. */
+  diagnostics: string[];
 }
+
+export type { ProfileInfo };
 
 /** The `sidekick/sidekick.yaml` block: all optional. `watch` lists the event types the Sidekick is told about. */
 const RawSidekickSchema = z
@@ -678,6 +687,12 @@ export async function hasPlaybooks(workspaceDir: string): Promise<boolean> {
       // Folder absent.
     }
   }
+  // A workspace with only profiles still shows the screen, so they can be turned on.
+  const profiles = (await listFolder(path.join(workspaceDir, PLAYBOOKS_DIRS[0], PROFILES_DIR))) ?? [];
+  for (const name of profiles) {
+    const files = await listFolder(path.join(workspaceDir, PLAYBOOKS_DIRS[0], PROFILES_DIR, name));
+    if (files?.some((file) => /\.ya?ml$/.test(file))) return true;
+  }
   return false;
 }
 
@@ -690,60 +705,120 @@ async function listFolder(root: string): Promise<string[] | null> {
   }
 }
 
+/** Folder of the profiles, inside the primary playbooks folder: `profiles/<id>/` is a repository like the folder itself. */
+const PROFILES_DIR = "profiles";
+
+/** Loads one repository folder (the playbooks folder itself, or a profile): its entries, using its own roles/, defaults/ and scripts/. */
+async function loadRepo(repo: string, root: string, relDir: string, names: string[]): Promise<PlaybookEntry[]> {
+  const entries: PlaybookEntry[] = [];
+  const files = names.filter((name) => /\.ya?ml$/.test(name)).sort();
+  const { defaults, errors: mainErrors } = await loadDefaults(root, relDir);
+  const { text: managerText, errors: managerErrors } = await loadManagerText(root, relDir);
+  const defaultsErrors = [...mainErrors, ...managerErrors];
+  const roleCache = new Map<string, Promise<RoleLoad>>();
+  const role = (id: string) => {
+    if (!roleCache.has(id)) roleCache.set(id, loadRole(root, relDir, id, defaults.tiers ?? {}));
+    return roleCache.get(id)!;
+  };
+  const loads = new Map<string, Promise<Loaded>>();
+  const folder: Folder = {
+    root,
+    relDir,
+    repo,
+    defaults,
+    managerText,
+    role,
+    ids: new Set(files.map((name) => name.replace(/\.ya?ml$/, ""))),
+    load: (id, stack) => {
+      if (!loads.has(id)) {
+        const name = files.find((candidate) => candidate.replace(/\.ya?ml$/, "") === id)!;
+        loads.set(id, loadPlaybook(folder, name, `${relDir}/${name}`, id, stack));
+      }
+      return loads.get(id)!;
+    },
+  };
+  for (const name of files) {
+    const id = name.replace(/\.ya?ml$/, "");
+    const { entry } = await folder.load(id, []);
+    if (defaultsErrors.length > 0) {
+      entry.errors.unshift(...defaultsErrors);
+      entry.playbook = null;
+    }
+    entries.push(entry);
+  }
+  return entries;
+}
+
+export interface LoadOptions {
+  /** Profiles to activate; by default `profiles.active` of the user config. */
+  activeProfiles?: string[];
+}
+
 /**
- * Loads and validates every playbook in `.paseo/plugins/playbooks/` and `.paseo/playbooks/`.
- * Each folder uses its own roles/ and defaults/; the same playbook id in both is an error.
+ * Loads and validates the playbooks of the workspace: the default repository (`.paseo/plugins/playbooks/` and
+ * `.paseo/playbooks/`, always) plus each active profile (`.paseo/plugins/playbooks/profiles/<id>/`, same layout).
+ * Each repository uses its own roles/ and defaults/, so a playbook never resolves anything from another one.
+ * A playbook of a profile goes by `<profile>:<id>`; the same bare id in two repositories is allowed (and reported),
+ * the same id in both default folders is an error.
  */
-export async function loadPlaybooks(workspaceDir: string): Promise<LoadResult> {
+export async function loadPlaybooks(workspaceDir: string, options: LoadOptions = {}): Promise<LoadResult> {
   const roots: string[] = [];
   const entries: PlaybookEntry[] = [];
+  const diagnostics: string[] = [];
   for (const relDir of PLAYBOOKS_DIRS) {
     const root = path.join(workspaceDir, relDir);
     const names = await listFolder(root);
     if (names === null) continue;
     roots.push(root);
-    const files = names.filter((name) => /\.ya?ml$/.test(name)).sort();
-    const { defaults, errors: mainErrors } = await loadDefaults(root, relDir);
-    const { text: managerText, errors: managerErrors } = await loadManagerText(root, relDir);
-    const defaultsErrors = [...mainErrors, ...managerErrors];
-    const roleCache = new Map<string, Promise<RoleLoad>>();
-    const role = (id: string) => {
-      if (!roleCache.has(id)) roleCache.set(id, loadRole(root, relDir, id, defaults.tiers ?? {}));
-      return roleCache.get(id)!;
-    };
-    const loads = new Map<string, Promise<Loaded>>();
-    const folder: Folder = {
-      root,
-      relDir,
-      defaults,
-      managerText,
-      role,
-      ids: new Set(files.map((name) => name.replace(/\.ya?ml$/, ""))),
-      load: (id, stack) => {
-        if (!loads.has(id)) {
-          const name = files.find((candidate) => candidate.replace(/\.ya?ml$/, "") === id)!;
-          loads.set(id, loadPlaybook(folder, name, `${relDir}/${name}`, id, stack));
-        }
-        return loads.get(id)!;
-      },
-    };
-    for (const name of files) {
-      const id = name.replace(/\.ya?ml$/, "");
-      const { entry } = await folder.load(id, []);
-      if (defaultsErrors.length > 0) {
-        entry.errors.unshift(...defaultsErrors);
-        entry.playbook = null;
-      }
-      entries.push(entry);
-    }
+    entries.push(...(await loadRepo(DEFAULT_REPO, root, relDir, names)));
   }
+  // The same id twice in the default repository would be a silent pick: refuse both.
   for (const entry of entries) {
     const clashes = entries.filter((other) => other !== entry && other.id === entry.id);
     if (clashes.length === 0) continue;
     entry.errors.push(`${entry.file}: playbook id "${entry.id}" is also defined in ${clashes.map((other) => other.file).join(", ")}; rename one`);
     entry.playbook = null;
   }
-  return { roots, exists: roots.length > 0, entries, sidekick: await loadSidekick(workspaceDir) };
+  if (roots.length > 1) diagnostics.push(`${PLAYBOOKS_DIRS[1]}/ is the legacy location: it is read as part of the default repository, next to ${PLAYBOOKS_DIRS[0]}/ (move its files there when convenient)`);
+
+  // Profiles: each direct subfolder of profiles/ in the primary folder, active only when the user turned it on.
+  const profiles: ProfileInfo[] = [];
+  const profilesRel = `${PLAYBOOKS_DIRS[0]}/${PROFILES_DIR}`;
+  const requested = options.activeProfiles ?? (await readActiveProfiles());
+  const profileDirs = (await listFolder(path.join(workspaceDir, profilesRel))) ?? [];
+  for (const name of profileDirs.sort()) {
+    if (name.startsWith(".")) continue;
+    const root = path.join(workspaceDir, profilesRel, name);
+    const files = await listFolder(root);
+    if (files === null) continue; // a stray file, not a profile
+    if (name === DEFAULT_REPO || !ID.test(name)) {
+      diagnostics.push(`${profilesRel}/${name}: not a profile (${name === DEFAULT_REPO ? "`default` is the main repository" : "profile folder names use lowercase letters, digits, - and _"}); ignored`);
+      continue;
+    }
+    const active = requested.includes(name);
+    const info: ProfileInfo = { id: name, active, playbooks: files.filter((file) => /\.ya?ml$/.test(file)).length, errors: [] };
+    profiles.push(info);
+    if (info.playbooks === 0) diagnostics.push(`${profilesRel}/${name}: no playbook files`);
+    if (!active) continue;
+    try {
+      const loaded = await loadRepo(name, root, `${profilesRel}/${name}`, files);
+      entries.push(...loaded);
+    } catch (error) {
+      info.errors.push(`could not load: ${error instanceof Error ? error.message : String(error)}`);
+      diagnostics.push(`${profilesRel}/${name}: could not load: ${info.errors[0]}`);
+    }
+  }
+  for (const id of requested) {
+    if (!profiles.some((profile) => profile.id === id)) diagnostics.push(`profile "${id}" is active in the config but has no folder in ${profilesRel}/; ignored`);
+  }
+  // Same bare id in several repositories: both stay (qualified), but a bare reference to it is ambiguous.
+  const byBare = new Map<string, PlaybookEntry[]>();
+  for (const entry of entries) byBare.set(bareId(entry.id), [...(byBare.get(bareId(entry.id)) ?? []), entry]);
+  for (const [id, group] of byBare) {
+    const repos = new Set(group.map((entry) => entry.repo));
+    if (repos.size > 1) diagnostics.push(`playbook id "${id}" exists in ${[...repos].map((repo) => `\`${repo}\``).join(" and ")}: refer to it as ${group.map((entry) => `\`${qualified(entry)}\``).join(" or ")} (a bare "${id}" is ambiguous)`);
+  }
+  return { roots, exists: roots.length > 0 || profiles.length > 0, entries, sidekick: await loadSidekick(workspaceDir), profiles, diagnostics };
 }
 
 /**
@@ -763,6 +838,8 @@ async function checkScript(root: string, name: string): Promise<{ name: string }
 interface Folder {
   root: string;
   relDir: string;
+  /** The repository: `default` for the playbooks folders, a profile's id otherwise. */
+  repo: string;
   defaults: RawDefaults;
   /** `defaults/manager.md`, trimmed. */
   managerText: string | null;
@@ -774,9 +851,15 @@ interface Folder {
 
 type Loaded = { entry: PlaybookEntry };
 
+/** The id a repository's playbook goes by: bare in the default repository, `profile:id` in a profile. */
+export function qualifyId(repo: string, id: string): string {
+  return repo === DEFAULT_REPO ? id : `${repo}:${id}`;
+}
+
 async function loadPlaybook(folder: Folder, name: string, file: string, id: string, stack: string[]): Promise<Loaded> {
   const { root, defaults, role } = folder;
-  const entry: PlaybookEntry = { id, file, title: id, hidden: false, errors: [], playbook: null };
+  const qid = qualifyId(folder.repo, id);
+  const entry: PlaybookEntry = { id: qid, repo: folder.repo, file, title: id, hidden: false, errors: [], playbook: null };
   const fail = (errors: string[]) => {
     entry.errors.push(...errors);
     return { entry };
@@ -1040,7 +1123,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
       steps.push({
         id: rawStep.id,
         kind: "handoff",
-        handoff: targetId,
+        handoff: qualifyId(folder.repo, targetId),
         ...(wait ? {} : { handoffWait: false as const }),
         needs: rawStep.needs,
         prompt: "",
@@ -1383,7 +1466,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
   if (errors.length > 0) return fail(errors);
   const manager = mergeAgent(defaults.agent?.provider ? { provider: defaults.agent.provider, model: defaults.agent.model } : undefined, defaults.manager);
   entry.playbook = {
-    id,
+    id: qid,
     title: entry.title,
     description: pb.description ?? "",
     file,
@@ -1394,7 +1477,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     manager,
     managerCompact: pb.manager?.compact ?? defaults.managerCompact ?? DEFAULT_MANAGER_COMPACT,
     exhaustedForMs: (defaults.providers?.exhausted_for ? parseDuration(defaults.providers.exhausted_for) : null) ?? DEFAULT_EXHAUSTED_FOR_MS,
-    managerInstructions: managerInstructions(folder.managerText, id, pb.manager?.prompt, [...blocks.values()]),
+    managerInstructions: managerInstructions(folder.managerText, qid, pb.manager?.prompt, [...blocks.values()]),
     outcomes: playbookOutcomes,
     workspace: {
       archive: pb.workspace?.archive ?? defaults.workspace?.archive ?? "never",

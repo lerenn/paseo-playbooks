@@ -347,8 +347,22 @@ export const PlaybookSchema = z.object({
 export type Playbook = z.infer<typeof PlaybookSchema>;
 
 /** One playbook file as seen by the panel and `list_playbooks`: valid or with errors. */
-export const PlaybookEntrySchema = z.object({
+export const ProfileInfoSchema = z.object({
+  /** The folder name in `profiles/`. */
   id: z.string(),
+  /** Turned on in the user config: its playbooks are in the catalog. */
+  active: z.boolean(),
+  /** Playbook files in the profile's folder. */
+  playbooks: z.number(),
+  errors: z.array(z.string()).default([]),
+});
+export type ProfileInfo = z.infer<typeof ProfileInfoSchema>;
+
+export const PlaybookEntrySchema = z.object({
+  /** `deploy` in the default repository, `louis:deploy` in the profile `louis`. */
+  id: z.string(),
+  /** The repository it comes from: `default` or a profile id. */
+  repo: z.string().default("default"),
   file: z.string(),
   title: z.string(),
   /** `hidden: true` in the YAML: listed in the panel's collapsed "Hidden playbooks" section (still startable, still usable as a sub-playbook). */

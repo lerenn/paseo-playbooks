@@ -1,7 +1,7 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 import { AnalyticsSchema } from "./analytics";
-import { PlaybookEntrySchema, RunSchema, RunSummarySchema, VarValueSchema } from "./types";
+import { PlaybookEntrySchema, ProfileInfoSchema, RunSchema, RunSummarySchema, VarValueSchema } from "./types";
 
 export const listPlaybooks = defineRpc({
   name: "playbooks.list",
@@ -10,7 +10,18 @@ export const listPlaybooks = defineRpc({
     roots: z.array(z.string()),
     exists: z.boolean(),
     entries: z.array(PlaybookEntrySchema),
+    /** Profiles found in the workspace, active or not. */
+    profiles: z.array(ProfileInfoSchema).default([]),
+    /** Layout notes (legacy folder, ambiguous ids...). */
+    diagnostics: z.array(z.string()).default([]),
   }),
+});
+
+/** Turns a profile on or off. The choice is the user's, global to every workspace. */
+export const setProfileRpc = defineRpc({
+  name: "playbooks.set-profile",
+  input: z.object({ profile: z.string(), active: z.boolean() }),
+  output: z.object({ active: z.array(z.string()) }),
 });
 
 /** Writes the starter playbook into a workspace that has none. */

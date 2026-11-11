@@ -16,6 +16,7 @@ import {
   overviewStateRpc,
   analyticsStateRpc,
   listPlaybooks,
+  setProfileRpc,
   listRuns,
   listWorkspaceAgents,
   markRunSeenRpc,
@@ -29,6 +30,7 @@ import {
   startRun,
 } from "./shared/contracts";
 import { summarizeRun } from "./shared/types";
+import { setProfileActive } from "./server/config";
 import { hasPlaybooks, loadPlaybooks } from "./server/loader";
 import { GATE_LABEL, Runtime, STEP_LABEL, UserError } from "./server/runtime";
 import { SIDEKICK_LABEL } from "./server/sidekick";
@@ -109,6 +111,7 @@ export default function contribute(server: PluginServerContext) {
     if (!workspace) throw new UserError("workspace not found");
     return loadPlaybooks(workspace.workspaceDirectory ?? workspace.projectRootPath);
   });
+  handle(setProfileRpc, async ({ profile, active }) => ({ active: await setProfileActive(profile, active) }));
   handle(createExampleRpc, async ({ workspaceId }, { paseo }) => {
     const workspace = await paseo.workspaces.ref(workspaceId).refresh();
     if (!workspace) throw new UserError("workspace not found");

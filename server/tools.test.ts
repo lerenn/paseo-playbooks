@@ -129,7 +129,7 @@ describe("playbook views", () => {
   });
 
   it("an invalid playbook is valid:false with its errors in both views", () => {
-    const entry = { id: "bad", file: "bad.yaml", title: "bad", hidden: false, errors: ["steps: required"], playbook: null };
+    const entry = { id: "bad", repo: "default", file: "bad.yaml", title: "bad", hidden: false, errors: ["steps: required"], playbook: null };
     for (const view of ["compact", "full"] as const) expect(describeEntries([entry], view)).toEqual([expect.objectContaining({ id: "bad", valid: false, errors: ["steps: required"] })]);
   });
 
