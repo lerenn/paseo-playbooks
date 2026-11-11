@@ -38,7 +38,17 @@ import { createSidekickStarter, createStarter } from "./server/starter";
 import { defaultRunsDir, RunStore } from "./server/store";
 import { gateTool, managerTools, runTools, sidekickTool, stepTool, validateTool } from "./server/tools";
 
+let safetyNet = false;
+/** One bad call (a refused result, a failed timer) must not take every run's tools down: log it and keep serving. */
+function installSafetyNet(): void {
+  if (safetyNet) return;
+  safetyNet = true;
+  process.on("unhandledRejection", (reason) => console.error("[playbooks] unhandled rejection (kept serving):", reason));
+  process.on("uncaughtException", (error) => console.error("[playbooks] uncaught exception (kept serving):", error));
+}
+
 export default function contribute(server: PluginServerContext) {
+  installSafetyNet();
   const store = new RunStore(defaultRunsDir());
   const ready = store.init();
   const runtime = new Runtime(store);
