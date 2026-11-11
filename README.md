@@ -64,5 +64,121 @@ could be automated, and sends subagents to change the playbooks in pull requests
 shell or file tools of its own. A project without the folder shows a short tutorial and a button that writes
 starter files. The `sidekick/` folder is not a playbook, so a playbook named `sidekick` still works.
 
+The Sidekick is long-lived and found by its labels: `playbooks/sidekick` and `playbooks/project=<project id>`
+(`paseo ls -g` lists them), so any agent can send it a prompt. It relays the human's answers to managers
+(`send_agent_prompt`, `respond_to_permission`) and checks the gate moved, and creates its subagents on
+`sidekick.subagents` (`provider`, `model`; default `claude` / `claude-sonnet-5-5`); their finish notices wait
+until it is idle. It saves a short decision ledger with `sidekick_handoff`. When its context passes
+`sidekick.session.restart_above_tokens` (default 300000) it is asked to hand off and is replaced by a new
+session that starts from the ledger.
 
 You can paste or drop images and files (web) in the Sidekick's message box (up to 8 per message; images 5 MB,
+other files 10 MB, 25 MB in total; executables are refused). Each shows as a removable chip, with a thumbnail
+for images. Images reach the agent as image content blocks, the way Paseo's own composer sends them. Other
+files are saved on the host under the system temp folder (`paseo-playbooks-attachments/`, kept a week) and
+their paths are added to the message.
+
+## Develop
+
+```bash
+npm install
+npm run typecheck
+npm test
+```
+
+Install on a local daemon from a stable checkout (not a Paseo worktree, which can be
+archived), then reload after each change:
+
+```bash
+paseo plugin install "$PWD"
+paseo plugin reload paseo-playbooks
+paseo plugin logs paseo-playbooks
+```
+
+### Profiles
+
+A profile is an extra, opt-in repository of playbooks, with the same layout as the playbooks folder
+(playbook files, `roles/`, `defaults/`, `scripts/`), in `.paseo/plugins/playbooks/profiles/<name>/`
+(see `examples/.paseo/plugins/playbooks/profiles/personal/`). The folder itself is the always-active
+`default` repository. Profiles are off by default: tick them in the Playbooks panel (stored per user in
+`$PASEO_HOME/plugin-data/paseo-playbooks/config.yaml` as `profiles: { active: [louis] }`). A profile's
+playbooks are named `<profile>:<id>` (`louis:deploy`), and resolve their roles and sub-playbooks only
+inside the profile. If two repositories share an id, both are kept, and a bare `deploy` is refused as
+ambiguous: write `default:deploy` or `louis:deploy`.
+
+To use playbooks in a repository, copy `examples/.paseo/plugins/playbooks/` into it (as
+`.paseo/plugins/playbooks/` or `.paseo/playbooks/`),
+adjust the roles and playbooks and commit them. Then open the Playbooks panel in a workspace of
+that repository and press Start. Start runs the playbook with the workspace's most
+recently used agent as manager (see Known limits), in that workspace (the run starts at
+once, but if that agent is busy, its kickoff waits until its current turn ends). The arrow
+next to Start offers "Start on a new agent", which creates a new manager agent in the same
+workspace, and "Start in a new workspace", which creates a new worktree and manager.
+
+## Release
+
+The version lives in `package.json`, and `package-lock.json` must carry the same one. A pull
+request that changes shipped files (`client/`, `server/`, `shared/`, `skills/`, `assets/`,
+`index.*`, `paseo-plugin.json` or `OVERVIEW*.md`) must bump it, or CI fails; CI also fails when
+the two files differ:
+
+```bash
+npm version patch --no-git-tag-version   # or minor / major
+```
+
+When a new version reaches `main`, the Release workflow tags it `vX.Y.Z` and creates a GitHub
+release. To update the Paseo Cafe listing, reply on the registry review PR (or open a new
+submission) with that tag.
+
+## Known limits
+
+- Reloading the plugin (`paseo plugin reload`) removes the playbook tools from agents that
+  are already running. They get the tools back when their session restarts.
+- If the daemon restarts before a busy agent's queued kickoff is delivered, the kickoff is
+  lost (the queue is kept in memory only). After the restart the agent gets a short "carry
+  on" note, but never got the manager instructions. If it does not pick the run up, cancel
+  the run from the panel and start again.
+- After a daemon restart, recovery starts at the plugin's first event (the app connecting, an
+  agent opening a session), not when the daemon starts. A step's timeout keeps counting while
+  the daemon is down.
+- After a plugin update, idle agents whose session holds the old plugin's tools are reloaded (history
+  kept) so they stop failing with "Tool not found"; an agent mid-turn is reloaded when its turn ends,
+  never one waiting on a permission or question. Turn off with `reload_stale_sessions: false` in
+  `defaults/main.yaml`. Agents from before v0.51.0 are reloaded only if they belong to a run
+  (see `docs/adrs/2026-11-09-reload-stale-sessions.md`).
+- A `tiers:` entry in `defaults/main.yaml` may be a list of providers: when a step agent runs out of tokens
+  (quota, rate or usage limit, no credits), the same attempt restarts on the next entry, without using a
+  retry, and the exhausted `provider/model` is skipped for `providers: { exhausted_for: 1h }` (default 1h; limits
+  reset, so it is tried again after that; very short values re-probe a failing provider). Run state keeps
+  `run.exhausted` as `{ target, at }`. Error texts are matched by pattern, so an unusual provider message
+  may not be recognized and the failure then goes to the manager. With `providers: { on_exhausted: wait }`
+  (default `fail`), when every entry is out of tokens the step keeps its place and its attempt restarts by
+  itself once a provider is due again (no retry used); `max_wait: 12h` caps the wait, after which the failure
+  goes to the manager (default: no cap). The panel shows "Waiting for tokens until HH:MM" on the step. A multi-entry tier cannot be combined
+  with inline `provider`, `model`, `mode` or `thinking` on the same `agent` block. Each entry has its own
+  `mode` and `thinking`. The run log gets a `provider_exhausted` line.
+  The manager itself never switches mid-run (see `docs/adrs/2026-11-10-provider-fallback-tiers.md`).
+- `providers: { fallback: [codex/gpt-5.5, claude/claude-opus-5-5] }` in `defaults/main.yaml` adds
+  `provider/model` fallbacks to every step agent, after its tier's own entries, so a role with one model
+  moves on too. Out of tokens is also detected when a turn ends normally on the provider's notice
+  ("You've hit your weekly limit · resets Nov 16, 2pm"), not only on a failed turn. The manager can move a
+  step to another model itself: `nudge_step`, `start_step` and `restart_run` take `model: provider/model`
+  (and `thinking`) for that attempt; on `nudge_step` a new agent takes over the same attempt. `get_run`
+  shows the model of each step and, in view `full`, the models of each attempt
+  (see `docs/adrs/2026-11-11-step-model-override-failover.md`).
+- `archive_run` archives an ended run like the panel's archive button (refused while active, or while its hand-off job is still open unless `force: true`; idempotent). `list_runs` hides archived runs unless `archived: true`. See `docs/adrs/2026-11-10-archive-run.md`.
+- `list_playbooks` and `validate_playbooks` return a compact view by default (`results[].id`, `.valid`, `.errors`); `view: "full"` and `playbookId` give the detail.
+- Loop feedback (a `goto` back) goes in `complete_step`'s `summary`, not in `outputs`.
+- `isolation: worktree` is prompt-directed: Paseo pins an agent's directory to its workspace, so agents
+  start in the workspace and are told (and, by the guard, checked) to work only in the run's worktree.
+  An agent that ignores the prompt fails its step; it is not prevented.
+- A run with `isolation: worktree` reads its playbook and roles from its own worktree, off a freshly fetched
+  `origin/<base>`, so merged rules reach new runs without fast-forwarding the workspace checkout. If the fetch fails
+  (or the playbook is missing or invalid on origin) the workspace checkout's copy is used and `start_playbook` says so.
+  The definition is frozen at start; `restart_run` reuses it. `validate_playbooks` shows what a new run would load
+  (`results[].source`). Only a playbook that already exists, valid and isolated, in the workspace checkout can be started.
+  See `docs/adrs/2026-11-10-playbooks-from-fresh-main.md`.
+- Plain Start picks the workspace's most recently used agent (the one you last sent a
+  message to, skipping agents that already manage a run), because the panel cannot see
+  which tab has focus. To pick a specific agent, send it a message first, or use "Start on
+  a new agent".
