@@ -137,10 +137,21 @@ submission) with that tag.
   retry, and the exhausted `provider/model` is skipped for `providers: { exhausted_for: 1h }` (default 1h; limits
   reset, so it is tried again after that; very short values re-probe a failing provider). Run state keeps
   `run.exhausted` as `{ target, at }`. Error texts are matched by pattern, so an unusual provider message
-  may not be recognized and the failure then goes to the manager. A multi-entry tier cannot be combined
+  may not be recognized and the failure then goes to the manager. With `providers: { on_exhausted: wait }`
+  (default `fail`), when every entry is out of tokens the step keeps its place and its attempt restarts by
+  itself once a provider is due again (no retry used); `max_wait: 12h` caps the wait, after which the failure
+  goes to the manager (default: no cap). The panel shows "Waiting for tokens until HH:MM" on the step. A multi-entry tier cannot be combined
   with inline `provider`, `model`, `mode` or `thinking` on the same `agent` block. Each entry has its own
   `mode` and `thinking`. The run log gets a `provider_exhausted` line.
   The manager itself never switches mid-run (see `docs/adrs/2026-11-10-provider-fallback-tiers.md`).
+- `providers: { fallback: [codex/gpt-5.5, claude/claude-opus-5-5] }` in `defaults/main.yaml` adds
+  `provider/model` fallbacks to every step agent, after its tier's own entries, so a role with one model
+  moves on too. Out of tokens is also detected when a turn ends normally on the provider's notice
+  ("You've hit your weekly limit · resets Nov 16, 2pm"), not only on a failed turn. The manager can move a
+  step to another model itself: `nudge_step`, `start_step` and `restart_run` take `model: provider/model`
+  (and `thinking`) for that attempt; on `nudge_step` a new agent takes over the same attempt. `get_run`
+  shows the model of each step and, in view `full`, the models of each attempt
+  (see `docs/adrs/2026-11-11-step-model-override-failover.md`).
 - `archive_run` archives an ended run like the panel's archive button (refused while active, or while its hand-off job is still open unless `force: true`; idempotent). `list_runs` hides archived runs unless `archived: true`. See `docs/adrs/2026-11-10-archive-run.md`.
 - `list_playbooks` and `validate_playbooks` return a compact view by default (`results[].id`, `.valid`, `.errors`); `view: "full"` and `playbookId` give the detail.
 - Loop feedback (a `goto` back) goes in `complete_step`'s `summary`, not in `outputs`.

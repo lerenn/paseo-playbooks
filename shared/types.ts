@@ -149,6 +149,8 @@ export const WhenSchema = z.object({
   values: z.array(z.string()),
   /** The step's own loop count (`when: { loop: ">=2" }`): it holds when any of these tests does. Then `source` and `values` are unused. */
   loop: z.array(z.object({ op: z.enum(["==", ">=", "<=", ">", "<"]), value: z.number().int().min(0) })).optional(),
+  /** `{ empty: true }` / `{ empty: false }`: holds when the value is unset or "" (true) / set (false). Then `values` is unused. */
+  empty: z.boolean().optional(),
 });
 export type When = z.infer<typeof WhenSchema>;
 
@@ -158,7 +160,7 @@ export const StepSchema = z.object({
   title: z.string().optional(),
   /** Name in the Playbooks screen columns. Unset = the title. */
   shortTitle: z.string().optional(),
-  kind: z.enum(["agent", "gate", "script", "handoff"]),
+  kind: z.enum(["agent", "gate", "script", "handoff", "branch"]),
   role: z.string().optional(),
   gate: z.string().optional(),
   /** Script steps: the executable, relative to the workspace (`<playbooks folder>/scripts/<name>`). */
@@ -169,6 +171,11 @@ export const StepSchema = z.object({
   handoffWait: z.literal(false).optional(),
   /** Runs the step only when every condition holds; otherwise it is skipped. Unset = always. */
   when: z.array(WhenSchema).optional(),
+  /**
+   * Branch steps: ordered cases, the first whose conditions hold wins (a case without `when` is the
+   * `else`, always last). The step completes at once with the winning case as its outcome.
+   */
+  branch: z.object({ cases: z.array(z.object({ name: z.string(), when: z.array(WhenSchema).optional(), end: z.object({ outcome: z.string().optional() }).optional() })) }).optional(),
   /** On a train of a singleton pipeline: the plugin settles its jobs from this output when the step completes. */
   settle: z.object({ output: z.string() }).optional(),
   /** Script steps: rerun the script this often while it exits with SCRIPT_NOT_YET. Unset = run it once. */
@@ -308,6 +315,12 @@ export const PlaybookSchema = z.object({
   managerCompact: ManagerCompactSchema.default(DEFAULT_MANAGER_COMPACT),
   /** How long an exhausted `provider/model` is skipped before it is tried again (`providers.exhausted_for`), in ms. */
   exhaustedForMs: z.number().default(DEFAULT_EXHAUSTED_FOR_MS),
+  /** What a step does when every provider of its role is out of tokens (`providers.on_exhausted`). */
+  onExhausted: z.enum(["fail", "wait"]).default("fail"),
+  /** How long a step waits at most for a provider to recover (`providers.max_wait`), in ms; null = no limit. */
+  maxWaitMs: z.number().nullable().default(null),
+  /** `provider/model` targets every step agent falls back to, after its own chain (`providers.fallback`). */
+  fallback: z.array(z.string()).default([]),
   /** Whether the plugin archives the workspace it created for a run once the run ends. */
   workspace: z
     .object({ archive: z.enum(["never", "on_end"]), keepFailed: z.boolean() })
@@ -433,6 +446,14 @@ export function addUsage(
   };
 }
 
+/** One agent of an attempt: its id, the `provider/model` it ran on, when it started and why it got that target. */
+export const AttemptAgentSchema = z.object({
+  agentId: z.string(),
+  target: z.string(),
+  at: z.string(),
+  why: z.enum(["chain", "model", "failover", "resumed"]),
+});
+
 export const AttemptSchema = z.object({
   n: z.number().int().positive(),
   agentId: z.string(),
@@ -466,10 +487,20 @@ export const AttemptSchema = z.object({
   /** Agent steps: the `provider/model` the attempt's agent runs on, and the prompt it was started with (to restart it on the next target). */
   target: z.string().default(""),
   prompt: z.string().default(""),
+  /** Agent steps with `providers.on_exhausted: wait`: set while every provider of the role is out of tokens; the attempt restarts at `until`. */
+  waiting: z.object({ since: z.string(), until: z.string() }).nullable().default(null),
+  /**
+   * Agent steps: every agent the attempt ran on, oldest first, and why it got that target: `chain` (the
+   * role's first available target), `model` (the manager's `model` on start_step, nudge_step or
+   * restart_run), `failover` (the previous one ran out of tokens) or `resumed` (after waiting for tokens).
+   * Empty on attempts from before it.
+   */
+  agents: z.array(AttemptAgentSchema).default([]),
   /** What the attempt's agent spent; null before its first turn ended, and on script and hand-off attempts. */
   usage: UsageSchema.nullable().optional(),
 });
 export type Attempt = z.infer<typeof AttemptSchema>;
+export type AttemptAgent = z.infer<typeof AttemptAgentSchema>;
 
 export const RunStepSchema = z.object({
   status: StepStatusSchema,
@@ -482,8 +513,12 @@ export const RunStepSchema = z.object({
   /** How many times a goto has sent the run back through this step (0 on its first pass). Runs from before it start at 0. */
   loop: z.number().int().min(0).default(0),
   completedSeq: z.number().int().nullable(),
+  /** Branch steps: the case that won (also the step's outcome); null before it ran. */
+  branch: z.string().nullable().default(null),
   /** When the step started waiting for a free `concurrency` slot of its block (orders the queue). */
   queuedAt: z.string().nullable().default(null),
+  /** The `model` restart_run gave for this step: its next attempt runs on it unless start_step passes its own. Null when none. */
+  nextModel: z.object({ target: z.string(), thinking: z.string().optional() }).nullable().default(null),
 });
 export type RunStep = z.infer<typeof RunStepSchema>;
 
@@ -637,6 +672,7 @@ export const StepSummarySchema = StepSchema.pick({
   shortTitle: true,
   kind: true,
   when: true,
+  branch: true,
   needs: true,
   outcomes: true,
   on: true,
@@ -694,12 +730,13 @@ export function summarizeRun(run: Run): RunSummary {
       description,
       singleton,
       blocks,
-      steps: run.playbook.steps.map(({ id, title, shortTitle, kind, when, needs, outcomes, on, choices, afterTask }) => ({
+      steps: run.playbook.steps.map(({ id, title, shortTitle, kind, when, branch, needs, outcomes, on, choices, afterTask }) => ({
         id,
         title,
         shortTitle,
         kind,
         when,
+        branch,
         needs,
         outcomes,
         on,

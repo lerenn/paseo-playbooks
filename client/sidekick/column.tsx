@@ -129,12 +129,27 @@ function ItemView({ theme, item }: { theme: Theme; item: Item }) {
     case "assistant":
       return <Markdown>{item.text}</Markdown>;
     case "reasoning":
-      return <Text selectable style={{ color: muted, fontSize: 12, fontStyle: "italic" }}>{item.text}</Text>;
+      return <ReasoningLine theme={theme} text={item.text} streaming={item.streaming} />;
     case "notice":
       return <Text style={{ color: item.level === "error" ? theme.colors.statusDanger : item.level === "warning" ? theme.colors.statusWarning : muted, fontSize: 12 }}>{item.text}</Text>;
     case "tool":
       return <ToolCard theme={theme} item={item} />;
   }
+}
+
+/** The agent's reasoning: one closed line that opens on click, so thoughts do not crowd out the answers. */
+function ReasoningLine({ theme, text, streaming }: { theme: Theme; text: string; streaming: boolean }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <View style={{ gap: 6 }}>
+      <Pressable accessibilityRole="button" accessibilityState={{ expanded: open }} onPress={() => setOpen(!open)}>
+        <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>
+          {streaming ? "Thinking…" : "Thought"} ({open ? "hide" : "show"})
+        </Text>
+      </Pressable>
+      {open ? <Text selectable style={{ color: theme.colors.foregroundMuted, fontSize: 12, fontStyle: "italic", borderLeftWidth: 2, borderColor: theme.colors.border, paddingLeft: 8 }}>{text}</Text> : null}
+    </View>
+  );
 }
 
 /** The plugin's first message to the Sidekick: one closed line that opens on click, so it is not mistaken for something the human wrote. */

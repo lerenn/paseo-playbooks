@@ -25,7 +25,7 @@ import {
   scriptAttemptId,
 } from "../shared/types";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "./defaults";
-import { isQuotaError } from "./quota";
+import { isQuotaError, isQuotaMessage } from "./quota";
 import * as engine from "./engine";
 import { checkoutSnapshot, currentRef, defaultBranch, fastForward, freshRef, removedGitlinks, snapshotDiff } from "./git";
 import { createWorktree, dirtyPaths, linkedSubmodules, listWorktreeDirs, pruneWorktrees, removeWorktree, repoOfWorktree, worktreeBranch, worktreePath } from "./worktree";
@@ -68,6 +68,24 @@ export const GATE_TOOL_NAMES = ["report_gate_decision"];
 type AgentConfig = { provider: string; modeId?: string; thinkingOptionId?: string; options?: { allowedTools: string[]; disallowedTools?: string[] } };
 
 /** Pre-approves our own tools so unattended agents in `default` mode are not blocked on them. */
+/** A model the manager picks for one step attempt: `provider/model`, and optionally a thinking option. */
+export interface ModelChoice {
+  target: string;
+  thinking?: string;
+}
+
+/** Splits `provider/model` at its first slash (model ids may contain more). */
+function splitTarget(entry: string): [string, string] {
+  const at = entry.indexOf("/");
+  return at < 0 ? [entry, ""] : [entry.slice(0, at), entry.slice(at + 1)];
+}
+
+/** A target on `provider/model` that keeps `base`'s mode and thinking only when it is on the same provider (they are provider-specific). */
+function inheritTarget(base: AgentTarget, provider: string, model: string): AgentTarget {
+  const same = base.provider === provider;
+  return { provider, model, ...(same && base.mode ? { mode: base.mode } : {}), ...(same && base.thinking ? { thinking: base.thinking } : {}) };
+}
+
 function preapprove(config: AgentConfig, provider: string, tools: string[]): AgentConfig {
   if (provider === "claude") config.options = { allowedTools: tools.map((tool) => `mcp__paseo__${tool}`) };
   return config;
@@ -404,6 +422,10 @@ export class Runtime {
           this.armTimeout(run, stepId);
           continue;
         }
+        if (attempt.waiting) {
+          this.armWait(run, stepId);
+          continue;
+        }
         const agent = await this.api().agents.ref(attempt.agentId).refresh().catch(() => null);
         if (agent?.agent.status === "running") {
           this.armTimeout(run, stepId);
@@ -504,6 +526,17 @@ export class Runtime {
     } finally {
       this.eventsScanning = false;
     }
+  }
+
+  /** A page of any agent's timeline, newest first when no cursor is given, else the entries before it. */
+  async readTimeline(agentId: string, options: { limit: number; before?: { epoch: string; seq: number } }) {
+    const handle = this.api().agents.ref(agentId);
+    const page = await handle
+      .timeline.refetch(options.before ? { direction: "before", cursor: options.before, limit: options.limit } : { direction: "tail", limit: options.limit })
+      .catch((error: unknown) => {
+        throw new UserError(`cannot read agent "${agentId}": ${error instanceof Error ? error.message : String(error)}`);
+      });
+    return { entries: page.entries, hasOlder: page.hasOlder, startCursor: page.startCursor };
   }
 
   /** A run a tool only reads: any run, whoever manages it. Writes go through ownedRun. */
@@ -1676,7 +1709,7 @@ export class Runtime {
     slot.child?.kill("SIGTERM");
   }
 
-  async startStep(managerId: string, runId: string, stepId: string, brief: string): Promise<{ agentId: string; attempt: number }> {
+  async startStep(managerId: string, runId: string, stepId: string, brief: string, model?: ModelChoice): Promise<{ agentId: string; attempt: number; target: string }> {
     let run = this.ownedRun(managerId, runId);
     const step = engine.stepDef(run, stepId);
     if (step.kind === "script") throw new UserError(`step "${stepId}" is a script step: the plugin runs it by itself and wakes you with its result`);
@@ -1686,7 +1719,9 @@ export class Runtime {
       throw new UserError(`step "${stepId}" is ${run.steps[stepId]!.status}, not ready (ready now: ${engine.readySteps(run).join(", ") || "none"})`);
     }
     const role = run.playbook.roles[step.role]!;
-    const config = await this.stepAgentConfig(run, step);
+    // The manager's model, else the one restart_run left for this step, else the role's chain.
+    const chosen = model ?? run.steps[stepId]!.nextModel ?? undefined;
+    const config = await this.stepAgentConfig(run, step, STEP_TOOL_NAMES, chosen ? await this.checkModel(chosen) : undefined);
     if (run.worktree && (run.worktree.state !== "active" || !existsSync(run.worktree.path))) {
       // An after-task or a late step of an ended run: its worktree was deleted or kept; work needs it back.
       const worktree = await this.ensureWorktree(run, run.workspaceDir);
@@ -1707,23 +1742,27 @@ export class Runtime {
     const started = await this.store.mutate(run.id, (current) =>
       engine.startAttempt(current, stepId, { agentId: agent.id, brief, now: nowIso(), readonlySnapshot: snapshot }),
     );
-    await this.store.mutate(run.id, (current) => void (engine.currentAttempt(current, stepId)!.target = config.provider ?? ""));
+    await this.store.mutate(run.id, (current) => {
+      const attempt = engine.currentAttempt(current, stepId)!;
+      attempt.target = config.provider ?? "";
+      attempt.agents.push({ agentId: agent.id, target: attempt.target, at: attempt.startedAt, why: chosen ? "model" : "chain" });
+      current.steps[stepId]!.nextModel = null;
+    });
     await agent.send(withPreamble(started.prompt, run));
     this.armTimeout(this.store.get(run.id)!, stepId);
     // The previous attempt's agent is done: the step's history keeps its outcome.
     if (previous && step.archiveAgents !== false) await this.archiveStepAgent(previous.agentId);
-    return { agentId: agent.id, attempt: started.attempt.n };
+    return { agentId: agent.id, attempt: started.attempt.n, target: config.provider ?? "" };
   }
 
-  private async stepAgentConfig(run: Run, step: Pick<Step, "id" | "agent">, tools = STEP_TOOL_NAMES) {
+  /** The targets of a step's chain (primary first) with their resolved provider and model. */
+  private async stepCandidates(run: Run, step: Pick<Step, "id" | "agent">) {
     const manager = await this.api().agents.ref(run.managerAgentId).refresh().catch(() => null);
     const [first, ...rest] = [
       { ...step.agent, fallback: undefined } as AgentTarget,
       ...(step.agent.fallback ?? []),
     ];
-    const skipped = engine.activeExhausted(run);
-    // The first target not out of tokens (or whose delay has passed); if all are, the primary (the failure goes to the manager as before).
-    const candidates = [first!, ...rest].map((target, index) => {
+    const own = [first!, ...rest].map((target, index) => {
       const provider = target.provider ?? (index === 0 ? manager?.agent.provider : undefined) ?? DEFAULT_PROVIDER;
       const model =
         target.model ??
@@ -1731,7 +1770,53 @@ export class Runtime {
         (provider === DEFAULT_PROVIDER ? DEFAULT_MODEL : undefined);
       return { target, provider, model };
     });
-    const chosen = candidates.find((candidate) => candidate.model && !skipped.includes(`${candidate.provider}/${candidate.model}`)) ?? candidates[0]!;
+    // `providers.fallback`: after the role's own chain, skipping targets already in it.
+    const seen = new Set(own.map((candidate) => `${candidate.provider}/${candidate.model}`));
+    const extra = (run.playbook.fallback ?? [])
+      .filter((entry) => !seen.has(entry) && seen.add(entry))
+      .map((entry) => {
+        const [provider, model] = splitTarget(entry);
+        return { target: inheritTarget({ ...own[0]!.target, provider: own[0]!.provider }, provider, model), provider, model: model as string | undefined };
+      });
+    return [...own, ...extra];
+  }
+
+  /**
+   * A `provider/model` the manager passed (start_step, nudge_step, restart_run): refused unless the
+   * provider lists that model (list_models), and a thinking option it does not offer.
+   */
+  async checkModel(choice: ModelChoice): Promise<ModelChoice> {
+    const [provider, model] = splitTarget(choice.target.trim());
+    if (!provider || !model) throw new UserError(`model "${choice.target}": expected provider/model, such as claude/claude-opus-5-5 (see list_providers and list_models)`);
+    let listed: Array<{ id: string; aliases?: string[]; thinkingOptions?: Array<{ id: string }> }> = [];
+    let problem: string | null = null;
+    try {
+      const result = (await this.api().providers.listModels(provider as never)) as { models?: typeof listed; error?: string | null };
+      listed = result.models ?? [];
+      problem = result.error ?? null;
+    } catch (error) {
+      problem = errorText(error);
+    }
+    if (listed.length === 0) throw new UserError(`model "${choice.target}": provider "${provider}" lists no models${problem ? ` (${problem})` : ""}; see list_providers`);
+    const found = listed.find((entry) => entry.id === model || entry.aliases?.includes(model));
+    if (!found) throw new UserError(`model "${choice.target}": "${provider}" has no model "${model}". It has: ${listed.map((entry) => entry.id).join(", ")}`);
+    if (choice.thinking && found.thinkingOptions && !found.thinkingOptions.some((option) => option.id === choice.thinking)) {
+      throw new UserError(`thinking "${choice.thinking}": ${provider}/${found.id} offers ${found.thinkingOptions.map((option) => option.id).join(", ")}`);
+    }
+    return { target: `${provider}/${found.id}`, ...(choice.thinking ? { thinking: choice.thinking } : {}) };
+  }
+
+  private async stepAgentConfig(run: Run, step: Pick<Step, "id" | "agent">, tools = STEP_TOOL_NAMES, override?: ModelChoice) {
+    const skipped = engine.activeExhausted(run);
+    // The first target not out of tokens (or whose delay has passed); if all are, the primary (the failure goes to the manager as before).
+    const candidates = await this.stepCandidates(run, step);
+    let chosen = candidates.find((candidate) => candidate.model && !skipped.includes(`${candidate.provider}/${candidate.model}`)) ?? candidates[0]!;
+    if (override) {
+      // The manager's model: the step's mode and thinking carry over only on the same provider.
+      const [provider, id] = splitTarget(override.target);
+      const base = inheritTarget({ ...candidates[0]!.target, provider: candidates[0]!.provider }, provider, id);
+      chosen = { target: override.thinking ? { ...base, thinking: override.thinking } : base, provider, model: id };
+    }
     const { target, provider, model } = chosen;
     if (!model) throw new UserError(`step "${step.id}": no model for provider "${provider}"; set agent.model in the playbook`);
     const config: AgentConfig = { provider: `${provider}/${model}` };
@@ -1953,7 +2038,7 @@ export class Runtime {
   }
 
   /** Sends a follow-up to the current attempt's agent, in the same conversation. While paused, only a human may. */
-  async nudgeStep(runId: string, stepId: string, message: string, byHuman = false): Promise<void> {
+  async nudgeStep(runId: string, stepId: string, message: string, byHuman = false, model?: ModelChoice): Promise<{ agentId: string; target: string } | void> {
     const run = this.store.get(runId);
     if (!run) throw new UserError(`unknown run "${runId}"`);
     if (!byHuman && isPaused(run)) throw new UserError(`run ${run.id} is paused by a human: wait until it is resumed. End your turn.`);
@@ -1962,6 +2047,7 @@ export class Runtime {
     if (!state || !attempt) throw new UserError(`step "${stepId}" has no attempt to nudge`);
     if (isAgentlessAttempt(attempt.agentId)) throw new UserError(`step "${stepId}" is a ${isScriptAttempt(attempt.agentId) ? "script" : "hand-off"} step: there is no agent to nudge`);
     if (!isStepLive(run, stepId)) throw new UserError(`step "${stepId}" can no longer change: run ${run.id} is ${run.status}`);
+    if (model) return this.moveStep(runId, stepId, message, await this.checkModel(model));
     if (state.status === "reported") {
       // The agent works again: its next turn end reports again (after a timeout, its report replaces the timeout failure).
       await this.store.mutate(runId, (current) => engine.reopenAttempt(current, stepId, nowIso()));
@@ -1972,6 +2058,40 @@ export class Runtime {
       throw new UserError(`step "${stepId}" is ${state.status}; only a running or reported step can be nudged`);
     }
     await this.api().agents.ref(attempt.agentId).send(message, { activeTurnBehavior: "steer" });
+  }
+
+  /**
+   * nudge_step with a model: an agent cannot change provider or model, so a new agent on that model
+   * takes over the same attempt (no retry used), started with the attempt's prompt and the message.
+   * The old agent is archived. Used when the step's provider is out of tokens and no fallback is left.
+   */
+  private async moveStep(runId: string, stepId: string, message: string, model: ModelChoice): Promise<{ agentId: string; target: string }> {
+    const run = this.store.get(runId)!;
+    const step = engine.stepDef(run, stepId);
+    if (step.kind !== "agent" || !step.role) throw new UserError(`step "${stepId}" is not an agent step: it has no model`);
+    const state = run.steps[stepId]!;
+    const attempt = state.attempts.at(-1)!;
+    if (state.status !== "running" && state.status !== "reported") throw new UserError(`step "${stepId}" is ${state.status}; only a running or reported step can move to another model (start_step takes model too)`);
+    if (attempt.report) throw new UserError(`step "${stepId}" attempt ${attempt.n} already reported ${attempt.report.outcome}: call complete_step (or nudge_step without model)`);
+    const config = await this.stepAgentConfig(run, step, STEP_TOOL_NAMES, model);
+    const role = run.playbook.roles[step.role]!;
+    const agent = await this.api()
+      .workspaces.ref(run.workspaceId)
+      .agents.create({
+        config: { ...config, systemPrompt: stepSystemPrompt(run.playbook, step, role, run) },
+        parent: run.managerAgentId,
+        title: `${run.playbook.title} · ${role.title} #${attempt.n}`,
+        labels: { [RUN_LABEL]: run.id, [STEP_LABEL]: stepId, "playbooks/attempt": String(attempt.n) },
+      });
+    const oldAgent = attempt.agentId;
+    this.clearTimeout(oldAgent);
+    await this.store.mutate(runId, (current) => engine.moveAttempt(current, stepId, { agentId: agent.id, target: config.provider ?? "", now: nowIso() }));
+    const handover = `A previous agent of this attempt (agent ${oldAgent}, on ${attempt.target || "another model"}) stopped before reporting; you take over on ${config.provider}. Check what it already did (git log, git status, the PRs) before redoing work. Its conversation can be read with read_agent_conversation.`;
+    const prompt = [attempt.prompt, handover, message.trim() ? `Message from the Playbook Manager:\n${message.trim()}` : ""].filter(Boolean).join("\n\n");
+    await agent.send(withPreamble(prompt, this.store.get(runId)!));
+    this.armTimeout(this.store.get(runId)!, stepId);
+    if (oldAgent !== agent.id) await this.archiveStepAgent(oldAgent);
+    return { agentId: agent.id, target: config.provider ?? "" };
   }
 
   /**
@@ -2010,9 +2130,15 @@ export class Runtime {
     via: "panel" | "agent" = "panel",
     takeOver?: { id: string; workspaceId: string | null },
     workspaceId?: string,
+    model?: ModelChoice,
   ): Promise<{ run: Run; newManager: boolean }> {
     const run = this.store.get(runId);
     if (!run) throw new UserError(`unknown run "${runId}"`);
+    if (model) {
+      const kind = run.playbook.steps.find((step) => step.id === stepId);
+      if (kind && (kind.kind !== "agent" || !kind.role)) throw new UserError(`step "${stepId}" is not an agent step: model only applies to an agent step`);
+      model = await this.checkModel(model);
+    }
     const blocker = restartBlocker(run, stepId);
     if (blocker) throw new UserError(blocker);
     if (isPipeline(run)) throw new UserError(`run ${run.id} is a singleton pipeline: it is not restarted; the next hand-off starts a new one`);
@@ -2062,7 +2188,7 @@ export class Runtime {
     // An isolated run gets its worktree back (the ended run's was deleted), with a fresh baseline for the guard.
     const worktree = await this.ensureWorktree(run, move?.dir ?? run.workspaceDir);
     const effects = await this.store.mutate(runId, (current) => {
-      const fx = engine.restartRun(current, stepId, { comment, by, now: nowIso() });
+      const fx = engine.restartRun(current, stepId, { comment, by, now: nowIso(), model: model ?? null });
       if (worktree) current.worktree = worktree;
       if (move) {
         engine.moveRun(current, move, nowIso());
@@ -2257,20 +2383,24 @@ export class Runtime {
     await this.deliver(runId);
   }
 
-  async onStepTurnEnded(runId: string, agentId: string, turnEnd: "completed" | "failed" | "canceled" | "lost" | "timeout"): Promise<void> {
+  async onStepTurnEnded(runId: string, agentId: string, turnEnd: "completed" | "failed" | "canceled" | "lost" | "timeout", canWait = true): Promise<void> {
     const run = this.store.get(runId);
     if (!run) return;
     const found = engine.findAttemptByAgent(run, agentId);
     if (!found || run.steps[found.stepId]!.status !== "running") return;
     this.clearTimeout(agentId);
     let lastMessage: string | null = null;
+    let outOfTokens = false;
     if (!found.attempt.report) {
       const page = await this.api().agents.ref(agentId).timeline.refetch({ direction: "tail", limit: 30 }).catch(() => null);
       lastMessage = page ? lastAssistantText(page.entries as never) : null;
-      if (turnEnd === "failed" && page && !isPaused(run) && isQuotaError(failureText(page.entries as never))) {
-        if (await this.failOverStep(runId, found.stepId, agentId, failureText(page.entries as never))) return;
+      // A failed turn whose error says so, or a turn that ended on the provider's own notice ("You've hit your weekly limit").
+      const reason = turnEnd === "failed" && page ? failureText(page.entries as never) : turnEnd === "completed" ? lastMessage : null;
+      outOfTokens = turnEnd === "failed" ? isQuotaError(reason) : isQuotaMessage(reason);
+      if (outOfTokens && !isPaused(run)) {
+        if (await this.failOverStep(runId, found.stepId, agentId, reason ?? "", { canWait })) return;
       }
-      if (turnEnd === "completed" && !found.attempt.reminded && !isPaused(run) && (await this.remindToReport(runId, found.stepId, agentId))) return;
+      if (turnEnd === "completed" && !outOfTokens && !found.attempt.reminded && !isPaused(run) && (await this.remindToReport(runId, found.stepId, agentId))) return;
     }
     const violation = await this.checkoutViolation(run, found.attempt);
     const ended = await this.store.mutate(runId, (current) => {
@@ -2281,7 +2411,9 @@ export class Runtime {
     if (!ended) return;
     const report = this.store.get(runId)!.steps[ended.stepId]!.attempts.at(-1)!.report;
     const head = `step "${ended.stepId}" attempt ${ended.attempt.n}`;
-    const line = report
+    const line = !report && outOfTokens
+      ? `${head} ended (${turnEnd}) without reporting: its provider ${ended.attempt.target || "(unknown)"} is out of tokens and no fallback of its role is available.${lastMessage ? ` Last message: ${lastMessage.slice(0, 500)}` : ""} Move it to another model: nudge_step with model (a provider/model from list_providers and list_models; the same attempt, no retry used), or wait for the reset and nudge_step it without model. To avoid this, set providers.fallback in defaults/main.yaml.`
+      : report
       ? `${reportedLine(ended.stepId, ended.attempt.n, report)}${turnEnd === "timeout" ? " If its work is in fact done, nudge_step it to report: its report replaces the timeout failure. Or call complete_step with the outputs from its conversation." : ""}`
       : ended.attempt.reminded
         ? `${head} ended (${turnEnd}) without reporting, even after the plugin asked it to.${lastMessage ? ` Last message: ${lastMessage.slice(0, 1500)}` : ""} If it is still waiting on something, nudge_step it later. If it could not report (e.g. report_step_result "not found"), check the outputs it gave in its conversation and call complete_step with them.`
@@ -2304,7 +2436,7 @@ export class Runtime {
    * on the next target of its chain, with the same prompt and without using a retry. False if no
    * target is left or the new agent could not start (the failure then goes to the manager).
    */
-  private async failOverStep(runId: string, stepId: string, agentId: string, reason: string): Promise<boolean> {
+  private async failOverStep(runId: string, stepId: string, agentId: string, reason: string, options: { canWait?: boolean; resuming?: boolean } = {}): Promise<boolean> {
     const run = this.store.get(runId);
     const attempt = run?.steps[stepId]?.attempts.at(-1);
     if (!run || !attempt || attempt.agentId !== agentId || !attempt.target || isAgentlessAttempt(agentId)) return false;
@@ -2312,7 +2444,7 @@ export class Runtime {
     if (step.kind !== "agent" || !step.role) return false;
     const exhausted = attempt.target;
     const probe = structuredClone(run);
-    engine.markTarget(probe, exhausted, nowIso());
+    if (!options.resuming) engine.markTarget(probe, exhausted, nowIso());
     let config: AgentConfig;
     try {
       config = await this.stepAgentConfig(probe, step);
@@ -2320,7 +2452,29 @@ export class Runtime {
       config = { provider: exhausted };
     }
     if (engine.activeExhausted(probe).includes(config.provider ?? exhausted)) {
-      await this.store.mutate(runId, (current) => engine.markExhausted(current, stepId, exhausted, nowIso(), reason));
+      if (run.playbook.onExhausted === "wait" && options.canWait !== false) {
+        const chain = (await this.stepCandidates(probe, step)).map((candidate) => `${candidate.provider}/${candidate.model}`);
+        const resetAt = engine.exhaustedUntil(probe, chain);
+        const first = !attempt.waiting;
+        const waiting = await this.store.mutate(runId, (current) => {
+          if (!options.resuming) engine.markTarget(current, exhausted, nowIso());
+          return engine.startWaiting(current, stepId, { target: exhausted, reason, now: nowIso(), resetAt });
+        });
+        if (waiting) {
+          this.armWait(this.store.get(runId)!, stepId);
+          const until = this.store.get(runId)!.steps[stepId]!.attempts.at(-1)!.waiting!.until;
+          if (first) {
+            await this.enqueue(runId, [`step "${stepId}" attempt ${attempt.n}: every provider of its role is out of tokens; the plugin waits and restarts the attempt with the same brief at ${new Date(until).toLocaleString()} (no retry used)${run.playbook.maxWaitMs ? `, giving up after ${humanDuration(run.playbook.maxWaitMs)} in all` : ""}. Nothing to do: do not nudge or complete it; you are woken when it reports or fails.`]);
+            await this.deliver(runId);
+          }
+          return true;
+        }
+      }
+      await this.store.mutate(runId, (current) => {
+        engine.markExhausted(current, stepId, exhausted, nowIso(), reason);
+        const last = engine.currentAttempt(current, stepId);
+        if (last) last.waiting = null;
+      });
       return false;
     }
     const role = run.playbook.roles[step.role]!;
@@ -2341,14 +2495,52 @@ export class Runtime {
     }
     this.clearTimeout(agentId);
     await this.store.mutate(runId, (current) =>
-      engine.failOverAttempt(current, stepId, { target: exhausted, agentId: agent.id, newTarget: config.provider ?? "", now: nowIso(), reason }),
+      engine.failOverAttempt(current, stepId, { target: exhausted, agentId: agent.id, newTarget: config.provider ?? "", now: nowIso(), reason, resumed: options.resuming === true }),
     );
     await agent.send(withPreamble(attempt.prompt, this.store.get(runId)!)).catch((error: unknown) => console.error(`[playbooks] could not brief ${agent.id}:`, errorText(error)));
     this.armTimeout(this.store.get(runId)!, stepId);
     await this.archiveStepAgent(agentId);
+    if (options.resuming) {
+      await this.enqueue(runId, [`step "${stepId}" attempt ${attempt.n}: waited for tokens; the plugin restarted the attempt on ${config.provider} with the same brief (no retry used). Nothing to do: it will report as usual.`]);
+      await this.deliver(runId);
+      return true;
+    }
     await this.enqueue(runId, [`step "${stepId}" attempt ${attempt.n}: ${exhausted} is out of tokens; the plugin restarted the attempt on ${config.provider} with the same brief (no retry used); ${exhausted} is tried again after ${humanDuration(run.playbook.exhaustedForMs)}. Nothing to do: it will report as usual.`]);
     await this.deliver(runId);
     return true;
+  }
+
+  /** Schedules the restart of an attempt that waits for tokens (`attempt.waiting.until`). */
+  private armWait(run: Run, stepId: string): void {
+    const attempt = run.steps[stepId]?.attempts.at(-1);
+    if (!attempt?.waiting) return;
+    this.clearTimeout(attempt.agentId);
+    const due = Date.parse(attempt.waiting.until) - Date.now();
+    const timer = setTimeout(() => void this.onWaitEnded(run.id, stepId, attempt.agentId), Math.max(0, due));
+    (timer as unknown as { unref?: () => void }).unref?.();
+    this.timers.set(attempt.agentId, timer);
+  }
+
+  /** The wait is over: restart the attempt on the first provider that is back, wait again if none is, or fail once `max_wait` is spent. */
+  private async onWaitEnded(runId: string, stepId: string, agentId: string): Promise<void> {
+    this.timers.delete(agentId);
+    const run = this.store.get(runId);
+    const attempt = run?.steps[stepId]?.attempts.at(-1);
+    if (!run || attempt?.agentId !== agentId || !attempt.waiting || run.steps[stepId]!.status !== "running") return;
+    // A paused run starts nothing: look again in a minute.
+    if (isPaused(run)) {
+      const timer = setTimeout(() => void this.onWaitEnded(runId, stepId, agentId), 60_000);
+      (timer as unknown as { unref?: () => void }).unref?.();
+      this.timers.set(agentId, timer);
+      return;
+    }
+    if (await this.failOverStep(runId, stepId, agentId, "tokens still out", { resuming: true })) return;
+    // No wait left (max_wait spent, or the new agent could not start): the failure goes to the manager.
+    await this.store.mutate(runId, (current) => {
+      const last = engine.currentAttempt(current, stepId);
+      if (last?.agentId === agentId) last.waiting = null;
+    });
+    await this.onStepTurnEnded(runId, agentId, "failed", false);
   }
 
   /**
@@ -2532,6 +2724,8 @@ export class Runtime {
     const step = engine.stepDef(run, stepId);
     const attempt = run.steps[stepId]!.attempts.at(-1);
     if (!attempt) return;
+    // An attempt waiting for tokens has no timeout or silence check: its new agent gets them whole.
+    if (attempt.waiting) return;
     this.clearTimeout(attempt.agentId);
     this.armWatch(run, stepId, Date.parse(attempt.reopenedAt ?? attempt.startedAt));
     const timeoutMs = attemptTimeoutMs(step, attempt);

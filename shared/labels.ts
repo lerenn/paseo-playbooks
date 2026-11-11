@@ -23,3 +23,12 @@ export function stepShortTitle(step: Titled): string {
 export function stepTitleOf(playbook: { steps: Titled[] }, id: string): string {
   return stepTitle(playbook.steps.find((step) => step.id === id) ?? { id });
 }
+
+type Condition = { input: string; values: string[]; empty?: boolean; loop?: Array<{ op: string; value: number }> };
+
+/** A `when` / `if` condition on one line: "env=stg|prd", "url is set", "loop >=2". */
+export function conditionText(condition: Condition): string {
+  if (condition.loop) return `loop ${condition.loop.map((test) => `${test.op}${test.value}`).join("|")}`;
+  if (condition.empty !== undefined) return `${condition.input} is ${condition.empty ? "empty" : "set"}`;
+  return `${condition.input}=${condition.values.join("|")}`;
+}

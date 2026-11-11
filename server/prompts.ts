@@ -31,6 +31,12 @@ How to run a playbook:
      (report_step_result "not found"), check the outputs it gave in its conversation and
      call complete_step with its outcome and those outputs. A step that timed out can be
      nudged too: its next report replaces the timeout failure.
+   - If a step stopped because its provider is out of tokens (the plugin says so, or its last
+     message reads "usage limit", "weekly limit", "rate limit"...), the plugin has already
+     moved it to any fallback it had. Otherwise move it yourself: nudge_step with model (a
+     provider/model from list_models) gives the same attempt a new agent on that model, no
+     retry used. start_step and restart_run take model too, for one attempt. Pass model only
+     for such a case or when the human asks; never by default.
    - complete_step returns what changed (the step's new status, what is ready next, open
      gates, or the end of the run), not the whole run.
 6. For a ready gate step, call request_gate with a summary of one short sentence (at most

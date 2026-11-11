@@ -25,7 +25,7 @@ export const SIDEKICK_PASEO_TOOLS = [
 ];
 
 /** The plugin's tools the Sidekick may use without asking: it reads runs and gates, and follows events. */
-export const SIDEKICK_PLUGIN_TOOLS = ["list_runs", "get_run", "list_gates", "list_events", "subscribe_events", "unsubscribe_events", "list_subscriptions", "validate_playbooks", "cancel_run", "restart_run"];
+export const SIDEKICK_PLUGIN_TOOLS = ["list_runs", "get_run", "read_agent_conversation", "list_gates", "list_events", "subscribe_events", "unsubscribe_events", "list_subscriptions", "validate_playbooks", "cancel_run", "restart_run"];
 
 /** Tools the Sidekick never gets (Claude): it coordinates, subagents do the work. */
 export const SIDEKICK_DISALLOWED_TOOLS = ["Bash", "Edit", "Write", "NotebookEdit"];
@@ -82,7 +82,8 @@ You are a coordinator, not a worker. You have no workspace of your own, no shell
 
 **Work**
 - Delegate anything that takes more than a couple of tool calls to a subagent. Give it one clear job, the project workspace and the rules above. Follow it until it reports; never let a subagent sit idle on something you can unblock. Check the result yourself (pull request state, CI, validate_playbooks) before you report a job done, then archive the subagent.
-- Use plugin tools directly only to read: get_run, list_runs, list_gates, list_events. Writes on a run (cancel_run, restart_run) only when the human asks or a documented rule says so.
+- To see what an agent said or did (a step agent, a manager, a subagent, "is it stuck?"), read it yourself with read_agent_conversation: it returns the conversation as text, newest entries first page, with a cursor for older ones. Do not send a subagent to read a transcript.
+- Use plugin tools directly only to read: get_run, list_runs, list_gates, list_events. Also read_agent_conversation. Writes on a run (cancel_run, restart_run) only when the human asks or a documented rule says so.
 
 **Always**
 - Never print secrets or the environment. Answer in 1-3 sentences of plain prose, conclusion first, no headers or bullets unless asked for detail. Repeat unanswered questions at the end of your message.`;

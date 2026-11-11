@@ -159,4 +159,34 @@ steps:
     const [typo] = await load({ "p.yaml": STEPS }, `${CHAIN}providers: { exhausted_aftr: 1h }\n`);
     expect(typo!.errors.join("\n")).toMatch(/exhausted_aftr|Unrecognized key/);
   });
+
+  it("reads `providers: { on_exhausted, max_wait }`: fail and no limit when absent, max_wait only with wait", async () => {
+    const [none] = await load({ "p.yaml": STEPS }, CHAIN);
+    expect(none!.playbook!.onExhausted).toBe("fail");
+    expect(none!.playbook!.maxWaitMs).toBeNull();
+    const [ok] = await load({ "p.yaml": STEPS }, `${CHAIN}providers: { on_exhausted: wait, max_wait: 12h }\n`);
+    expect(ok!.errors).toEqual([]);
+    expect(ok!.playbook!.onExhausted).toBe("wait");
+    expect(ok!.playbook!.maxWaitMs).toBe(12 * 3_600_000);
+    const [unlimited] = await load({ "p.yaml": STEPS }, `${CHAIN}providers: { on_exhausted: wait }\n`);
+    expect(unlimited!.playbook!.maxWaitMs).toBeNull();
+    const [misplaced] = await load({ "p.yaml": STEPS }, `${CHAIN}providers: { max_wait: 12h }\n`);
+    expect(misplaced!.errors.join("\n")).toMatch(/max_wait only applies with providers\.on_exhausted: wait/);
+    const [bad] = await load({ "p.yaml": STEPS }, `${CHAIN}providers: { on_exhausted: wait, max_wait: long }\n`);
+    expect(bad!.errors.join("\n")).toMatch(/providers\.max_wait: expected a duration/);
+    const [wrong] = await load({ "p.yaml": STEPS }, `${CHAIN}providers: { on_exhausted: retry }\n`);
+    expect(wrong!.errors.length).toBeGreaterThan(0);
+  });
+
+  it("reads `providers: { fallback }`: provider/model strings, none when absent", async () => {
+    const [none] = await load({ "p.yaml": STEPS }, CHAIN);
+    expect(none!.playbook!.fallback).toEqual([]);
+    const [ok] = await load({ "p.yaml": STEPS }, `${CHAIN}providers: { fallback: [codex/gpt-5.5, "claude/claude-opus-4-8[1m]"] }\n`);
+    expect(ok!.errors).toEqual([]);
+    expect(ok!.playbook!.fallback).toEqual(["codex/gpt-5.5", "claude/claude-opus-4-8[1m]"]);
+    const [bad] = await load({ "p.yaml": STEPS }, `${CHAIN}providers: { fallback: [opus] }\n`);
+    expect(bad!.errors.join("\n")).toMatch(/providers\.fallback: "opus" is not a provider\/model/);
+    const [notList] = await load({ "p.yaml": STEPS }, `${CHAIN}providers: { fallback: codex/gpt-5.5 }\n`);
+    expect(notList!.errors.length).toBeGreaterThan(0);
+  });
 });
