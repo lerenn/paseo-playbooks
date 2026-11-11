@@ -2618,7 +2618,7 @@ export class Runtime {
   /**
    * Records what the agent spent since its last turn: `lastUsage` is cumulative for the session, so the
    * ledger turns it into a delta, which goes to the step attempt, gate decider or manager run it belongs
-   * to. Every agent that ends a turn goes in the ledger, also those outside the runs (coordinators...).
+   * to. Every agent that ends a turn goes in the ledger, also those outside the runs.
    */
   private async recordUsage(agentId: string): Promise<void> {
     try {

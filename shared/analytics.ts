@@ -16,11 +16,11 @@ export const UsageRowSchema = z.object({
 });
 export type UsageRow = z.infer<typeof UsageRowSchema>;
 
-/** What one agent spent over its life (a manager, a step agent, a decider, a coordinator, the Meta-Manager...). */
+/** What one agent spent over its life (a manager, a step agent, a decider, any other agent). */
 export const AgentUsageSchema = z.object({
   agentId: z.string(),
   title: z.string(),
-  /** step, decider, manager, sidekick or other (a coordinator, the Meta-Manager, any agent outside the runs). */
+  /** step, decider, manager, sidekick or other (any agent outside the runs). */
   kind: z.string(),
   role: z.string().nullable(),
   model: z.string().nullable(),

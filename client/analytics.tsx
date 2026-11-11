@@ -153,7 +153,7 @@ function Table(props: { theme: Theme; title: string; rows: UsageRow[]; showWaste
   );
 }
 
-/** The agents that spent the most, whatever they are: managers, coordinators, the Meta-Manager, step agents. */
+/** The agents that spent the most, whatever they are: managers, step agents, any other agent. */
 function TopAgents(props: { theme: Theme; rows: AgentRow[] }) {
   const { theme, rows } = props;
   if (rows.length === 0) return null;
