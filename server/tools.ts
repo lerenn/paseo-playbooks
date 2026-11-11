@@ -10,7 +10,7 @@ import { hasPlaybooks, loadPlaybooks } from "./loader";
 import { conversationText } from "./conversation";
 import { attentionText } from "./overseer";
 import { MANAGER_PROTOCOL, managerInstructionsText, worktreePreamble } from "./prompts";
-import { UserError, type Runtime } from "./runtime";
+import { UserError, type ModelChoice, type Runtime } from "./runtime";
 
 function ok(text: string, structuredContent?: unknown): AgentToolResult {
   return structuredContent === undefined ? { text } : { text, structuredContent };
@@ -97,6 +97,31 @@ function worktreeView(run: Run) {
   };
 }
 
+/** When the manager passes `model`, in the tool descriptions. */
+const MODEL_USE =
+  "model (optional): a provider/model (see list_providers and list_models) for this attempt only, instead of the role's model and its fallbacks; thinking: one of that model's thinking options. The step's mode and thinking carry over only on the same provider. Pass it only when the role's model cannot run (out of tokens, unavailable) or the human asks for another model; the plugin already fails over on its own when the role has fallbacks.";
+
+const ModelArgs = {
+  model: z.string().optional().describe("provider/model for this attempt only, e.g. claude/claude-opus-5-5 (list_models)"),
+  thinking: z.string().optional().describe("Thinking option of that model (with model only)"),
+};
+
+function modelChoice(model: string | undefined, thinking: string | undefined): ModelChoice | undefined {
+  if (!model?.trim()) {
+    if (thinking) throw new UserError("thinking only applies with model");
+    return undefined;
+  }
+  return { target: model.trim(), ...(thinking ? { thinking } : {}) };
+}
+
+/** Per attempt, the models its agents ran on, oldest first (an attempt from before this history shows its last one). */
+function attemptModels(attempts: Run["steps"][string]["attempts"]) {
+  return attempts.map((attempt) => ({
+    attempt: attempt.n,
+    agents: attempt.agents.length > 0 ? attempt.agents : attempt.target ? [{ agentId: attempt.agentId, target: attempt.target, at: attempt.startedAt, why: "chain" as const }] : [],
+  }));
+}
+
 /** The default get_run view: one short line of state per step, no reports, outputs or inputs. */
 export function runCompact(run: Run, only?: string[]) {
   return {
@@ -125,6 +150,7 @@ export function runCompact(run: Run, only?: string[]) {
             status: state.status,
             outcome: attempt?.outcome ?? attempt?.report?.outcome ?? null,
             attempts: state.attempts.length,
+            ...(attempt?.target ? { model: attempt.target } : {}),
             turnEnd: attempt?.turnEnd ?? null,
             summary: clip(state.summary ?? attempt?.report?.summary ?? null),
           },
@@ -171,6 +197,7 @@ export function runFull(run: Run, only?: string[]) {
             status: state.status,
             attempts: state.attempts.length,
             agentId: attempt && !isAgentlessAttempt(attempt.agentId) ? attempt.agentId : null,
+            ...(step.kind === "agent" ? { models: attemptModels(state.attempts), ...(state.nextModel ? { nextModel: state.nextModel } : {}) } : {}),
             ...(step.kind === "handoff" ? { handoff: step.handoff, job: attempt?.job ?? null } : {}),
             ...(step.kind === "script" ? { script: step.script, checks: attempt?.checks ?? 0, nextCheckAt: attempt?.nextCheckAt ?? null } : {}),
             ...(step.kind === "branch" ? { chosen: state.branch } : {}),
@@ -346,13 +373,13 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
     }),
     defineAgentTool({
       name: "start_step",
-      description: "Start a ready agent step as a subagent. The plugin renders the step prompt and inputs; your brief adds context they lack.",
-      input: z.object({ runId: IdArg, stepId: z.string(), brief: z.string().default("").describe("Short brief for the step agent") }),
-      execute: ({ runId, stepId, brief }, { agent }) =>
+      description: `Start a ready agent step as a subagent. The plugin renders the step prompt and inputs; your brief adds context they lack. ${MODEL_USE}`,
+      input: z.object({ runId: IdArg, stepId: z.string(), brief: z.string().default("").describe("Short brief for the step agent"), ...ModelArgs }),
+      execute: ({ runId, stepId, brief, model, thinking }, { agent }) =>
         guard(async () => {
-          const started = await runtime.startStep(agent.id, runId, stepId, brief);
+          const started = await runtime.startStep(agent.id, runId, stepId, brief, modelChoice(model, thinking));
           return ok(
-            `Step "${stepId}" attempt ${started.attempt} started (agent ${started.agentId}). End your turn; you will be woken when it finishes.`,
+            `Step "${stepId}" attempt ${started.attempt} started on ${started.target} (agent ${started.agentId}). End your turn; you will be woken when it finishes.`,
             started,
           );
         }),
@@ -457,12 +484,13 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
     }),
     defineAgentTool({
       name: "nudge_step",
-      description: "Send a follow-up message to a step's current agent (same conversation, no new attempt), e.g. when it ended without reporting. On a step that timed out, its next report replaces the timeout failure.",
-      input: z.object({ runId: IdArg, stepId: z.string(), message: z.string() }),
-      execute: ({ runId, stepId, message }, { agent }) =>
+      description: `Send a follow-up message to a step's current agent (same conversation, no new attempt), e.g. when it ended without reporting. On a step that timed out, its next report replaces the timeout failure. With model: an agent cannot change model, so a new agent on that model takes over the same attempt (no retry used, the old agent is archived), started with the step's prompt, a hand-over note and your message; use it when the step stopped because its provider is out of tokens (its last message says "usage limit", "weekly limit", "rate limit"...) and no fallback took over. Refused once the attempt has reported. ${MODEL_USE}`,
+      input: z.object({ runId: IdArg, stepId: z.string(), message: z.string(), ...ModelArgs }),
+      execute: ({ runId, stepId, message, model, thinking }, { agent }) =>
         guard(async () => {
           runtime.ownedRun(agent.id, runId);
-          await runtime.nudgeStep(runId, stepId, message);
+          const moved = await runtime.nudgeStep(runId, stepId, message, false, modelChoice(model, thinking));
+          if (moved) return ok(`"${stepId}" moved to ${moved.target} (agent ${moved.agentId}), same attempt. End your turn; you will be woken when it finishes.`, moved);
           return ok(`Sent to "${stepId}". End your turn; you will be woken when it finishes.`);
         }),
     }),
@@ -726,7 +754,7 @@ export function runTools(runtime: Runtime): AgentToolDefinition[] {
     defineAgentTool({
       name: "restart_run",
       description:
-        "Recover a finished (completed, failed, canceled, or failed with \"manager lost\") or archived run: reopen it from a step of its main graph whose needs completed. That step and everything after it run again; completed steps before it keep their outputs and are not repeated. With takeOver: true you become its manager (you must be in the run's workspace). Otherwise its manager is woken, or, if that manager was archived, a new Playbook Manager is created in the run's workspace and takes over. If the run's workspace was deleted or has another active run, pass workspaceId to restart it in another workspace of the project. See list_runs (archived: true) for runs, failure and restartableFrom.",
+        "Recover a finished (completed, failed, canceled, or failed with \"manager lost\") or archived run: reopen it from a step of its main graph whose needs completed. That step and everything after it run again; completed steps before it keep their outputs and are not repeated. With takeOver: true you become its manager (you must be in the run's workspace). Otherwise its manager is woken, or, if that manager was archived, a new Playbook Manager is created in the run's workspace and takes over. If the run's workspace was deleted or has another active run, pass workspaceId to restart it in another workspace of the project. See list_runs (archived: true) for runs, failure and restartableFrom. With model, the restarted step's next attempt runs on it (an agent step only; start_step may still pass another).",
       input: z.object({
         runId: IdArg,
         stepId: z.string().describe("Step to restart from (see restartableFrom in list_runs)"),
@@ -739,14 +767,15 @@ export function runTools(runtime: Runtime): AgentToolDefinition[] {
           .boolean()
           .default(false)
           .describe("Become the run's manager yourself (you must be an agent of the run's workspace), instead of its previous manager or a new one"),
+        ...ModelArgs,
       }),
-      execute: ({ runId, stepId, note, takeOver, workspaceId }, { agent }) =>
+      execute: ({ runId, stepId, note, takeOver, workspaceId, model, thinking }, { agent }) =>
         guard(async () => {
           // A taker needs the manager tools, which agents get in a workspace with playbooks.
           if (takeOver && runtime.runsOfManager(agent.id).length === 0 && !(await hasPlaybooks(agent.cwd))) {
             throw new UserError("you do not have the manager tools (your workspace has no playbooks): omit takeOver and a Playbook Manager is found for the run");
           }
-          const { run, newManager } = await runtime.restartRun(runId, stepId, note?.trim() || null, agent.id, "agent", takeOver ? { id: agent.id, workspaceId: agent.workspaceId } : undefined, workspaceId);
+          const { run, newManager } = await runtime.restartRun(runId, stepId, note?.trim() || null, agent.id, "agent", takeOver ? { id: agent.id, workspaceId: agent.workspaceId } : undefined, workspaceId, modelChoice(model, thinking));
           const isManager = run.managerAgentId === agent.id;
           const next = isManager
             ? `You manage it${newManager ? " now (get_run with view \"full\" shows the completed steps' reports and outputs)" : ""}: start the ready steps (${engine.readySteps(run).join(", ") || "none"}) with start_step.`

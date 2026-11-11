@@ -83,6 +83,7 @@ providers:             # provider failover
   exhausted_for: 1h    # an exhausted provider/model is skipped this long, then tried again (default 1h)
   on_exhausted: fail   # when every provider of a role is out of tokens: fail (to the manager, default) | wait (restart by itself)
   # max_wait: 12h      # with wait: give up and fail to the manager after this long (default: no limit)
+  fallback: [codex/gpt-5.5, claude/claude-opus-5-5]  # provider/model targets every step falls back to, after its own tier (default none)
 timeout: 1h            # default step timeout (optional)
 role:                  # defaults for agent steps, in the shape of a step's `role:` block
   silence: 30m         # remind a step agent after this long without activity (default 30m; off to disable)
@@ -116,6 +117,19 @@ earliest end of `exhausted_for`; it waits again if the provider is still out) un
 (default: no limit) is spent. Do not nudge or complete a waiting step. A multi-entry tier cannot be combined with inline `provider`, `model`, `mode`
 or `thinking` on the same `agent` block: define another tier. On `manager` it only picks the first
 entry when a manager is created; the manager never switches mid-run.
+
+`providers.fallback` (a list of `provider/model`) is appended to every step agent's chain, after its
+tier's own entries (duplicates skipped), so a role with a single model still moves on when it runs out.
+A fallback keeps the role's `mode` and `thinking` only on the same provider. Out of tokens is detected
+on a failed turn (its error text) and on a turn that ends on the provider's short notice as its last
+message (Claude Code's "You've hit your weekly limit · resets …"); the patterns are in `server/quota.ts`.
+
+The manager can pick a model for one attempt: `start_step`, `nudge_step` and `restart_run` take
+`model: provider/model` (checked against the provider's models, as `list_models` shows them) and
+`thinking`. On `nudge_step` a new agent on that model takes over the same attempt (no retry used; the
+old agent is archived): the way to unstick a step whose provider is out with no fallback left.
+`get_run` shows each step's `model` (compact) and, per attempt, the agents and models it ran on with
+why (`chain`, `model`, `failover`, `resumed`) in view `full`.
 
 ## Manager instructions
 

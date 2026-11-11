@@ -133,6 +133,14 @@ submission) with that tag.
   with inline `provider`, `model`, `mode` or `thinking` on the same `agent` block. Each entry has its own
   `mode` and `thinking`. The run log gets a `provider_exhausted` line.
   The manager itself never switches mid-run (see `docs/adrs/2026-11-10-provider-fallback-tiers.md`).
+- `providers: { fallback: [codex/gpt-5.5, claude/claude-opus-5-5] }` in `defaults/main.yaml` adds
+  `provider/model` fallbacks to every step agent, after its tier's own entries, so a role with one model
+  moves on too. Out of tokens is also detected when a turn ends normally on the provider's notice
+  ("You've hit your weekly limit · resets Nov 16, 2pm"), not only on a failed turn. The manager can move a
+  step to another model itself: `nudge_step`, `start_step` and `restart_run` take `model: provider/model`
+  (and `thinking`) for that attempt; on `nudge_step` a new agent takes over the same attempt. `get_run`
+  shows the model of each step and, in view `full`, the models of each attempt
+  (see `docs/adrs/2026-11-11-step-model-override-failover.md`).
 - `archive_run` archives an ended run like the panel's archive button (refused while active, or while its hand-off job is still open unless `force: true`; idempotent). `list_runs` hides archived runs unless `archived: true`. See `docs/adrs/2026-11-10-archive-run.md`.
 - `list_playbooks` and `validate_playbooks` return a compact view by default (`results[].id`, `.valid`, `.errors`); `view: "full"` and `playbookId` give the detail.
 - Loop feedback (a `goto` back) goes in `complete_step`'s `summary`, not in `outputs`.

@@ -373,6 +373,8 @@ const RawDefaultsSchema = z.object({
         on_exhausted: z.enum(["fail", "wait"]).optional(),
         /** With `on_exhausted: wait`: the longest a step waits (`12h`) before it fails to the manager. Default: no limit. */
         max_wait: z.string().optional(),
+        /** `provider/model` targets every step agent of these playbooks falls back to, in order, after its own chain (`[codex/gpt-5.5, claude/claude-opus-5-5]`). Default none. */
+        fallback: z.array(z.string()).optional(),
       })
       .strict()
       .optional(),
@@ -552,6 +554,9 @@ async function loadDefaults(root: string, relDir: string): Promise<{ defaults: R
   }
   if (parsed.data.providers?.exhausted_for !== undefined && parseDuration(parsed.data.providers.exhausted_for) === null) {
     errors.push(`${rel}: providers.exhausted_for: expected a duration such as 30m or 2h`);
+  }
+  for (const entry of parsed.data.providers?.fallback ?? []) {
+    if (!/^[^/\s]+\/\S+$/.test(entry)) errors.push(`${rel}: providers.fallback: "${entry}" is not a provider/model such as claude/claude-opus-5-5`);
   }
   if (parsed.data.providers?.max_wait !== undefined) {
     if (parsed.data.providers.on_exhausted !== "wait") errors.push(`${rel}: providers.max_wait only applies with providers.on_exhausted: wait`);
@@ -1492,6 +1497,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     exhaustedForMs: (defaults.providers?.exhausted_for ? parseDuration(defaults.providers.exhausted_for) : null) ?? DEFAULT_EXHAUSTED_FOR_MS,
     onExhausted: defaults.providers?.on_exhausted ?? "fail",
     maxWaitMs: (defaults.providers?.max_wait ? parseDuration(defaults.providers.max_wait) : null) ?? null,
+    fallback: defaults.providers?.fallback ?? [],
     managerInstructions: managerInstructions(folder.managerText, id, pb.manager?.prompt, [...blocks.values()]),
     outcomes: playbookOutcomes,
     workspace: {
