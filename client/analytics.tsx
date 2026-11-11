@@ -7,6 +7,7 @@ import type { Usage } from "../shared/types";
 import type { Theme } from "./theme";
 
 const RANGES: Array<{ label: string; days: number | undefined }> = [
+  { label: "Last day", days: 1 },
   { label: "7 days", days: 7 },
   { label: "30 days", days: 30 },
   { label: "All time", days: undefined },
