@@ -3196,8 +3196,11 @@ export class Runtime {
     }
     const own = await this.sidekickRegistry.findByAgent(agentId);
     if (!own) return false;
+    // Its turn is over: not busy any more (an end-of-turn send below starts a new one), and held event notices can go out.
+    this.busyManagers.delete(agentId);
     if (this.sidekickRolling.has(agentId)) {
       await this.rollSidekick(own.projectId, own.record);
+      await this.bus.flush();
       return true;
     }
     const project = await this.projectOf(own.record.workspaceId).catch(() => null);
@@ -3209,6 +3212,7 @@ export class Runtime {
       // Asked once; if it still has not handed off after its next turn, restart it from the last saved ledger.
       if (this.sidekickAsked.has(agentId)) {
         await this.rollSidekick(own.projectId, own.record);
+        await this.bus.flush();
         return true;
       }
       this.sidekickAsked.add(agentId);
@@ -3224,7 +3228,15 @@ export class Runtime {
       for (const { runId, gate } of fresh) swept.add(`${runId}:${gate.id}`);
       parts.push(sidekickGateSweep(fresh.map(({ runId, gate }) => ({ runId, gateId: gate.id, stepId: gate.stepId }))));
     }
-    if (parts.length > 0) await this.api().agents.ref(agentId).send(parts.join("\n\n"));
+    if (parts.length > 0) {
+      this.busyManagers.add(agentId);
+      try {
+        await this.api().agents.ref(agentId).send(parts.join("\n\n"));
+      } catch (error) {
+        this.busyManagers.delete(agentId);
+        throw error;
+      }
+    } else await this.bus.flush();
     return true;
   }
 
