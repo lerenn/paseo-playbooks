@@ -12,9 +12,15 @@ async function git(cwd: string, args: string[]): Promise<string> {
   return stdout;
 }
 
+/** A playbook id (`lfradin:pr-to-prod`, odd characters) as one valid git ref component: everything outside [A-Za-z0-9._-] becomes `-`. */
+export function refSafe(value: string): string {
+  const safe = value.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/\.{2,}/g, ".").replace(/^[-.]+|[-.]+$/g, "").replace(/\.lock$/i, "-lock");
+  return safe || "playbook";
+}
+
 /** The branch an isolated run's worktree gets: `playbooks/<playbook>-<id>`, like a run's own workspace. */
 export function worktreeBranch(playbookId: string, id: string): string {
-  return `playbooks/${playbookId}-${id}`;
+  return `playbooks/${refSafe(playbookId)}-${id}`;
 }
 
 /** The run id a worktree directory belongs to: directories are named by run id. */
