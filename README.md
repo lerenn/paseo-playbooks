@@ -135,8 +135,9 @@ npm version patch --no-git-tag-version   # or minor / major
 ```
 
 When a new version reaches `main`, the Release workflow tags it `vX.Y.Z` and creates a GitHub
-release. To update the Paseo Cafe listing, reply on the registry review PR (or open a new
-submission) with that tag.
+release. To update the official listing on paseo.sh/plugins, run the `update-official-plugin`
+skill (`.agents/skills/update-official-plugin/`): it opens a submission on `getpaseo/plugins`
+with that tag.
 
 ## Known limits
 
