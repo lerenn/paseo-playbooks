@@ -2999,6 +2999,32 @@ export class Runtime {
     });
   }
 
+  /**
+   * The human's "restart session": replaces the project's Sidekick by a new agent that starts from the
+   * last hand-off it saved (none: a blank start). The old agent is archived, even mid-turn. Shares the
+   * opening lock, so it never races an open.
+   */
+  restartSidekick(workspaceId: string): Promise<{ projectId: string; workspaceId: string; agentId: string; created: boolean }> {
+    return this.withProject(workspaceId, async (project) => {
+      const pending = this.sidekickOpening.get(project.projectId);
+      if (pending) await pending.catch(() => undefined);
+      const restart = (async () => {
+        const known = await this.sidekickRegistry.read(project.projectId);
+        if (!known) return this.ensureSidekick(project);
+        const load = await loadSidekick(project.root);
+        if (!load.configured) throw new UserError(`this project has no Sidekick: add a sidekick/ folder to its playbooks folder (see "Create the Sidekick files")`);
+        if (!load.config) throw new UserError(`the Sidekick files have errors:\n${load.errors.join("\n")}`);
+        this.sidekickRolling.delete(known.agentId);
+        this.sidekickAsked.delete(known.agentId);
+        this.sidekickHeld.delete(known.agentId);
+        await this.api().agents.ref(known.agentId).archive().catch(() => undefined);
+        return this.launchSidekick(project, load, known, known.handoff);
+      })().finally(() => this.sidekickOpening.delete(project.projectId));
+      this.sidekickOpening.set(project.projectId, restart);
+      return restart;
+    });
+  }
+
   /** The workspace's project: id, label and root directory. */
   private async projectOf(workspaceId: string) {
     const workspace = await this.api().workspaces.ref(workspaceId).refresh();

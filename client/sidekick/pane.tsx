@@ -2,7 +2,7 @@ import { openExternalUrl, useRpc } from "@getpaseo/plugin/client";
 import { Icon, ScrollView, useToast } from "@getpaseo/plugin/client/ui";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PanResponder, Pressable, Text, View } from "react-native";
-import { createSidekickFilesRpc, listSidekicksRpc, openSidekickRpc, type SidekickProject } from "../../shared/contracts";
+import { createSidekickFilesRpc, listSidekicksRpc, openSidekickRpc, restartSidekickRpc, type SidekickProject } from "../../shared/contracts";
 import { GETTING_STARTED_URL } from "../panel";
 import { Button } from "../sheet";
 import type { Theme } from "../theme";
@@ -56,6 +56,8 @@ export function SidekickPane(props: Props) {
   );
   const list = useRpc(listSidekicksRpc);
   const open = useRpc(openSidekickRpc);
+  const restart = useRpc(restartSidekickRpc);
+  const toast = useToast();
   const [projects, setProjects] = useState<SidekickProject[]>([]);
   const added = ui.added;
   const selected = ui.selectedProjectId;
@@ -200,6 +202,16 @@ export function SidekickPane(props: Props) {
           agentId={agentId}
           projectId={current.projectId}
           status={{ loading: opening?.projectId === current.projectId && !opening.error, error: opening?.projectId === current.projectId ? opening.error : null }}
+          onRestart={async () => {
+            try {
+              const result = await restart({ workspaceId: current.workspaceId });
+              setAgents((all) => ({ ...all, [result.projectId]: result.agentId }));
+              toast.show("Started a new Sidekick session from the last hand-off.", { variant: "success" });
+              void refreshRef.current();
+            } catch (error) {
+              toast.error(error instanceof Error ? error.message : "Could not restart the Sidekick");
+            }
+          }}
           onOpenTab={agentId && props.openAgent ? () => props.openAgent!(agentId) : undefined}
         />
       )}

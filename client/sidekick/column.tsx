@@ -15,6 +15,8 @@ interface Props {
   agentId: string | null;
   /** Opens the agent as a native tab, where everything the chat lacks (model, mode) lives. */
   onOpenTab?: (() => void) | undefined;
+  /** Restarts the Sidekick as a new session (asks first). */
+  onRestart?: (() => Promise<void>) | undefined;
   /** The project tab: its unsent message is kept in the UI store. */
   projectId: string;
   /** Set while the Sidekick is being created or its RPC failed. */
@@ -29,6 +31,7 @@ export function SidekickChat(props: Props) {
   const { state } = chat;
   const draft = useSidekickUi().drafts[props.projectId] ?? "";
   const setDraft = (text: string) => sidekickUi.setDraft(props.projectId, text);
+  const [confirmRestart, setConfirmRestart] = useState(false);
   const [sending, setSending] = useState(false);
   const composer = useRef<unknown>(null);
   const attachments = useAttachments(composer, (message) => toast.error(message));
@@ -55,11 +58,27 @@ export function SidekickChat(props: Props) {
   const muted = theme.colors.foregroundMuted;
   return (
     <View style={{ flex: 1 }}>
-      {chat.info.model || props.onOpenTab ? (
+      {chat.info.model || props.onOpenTab || props.onRestart ? (
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, paddingVertical: 6, borderBottomWidth: 1, borderColor: theme.colors.border }}>
           <Text style={{ color: muted, fontSize: 11, flex: 1 }} numberOfLines={1}>
             {chat.info.model ? `${chat.info.model}${chat.info.mode ? ` · ${chat.info.mode}` : ""}` : ""}
           </Text>
+          {props.onRestart && agentId ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={confirmRestart ? "Confirm: restart the Sidekick as a new session" : "Start a new Sidekick session"}
+              {...({ title: confirmRestart ? "Press again to restart" : "New session (continues from the last hand-off)" } as object)}
+              hitSlop={8}
+              onPress={() => {
+                if (!confirmRestart) return setConfirmRestart(true);
+                setConfirmRestart(false);
+                void props.onRestart!();
+              }}
+              onBlur={() => setConfirmRestart(false)}
+            >
+              {confirmRestart ? <Text style={{ color: theme.colors.statusWarning, fontSize: 11 }}>Restart?</Text> : <Icon name="RotateCcw" size={15} color={muted} />}
+            </Pressable>
+          ) : null}
           {props.onOpenTab ? (
             <Pressable accessibilityRole="button" accessibilityLabel="Open the Sidekick as an agent tab" hitSlop={8} onPress={props.onOpenTab}>
               <Icon name="ExternalLink" size={15} color={muted} />
