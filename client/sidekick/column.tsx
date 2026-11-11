@@ -5,6 +5,7 @@ import { formatSize } from "../../shared/attachments";
 import type { Theme } from "../theme";
 import { useAttachments } from "./attach";
 import { sidekickUi, useSidekickUi } from "./ui-state";
+import { isQueueKey, mergeQueued, queueAction, shouldFlush } from "./queue";
 import { describePermission } from "./describe";
 import { pluginMessage } from "./instructions";
 import { groupTools, type GroupState } from "./group";
@@ -30,7 +31,9 @@ export function SidekickChat(props: Props) {
   const chat = useSidekickChat(agentId);
   const toast = useToast();
   const { state } = chat;
-  const draft = useSidekickUi().drafts[props.projectId] ?? "";
+  const ui = useSidekickUi();
+  const draft = ui.drafts[props.projectId] ?? "";
+  const queued = ui.queued[props.projectId];
   const setDraft = (text: string) => sidekickUi.setDraft(props.projectId, text);
   const [confirmRestart, setConfirmRestart] = useState(false);
   const [sending, setSending] = useState(false);
@@ -39,9 +42,15 @@ export function SidekickChat(props: Props) {
   const scroller = useRef<{ scrollToEnd?: (options?: { animated?: boolean }) => void } | null>(null);
   useEffect(() => scroller.current?.scrollToEnd?.({ animated: false }), [state.items, state.permissions.length]);
 
-  const submit = () => {
+  const submit = (queue = false) => {
     const text = draft.trim();
     if ((!text && attachments.items.length === 0) || sending) return;
+    if (queue && queueAction(state.running) === "queue") {
+      sidekickUi.setQueued(props.projectId, mergeQueued(queued, { text, attachments: attachments.items }));
+      setDraft("");
+      attachments.clear();
+      return;
+    }
     setSending(true);
     chat
       .send(text, attachments.items)
@@ -52,6 +61,20 @@ export function SidekickChat(props: Props) {
       .catch((error: unknown) => toast.error(error instanceof Error ? error.message : "Could not send"))
       .finally(() => setSending(false));
   };
+  // The queued message goes out as soon as the turn has ended.
+  const live = state.connection === "live";
+  useEffect(() => {
+    if (!queued || !shouldFlush(queued, { live, running: state.running, sending })) return;
+    sidekickUi.setQueued(props.projectId, null);
+    setSending(true);
+    chat
+      .send(queued.text, queued.attachments)
+      .catch((error: unknown) => {
+        toast.error(error instanceof Error ? error.message : "Could not send the queued message");
+        if (!sidekickUi.get().drafts[props.projectId]) sidekickUi.setDraft(props.projectId, queued.text);
+      })
+      .finally(() => setSending(false));
+  }, [queued, live, state.running, sending]); // eslint-disable-line react-hooks/exhaustive-deps
   const stop = () => chat.stop().catch((error: unknown) => toast.error(error instanceof Error ? error.message : "Could not stop"));
   const respond = (id: string, response: PermissionResponse) =>
     chat.respond(id, response).catch((error: unknown) => toast.error(error instanceof Error ? error.message : "Could not answer"));
@@ -118,25 +141,37 @@ export function SidekickChat(props: Props) {
             ))}
           </ScrollView>
         ) : null}
+        {queued ? (
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8, borderRadius: 8, borderWidth: 1, borderStyle: "dashed", borderColor: theme.colors.border, paddingHorizontal: 8, paddingVertical: 6 }}>
+            <Icon name="Clock" size={13} color={muted} />
+            <Text style={{ color: muted, fontSize: 12, flex: 1 }} numberOfLines={2}>
+              Queued: {queued.text || `${queued.attachments.length} attachment(s)`}
+            </Text>
+            <Pressable accessibilityRole="button" accessibilityLabel="Cancel the queued message" hitSlop={8} onPress={() => sidekickUi.setQueued(props.projectId, null)}>
+              <Icon name="X" size={14} color={muted} />
+            </Pressable>
+          </View>
+        ) : null}
         <TextInput
           value={draft}
           onChangeText={setDraft}
-          placeholder={agentId ? (state.running ? "Message (sent into the running turn)" : "Message the Sidekick (paste or drop files)") : "Starting…"}
+          placeholder={agentId ? (state.running ? "Enter sends into the running turn, ⌘/Ctrl+Enter queues" : "Message the Sidekick (paste or drop files)") : "Starting…"}
           placeholderTextColor={muted}
           editable={agentId !== null}
           multiline
           onKeyPress={(event) => {
-            const key = event.nativeEvent as unknown as { key?: string; shiftKey?: boolean };
+            const key = event.nativeEvent as unknown as { key?: string; shiftKey?: boolean; metaKey?: boolean; ctrlKey?: boolean };
             if (key.key === "Enter" && !key.shiftKey) {
               (event as unknown as { preventDefault?: () => void }).preventDefault?.();
-              submit();
+              submit(isQueueKey(key));
             }
           }}
           style={{ minHeight: 40, maxHeight: 140, color: theme.colors.foreground, borderWidth: 1, borderColor: theme.colors.border, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8 }}
         />
         <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 8 }}>
           {state.running ? <ColumnButton theme={theme} label="Stop" onPress={stop} tone="danger" /> : null}
-          <ColumnButton theme={theme} label="Send" onPress={submit} disabled={(!draft.trim() && attachments.items.length === 0) || sending || agentId === null} tone="primary" />
+          {state.running ? <ColumnButton theme={theme} label="Queue" onPress={() => submit(true)} disabled={(!draft.trim() && attachments.items.length === 0) || sending || agentId === null} tone="plain" /> : null}
+          <ColumnButton theme={theme} label="Send" onPress={() => submit()} disabled={(!draft.trim() && attachments.items.length === 0) || sending || agentId === null} tone="primary" />
         </View>
       </View>
     </View>
