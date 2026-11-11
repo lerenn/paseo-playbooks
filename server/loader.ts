@@ -640,6 +640,9 @@ const RawSidekickSchema = z
         thinking: z.string().optional(),
         /** Event types (or globs such as `gate.*`) it is subscribed to, for this project's runs. */
         watch: z.array(z.string().min(1)).min(1).optional(),
+        /** Provider and model of the subagents the Sidekick creates (default: claude / claude-sonnet-5-5). */
+        subagents: z.object({ provider: z.string().min(1).optional(), model: z.string().min(1).optional() }).strict().optional(),
+        session: z.object({ restart_above_tokens: z.number().int().positive().optional() }).strict().optional(),
       })
       .strict()
       .optional(),
@@ -655,6 +658,9 @@ export interface SidekickConfig {
   mode?: string;
   thinking?: string;
   watch: string[];
+  /** Context size above which the Sidekick is restarted with a hand-off; default 300000. */
+  restartAboveTokens?: number;
+  subagents?: { provider?: string; model?: string };
 }
 
 export interface SidekickLoad {
@@ -689,8 +695,13 @@ export async function loadSidekick(workspaceDir: string): Promise<SidekickLoad> 
         const parsed = RawSidekickSchema.safeParse(raw.value);
         if (!parsed.success) errors.push(...formatZodError(`${rel}/sidekick.yaml`, parsed.error));
         else {
-          const { watch, ...settings } = parsed.data.sidekick ?? {};
-          config = { ...Object.fromEntries(Object.entries(settings).filter(([, value]) => value !== undefined)), watch: watch ?? DEFAULT_SIDEKICK_WATCH };
+          const { watch, session, subagents, ...settings } = parsed.data.sidekick ?? {};
+          config = {
+            ...Object.fromEntries(Object.entries(settings).filter(([, value]) => value !== undefined)),
+            watch: watch ?? DEFAULT_SIDEKICK_WATCH,
+            ...(subagents && (subagents.provider || subagents.model) ? { subagents: Object.fromEntries(Object.entries(subagents).filter(([, value]) => value !== undefined)) } : {}),
+            ...(session?.restart_above_tokens ? { restartAboveTokens: session.restart_above_tokens } : {}),
+          };
         }
       }
     }

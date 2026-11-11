@@ -32,7 +32,7 @@ import { createWorktree, dirtyPaths, linkedSubmodules, listWorktreeDirs, pruneWo
 import { chooseDefinition } from "./fresh";
 import { loadPlaybooks, loadSidekick } from "./loader";
 import { findEntry } from "../shared/repos";
-import { SIDEKICK_DISALLOWED_TOOLS, SIDEKICK_KICKOFF, SIDEKICK_LABEL, SIDEKICK_PASEO_TOOLS, SIDEKICK_PLUGIN_TOOLS, SidekickRegistry, sidekickPrompt, sidekickTitle } from "./sidekick";
+import { DEFAULT_SIDEKICK_RESTART_TOKENS, DEFAULT_SIDEKICK_SUBAGENT, SIDEKICK_DISALLOWED_TOOLS, SIDEKICK_LABEL, SIDEKICK_PROJECT_LABEL, sidekickHandoffRequest, sidekickKickoff, SIDEKICK_PASEO_TOOLS, SIDEKICK_PLUGIN_TOOLS, SidekickRegistry, sidekickPrompt, sidekickTitle } from "./sidekick";
 import { BusError, EventBus, type BusEvent, type Notifier, type Subscription } from "./bus";
 import { OversightProducer, registerOversightTypes } from "./oversight-events";
 import { gateListing, listAttention, type GateFilter } from "./overseer";
@@ -301,6 +301,10 @@ export class Runtime {
   private readonly stoppedDeciders = new Set<string>();
 
   private readonly sidekickRegistry: SidekickRegistry;
+  /** Sidekick agents that handed off and restart when their turn ends; those already asked to hand off; finish notices held for a busy Sidekick. */
+  private readonly sidekickRolling = new Set<string>();
+  private readonly sidekickAsked = new Set<string>();
+  private readonly sidekickHeld = new Map<string, string[]>();
   private readonly sidekickOpening = new Map<string, Promise<{ projectId: string; workspaceId: string; agentId: string; created: boolean }>>();
 
   /** The event bus (bus.ts) and its first producer, the runs (oversight-events.ts). */
@@ -2581,10 +2585,11 @@ export class Runtime {
   }
 
   /** Lifecycle hook: any agent's turn ended. */
-  async onTurnEnded(agentId: string, outcome: "completed" | "failed" | "canceled"): Promise<void> {
+  async onTurnEnded(agentId: string, outcome: "completed" | "failed" | "canceled", parentAgentId: string | null = null): Promise<void> {
     // First, while the agent is idle: what follows may send it a new turn.
     await this.sessions.reloadIfStale(this.api(), agentId, { known: this.isRunAgent(agentId) });
     await this.recordUsage(agentId);
+    if (await this.onSidekickTurnEnded(agentId, parentAgentId, outcome).catch((error) => (console.error("[playbooks] Sidekick turn handling failed:", errorText(error)), false))) return;
     const decider = this.deciderOf(agentId);
     if (decider) return this.onDeciderTurnEnded(decider.run.id, decider.gate.id, agentId, outcome);
     const step = this.stepRunOf(agentId);
@@ -3029,7 +3034,12 @@ export class Runtime {
       const agent = await this.api().agents.ref(known.agentId).refresh().catch(() => null);
       if (agent && !agent.agent.archivedAt) return { projectId: project.projectId, ...known, created: false };
     }
-    const settings = load.config;
+    return this.launchSidekick(project, load, known, known?.handoff);
+  }
+
+  /** Creates the Sidekick agent (in its hidden workspace, made if it is gone), saves it, and subscribes it to its events. */
+  private async launchSidekick(project: { projectId: string; label: string; root: string }, load: Awaited<ReturnType<typeof loadSidekick>>, known: { workspaceId: string } | null, handoff: string | undefined) {
+    const settings = load.config!;
     const provider = settings.provider ?? DEFAULT_PROVIDER;
     const model = settings.model ?? (provider === DEFAULT_PROVIDER ? DEFAULT_MODEL : undefined);
     if (!model) throw new UserError(`no model for the Sidekick on provider "${provider}"; set sidekick.model in sidekick/sidekick.yaml`);
@@ -3047,11 +3057,12 @@ export class Runtime {
     const workspace = workspaceId
       ? this.api().workspaces.ref(workspaceId)
       : await this.api().workspaces.create({ title: sidekickTitle(project.label), source: { kind: "directory", path: project.root }, background: true });
+    const subagent = { ...DEFAULT_SIDEKICK_SUBAGENT, ...settings.subagents };
     const agent = await workspace.agents.create({
       config,
       title: sidekickTitle(project.label),
-      labels: { [SIDEKICK_LABEL]: "true" },
-      prompt: `${sidekickPrompt({ projectId: project.projectId, label: project.label, root: project.root, watch: settings.watch }, load.instructions)}\n\n${SIDEKICK_KICKOFF}`,
+      labels: { [SIDEKICK_LABEL]: "true", [SIDEKICK_PROJECT_LABEL]: project.projectId },
+      prompt: `${sidekickPrompt({ projectId: project.projectId, label: project.label, root: project.root, watch: settings.watch, subagent }, load.instructions)}\n\n${sidekickKickoff(handoff)}`,
     });
     const record = { workspaceId: workspaceId ?? workspace.id, agentId: agent.id };
     await this.sidekickRegistry.write(project.projectId, record);
@@ -3059,6 +3070,66 @@ export class Runtime {
       console.error("[playbooks] could not subscribe the Sidekick:", errorText(error)),
     );
     return { projectId: project.projectId, ...record, created: true };
+  }
+
+  /** `sidekick_handoff`: saves the Sidekick's ledger; with `restart`, it is replaced by a new session when its turn ends. */
+  async sidekickHandoff(agentId: string, summary: string, restart: boolean): Promise<string> {
+    const found = await this.sidekickRegistry.findByAgent(agentId);
+    if (!found) throw new UserError("only a Sidekick can hand off");
+    await this.sidekickRegistry.write(found.projectId, { ...found.record, handoff: summary });
+    if (!restart) return "Saved. The next session of the Sidekick starts from it.";
+    this.sidekickRolling.add(agentId);
+    return "Saved. End your turn now: the plugin starts a new session that continues from it.";
+  }
+
+  /** Replaces a Sidekick by a new agent that starts from its saved hand-off; the old one is archived (its subscriptions end with it). */
+  private async rollSidekick(projectId: string, record: { workspaceId: string; agentId: string; handoff?: string | undefined }): Promise<void> {
+    this.sidekickRolling.delete(record.agentId);
+    this.sidekickAsked.delete(record.agentId);
+    const project = { ...(await this.projectOf(record.workspaceId)), projectId };
+    const load = await loadSidekick(project.root);
+    if (!load.config) return;
+    await this.api().agents.ref(record.agentId).archive();
+    await this.launchSidekick(project, load, record, record.handoff);
+  }
+
+  /**
+   * A Sidekick's own turn ended, or a subagent of one did. Subagents' finish notices wait until the
+   * Sidekick is idle (so they never cut into a question to the human); a Sidekick past its context
+   * threshold is asked to hand off, then restarted.
+   */
+  private async onSidekickTurnEnded(agentId: string, parentAgentId: string | null, outcome: string): Promise<boolean> {
+    if (parentAgentId) {
+      const parent = await this.sidekickRegistry.findByAgent(parentAgentId);
+      if (!parent) return false;
+      const notice = `Subagent ${agentId.slice(0, 8)} finished its turn (${outcome}); read its report with get_agent_activity (limit 1).`;
+      const sidekick = await this.api().agents.ref(parentAgentId).refresh().catch(() => null);
+      if (sidekick?.agent.status === "idle") await this.api().agents.ref(parentAgentId).send(notice);
+      else this.sidekickHeld.set(parentAgentId, [...(this.sidekickHeld.get(parentAgentId) ?? []), notice]);
+      return true;
+    }
+    const own = await this.sidekickRegistry.findByAgent(agentId);
+    if (!own) return false;
+    if (this.sidekickRolling.has(agentId)) {
+      await this.rollSidekick(own.projectId, own.record);
+      return true;
+    }
+    const project = await this.projectOf(own.record.workspaceId).catch(() => null);
+    const limit = (project ? (await loadSidekick(project.root)).config?.restartAboveTokens : undefined) ?? DEFAULT_SIDEKICK_RESTART_TOKENS;
+    const used = (await this.api().agents.ref(agentId).refresh().catch(() => null))?.agent.lastUsage?.contextWindowUsedTokens ?? 0;
+    const parts = this.sidekickHeld.get(agentId) ?? [];
+    this.sidekickHeld.delete(agentId);
+    if (used > limit) {
+      // Asked once; if it still has not handed off after its next turn, restart it from the last saved ledger.
+      if (this.sidekickAsked.has(agentId)) {
+        await this.rollSidekick(own.projectId, own.record);
+        return true;
+      }
+      this.sidekickAsked.add(agentId);
+      parts.push(sidekickHandoffRequest(used));
+    }
+    if (parts.length > 0) await this.api().agents.ref(agentId).send(parts.join("\n\n"));
+    return true;
   }
 
   /** A new workspace branched off this one's current ref, with a new Playbook Manager that starts the run there. */
