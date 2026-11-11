@@ -67,7 +67,10 @@ starter files. The `sidekick/` folder is not a playbook, so a playbook named `si
 The Sidekick is long-lived and found by its labels: `playbooks/sidekick` and `playbooks/project=<project id>`
 (`paseo ls -g` lists them), so any agent can send it a prompt. It relays the human's answers to managers
 (`send_agent_prompt`, `respond_to_permission`) and checks the gate moved, and creates its subagents on
-`sidekick.subagents` (`provider`, `model`; default `claude` / `claude-sonnet-5-5`); their finish notices wait
+`sidekick.subagents` (`provider`, `model`; default `claude` / `claude-sonnet-5-5`; optional `mode`, a Paseo
+mode id such as `default`, `acceptEdits`, `plan`, `auto` or `bypassPermissions`, set on every subagent; unset, the
+plugin sends none and Paseo's default mode for the provider applies, not the Sidekick's own; a value that is not a
+mode id is ignored with a warning); their finish notices wait
 until it is idle. It saves a short decision ledger with `sidekick_handoff`. When its context passes
 `sidekick.session.restart_above_tokens` (default 300000) it is asked to hand off and is replaced by a new
 session that starts from the ledger.

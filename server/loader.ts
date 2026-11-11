@@ -643,7 +643,7 @@ const RawSidekickSchema = z
         /** Event types (or globs such as `gate.*`) it is subscribed to, for this project's runs. */
         watch: z.array(z.string().min(1)).min(1).optional(),
         /** Provider and model of the subagents the Sidekick creates (default: claude / claude-sonnet-5-5). */
-        subagents: z.object({ provider: z.string().min(1).optional(), model: z.string().min(1).optional() }).strict().optional(),
+        subagents: z.object({ provider: z.string().min(1).optional(), model: z.string().min(1).optional(), mode: z.unknown().optional() }).strict().optional(),
         session: z.object({ restart_above_tokens: z.number().int().positive().optional() }).strict().optional(),
       })
       .strict()
@@ -662,7 +662,7 @@ export interface SidekickConfig {
   watch: string[];
   /** Context size above which the Sidekick is restarted with a hand-off; default 300000. */
   restartAboveTokens?: number;
-  subagents?: { provider?: string; model?: string };
+  subagents?: { provider?: string; model?: string; mode?: string };
 }
 
 export interface SidekickLoad {
@@ -674,9 +674,14 @@ export interface SidekickLoad {
   /** `sidekick/instructions.md`, trimmed; null when there is none. */
   instructions: string | null;
   errors: string[];
+  /** Values ignored (not errors): the Sidekick still starts. */
+  warnings: string[];
 }
 
-const NO_SIDEKICK: SidekickLoad = { configured: false, dir: null, config: null, instructions: null, errors: [] };
+const NO_SIDEKICK: SidekickLoad = { configured: false, dir: null, config: null, instructions: null, errors: [], warnings: [] };
+
+/** A Paseo agent mode id (`default`, `acceptEdits`, `plan`, `auto`, `bypassPermissions`, a provider's own). */
+const MODE_ID = /^[A-Za-z][A-Za-z0-9_:.-]*$/;
 
 /**
  * The Sidekick of a project: `sidekick/sidekick.yaml` and `sidekick/instructions.md` in the first playbooks
@@ -689,6 +694,7 @@ export async function loadSidekick(workspaceDir: string): Promise<SidekickLoad> 
     if ((await listFolder(dir)) === null) continue;
     const rel = `${relDir}/sidekick`;
     const errors: string[] = [];
+    const warnings: string[] = [];
     let config: SidekickConfig = { watch: DEFAULT_SIDEKICK_WATCH };
     if ((await readText(path.join(dir, "sidekick.yaml"))) !== null) {
       const raw = await readYaml(path.join(dir, "sidekick.yaml"), `${rel}/sidekick.yaml`);
@@ -697,11 +703,20 @@ export async function loadSidekick(workspaceDir: string): Promise<SidekickLoad> 
         const parsed = RawSidekickSchema.safeParse(raw.value);
         if (!parsed.success) errors.push(...formatZodError(`${rel}/sidekick.yaml`, parsed.error));
         else {
-          const { watch, session, subagents, ...settings } = parsed.data.sidekick ?? {};
+          const { watch, session, subagents: rawSubagents, ...settings } = parsed.data.sidekick ?? {};
+          let subagents: { provider?: string; model?: string; mode?: string } | undefined;
+          if (rawSubagents) {
+            const { mode, ...rest } = rawSubagents;
+            subagents = rest;
+            if (mode !== undefined) {
+              if (typeof mode === "string" && MODE_ID.test(mode)) subagents.mode = mode;
+              else warnings.push(`${rel}/sidekick.yaml: sidekick.subagents.mode must be a mode id such as default, acceptEdits, plan, auto or bypassPermissions; ignored`);
+            }
+          }
           config = {
             ...Object.fromEntries(Object.entries(settings).filter(([, value]) => value !== undefined)),
             watch: watch ?? DEFAULT_SIDEKICK_WATCH,
-            ...(subagents && (subagents.provider || subagents.model) ? { subagents: Object.fromEntries(Object.entries(subagents).filter(([, value]) => value !== undefined)) } : {}),
+            ...(subagents && (subagents.provider || subagents.model || subagents.mode) ? { subagents: Object.fromEntries(Object.entries(subagents).filter(([, value]) => value !== undefined)) } : {}),
             ...(session?.restart_above_tokens ? { restartAboveTokens: session.restart_above_tokens } : {}),
           };
         }
@@ -713,7 +728,7 @@ export async function loadSidekick(workspaceDir: string): Promise<SidekickLoad> 
       if (text.trim() === "") errors.push(`${rel}/instructions.md: empty`);
       else instructions = text.trim();
     }
-    return { configured: true, dir: rel, config: errors.length > 0 ? null : config, instructions, errors };
+    return { configured: true, dir: rel, config: errors.length > 0 ? null : config, instructions, errors, warnings };
   }
   return NO_SIDEKICK;
 }

@@ -4,5 +4,5 @@ sidekick:
   # Events it is told about, for this project's runs.
   watch: [gate.escalated, run.failed, run.manager_lost]
   # Subagents it creates for jobs, and the context size that restarts it with a hand-off summary.
-  # subagents: { provider: claude, model: claude-sonnet-5-5 }
+  # subagents: { provider: claude, model: claude-sonnet-5-5, mode: acceptEdits }
   # session: { restart_above_tokens: 300000 }
