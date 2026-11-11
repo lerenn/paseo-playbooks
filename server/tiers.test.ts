@@ -177,4 +177,16 @@ steps:
     const [wrong] = await load({ "p.yaml": STEPS }, `${CHAIN}providers: { on_exhausted: retry }\n`);
     expect(wrong!.errors.length).toBeGreaterThan(0);
   });
+
+  it("reads `providers: { fallback }`: provider/model strings, none when absent", async () => {
+    const [none] = await load({ "p.yaml": STEPS }, CHAIN);
+    expect(none!.playbook!.fallback).toEqual([]);
+    const [ok] = await load({ "p.yaml": STEPS }, `${CHAIN}providers: { fallback: [codex/gpt-5.5, "claude/claude-opus-4-8[1m]"] }\n`);
+    expect(ok!.errors).toEqual([]);
+    expect(ok!.playbook!.fallback).toEqual(["codex/gpt-5.5", "claude/claude-opus-4-8[1m]"]);
+    const [bad] = await load({ "p.yaml": STEPS }, `${CHAIN}providers: { fallback: [opus] }\n`);
+    expect(bad!.errors.join("\n")).toMatch(/providers\.fallback: "opus" is not a provider\/model/);
+    const [notList] = await load({ "p.yaml": STEPS }, `${CHAIN}providers: { fallback: codex/gpt-5.5 }\n`);
+    expect(notList!.errors.length).toBeGreaterThan(0);
+  });
 });

@@ -6,7 +6,7 @@ import { descendantsOf } from "../shared/graph";
 import { blockEntrySteps, blockStepIds, holdsBlock, innermostBlock } from "../shared/slots";
 import { askChoices, askHumanText, askTransitionOf, choicesOfGate, outcomeTransition } from "../shared/gates";
 import { parse as parseYaml, stringify as toYaml } from "yaml";
-import type { AfterTask, AskChoice, Attempt, Gate, GateDecider, Job, Playbook, Run, RunDefinition, RunStep, RunWorktree, Step, Transition, VarValue, When } from "../shared/types";
+import type { AfterTask, AskChoice, Attempt, AttemptAgent, Gate, GateDecider, Job, Playbook, Run, RunDefinition, RunStep, RunWorktree, Step, Transition, VarValue, When } from "../shared/types";
 import { isActive, isAgentlessAttempt, isPaused, isPipeline, isStepDone, isStepLive, isTerminal, restartBlocker, runningAfterTasks } from "../shared/types";
 import { coerceValue, formatValue, parseDuration, renderTemplate, replaceRefs, resolveValue, templateRefs } from "../shared/vars";
 
@@ -179,7 +179,7 @@ function createRun(input: NewRunInput, inputs: Record<string, VarValue>, kind: "
     steps: Object.fromEntries(
       input.playbook.steps.map((step) => [
         step.id,
-        { status: "pending", attempts: [], outputs: {}, summary: null, feedback: null, loop: 0, completedSeq: null, branch: null, queuedAt: null },
+        { status: "pending", attempts: [], outputs: {}, summary: null, feedback: null, loop: 0, completedSeq: null, branch: null, queuedAt: null, nextModel: null },
       ]),
     ),
     loops: {},
@@ -480,6 +480,7 @@ export function startAttempt(
     target: "",
     prompt: "",
     waiting: null,
+    agents: [],
   };
   const context = {
     inputs: Object.fromEntries(Object.entries(values).map(([name, entry]) => [name, entry.value])),
@@ -517,12 +518,44 @@ export function failOverAttempt(run: Run, stepId: string, input: { target: strin
     log(run, input.now, "provider_exhausted", stepId, `${input.target} is out of tokens (${input.reason.slice(0, 200)}); attempt ${attempt.n} moves to ${input.newTarget}`);
   }
   attempt.waiting = null;
-  attempt.agentId = input.agentId;
-  attempt.target = input.newTarget;
+  setAttemptAgent(attempt, { agentId: input.agentId, target: input.newTarget, at: input.now, why: input.resumed ? "resumed" : "failover" });
   attempt.reminded = false;
   attempt.silenceReminded = false;
   // The new agent gets the whole timeout and silence window.
   attempt.reopenedAt = input.now;
+}
+
+/** Records the agent an attempt now runs on (its first one, or one replacing the previous agent). */
+export function setAttemptAgent(attempt: Attempt, agent: AttemptAgent): void {
+  attempt.agentId = agent.agentId;
+  attempt.target = agent.target;
+  attempt.agents.push(agent);
+}
+
+/**
+ * The manager moves a running (or reported) attempt to another model: its new agent replaces the
+ * old one in the same attempt (`retries` untouched), with the whole timeout and silence window.
+ */
+export function moveAttempt(run: Run, stepId: string, input: { agentId: string; target: string; now: string }): Attempt {
+  assertLive(run, stepId);
+  const state = runStep(run, stepId);
+  const attempt = state.attempts.at(-1);
+  if (!attempt || (state.status !== "running" && state.status !== "reported")) {
+    throw new EngineError(`step "${stepId}" is ${state.status}; only a running or reported step can move to another model`);
+  }
+  if (attempt.report) throw new EngineError(`step "${stepId}" attempt ${attempt.n} already reported ${attempt.report.outcome}: call complete_step (or nudge_step without model)`);
+  const from = attempt.target || "its previous model";
+  state.status = "running";
+  attempt.lastMessage = null;
+  attempt.endedAt = null;
+  attempt.turnEnd = null;
+  attempt.waiting = null;
+  attempt.reminded = false;
+  attempt.silenceReminded = false;
+  attempt.reopenedAt = input.now;
+  setAttemptAgent(attempt, { agentId: input.agentId, target: input.target, at: input.now, why: "model" });
+  log(run, input.now, "step_model_changed", stepId, `attempt ${attempt.n} moves from ${from} to ${input.target} (the manager's model)`);
+  return attempt;
 }
 
 /** Marks a target exhausted as of `now`, replacing an older (possibly expired) entry. */
@@ -1407,7 +1440,7 @@ export function cancelRun(run: Run, reason: string, now: string): Effects {
  * (they run once more when it ends). Loop counts are kept, so loop limits still apply.
  * An archived run is unarchived.
  */
-export function restartRun(run: Run, stepId: string, input: { comment: string | null; by: string | null; now: string }): Effects {
+export function restartRun(run: Run, stepId: string, input: { comment: string | null; by: string | null; now: string; model?: RunStep["nextModel"] }): Effects {
   const blocker = restartBlocker(run, stepId);
   if (blocker) throw new EngineError(blocker);
   const fx = effects();
@@ -1422,7 +1455,9 @@ export function restartRun(run: Run, stepId: string, input: { comment: string | 
     state.branch = null;
     state.completedSeq = null;
     state.queuedAt = null;
+    state.nextModel = null;
   }
+  run.steps[stepId]!.nextModel = input.model ?? null;
   run.steps[stepId]!.feedback = input.comment?.trim() ? `Restarted from this step by a human: ${input.comment.trim()}` : null;
   for (const task of run.playbook.after) {
     run.after[task.id] = { status: "pending", startedAt: null, endedAt: null, detail: null };
@@ -1437,6 +1472,7 @@ export function restartRun(run: Run, stepId: string, input: { comment: string | 
   log(run, now, "run_restarted", stepId, `was ${previous}${input.by ? `, by ${input.by}` : ""}${input.comment?.trim() ? `: ${input.comment.trim()}` : ""}`);
   const { ready, queued } = refreshReady(run, now, fx);
   fx.notes.push(`The run (was ${previous}) restarted from "${stepId}". Ready: ${ready.join(", ") || "none"}.`);
+  if (input.model) fx.notes.push(`"${stepId}" runs on ${input.model.target} on its next attempt (the restart's model), unless start_step passes another model.`);
   if (queued.length > 0) fx.notes.push(queueNote(run, queued));
   updateStatus(run);
   return fx;

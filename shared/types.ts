@@ -319,6 +319,8 @@ export const PlaybookSchema = z.object({
   onExhausted: z.enum(["fail", "wait"]).default("fail"),
   /** How long a step waits at most for a provider to recover (`providers.max_wait`), in ms; null = no limit. */
   maxWaitMs: z.number().nullable().default(null),
+  /** `provider/model` targets every step agent falls back to, after its own chain (`providers.fallback`). */
+  fallback: z.array(z.string()).default([]),
   /** Whether the plugin archives the workspace it created for a run once the run ends. */
   workspace: z
     .object({ archive: z.enum(["never", "on_end"]), keepFailed: z.boolean() })
@@ -430,6 +432,14 @@ export function addUsage(
   };
 }
 
+/** One agent of an attempt: its id, the `provider/model` it ran on, when it started and why it got that target. */
+export const AttemptAgentSchema = z.object({
+  agentId: z.string(),
+  target: z.string(),
+  at: z.string(),
+  why: z.enum(["chain", "model", "failover", "resumed"]),
+});
+
 export const AttemptSchema = z.object({
   n: z.number().int().positive(),
   agentId: z.string(),
@@ -465,10 +475,18 @@ export const AttemptSchema = z.object({
   prompt: z.string().default(""),
   /** Agent steps with `providers.on_exhausted: wait`: set while every provider of the role is out of tokens; the attempt restarts at `until`. */
   waiting: z.object({ since: z.string(), until: z.string() }).nullable().default(null),
+  /**
+   * Agent steps: every agent the attempt ran on, oldest first, and why it got that target: `chain` (the
+   * role's first available target), `model` (the manager's `model` on start_step, nudge_step or
+   * restart_run), `failover` (the previous one ran out of tokens) or `resumed` (after waiting for tokens).
+   * Empty on attempts from before it.
+   */
+  agents: z.array(AttemptAgentSchema).default([]),
   /** What the attempt's agent spent; null before its first turn ended, and on script and hand-off attempts. */
   usage: UsageSchema.nullable().optional(),
 });
 export type Attempt = z.infer<typeof AttemptSchema>;
+export type AttemptAgent = z.infer<typeof AttemptAgentSchema>;
 
 export const RunStepSchema = z.object({
   status: StepStatusSchema,
@@ -485,6 +503,8 @@ export const RunStepSchema = z.object({
   branch: z.string().nullable().default(null),
   /** When the step started waiting for a free `concurrency` slot of its block (orders the queue). */
   queuedAt: z.string().nullable().default(null),
+  /** The `model` restart_run gave for this step: its next attempt runs on it unless start_step passes its own. Null when none. */
+  nextModel: z.object({ target: z.string(), thinking: z.string().optional() }).nullable().default(null),
 });
 export type RunStep = z.infer<typeof RunStepSchema>;
 
