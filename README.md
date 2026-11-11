@@ -81,6 +81,17 @@ paseo plugin reload paseo-playbooks
 paseo plugin logs paseo-playbooks
 ```
 
+### Profiles
+
+A profile is an extra, opt-in repository of playbooks, with the same layout as the playbooks folder
+(playbook files, `roles/`, `defaults/`, `scripts/`), in `.paseo/plugins/playbooks/profiles/<name>/`
+(see `examples/.paseo/plugins/playbooks/profiles/personal/`). The folder itself is the always-active
+`default` repository. Profiles are off by default: tick them in the Playbooks panel (stored per user in
+`$PASEO_HOME/plugin-data/paseo-playbooks/config.yaml` as `profiles: { active: [louis] }`). A profile's
+playbooks are named `<profile>:<id>` (`louis:deploy`), and resolve their roles and sub-playbooks only
+inside the profile. If two repositories share an id, both are kept, and a bare `deploy` is refused as
+ambiguous: write `default:deploy` or `louis:deploy`.
+
 To use playbooks in a repository, copy `examples/.paseo/plugins/playbooks/` into it (as
 `.paseo/plugins/playbooks/` or `.paseo/playbooks/`),
 adjust the roles and playbooks and commit them. Then open the Playbooks panel in a workspace of

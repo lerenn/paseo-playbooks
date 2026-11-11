@@ -239,10 +239,11 @@ function whenView(conditions: When[]) {
 }
 
 function describeEntry(entry: PlaybookEntry) {
-  if (!entry.playbook) return { id: entry.id, file: entry.file, valid: false, errors: entry.errors };
+  if (!entry.playbook) return { id: entry.id, repo: entry.repo, file: entry.file, valid: false, errors: entry.errors };
   const pb = entry.playbook;
   return {
     id: pb.id,
+    repo: entry.repo,
     file: pb.file,
     valid: true,
     title: pb.title,

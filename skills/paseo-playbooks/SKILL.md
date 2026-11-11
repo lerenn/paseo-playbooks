@@ -41,6 +41,11 @@ Everything lives in the repository, under `.paseo/plugins/playbooks/` or the sho
   name is reserved.
 - Each of the two folders is self-contained: a playbook uses the `roles/` and
   `defaults/` (and `scripts/`) of its own folder. The same playbook id in both folders is an error.
+- **Profiles**: `profiles/<name>/` in `.paseo/plugins/playbooks/` is an extra opt-in repository with this
+  same layout (playbook files, `roles/`, `defaults/`, `scripts/`); no other format. The folder itself is the
+  `default` repository, always active. The user turns profiles on in the Playbooks panel (off by default).
+  A profile's playbook is `<profile>:<id>` (`louis:deploy`) and resolves roles and sub-playbooks only inside
+  its profile. A bare id shared by two repositories is ambiguous: use `default:deploy` or `louis:deploy`.
 - Ids (playbooks, roles, steps, inputs, outputs) use lowercase letters, digits, `-` and `_`,
   and start with a letter.
 - A playbook refers to a role by its directory name. Roles are shared by playbooks.

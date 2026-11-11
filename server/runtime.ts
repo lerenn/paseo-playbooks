@@ -31,6 +31,7 @@ import { checkoutSnapshot, currentRef, defaultBranch, fastForward, freshRef, rem
 import { createWorktree, dirtyPaths, linkedSubmodules, listWorktreeDirs, pruneWorktrees, removeWorktree, repoOfWorktree, worktreeBranch, worktreePath } from "./worktree";
 import { chooseDefinition } from "./fresh";
 import { loadPlaybooks, loadSidekick } from "./loader";
+import { findEntry } from "../shared/repos";
 import { SIDEKICK_DISALLOWED_TOOLS, SIDEKICK_KICKOFF, SIDEKICK_LABEL, SIDEKICK_PASEO_TOOLS, SIDEKICK_PLUGIN_TOOLS, SidekickRegistry, sidekickPrompt, sidekickTitle } from "./sidekick";
 import { BusError, EventBus, type BusEvent, type Notifier, type Subscription } from "./bus";
 import { OversightProducer, registerOversightTypes } from "./oversight-events";
@@ -841,7 +842,9 @@ export class Runtime {
     let playbook: Playbook | null = options.playbook ?? (reservation && reservation.playbook.id === playbookId ? reservation.playbook : null);
     if (!playbook) {
       const loaded = await loadPlaybooks(workspaceDir);
-      const entry = loaded.entries.find((candidate) => candidate.id === playbookId);
+      const found = findEntry(loaded.entries, playbookId);
+      if ("error" in found) throw new UserError(found.error);
+      const entry = found.entry;
       if (!entry) throw new UserError(`no playbook "${playbookId}" in this workspace (have: ${loaded.entries.map((e) => e.id).join(", ") || "none"})`);
       if (!entry.playbook) throw new UserError(`playbook "${playbookId}" is invalid:\n${entry.errors.join("\n")}`);
       playbook = entry.playbook;
@@ -3094,7 +3097,9 @@ export class Runtime {
       }
     }
     const loaded = await loadPlaybooks(workspaceDir);
-    const entry = loaded.entries.find((candidate) => candidate.id === playbookId);
+    const found = findEntry(loaded.entries, playbookId);
+    if ("error" in found) throw new UserError(found.error);
+    const entry = found.entry;
     if (!entry) throw new UserError(`no playbook "${playbookId}" in this workspace (have: ${loaded.entries.map((e) => e.id).join(", ") || "none"})`);
     if (!entry.playbook) throw new UserError(`playbook "${playbookId}" is invalid:\n${entry.errors.join("\n")}`);
     const playbook = entry.playbook;
