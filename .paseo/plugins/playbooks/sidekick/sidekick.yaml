@@ -4,7 +4,7 @@ sidekick:
   # Same model as the playbook managers (defaults/main.yaml). The Sidekick reads runs and sends
   # subagents to do the work, so it does not need a larger one.
   model: claude-sonnet-5-5
-  # Ask before acting, as the managers do. It has no shell or file tools anyway.
+  # Ask before acting, as the managers do. Its prompt keeps it from editing files or running commands.
   mode: default
   # Triage of a failed run or a gate is short reasoning; keep it cheap.
   thinking: medium

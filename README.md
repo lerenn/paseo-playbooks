@@ -60,8 +60,8 @@ that has active runs or a Sidekick, and a **+** tab to add another project. A pr
 coordinator agent defined by a `sidekick/` folder beside its playbooks (`sidekick/sidekick.yaml` for provider,
 model, mode, thinking and the events it `watch`es; `sidekick/instructions.md` for the repository's rules). It
 runs in a hidden background workspace on the project root, watches the project's runs, judges which decisions
-could be automated, and sends subagents to change the playbooks in pull requests that you merge. It has no
-shell or file tools of its own. A project without the folder shows a short tutorial and a button that writes
+could be automated, and sends subagents to change the playbooks in pull requests that you merge. Its prompt
+forbids it to edit files or run commands itself. A project without the folder shows a short tutorial and a button that writes
 starter files. The `sidekick/` folder is not a playbook, so a playbook named `sidekick` still works.
 
 The Sidekick is long-lived and found by its labels: `playbooks/sidekick` and `playbooks/project=<project id>`

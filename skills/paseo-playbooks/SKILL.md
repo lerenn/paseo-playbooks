@@ -54,7 +54,7 @@ Everything lives in the repository, under `.paseo/plugins/playbooks/` or the sho
 
 A project may have one Sidekick: a coordinator agent shown in a column beside the Playbooks screen (one tab
 per project). It watches the project's runs, judges which decisions could be automated, and sends
-subagents to change the playbooks in pull requests that a human merges. It has no shell or file tools.
+subagents to change the playbooks in pull requests that a human merges. Its prompt forbids it to edit files or run commands itself.
 It is defined by the `sidekick/` folder (a folder, so it never takes a playbook id: a playbook named
 `sidekick.yaml` and `sidekick/sidekick.yaml` coexist). Without that folder the project has no Sidekick, and
 its tab offers "Create the Sidekick files".
