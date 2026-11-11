@@ -851,3 +851,17 @@ export function gateTool(runtime: Runtime): AgentToolDefinition {
     execute: (input, { agent }) => guard(async () => ok(await runtime.reportGateDecision(agent.id, input))),
   });
 }
+
+/** The Sidekick's own tool: saves its decision ledger, and hands the session over to a fresh one when its context is large. */
+export function sidekickTool(runtime: Runtime): AgentToolDefinition {
+  return defineAgentTool({
+    name: "sidekick_handoff",
+    description:
+      "Save your short decision ledger and hand-off notes (decisions taken and why, rules applied, subagents and pull requests in flight, open questions, what to check next); the next session of you starts from them. With restart: true, end your turn right after: the plugin replaces you by a new session with this summary, to keep your context small. Only a Sidekick can call it.",
+    input: z.object({
+      summary: z.string().min(1).max(8000).describe("The ledger and hand-off notes, short and self-contained"),
+      restart: z.boolean().default(false).describe("Also restart as a new session when your turn ends"),
+    }),
+    execute: ({ summary, restart }, { agent }) => guard(async () => ok(await runtime.sidekickHandoff(agent.id, summary, restart))),
+  });
+}

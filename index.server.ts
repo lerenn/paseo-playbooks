@@ -36,7 +36,7 @@ import { GATE_LABEL, Runtime, STEP_LABEL, UserError } from "./server/runtime";
 import { SIDEKICK_LABEL } from "./server/sidekick";
 import { createSidekickStarter, createStarter } from "./server/starter";
 import { defaultRunsDir, RunStore } from "./server/store";
-import { gateTool, managerTools, runTools, stepTool, validateTool } from "./server/tools";
+import { gateTool, managerTools, runTools, sidekickTool, stepTool, validateTool } from "./server/tools";
 
 export default function contribute(server: PluginServerContext) {
   const store = new RunStore(defaultRunsDir());
@@ -64,7 +64,7 @@ export default function contribute(server: PluginServerContext) {
   // Tools: report_step_result for step agents; manager tools for agents whose workspace has
   // playbooks (or that already manage a run); validate_playbooks, list_runs, cancel_run, start_after_task and
   // restart_run for every other agent, so a human can stop, wrap up or restart a run from any chat.
-  const tools = { manager: managerTools(runtime), common: [validateTool(runtime), ...runTools(runtime)], step: stepTool(runtime), gate: gateTool(runtime) };
+  const tools = { manager: managerTools(runtime), common: [validateTool(runtime), ...runTools(runtime)], step: stepTool(runtime), sidekick: sidekickTool(runtime), gate: gateTool(runtime) };
   server.before("agent.session_open", async ({ request }, context) => {
     if (request.purpose === "history") return;
     // Only the store is needed here. Do not wait for reconcile: its own sends (resume a step, wake a
@@ -75,7 +75,7 @@ export default function contribute(server: PluginServerContext) {
     if (request.labels[STEP_LABEL]) return { ...request, tools: [...request.tools, tools.step] };
     if (request.labels[GATE_LABEL]) return { ...request, tools: [...request.tools, tools.gate] };
     // The Sidekick sits on its project's root, which has playbooks: it still gets only the common tools, never a manager's.
-    if (request.labels[SIDEKICK_LABEL]) return { ...request, tools: [...request.tools, ...tools.common] };
+    if (request.labels[SIDEKICK_LABEL]) return { ...request, tools: [...request.tools, ...tools.common, tools.sidekick] };
     const manages = runtime.runsOfManager(request.agentId).length > 0 || request.labels["playbooks/manager"] === "true";
     const extra = manages || runtime.hasReservation(request.workspaceId) || (await hasPlaybooks(request.cwd)) ? tools.manager : [];
     return { ...request, tools: [...request.tools, ...tools.common, ...extra] };
@@ -90,7 +90,7 @@ export default function contribute(server: PluginServerContext) {
   server.on("agent.turn_ended", ({ agent, outcome }, context) =>
     quietly("turn_ended", async () => {
       await enter(context.paseo);
-      await runtime.onTurnEnded(agent.id, outcome.kind);
+      await runtime.onTurnEnded(agent.id, outcome.kind, agent.parentAgentId ?? null);
     }),
   );
   server.on("agent.archived", ({ agent }, context) =>

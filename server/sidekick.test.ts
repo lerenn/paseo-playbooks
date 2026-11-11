@@ -104,9 +104,13 @@ describe("the Sidekick prompt", () => {
 function fakePaseo(roots: Record<string, string>) {
   const archivedAt: Record<string, string | null> = {};
   const created = { workspaces: [] as Array<Record<string, unknown>>, agents: [] as Array<{ workspaceId: string; options: Record<string, any> }> };
+  const sent: Array<{ agentId: string; text: string }> = [];
+  const state: Record<string, { status: string; used: number }> = {};
   const ref = (agentId: string) => ({
-    refresh: async () => (agentId in archivedAt ? { agent: { id: agentId, status: "idle", archivedAt: archivedAt[agentId] } } : null),
-    send: async () => undefined,
+    refresh: async () =>
+      agentId in archivedAt ? { agent: { id: agentId, status: state[agentId]?.status ?? "idle", archivedAt: archivedAt[agentId], lastUsage: { contextWindowUsedTokens: state[agentId]?.used ?? 0 } } } : null,
+    send: async (text: string) => void sent.push({ agentId, text }),
+    archive: async () => void (archivedAt[agentId] = new Date().toISOString()),
   });
   const workspace = (id: string) => ({
     id,
@@ -135,7 +139,7 @@ function fakePaseo(roots: Record<string, string>) {
       },
     },
   };
-  return { paseo, created, archive: (id: string) => (archivedAt[id] = new Date().toISOString()) };
+  return { paseo, created, sent, state, archive: (id: string) => (archivedAt[id] = new Date().toISOString()) };
 }
 
 async function setup(projects: Record<string, boolean>) {
@@ -211,6 +215,69 @@ describe("a project's Sidekick", () => {
       { projectId: "shop", configured: true, agentId: "agent-1", activeRuns: 0 },
       { projectId: "blog", configured: false, agentId: null, activeRuns: 0 },
     ]);
+  });
+});
+
+describe("a Sidekick's session", () => {
+  it("carries the project label, the configured subagent model and the relay and analytics tools", async () => {
+    const { runtime, created, roots } = await setup({ shop: true });
+    await write(roots.shop!, `${PLAYBOOKS}/sidekick/sidekick.yaml`, "sidekick: { subagents: { provider: codex, model: some-model } }\n");
+    await runtime.openSidekick("ws-shop");
+    const { options } = created.agents[0]!;
+    expect(options.labels).toMatchObject({ [SIDEKICK_LABEL]: "true", "playbooks/project": "shop" });
+    expect(options.prompt).toContain("provider codex, model some-model");
+    expect(options.config.options.allowedTools).toEqual(expect.arrayContaining(["mcp__paseo__respond_to_permission", "mcp__paseo__get_analytics", "mcp__paseo__sidekick_handoff"]));
+  });
+
+  it("defaults the subagents to claude / claude-sonnet-5-5 and reads the restart threshold", async () => {
+    const { runtime, created, roots } = await setup({ shop: true });
+    await runtime.openSidekick("ws-shop");
+    expect(created.agents[0]!.options.prompt).toContain("provider claude, model claude-sonnet-5-5");
+    await write(roots.shop!, `${PLAYBOOKS}/sidekick/sidekick.yaml`, "sidekick: { session: { restart_above_tokens: 5000 } }\n");
+    expect((await loadSidekick(roots.shop!)).config?.restartAboveTokens).toBe(5000);
+  });
+
+  it("is asked to hand off past the context threshold, then restarted with its summary", async () => {
+    const { runtime, created, sent, state, roots } = await setup({ shop: true });
+    await write(roots.shop!, `${PLAYBOOKS}/sidekick/sidekick.yaml`, "sidekick: { session: { restart_above_tokens: 1000 } }\n");
+    await runtime.openSidekick("ws-shop");
+    state["agent-1"] = { status: "idle", used: 500 };
+    await runtime.onTurnEnded("agent-1", "completed");
+    expect(sent).toEqual([]);
+    state["agent-1"] = { status: "idle", used: 2000 };
+    await runtime.onTurnEnded("agent-1", "completed");
+    expect(sent[0]?.text).toContain("sidekick_handoff");
+    await runtime.sidekickHandoff("agent-1", "Ledger: human chose A.", true);
+    await runtime.onTurnEnded("agent-1", "completed");
+    expect(created.agents).toHaveLength(2);
+    expect(created.agents[1]!.options.prompt).toContain("Ledger: human chose A.");
+    expect(created.workspaces).toHaveLength(1);
+    expect(await runtime.openSidekick("ws-shop")).toMatchObject({ agentId: "agent-2", created: false });
+  });
+
+  it("restarts from the last saved ledger when it does not hand off, and refuses a hand-off from other agents", async () => {
+    const { runtime, created, state } = await setup({ shop: true });
+    await runtime.openSidekick("ws-shop");
+    await expect(runtime.sidekickHandoff("someone", "x", false)).rejects.toThrow(/only a Sidekick/);
+    await runtime.sidekickHandoff("agent-1", "Saved ledger.", false);
+    state["agent-1"] = { status: "idle", used: 400_000 };
+    await runtime.onTurnEnded("agent-1", "completed");
+    await runtime.onTurnEnded("agent-1", "completed");
+    expect(created.agents[1]!.options.prompt).toContain("Saved ledger.");
+  });
+
+  it("holds a subagent's finish notice while the Sidekick is busy and sends it when it is idle", async () => {
+    const { runtime, sent, state } = await setup({ shop: true });
+    await runtime.openSidekick("ws-shop");
+    state["agent-1"] = { status: "running", used: 0 };
+    await runtime.onTurnEnded("sub-1abcdef", "completed", "agent-1");
+    expect(sent).toEqual([]);
+    state["agent-1"] = { status: "idle", used: 0 };
+    await runtime.onTurnEnded("agent-1", "completed");
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.text).toContain("sub-1abc");
+    await runtime.onTurnEnded("sub-2xyzabc", "completed", "agent-1");
+    expect(sent).toHaveLength(2);
   });
 });
 
