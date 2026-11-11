@@ -24,6 +24,7 @@ import {
   createSidekickFilesRpc,
   listSidekicksRpc,
   openSidekickRpc,
+  saveSidekickAttachmentRpc,
   restartRunRpc,
   retryStepRpc,
   startAfterTaskRpc,
@@ -33,6 +34,7 @@ import { summarizeRun } from "./shared/types";
 import { setProfileActive } from "./server/config";
 import { hasPlaybooks, loadPlaybooks } from "./server/loader";
 import { GATE_LABEL, Runtime, STEP_LABEL, UserError } from "./server/runtime";
+import { saveAttachment } from "./server/attachments";
 import { SIDEKICK_LABEL } from "./server/sidekick";
 import { createSidekickStarter, createStarter } from "./server/starter";
 import { defaultRunsDir, RunStore } from "./server/store";
@@ -181,6 +183,7 @@ export default function contribute(server: PluginServerContext) {
   });
   handle(listSidekicksRpc, async ({ workspaces }) => ({ projects: await runtime.sidekickProjects(workspaces) }));
   handle(openSidekickRpc, ({ workspaceId }) => runtime.openSidekick(workspaceId));
+  handle(saveSidekickAttachmentRpc, async (input) => ({ path: await saveAttachment(input) }));
   handle(createSidekickFilesRpc, async ({ workspaceId }) => ({ files: await createSidekickStarter(await runtime.projectRootOf(workspaceId)) }));
   handle(pauseRunRpc, async ({ runId }) => ({ pausedAt: (await runtime.pauseRun(runId)).pausedAt }));
   handle(resumeRunRpc, async ({ runId }) => ({ pausedAt: (await runtime.resumeRun(runId)).pausedAt }));

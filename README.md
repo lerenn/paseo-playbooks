@@ -72,6 +72,12 @@ until it is idle. It saves a short decision ledger with `sidekick_handoff`. When
 `sidekick.session.restart_above_tokens` (default 300000) it is asked to hand off and is replaced by a new
 session that starts from the ledger.
 
+You can paste, drop or pick images and files in the Sidekick's message box (up to 8 per message; images 5 MB,
+other files 10 MB, 25 MB in total; executables are refused). Each shows as a removable chip, with a thumbnail
+for images. Images reach the agent as image content blocks, the way Paseo's own composer sends them. Other
+files are saved on the host under the system temp folder (`paseo-playbooks-attachments/`, kept a week) and
+their paths are added to the message.
+
 ## Develop
 
 ```bash

@@ -1,5 +1,8 @@
-import { usePaseo } from "@getpaseo/plugin/client";
+import { usePaseo, useRpc } from "@getpaseo/plugin/client";
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { promptWithFiles } from "../../shared/attachments";
+import { saveSidekickAttachmentRpc } from "../../shared/contracts";
+import type { Pending } from "./attach";
 import { initialState, reduce, type PermissionRequest, type RawItem } from "./reduce";
 
 export type PermissionResponse =
@@ -20,6 +23,7 @@ export function useSidekickChat(agentId: string | null) {
   const [state, dispatch] = useReducer(reduce, undefined, initialState);
   const [info, setInfo] = useState<AgentInfo>({ model: null, mode: null });
   const generation = useRef(0);
+  const saveAttachment = useRpc(saveSidekickAttachmentRpc);
 
   useEffect(() => {
     dispatch({ type: "reset" });
@@ -88,13 +92,21 @@ export function useSidekickChat(agentId: string | null) {
     };
   }, [agentId, paseo]);
 
+  /**
+   * Sends a message. Images go as image content blocks, like Paseo's own composer; any other file is
+   * saved on the host and its path is added to the text.
+   */
   const send = useCallback(
-    async (text: string) => {
+    async (text: string, attachments: Pending[] = []) => {
       if (!agentId) return;
+      const images = attachments.filter((item) => item.kind === "image").map((item) => ({ data: item.dataBase64, mimeType: item.mimeType }));
+      const files = await Promise.all(
+        attachments.filter((item) => item.kind === "file").map(async (item) => ({ name: item.name, path: (await saveAttachment({ fileName: item.name, dataBase64: item.dataBase64 })).path })),
+      );
       // Mid-turn the message steers the turn instead of interrupting it.
-      await paseo.agents.ref(agentId).send(text, { activeTurnBehavior: "steer" });
+      await paseo.agents.ref(agentId).send(promptWithFiles(text, files), { activeTurnBehavior: "steer", ...(images.length > 0 ? { images } : {}) });
     },
-    [agentId, paseo],
+    [agentId, paseo, saveAttachment],
   );
 
   /** The SDK has no stop for an agent: reloading its session interrupts the running turn. */
