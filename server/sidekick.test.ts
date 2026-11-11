@@ -237,6 +237,20 @@ describe("a Sidekick's session", () => {
     expect((await loadSidekick(roots.shop!)).config?.restartAboveTokens).toBe(5000);
   });
 
+  it("applies sidekick.subagents.mode to the subagents it creates, and ignores a bad value with a warning", async () => {
+    const { runtime, created, roots } = await setup({ shop: true });
+    await write(roots.shop!, `${PLAYBOOKS}/sidekick/sidekick.yaml`, "sidekick: { subagents: { mode: acceptEdits } }\n");
+    await runtime.openSidekick("ws-shop");
+    expect(created.agents[0]!.options.prompt).toContain('settings: { modeId: "acceptEdits" }');
+    for (const bad of ["42", "not a mode!", "[plan]"]) {
+      await write(roots.shop!, `${PLAYBOOKS}/sidekick/sidekick.yaml`, `sidekick: { subagents: { mode: ${bad} } }\n`);
+      const load = await loadSidekick(roots.shop!);
+      expect(load.errors).toEqual([]);
+      expect(load.config?.subagents?.mode).toBeUndefined();
+      expect(load.warnings[0]).toMatch(/subagents\.mode.*ignored/);
+    }
+  });
+
   it("is asked to hand off past the context threshold, then restarted with its summary", async () => {
     const { runtime, created, sent, state, roots } = await setup({ shop: true });
     await write(roots.shop!, `${PLAYBOOKS}/sidekick/sidekick.yaml`, "sidekick: { session: { restart_above_tokens: 1000 } }\n");

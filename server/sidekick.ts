@@ -52,7 +52,7 @@ export interface SidekickProject {
   root: string;
   watch: string[];
   /** Provider and model for the subagents it creates. */
-  subagent?: { provider: string; model: string };
+  subagent?: { provider: string; model: string; mode?: string };
 }
 
 /**
@@ -94,7 +94,7 @@ You are a coordinator, not a worker. You have no workspace of your own, no shell
 - Do not add round limits or stop conditions the human did not ask for.
 
 **Subagents**
-- Create them with create_agent: provider ${(project.subagent ?? DEFAULT_SIDEKICK_SUBAGENT).provider}, model ${(project.subagent ?? DEFAULT_SIDEKICK_SUBAGENT).model}, workspaceId of one of this project's workspaces (they run in that workspace), and notifyOnFinish: false. The plugin tells you when one finishes, as a message once you are idle, so a finish notice never interrupts a question to the human. Tell each subagent to report once, at the end, in a few lines.
+- Create them with create_agent: provider ${(project.subagent ?? DEFAULT_SIDEKICK_SUBAGENT).provider}, model ${(project.subagent ?? DEFAULT_SIDEKICK_SUBAGENT).model}${project.subagent?.mode ? `, settings: { modeId: "${project.subagent.mode}" }` : ""}, workspaceId of one of this project's workspaces (they run in that workspace), and notifyOnFinish: false. The plugin tells you when one finishes, as a message once you are idle, so a finish notice never interrupts a question to the human. Tell each subagent to report once, at the end, in a few lines.
 
 **Memory**
 - Keep a short decision ledger (at most 20 lines): decisions the human took and why, rules you applied, subagents and pull requests in flight, what you wait for. Save it with sidekick_handoff (summary) whenever it changes; the plugin gives it back to you at the start of the next session.
@@ -184,7 +184,7 @@ sidekick:
   # thinking: medium
   # Events it is told about, for this project's runs (globs such as "gate.*" work).
   watch: [gate.escalated, run.failed, run.manager_lost]
-  # subagents: { provider: claude, model: claude-sonnet-5-5 }   # what it creates for jobs
+  # subagents: { provider: claude, model: claude-sonnet-5-5, mode: acceptEdits }   # what it creates for jobs
   # session:
   #   restart_above_tokens: 300000   # restart it with a hand-off summary when its context grows past this
 `,
