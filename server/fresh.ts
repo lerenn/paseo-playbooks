@@ -19,6 +19,7 @@ export function isAdoptable(entry: PlaybookEntry | undefined): entry is Playbook
  * origin/<base>) when that is a valid isolated playbook of the same id, else the workspace checkout's, with the reason.
  */
 export async function chooseDefinition(input: {
+  projectId: string;
   playbook: Playbook;
   worktreeDir: string;
   baseRef: string;
@@ -29,7 +30,7 @@ export async function chooseDefinition(input: {
   if (input.fetchError) return fallback(`could not fetch ${input.baseRef} (${input.fetchError}); using the workspace checkout's playbook`);
   let entry: PlaybookEntry | undefined;
   try {
-    entry = (await loadPlaybooks(input.worktreeDir)).entries.find((candidate) => candidate.id === input.playbook.id);
+    entry = (await loadPlaybooks(input.worktreeDir, { projectId: input.projectId })).entries.find((candidate) => candidate.id === input.playbook.id);
   } catch (error) {
     return fallback(`could not read the playbooks of ${input.baseRef} (${error instanceof Error ? error.message : String(error)}); using the workspace checkout's playbook`);
   }
@@ -48,14 +49,14 @@ export interface ResolvedEntry {
 }
 
 /** The playbooks of `ref` (origin's copy, fetched), read without a checkout; or why not. */
-async function loadAtRef(dir: string, base: string): Promise<{ ref: string; sha: string; loaded: LoadResult } | { error: string }> {
+async function loadAtRef(dir: string, base: string, activeProfiles: string[]): Promise<{ ref: string; sha: string; loaded: LoadResult } | { error: string }> {
   const { ref, fetchError } = await freshRefInfo(dir, base);
   if (fetchError) return { error: `could not fetch ${ref} (${fetchError})` };
   const tmp = await mkdtemp(path.join(tmpdir(), "playbooks-fresh-"));
   try {
     await exportPaths(dir, ref, PLAYBOOKS_DIRS, tmp);
     const sha = (await exec("git", ["-C", dir, "rev-parse", ref])).stdout.trim();
-    return { ref, sha, loaded: await loadPlaybooks(tmp) };
+    return { ref, sha, loaded: await loadPlaybooks(tmp, { activeProfiles }) };
   } catch (error) {
     return { error: `could not read the playbooks of ${ref} (${error instanceof Error ? error.message : String(error)})` };
   } finally {
@@ -74,6 +75,7 @@ export async function resolveForNewRun(workspaceDir: string, workspace: LoadResu
     if (!isAdoptable(entry)) continue;
     bases.set(entry.id, entry.playbook.isolation.base ?? (await defaultBranch(workspaceDir)));
   }
+  const activeProfiles = workspace.profiles.filter((profile) => profile.active).map((profile) => profile.id);
   const cache = new Map<string, Awaited<ReturnType<typeof loadAtRef>>>();
   const out: ResolvedEntry[] = [];
   for (const entry of workspace.entries) {
@@ -82,7 +84,7 @@ export async function resolveForNewRun(workspaceDir: string, workspace: LoadResu
       out.push({ entry, source: "workspace" });
       continue;
     }
-    if (!cache.has(base)) cache.set(base, await loadAtRef(workspaceDir, base));
+    if (!cache.has(base)) cache.set(base, await loadAtRef(workspaceDir, base, activeProfiles));
     const fresh = cache.get(base)!;
     if ("error" in fresh) {
       out.push({ entry, source: "workspace", note: `${fresh.error}; a new run would use the workspace checkout's playbook` });

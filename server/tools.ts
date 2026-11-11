@@ -328,7 +328,8 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
       }),
       execute: ({ view, playbookId }, { agent }) =>
         guard(async () => {
-          const loaded = await loadPlaybooks(agent.cwd);
+          const projectId = await runtime.projectIdOf(agent.workspaceId);
+          const loaded = await loadPlaybooks(agent.cwd, projectId ? { projectId } : {});
           const playbooks = describeEntries(loaded.entries, playbookId ? "full" : view, playbookId);
           return ok(`${MANAGER_PROTOCOL}\n\nPlaybooks:\n${JSON.stringify(playbooks, null, 2)}`, { playbooks });
         }),
@@ -802,7 +803,8 @@ export function validateTool(runtime: Runtime): AgentToolDefinition {
     execute: ({ path, view, playbookId }, { agent }) =>
       guard(async () => {
         const dir = path ?? agent.cwd;
-        const loaded = await loadPlaybooks(dir);
+        const projectId = await runtime.projectIdOf(agent.workspaceId);
+        const loaded = await loadPlaybooks(dir, projectId ? { projectId } : {});
         if (!loaded.exists) return ok(`No playbooks folder: create .paseo/plugins/playbooks/ or .paseo/playbooks/ in ${dir}.`, { exists: false, sidekick: { configured: false, errors: [] } });
         // What a new run would load: isolated playbooks come from their fresh base branch, not the checkout.
         const resolved = await resolveForNewRun(dir, loaded);
