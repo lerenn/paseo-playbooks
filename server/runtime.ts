@@ -33,6 +33,12 @@ import { createWorktree, dirtyPaths, linkedSubmodules, listWorktreeDirs, pruneWo
 import { chooseDefinition } from "./fresh";
 import { loadPlaybooks, loadSidekick } from "./loader";
 import { findEntry } from "../shared/repos";
+
+/** The entry a stored or typed playbook id means: bare ids resolve to the one namespaced entry (and the reverse); ambiguity or absence gives undefined. */
+function lookup(entries: Parameters<typeof findEntry>[0], ref: string) {
+  const found = findEntry(entries, ref);
+  return "entry" in found ? found.entry : undefined;
+}
 import { DEFAULT_SIDEKICK_RESTART_TOKENS, DEFAULT_SIDEKICK_SUBAGENT, SIDEKICK_DISALLOWED_TOOLS, SIDEKICK_LABEL, SIDEKICK_PROJECT_LABEL, sidekickHandoffRequest, sidekickKickoff, SIDEKICK_PASEO_TOOLS, SIDEKICK_PLUGIN_TOOLS, SidekickRegistry, sidekickPrompt, sidekickTitle } from "./sidekick";
 import { BusError, EventBus, type BusEvent, type Notifier, type Subscription } from "./bus";
 import { OversightProducer, registerOversightTypes } from "./oversight-events";
@@ -1201,7 +1207,7 @@ export class Runtime {
     const run = this.store.get(runId)!;
     const step = engine.stepDef(run, stepId);
     const loaded = await loadPlaybooks(run.workspaceDir, { projectId: run.projectId });
-    const entry = loaded.entries.find((candidate) => candidate.id === step.handoff);
+    const entry = lookup(loaded.entries, step.handoff ?? "");
     if (!entry?.playbook) throw new UserError(entry ? `playbook "${step.handoff}" is invalid: ${entry.errors[0] ?? ""}` : `no playbook "${step.handoff}" in ${run.workspaceDir}`);
     if (!entry.playbook.singleton) throw new UserError(`playbook "${entry.playbook.id}" is not a singleton`);
     const pipeline = await this.pipelineOf(entry.playbook, run.projectId, run.workspaceDir);
@@ -1267,14 +1273,14 @@ export class Runtime {
     // Branch off origin's copy: the source checkout's local branch may be far behind.
     const ref = base ? await freshRef(sourceDir, base) : undefined;
     const id = shortId();
-    const branch = `playbooks/${playbook.id}-${id}`;
+    const branch = worktreeBranch(playbook.id, id);
     const created = await this.api().workspaces.create({
       title: playbook.title,
       source: { kind: "worktree", cwd: sourceDir, action: "branch-off", branchName: branch, ...(ref ? { refName: ref } : {}) },
     });
     const workspace = await this.api().workspaces.ref(created.id).refresh();
     const workspaceDir = workspace?.workspaceDirectory ?? sourceDir;
-    const entry = (await loadPlaybooks(workspaceDir, { projectId })).entries.find((candidate) => candidate.id === playbook.id);
+    const entry = lookup((await loadPlaybooks(workspaceDir, { projectId })).entries, playbook.id);
     if (!entry?.playbook?.singleton) {
       // Nothing will run there: do not leave an empty workspace behind.
       await this.api().workspaces.ref(created.id).archive().catch((error) => console.error(`[playbooks] could not archive workspace ${created.id}:`, errorText(error)));
@@ -1317,7 +1323,7 @@ export class Runtime {
     const pipeline = this.store.get(pipelineId)!;
     const ref = pipeline.playbook.singleton?.branch ?? (await defaultBranch(pipeline.workspaceDir));
     if (ref) await fastForward(pipeline.workspaceDir, ref);
-    const entry = (await loadPlaybooks(pipeline.workspaceDir, { projectId: pipeline.projectId })).entries.find((candidate) => candidate.id === pipeline.playbook.id);
+    const entry = lookup((await loadPlaybooks(pipeline.workspaceDir, { projectId: pipeline.projectId })).entries, pipeline.playbook.id);
     if (!entry?.playbook?.singleton) return;
     const playbook = entry.playbook;
     const ended = await this.store.mutate(pipelineId, (current) => {
@@ -2936,7 +2942,7 @@ export class Runtime {
     if (!workspace) throw new UserError("workspace not found");
     const workspaceDir = workspace.workspaceDirectory ?? workspace.projectRootPath;
     const loaded = await loadPlaybooks(workspaceDir, { projectId: workspace.projectId });
-    const entry = loaded.entries.find((candidate) => candidate.id === input.playbook);
+    const entry = lookup(loaded.entries, input.playbook);
     if (!entry?.playbook) throw new UserError(entry ? `playbook "${input.playbook}" is invalid:\n${entry.errors.join("\n")}` : `no playbook "${input.playbook}"`);
     const playbook = entry.playbook;
     if (playbook.singleton) {
@@ -3155,7 +3161,7 @@ export class Runtime {
   private async startInNewWorkspace(workspaceDir: string, playbook: Playbook, inputs: Record<string, VarValue>) {
     const id = shortId();
     const runId = `run_${id}`;
-    const branch = `playbooks/${playbook.id}-${id}`;
+    const branch = worktreeBranch(playbook.id, id);
     const base = (await currentRef(workspaceDir)) ?? undefined;
     const headline = String(inputs.request ?? Object.values(inputs)[0] ?? "").slice(0, 60);
     const created = await this.api().workspaces.create({
