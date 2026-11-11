@@ -8,6 +8,7 @@ import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 type PaseoApi = PluginHandlerContext["paseo"];
 import type { AgentSettings, AgentTarget, Attempt, Gate, Job, Playbook, Run, RunWorktree, Step, VarValue } from "../shared/types";
 import { addUsage } from "../shared/types";
+import { UsageLedger } from "./usage-ledger";
 import { analyze, type Analytics } from "../shared/analytics";
 import {
   SCRIPT_NOT_YET,
@@ -300,6 +301,7 @@ export class Runtime {
   /** Role deciders of closed gates already stopped, by agent id. */
   private readonly stoppedDeciders = new Set<string>();
 
+  private readonly usageLedger: UsageLedger;
   private readonly sidekickRegistry: SidekickRegistry;
   /** Sidekick agents that handed off and restart when their turn ends; those already asked to hand off; finish notices held for a busy Sidekick. */
   private readonly sidekickRolling = new Set<string>();
@@ -320,6 +322,7 @@ export class Runtime {
     const dir = options.dataDir ?? path.dirname(store.dir);
     this.worktreesDir = path.join(dir, "worktrees");
     this.sessions = new StaleSessions(path.join(dir, "sessions.json"));
+    this.usageLedger = new UsageLedger(path.join(dir, "agent-usage.json"));
     this.sidekickRegistry = new SidekickRegistry(path.join(dir, "sidekick.json"));
     this.bus = new EventBus({ events: path.join(dir, "events.json"), subscriptions: path.join(dir, "subscriptions.json"), pending: path.join(dir, "pending-events.json") }, options.debounceMs === undefined ? {} : { debounceMs: options.debounceMs });
     registerOversightTypes(this.bus);
@@ -2607,31 +2610,45 @@ export class Runtime {
   }
 
   /** Where the tokens went (see shared/analytics.ts), over the runs on disk. */
-  analytics(options: { days?: number | undefined; playbook?: string | undefined; projectId?: string | undefined; limit?: number | undefined } = {}): Analytics {
+  async analytics(options: { days?: number | undefined; playbook?: string | undefined; projectId?: string | undefined; limit?: number | undefined } = {}): Promise<Analytics> {
     const since = options.days ? new Date(Date.now() - options.days * 86_400_000).toISOString() : null;
-    return analyze(this.store.list(), { since, playbook: options.playbook ?? null, projectId: options.projectId ?? null, ...(options.limit ? { limit: options.limit } : {}) });
+    return analyze(this.store.list(), { since, playbook: options.playbook ?? null, projectId: options.projectId ?? null, agents: await this.usageLedger.list(), ...(options.limit ? { limit: options.limit } : {}) });
   }
 
-  /** Adds the usage of the turn that just ended to the step attempt, gate decider or manager run it belongs to. */
+  /**
+   * Records what the agent spent since its last turn: `lastUsage` is cumulative for the session, so the
+   * ledger turns it into a delta, which goes to the step attempt, gate decider or manager run it belongs
+   * to. Every agent that ends a turn goes in the ledger, also those outside the runs.
+   */
   private async recordUsage(agentId: string): Promise<void> {
     try {
-      const target = this.deciderOf(agentId)?.run ?? this.stepRunOf(agentId)?.run ?? this.activeRunOfManager(agentId) ?? this.runsOfManager(agentId)[0];
-      if (!target) return;
-      const reading = (await this.api().agents.ref(agentId).refresh())?.agent.lastUsage;
-      if (!reading) return;
-      await this.store.mutate(target.id, (run) => {
-        const gate = run.gates.find((candidate) => candidate.deciderAgentId === agentId);
+      const run = this.deciderOf(agentId)?.run ?? this.stepRunOf(agentId)?.run ?? this.activeRunOfManager(agentId) ?? this.runsOfManager(agentId)[0];
+      const agent = (await this.api().agents.ref(agentId).refresh())?.agent;
+      const reading = agent?.lastUsage;
+      if (!agent || !reading) return;
+      const decider = this.deciderOf(agentId);
+      const found = run ? engine.findAttemptByAgent(run, agentId) : null;
+      const stepRole = found ? run!.playbook.steps.find((step) => step.id === found.stepId)?.role ?? null : null;
+      const kind = decider ? "decider" : found ? "step" : run?.managerAgentId === agentId ? "manager" : agent.labels?.[SIDEKICK_LABEL] !== undefined ? "sidekick" : "other";
+      const delta = await this.usageLedger.record(
+        agentId,
+        { title: agent.title ?? "", kind, role: decider ? decider.gate.decider.role ?? null : stepRole, model: [agent.provider, agent.model].filter(Boolean).join("/") || null, runId: run?.id ?? null },
+        reading,
+      );
+      if (!run) return;
+      await this.store.mutate(run.id, (current) => {
+        const gate = current.gates.find((candidate) => candidate.deciderAgentId === agentId);
         if (gate) {
-          gate.usage = addUsage(gate.usage, reading);
+          gate.usage = addUsage(gate.usage, delta);
           return;
         }
-        const found = engine.findAttemptByAgent(run, agentId);
-        if (found) {
-          const attempt = run.steps[found.stepId]!.attempts.at(-1)!;
-          attempt.usage = addUsage(attempt.usage, reading);
+        const attemptOf = engine.findAttemptByAgent(current, agentId);
+        if (attemptOf) {
+          const attempt = current.steps[attemptOf.stepId]!.attempts.at(-1)!;
+          attempt.usage = addUsage(attempt.usage, delta);
           return;
         }
-        if (run.managerAgentId === agentId) run.managerUsage = addUsage(run.managerUsage, reading);
+        if (current.managerAgentId === agentId) current.managerUsage = addUsage(current.managerUsage, delta);
       });
     } catch (error) {
       console.error(`[playbooks] could not record usage of ${agentId}:`, errorText(error));

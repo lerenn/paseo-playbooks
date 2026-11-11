@@ -1,7 +1,7 @@
 import { useRpc } from "@getpaseo/plugin/client";
 import { useEffect, useState } from "react";
 import { Pressable, Text, View } from "react-native";
-import { tokensOf, type Analytics, type UsageRow } from "../shared/analytics";
+import { tokensOf, type AgentRow, type Analytics, type UsageRow } from "../shared/analytics";
 import { analyticsStateRpc } from "../shared/contracts";
 import type { Usage } from "../shared/types";
 import type { Theme } from "./theme";
@@ -62,6 +62,7 @@ export function AnalyticsView(props: { theme: Theme }) {
           <Table theme={theme} title="By step" rows={data.byStep} showWaste />
           <Table theme={theme} title="By role" rows={data.byRole} showWaste />
           <Table theme={theme} title="By model" rows={data.byModel} showWaste />
+          <TopAgents theme={theme} rows={data.topAgents} />
         </>
       ) : null}
     </View>
@@ -145,6 +146,35 @@ function Table(props: { theme: Theme; title: string; rows: UsageRow[]; showWaste
               <View style={{ height: 4, borderRadius: 2, width: `${Math.max(2, Math.round((tokensOf(row.usage) / top) * 100))}%`, backgroundColor: theme.colors.accent }} />
             </View>
             {row.detail ? <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>{row.detail}</Text> : null}
+          </View>
+        ))}
+      </View>
+    </View>
+  );
+}
+
+/** The agents that spent the most, whatever they are: managers, step agents, any other agent. */
+function TopAgents(props: { theme: Theme; rows: AgentRow[] }) {
+  const { theme, rows } = props;
+  if (rows.length === 0) return null;
+  return (
+    <View style={{ gap: 8 }}>
+      <Text accessibilityRole="header" style={{ color: theme.colors.foreground, fontSize: 15, fontWeight: "700" }}>
+        Top agents
+      </Text>
+      <View style={{ borderRadius: 10, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface1, overflow: "hidden" }}>
+        {rows.map((row, index) => (
+          <View key={row.agentId} style={{ gap: 2, padding: 10, borderTopWidth: index === 0 ? 0 : 1, borderTopColor: theme.colors.border }}>
+            <View style={{ flexDirection: "row", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
+              <Text style={{ flex: 1, minWidth: 140, color: theme.colors.foreground, fontSize: 13 }}>{row.title || row.agentId}</Text>
+              <Text style={{ color: theme.colors.foreground, fontSize: 13, fontWeight: "600" }}>{dollars(row.usage.costUsd)}</Text>
+              <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>
+                {row.usage.turns} turns · {compactNumber(row.usage.inputTokens)} in · {compactNumber(row.usage.cachedInputTokens)} cached · {compactNumber(row.usage.outputTokens)} out · ctx {compactNumber(row.usage.contextPeak)}
+              </Text>
+            </View>
+            <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>
+              {[row.kind, row.role ? `role ${row.role}` : null, row.model, row.agentId.slice(0, 8)].filter(Boolean).join(" · ")}
+            </Text>
           </View>
         ))}
       </View>
