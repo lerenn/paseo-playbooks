@@ -1592,7 +1592,7 @@ export class Runtime {
       const result = spawnError
         ? { outcome: "failure", summary: `${step.script}: ${spawnError}`, outputs: {} }
         : scriptResult(step, exit, stdout, stderr);
-      void this.onCheckEnded(runId, stepId, attemptId, result, tailOf([stdout.trimEnd(), stderr.trimEnd()].filter(Boolean).join("\n")));
+      this.onCheckEnded(runId, stepId, attemptId, result, tailOf([stdout.trimEnd(), stderr.trimEnd()].filter(Boolean).join("\n"))).catch((error: unknown) => console.error(`[playbooks] script check of "${stepId}" failed:`, error));
     };
     try {
       // An isolated run's scripts run in its worktree; one the worktree's commit lacks (uncommitted in the workspace) runs from the workspace.
@@ -1656,12 +1656,8 @@ export class Runtime {
       const attempt = run.steps[stepId]?.attempts.at(-1);
       if (attempt?.agentId !== attemptId || run.steps[stepId]!.status !== "running") return;
       attempt.nextCheckAt = null;
-      try {
-        engine.recordReport(run, attemptId, result, nowIso());
-      } catch (error) {
-        // A bad outcome or outputs line is the script's failure, not a reason to hang.
-        engine.recordReport(run, attemptId, { outcome: "failure", summary: `${result.summary} (result refused: ${errorText(error)})`, outputs: {} }, nowIso());
-      }
+      // A bad outcome or outputs line is the script's failure, not a reason to hang or to throw.
+      engine.recordAutomaticReport(run, attemptId, result, nowIso());
       engine.endTurn(run, attemptId, { turnEnd, lastMessage: attempt.lastMessage, now: nowIso() });
     });
     await this.settleScripts(runId);

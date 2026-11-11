@@ -686,6 +686,28 @@ export function recordReport(
   return { stepId };
 }
 
+/**
+ * Records an automatic (script or hand-off) result. A result the step refuses (an outcome it does not
+ * declare, bad outputs) becomes a failure report instead of an error: nobody is there to read one.
+ * That failure is written directly, since a step need not declare "failure" among its outcomes.
+ */
+export function recordAutomaticReport(
+  run: Run,
+  attemptId: string,
+  result: { outcome: string; summary: string; outputs: Record<string, unknown> },
+  now: string,
+): void {
+  try {
+    recordReport(run, attemptId, result, now);
+  } catch (error) {
+    const found = findAttemptByAgent(run, attemptId);
+    if (!found) throw error;
+    const summary = `${result.summary} (result refused: ${error instanceof Error ? error.message : String(error)})`;
+    found.attempt.report = { outcome: "failure", summary, outputs: {} };
+    log(run, now, "step_reported", found.stepId, `failure: ${summary}`);
+  }
+}
+
 /** The step agent's turn ended. Moves a running step to reported. */
 export function endTurn(
   run: Run,
@@ -1858,11 +1880,7 @@ export function receiveJobResult(run: Run, stepId: string, attemptId: string, re
   const attempt = state?.attempts.at(-1);
   if (!state || attempt?.agentId !== attemptId || state.status !== "running") return false;
   attempt.noRetry = noRetry;
-  try {
-    recordReport(run, attemptId, result, now);
-  } catch (error) {
-    recordReport(run, attemptId, { outcome: "failure", summary: `${result.summary} (result refused: ${(error as Error).message})`, outputs: {} }, now);
-  }
+  recordAutomaticReport(run, attemptId, result, now);
   endTurn(run, attemptId, { turnEnd: "completed", lastMessage: attempt.lastMessage, now });
   return true;
 }
