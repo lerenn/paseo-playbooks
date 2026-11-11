@@ -509,6 +509,17 @@ export class Runtime {
     }
   }
 
+  /** A page of any agent's timeline, newest first when no cursor is given, else the entries before it. */
+  async readTimeline(agentId: string, options: { limit: number; before?: { epoch: string; seq: number } }) {
+    const handle = this.api().agents.ref(agentId);
+    const page = await handle
+      .timeline.refetch(options.before ? { direction: "before", cursor: options.before, limit: options.limit } : { direction: "tail", limit: options.limit })
+      .catch((error: unknown) => {
+        throw new UserError(`cannot read agent "${agentId}": ${error instanceof Error ? error.message : String(error)}`);
+      });
+    return { entries: page.entries, hasOlder: page.hasOlder, startCursor: page.startCursor };
+  }
+
   /** A run a tool only reads: any run, whoever manages it. Writes go through ownedRun. */
   readableRun(callerId: string, runId: string | undefined): Run {
     if (!runId) return this.ownedRun(callerId, runId);

@@ -7,6 +7,7 @@ import { isActive, isAgentlessAttempt, isPaused, isPipeline, isTerminal, restart
 import * as engine from "./engine";
 import { resolveForNewRun } from "./fresh";
 import { hasPlaybooks, loadPlaybooks } from "./loader";
+import { conversationText } from "./conversation";
 import { attentionText } from "./overseer";
 import { MANAGER_PROTOCOL, managerInstructionsText, worktreePreamble } from "./prompts";
 import { UserError, type Runtime } from "./runtime";
@@ -567,6 +568,26 @@ export function runTools(runtime: Runtime): AgentToolDefinition[] {
           if (run.managerAgentId === agent.id) await runtime.clearInbox(run.id);
           const summary = view === "full" ? runFull(run, steps) : runCompact(run, steps);
           return ok(JSON.stringify(summary, null, 2), summary);
+        }),
+    }),
+    defineAgentTool({
+      name: "read_agent_conversation",
+      description:
+        "Read another agent's conversation as plain text, oldest first: what the user asked, what the agent answered, its tool calls (name and status; the input too with includeToolDetail), and its reasoning with includeReasoning. Reads the newest `limit` entries (default 60). When hasOlder is true, pass the returned `before` back to read the entries before them. Read-only; works on any agent of the daemon (a step agent, a manager, a subagent), running or finished. Use it to see what an agent did and whether it is stuck, instead of handing a transcript to a subagent.",
+      input: z.object({
+        agentId: z.string().describe("The agent to read"),
+        limit: z.number().int().min(1).max(200).default(60).describe("Timeline entries to read (default 60); streamed messages count several"),
+        before: z.object({ epoch: z.string(), seq: z.number().int() }).optional().describe("The `before` of a previous call: read the entries before it"),
+        includeReasoning: z.boolean().default(false).describe("Also show the agent's reasoning"),
+        includeToolDetail: z.boolean().default(false).describe("Also show each tool call's input and output (clipped)"),
+        maxChars: z.number().int().min(100).max(20000).default(2000).describe("Characters kept per message or detail (default 2000)"),
+      }),
+      execute: ({ agentId, limit, before, includeReasoning, includeToolDetail, maxChars }) =>
+        guard(async () => {
+          const page = await runtime.readTimeline(agentId, { limit, before });
+          const text = conversationText(page.entries as never, { includeReasoning, includeToolDetail, maxChars });
+          const result = { agentId, hasOlder: page.hasOlder, before: page.hasOlder ? page.startCursor : null, entries: page.entries.length };
+          return ok(`${text || "(nothing to show in these entries)"}\n\n${JSON.stringify(result)}`, result);
         }),
     }),
     defineAgentTool({
