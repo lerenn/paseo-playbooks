@@ -10,6 +10,7 @@ function run(id: string, attempts: Array<ReturnType<typeof usage>>): any {
     createdAt: "2026-11-10T00:00:00Z",
     projectId: "p",
     playbook: { id: "pb", steps: [{ id: "build", role: "dev", agent: { model: "opus" } }] },
+    usageDeltas: true,
     managerUsage: usage(5, 5),
     gates: [],
     steps: { build: { attempts: attempts.map((u, i) => ({ agentId: `a${i}`, usage: u, turnEnd: "completed" })) } },
@@ -41,5 +42,13 @@ describe("analyze", () => {
     expect(all.topAgents.map((row) => row.agentId)).toEqual(["drain", "cheap"]);
     expect(all.topAgents[0]).not.toHaveProperty("last");
     expect(analyze([run("r1", [])], { agents, playbook: "pb" }).topAgents.map((row) => row.agentId)).toEqual(["cheap"]);
+  });
+
+  it("leaves out the inflated manager usage of runs from before deltas and counts them", () => {
+    const legacy = { ...run("r2", [usage(100, 10)]), usageDeltas: false, managerUsage: usage(1000, 1000) };
+    const result = analyze([legacy, run("r3", [])]);
+    expect(result.runsWithInvalidManagerUsage).toBe(1);
+    expect(result.overhead.manager.turns).toBe(1);
+    expect(result.total.inputTokens).toBe(100 + 5);
   });
 });

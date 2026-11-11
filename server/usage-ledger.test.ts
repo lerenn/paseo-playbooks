@@ -29,4 +29,16 @@ describe("UsageLedger", () => {
     const [entry] = await again.list();
     expect(entry!.usage).toMatchObject({ turns: 3, costUsd: 7, cachedInputTokens: 580 });
   });
+
+  it("sums a cumulative cost over three turns to the final cost, across runs of the same manager", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "ledger-"));
+    const ledger = new UsageLedger(path.join(dir, "agent-usage.json"));
+    const deltas = [
+      await ledger.record("m", { ...info, runId: "r1" }, reading(10, 0)),
+      await ledger.record("m", { ...info, runId: "r1" }, reading(25, 0)),
+      await ledger.record("m", { ...info, runId: "r2" }, reading(40, 0)),
+    ].map((d) => d.totalCostUsd);
+    expect(deltas).toEqual([10, 15, 15]);
+    expect((await ledger.list())[0]!.usage.costUsd).toBe(40);
+  });
 });

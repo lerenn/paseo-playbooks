@@ -49,6 +49,8 @@ export const AnalyticsSchema = z.object({
   runs: z.number().int(),
   /** Runs with no recorded usage at all (from before usage was recorded). */
   runsWithoutUsage: z.number().int(),
+  /** Runs from before usage was recorded as deltas: their manager usage is inflated and left out of the totals. */
+  runsWithInvalidManagerUsage: z.number().int().default(0),
   total: UsageSchema,
   byPlaybook: z.array(UsageRowSchema),
   byStep: z.array(UsageRowSchema),
@@ -137,19 +139,22 @@ export function analyze(runs: Run[], options: AnalyticsOptions = {}): Analytics 
   let manager = zero();
   let deciders = zero();
   let withoutUsage = 0;
+  let invalidManager = 0;
 
   for (const run of picked) {
     let any = false;
     const playbook = run.playbook.id;
-    manager = plus(manager, run.managerUsage);
-    total = plus(total, run.managerUsage);
-    if (run.managerUsage) any = true;
+    const managerUsage = run.usageDeltas ? run.managerUsage : null;
+    if (!run.usageDeltas && run.managerUsage) invalidManager += 1;
+    manager = plus(manager, managerUsage);
+    total = plus(total, managerUsage);
+    if (managerUsage) any = true;
     for (const gate of run.gates) {
       deciders = plus(deciders, gate.usage);
       total = plus(total, gate.usage);
       if (gate.usage) any = true;
     }
-    let runUsage = plus(plus(zero(), run.managerUsage), null);
+    let runUsage = plus(plus(zero(), managerUsage), null);
     for (const gate of run.gates) runUsage = plus(runUsage, gate.usage);
     for (const step of run.playbook.steps) {
       const attempts = run.steps[step.id]?.attempts ?? [];
@@ -180,6 +185,7 @@ export function analyze(runs: Run[], options: AnalyticsOptions = {}): Analytics 
     since,
     runs: picked.length,
     runsWithoutUsage: withoutUsage,
+    runsWithInvalidManagerUsage: invalidManager,
     total,
     byPlaybook: byPlaybook.rows(limit),
     byStep: byStep.rows(limit),

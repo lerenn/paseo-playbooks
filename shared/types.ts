@@ -651,6 +651,8 @@ export const RunSchema = z.object({
   managerAgentId: z.string(),
   /** What the manager's agent spent while this run was its active one. */
   managerUsage: UsageSchema.nullable().optional(),
+  /** Usage is recorded as per-turn deltas (v0.66.1+). Runs without it hold a cumulative-summed, inflated `managerUsage`, which analytics ignores. */
+  usageDeltas: z.boolean().default(false),
   /** The plugin created this run's workspace (`newWorkspace`), so it may archive it. Never set for a pipeline's or a moved run's. */
   workspaceCreated: z.boolean().default(false),
   /** Once the run ended: `done` (workspace archived) or `skipped` (kept; the history says why). */

@@ -161,6 +161,7 @@ function createRun(input: NewRunInput, inputs: Record<string, VarValue>, kind: "
     projectId: input.projectId,
     branch: input.branch,
     managerAgentId: input.managerAgentId,
+    usageDeltas: true,
     name: input.name ?? null,
     inputs,
     outputs: null,
