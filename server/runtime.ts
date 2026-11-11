@@ -3121,7 +3121,7 @@ export class Runtime {
       ? this.api().workspaces.ref(workspaceId)
       : await this.api().workspaces.create({ title: sidekickTitle(project.label), source: { kind: "directory", path: project.root }, background: true });
     for (const warning of load.warnings) console.warn(`[playbooks] ${warning}`);
-    const subagent = { ...DEFAULT_SIDEKICK_SUBAGENT, ...settings.subagents };
+    const subagent = { ...DEFAULT_SIDEKICK_SUBAGENT, ...(settings.mode ? { mode: settings.mode } : {}), ...settings.subagents };
     const agent = await workspace.agents.create({
       config,
       title: sidekickTitle(project.label),

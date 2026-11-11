@@ -262,6 +262,18 @@ describe("a Sidekick's session", () => {
     }
   });
 
+  it("makes subagents inherit sidekick.mode unless subagents.mode is set", async () => {
+    const run = async (yaml: string) => {
+      const { runtime, created, roots } = await setup({ shop: true });
+      await write(roots.shop!, `${PLAYBOOKS}/sidekick/sidekick.yaml`, yaml);
+      await runtime.openSidekick("ws-shop");
+      return created.agents[0]!.options.prompt as string;
+    };
+    expect(await run("sidekick: { mode: bypassPermissions }\n")).toContain('settings: { modeId: "bypassPermissions" }');
+    expect(await run("sidekick: { mode: bypassPermissions, subagents: { mode: plan } }\n")).toContain('settings: { modeId: "plan" }');
+    expect(await run("sidekick: { model: claude-sonnet-5-5 }\n")).not.toContain("modeId");
+  });
+
   it("is asked to hand off past the context threshold, then restarted with its summary", async () => {
     const { runtime, created, sent, state, roots } = await setup({ shop: true });
     await write(roots.shop!, `${PLAYBOOKS}/sidekick/sidekick.yaml`, "sidekick: { session: { restart_above_tokens: 1000 } }\n");

@@ -190,7 +190,7 @@ sidekick:
   # thinking: medium
   # Events it is told about, for this project's runs (globs such as "gate.*" work).
   watch: [gate.escalated, run.failed, run.manager_lost]
-  # subagents: { provider: claude, model: claude-sonnet-5-5, mode: acceptEdits }   # what it creates for jobs
+  # subagents: { provider: claude, model: claude-sonnet-5-5, mode: acceptEdits }   # what it creates for jobs; mode defaults to the Sidekick's own
   # session:
   #   restart_above_tokens: 300000   # restart it with a hand-off summary when its context grows past this
 `,
