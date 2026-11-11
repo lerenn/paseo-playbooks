@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { pluginMessage } from "./instructions";
 import { groupLabel, groupTools } from "./group";
 import { initialState, reduce } from "./reduce";
 import type { Item } from "./reduce";
@@ -21,6 +22,15 @@ describe("groupTools", () => {
 
   it("shortens a long list of names", () => {
     expect(groupLabel(["a", "b", "c", "d"].map((name, i) => tool(i, name)) as never)).toBe("Checked a, b, c, … (4)");
+  });
+});
+
+describe("plugin messages", () => {
+  it("summarize an event batch by its first line and the event kinds, and leave other text alone", () => {
+    const text = "[playbooks] 2 events you subscribed to:\n- gate.escalated: role x left the ask\n- run.failed: boom\n\nlist_events { since: 3 }";
+    expect(pluginMessage(text)).toMatchObject({ summary: "2 events you subscribed to (gate.escalated, run.failed)", body: expect.stringContaining("role x") });
+    expect(pluginMessage("[playbooks] Subagent ab finished its turn")?.summary).toBe("Subagent ab finished its turn");
+    expect(pluginMessage("hello [playbooks]")).toBeNull();
   });
 });
 

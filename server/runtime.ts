@@ -3157,7 +3157,7 @@ export class Runtime {
     if (parentAgentId) {
       const parent = await this.sidekickRegistry.findByAgent(parentAgentId);
       if (!parent) return false;
-      const notice = `Subagent ${agentId.slice(0, 8)} finished its turn (${outcome}); read its report with get_agent_activity (limit 1).`;
+      const notice = `[playbooks] Subagent ${agentId.slice(0, 8)} finished its turn (${outcome}); read its report with get_agent_activity (limit 1).`;
       const sidekick = await this.api().agents.ref(parentAgentId).refresh().catch(() => null);
       if (sidekick?.agent.status === "idle") await this.api().agents.ref(parentAgentId).send(notice);
       else this.sidekickHeld.set(parentAgentId, [...(this.sidekickHeld.get(parentAgentId) ?? []), notice]);

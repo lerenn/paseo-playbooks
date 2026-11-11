@@ -15,3 +15,18 @@ export function markInstructions(items: Item[]): Item[] {
   next[first] = { ...item, instructions: true };
   return next;
 }
+
+const PLUGIN_PREFIX = "[playbooks]";
+
+/**
+ * A message the plugin sent to the Sidekick (it starts with "[playbooks]"): a one-line summary to show closed
+ * (its first line, plus the kinds of the events it lists), and the body to show opened. Null for anything else.
+ */
+export function pluginMessage(text: string): { summary: string; body: string } | null {
+  const trimmed = text.trimStart();
+  if (!trimmed.startsWith(PLUGIN_PREFIX)) return null;
+  const body = trimmed.slice(PLUGIN_PREFIX.length).trim();
+  const first = (body.split("\n", 1)[0] ?? "").replace(/:$/, "");
+  const kinds = [...new Set([...body.matchAll(/^- ([a-z]+(?:\.[a-z_]+)+):/gm)].map((match) => match[1]!))];
+  return { summary: kinds.length > 0 ? `${first} (${kinds.join(", ")})` : first, body };
+}
