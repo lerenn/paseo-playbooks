@@ -6,3 +6,4 @@ sidekick:
   # Subagents it creates for jobs, and the context size that restarts it with a hand-off summary.
   # subagents: { provider: claude, model: claude-sonnet-5-5, mode: acceptEdits }
   # session: { restart_above_tokens: 300000 }
+  # runs: { max_concurrent: 5, confirm_bulk: true }   # rules for the runs it starts (prompt only); default: unlimited, no confirmation

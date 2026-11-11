@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_SIDEKICK_WATCH, loadPlaybooks, loadSidekick } from "./loader";
 import { Runtime } from "./runtime";
 import { SIDEKICK_PROMPT_START } from "../shared/sidekick-marker";
-import { SIDEKICK_LABEL, sidekickPrompt } from "./sidekick";
+import { SIDEKICK_LABEL, SIDEKICK_PASEO_TOOLS, SIDEKICK_PLUGIN_TOOLS, sidekickPrompt } from "./sidekick";
 import { createSidekickStarter } from "./starter";
 import { RunStore } from "./store";
 
@@ -92,6 +92,34 @@ describe("the Sidekick prompt", () => {
     expect(text).toContain('projectId: "p1"');
     expect(text.endsWith("Never merge on Friday.")).toBe(true);
     expect(sidekickPrompt({ projectId: "p1", label: "Shop", root: "/work/shop", watch: [] }, null)).not.toContain("Instructions of this repository");
+  });
+
+  it("lets the Sidekick start runs, and has the merging playbook merge", () => {
+    const text = sidekickPrompt({ projectId: "p1", label: "Shop", root: "/work/shop", watch: [] }, null);
+    expect(text).toContain("start_playbook");
+    expect(text).toContain("workspaceId");
+    expect(text).toContain("coordinator subagent");
+    expect(text).toContain("no access to external systems");
+    expect(text).toContain("start the project's merging playbook");
+    expect(text).not.toContain("The human merges");
+    expect(text).not.toContain("runs are started with a playbook's own manager");
+    expect(text).not.toContain("Limit: at most");
+    expect(text).not.toContain("ask the human with the interactive question tool and launch");
+  });
+
+  it("prints sidekick.runs limits when set", () => {
+    const base = { projectId: "p1", label: "Shop", root: "/work/shop", watch: [] };
+    expect(sidekickPrompt({ ...base, runs: { maxConcurrent: 3 } }, null)).toContain("at most 3 runs of this project active at once");
+    expect(sidekickPrompt({ ...base, runs: { maxConcurrent: 1 } }, null)).toContain("at most 1 run of this project");
+    const confirm = sidekickPrompt({ ...base, runs: { confirmBulk: true } }, null);
+    expect(confirm).toContain("more than one run in a batch");
+    expect(confirm).not.toContain("Limit: at most");
+    expect(sidekickPrompt({ ...base, runs: { confirmBulk: false } }, null)).not.toContain("more than one run in a batch (yours");
+  });
+
+  it("preapproves start_playbook and list_playbooks", () => {
+    expect(SIDEKICK_PLUGIN_TOOLS).toEqual(expect.arrayContaining(["start_playbook", "list_playbooks"]));
+    expect(SIDEKICK_PASEO_TOOLS).toEqual(expect.arrayContaining(["list_workspaces", "create_agent"]));
   });
 
   it("starts with the marker the chat recognises it by and does not ask the agent to rename itself", () => {
@@ -238,6 +266,32 @@ describe("a Sidekick's session", () => {
     expect(options.labels).toMatchObject({ [SIDEKICK_LABEL]: "true", "playbooks/project": "shop" });
     expect(options.prompt).toContain("provider codex, model some-model");
     expect(options.config.options.allowedTools).toEqual(expect.arrayContaining(["mcp__paseo__respond_to_permission", "mcp__paseo__get_analytics", "mcp__paseo__sidekick_handoff"]));
+  });
+
+  it("starts runs only in a workspace it names, never its own hidden one", async () => {
+    const { runtime } = await setup({ shop: true });
+    const sidekick = await runtime.openSidekick("ws-shop");
+    const caller = { id: sidekick.agentId, workspaceId: sidekick.workspaceId };
+    expect(await runtime.isSidekick(sidekick.agentId)).toBe(true);
+    expect(await runtime.isSidekick("someone-else")).toBe(false);
+    const input = { playbook: "pr", inputs: {}, newWorkspace: false };
+    await expect(runtime.startPlaybookInWorkspace(caller, { ...input, workspaceId: undefined })).rejects.toThrow(/pass workspaceId/);
+    await expect(runtime.startPlaybookInWorkspace(caller, { ...input, workspaceId: sidekick.workspaceId })).rejects.toThrow(/own hidden workspace/);
+  });
+
+  it("reads sidekick.runs, puts it in the prompt, and refuses invalid values", async () => {
+    const { runtime, created, roots } = await setup({ shop: true });
+    expect((await loadSidekick(roots.shop!)).config?.runs).toBeUndefined();
+    await write(roots.shop!, `${PLAYBOOKS}/sidekick/sidekick.yaml`, "sidekick: { runs: { max_concurrent: 2, confirm_bulk: true } }\n");
+    expect((await loadSidekick(roots.shop!)).config?.runs).toEqual({ maxConcurrent: 2, confirmBulk: true });
+    await runtime.openSidekick("ws-shop");
+    expect(created.agents[0]!.options.prompt).toContain("at most 2 runs of this project active at once");
+    for (const bad of ["{ max_concurrent: 0 }", "{ max_concurrent: -1 }", "{ max_concurrent: 1.5 }", "{ max_concurrent: lots }", "{ confirm_bulk: yes please }", "{ confirm_bulk: 1 }", "{ other: 1 }", "5"]) {
+      await write(roots.shop!, `${PLAYBOOKS}/sidekick/sidekick.yaml`, `sidekick: { runs: ${bad} }\n`);
+      const load = await loadSidekick(roots.shop!);
+      expect(load.errors.length, bad).toBeGreaterThan(0);
+      expect(load.config).toBeNull();
+    }
   });
 
   it("defaults the subagents to claude / claude-sonnet-5-5 and reads the restart threshold", async () => {

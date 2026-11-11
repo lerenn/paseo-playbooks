@@ -337,7 +337,7 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
     defineAgentTool({
       name: "start_playbook",
       description:
-        "Create a run of a playbook with you as its manager, in your workspace (one active run per workspace, unless the playbook has `isolation: worktree`: it gets a private git worktree, and runs may share the workspace). Returns the run id and the ready steps. With newWorkspace, the run gets a new workspace and its own Playbook Manager instead (for example a train's manager starting rework for an ejected job).",
+        "Create a run of a playbook with you as its manager, in your workspace (a Sidekick, or any caller that passes workspaceId, starts it in that workspace instead, with a new Playbook Manager) (one active run per workspace, unless the playbook has `isolation: worktree`: it gets a private git worktree, and runs may share the workspace). Returns the run id and the ready steps. With newWorkspace, the run gets a new workspace and its own Playbook Manager instead (for example a train's manager starting rework for an ejected job).",
       input: z.object({
         playbook: z.string().describe("Playbook id (its file name without .yaml)"),
         inputs: z.record(z.string(), VarValueSchema).default({}).describe("Playbook inputs by name"),
@@ -348,10 +348,21 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
         newWorkspace: z
           .boolean()
           .default(false)
-          .describe("Start it in a new workspace (branched off this one's current branch) with a new Playbook Manager; you do not manage it"),
+          .describe("Start it in a new workspace (branched off this one's current branch, or off workspaceId's) with a new Playbook Manager; you do not manage it"),
+        workspaceId: z
+          .string()
+          .optional()
+          .describe("A workspace of this project (list_workspaces) to run in instead of yours: the run starts there with a new Playbook Manager (or, with newWorkspace, in a new workspace branched off it); you do not manage it. A Sidekick has no workspace to run in and must pass it"),
       }),
-      execute: ({ playbook, inputs, name, newWorkspace }, { agent }) =>
+      execute: ({ playbook, inputs, name, newWorkspace, workspaceId }, { agent }) =>
         guard(async () => {
+          if (workspaceId || (await runtime.isSidekick(agent.id))) {
+            const started = await runtime.startPlaybookInWorkspace(agent, { playbook, inputs, workspaceId, newWorkspace });
+            return ok(
+              `Run ${started.runId} of "${playbook}" is starting in ${newWorkspace ? "a new workspace" : "workspace"} ${started.workspaceId} with its own Playbook Manager (${started.managerAgentId}). You do not manage it: the plugin tells you how it goes through your event subscription (list_runs shows it).`,
+              started,
+            );
+          }
           if (newWorkspace) {
             const started = await runtime.startPlaybookElsewhere(agent, playbook, inputs);
             return ok(
