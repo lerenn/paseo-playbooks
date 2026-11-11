@@ -35,15 +35,34 @@ export async function readProjectProfiles(projectId: string, file: string = user
   return [...new Set(active.filter((id): id is string => typeof id === "string" && id !== DEFAULT_REPO))];
 }
 
-/** Turns a profile on or off for a project, keeping the rest of the config; returns the project's new list. */
+/**
+ * Whether the project's `default` repository is on: `profiles.projects.<project>.default` of the user config. It is on
+ * unless that is exactly `false`, so a project without an entry (every existing user) keeps it.
+ */
+export async function readProjectDefault(projectId: string, file: string = userConfigFile()): Promise<boolean> {
+  const projects = asRecord(asRecord((await readConfig(file)).profiles).projects);
+  return !(Object.hasOwn(projects, projectId) && asRecord(projects[projectId]).default === false);
+}
+
+/**
+ * Turns a profile on or off for a project, keeping the rest of the config; returns the project's new list of active
+ * profiles. `default` is not a list entry: turning it off writes `default: false`, turning it on removes that key.
+ */
 export async function setProjectProfile(projectId: string, profile: string, active: boolean, file: string = userConfigFile()): Promise<string[]> {
-  if (profile === DEFAULT_REPO) return readProjectProfiles(projectId, file);
   const config = await readConfig(file);
   const current = await readProjectProfiles(projectId, file);
-  const next = active ? [...new Set([...current, profile])] : current.filter((id) => id !== profile);
   const profiles = asRecord(config.profiles);
   const projects = asRecord(profiles.projects);
-  config.profiles = { ...profiles, projects: { ...projects, [projectId]: { ...asRecord(projects[projectId]), active: next } } };
+  const entry = { ...asRecord(projects[projectId]) };
+  let next = current;
+  if (profile === DEFAULT_REPO) {
+    if (active) delete entry.default;
+    else entry.default = false;
+  } else {
+    next = active ? [...new Set([...current, profile])] : current.filter((id) => id !== profile);
+    entry.active = next;
+  }
+  config.profiles = { ...profiles, projects: { ...projects, [projectId]: entry } };
   await mkdir(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.tmp`;
   await writeFile(tmp, stringifyYaml(config), "utf8");

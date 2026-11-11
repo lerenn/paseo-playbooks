@@ -25,8 +25,8 @@ export function useSetProjectProfile(): (projectId: string, profile: string, act
 const chipStyle = (theme: Theme) => ({ borderRadius: 10, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface1, paddingHorizontal: 8, paddingVertical: 2 }) as const;
 
 /**
- * A project's profiles as a multi-select dropdown: the active ones are chips, `default` is always one, and the menu has a
- * checkbox per profile found in the project's main checkout. The same control is in the Profiles tab and in the panel's bar.
+ * A project's profiles as a multi-select dropdown: the active ones are chips, and the menu has a
+ * checkbox per repository: `default` (on unless turned off) and each profile found in the project's main checkout. The same control is in the Profiles tab and in the panel's bar.
  */
 export function ProfilePicker(props: { theme: Theme; label: string; profiles: ProfileInfo[]; onToggle(profile: string, active: boolean): void; zIndex?: number }) {
   const { theme, profiles } = props;
@@ -44,15 +44,12 @@ export function ProfilePicker(props: { theme: Theme; label: string; profiles: Pr
           onPress={() => setOpen(!open)}
           style={{ flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap", borderRadius: 8, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: open ? theme.colors.surface2 : theme.colors.surface1, paddingHorizontal: 8, paddingVertical: 4, minWidth: 180 }}
         >
-          <View accessibilityLabel="Default repository, always active" style={[chipStyle(theme), { flexDirection: "row", alignItems: "center", gap: 4 }]}>
-            <Icon name="Lock" size={10} color={muted} />
-            <Text style={{ color: muted, fontSize: 11 }}>default</Text>
-          </View>
           {active.map((profile) => (
             <View key={profile.id} style={chipStyle(theme)}>
               <Text style={{ color: theme.colors.foreground, fontSize: 11 }}>{profile.id}</Text>
             </View>
           ))}
+          {active.length === 0 ? <Text style={{ color: muted, fontSize: 11 }}>none active</Text> : null}
           <View style={{ flex: 1 }} />
           <Icon name={open ? "ChevronUp" : "ChevronDown"} size={12} color={muted} />
         </Pressable>
@@ -62,11 +59,6 @@ export function ProfilePicker(props: { theme: Theme; label: string; profiles: Pr
             style={{ position: "absolute", top: 34, left: 0, minWidth: 220, maxHeight: 260, padding: 4, borderRadius: 10, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface2, elevation: 6 }}
           >
             <ScrollView>
-              <View accessibilityRole="checkbox" accessibilityState={{ checked: true, disabled: true }} accessibilityLabel="Profile default, always active" style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 10, paddingVertical: 7 }}>
-                <Icon name="SquareCheck" size={14} color={muted} />
-                <Text style={{ color: muted, fontSize: 13 }}>default</Text>
-                <Text style={{ color: muted, fontSize: 11 }}>always active</Text>
-              </View>
               {profiles.length === 0 ? <Text style={{ color: muted, fontSize: 11, paddingHorizontal: 10, paddingVertical: 6 }}>No profiles in the project's main checkout</Text> : null}
               {profiles.map((profile) => (
                 <Pressable

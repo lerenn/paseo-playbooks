@@ -99,12 +99,13 @@ paseo plugin logs paseo-playbooks
 
 A profile is an extra, opt-in repository of playbooks, with the same layout as the playbooks folder
 (playbook files, `roles/`, `defaults/`, `scripts/`), in `.paseo/plugins/playbooks/profiles/<name>/`
-(see `examples/.paseo/plugins/playbooks/profiles/personal/`). The folder itself is the always-active
-`default` repository. Profiles are off by default and are turned on per project: in the "Profiles" tab of the
+(see `examples/.paseo/plugins/playbooks/profiles/personal/`). The folder itself is the `default`
+repository, on unless a project turns it off in the same dropdown. Profiles are off by default and are turned on per project: in the "Profiles" tab of the
 Playbooks screen (one row per project) or in the same dropdown at the top of a Playbooks panel. The choice
 applies to every conversation of every workspace of the project, and is stored per user in
 `$PASEO_HOME/plugin-data/paseo-playbooks/config.yaml` as
-`profiles: { projects: { <project id>: { active: [louis] } } }` (the old global `profiles.active` is ignored).
+`profiles: { projects: { <project id>: { active: [louis], default: false } } }` (`default: false` only when default is
+off; the old global `profiles.active` is ignored).
 The profiles on offer are those of the project's main checkout. A profile's
 playbooks are named `<profile>:<id>` (`louis:deploy`), and resolve their roles and sub-playbooks only
 inside the profile. If two repositories share an id, both are kept, and a bare `deploy` is refused as

@@ -361,9 +361,9 @@ export type Playbook = z.infer<typeof PlaybookSchema>;
 
 /** One playbook file as seen by the panel and `list_playbooks`: valid or with errors. */
 export const ProfileInfoSchema = z.object({
-  /** The folder name in `profiles/`. */
+  /** The folder name in `profiles/`, or `default` for the main repository (listed first in a project's offer). */
   id: z.string(),
-  /** Turned on in the user config: its playbooks are in the catalog. */
+  /** Turned on in the user config: its playbooks are in the catalog. `default` is on unless the project turned it off. */
   active: z.boolean(),
   /** Playbook files in the profile's folder. */
   playbooks: z.number(),

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { findEntry } from "../shared/repos";
-import { readProjectProfiles, setProjectProfile } from "./config";
+import { readProjectDefault, readProjectProfiles, setProjectProfile } from "./config";
 import { newRun, readySteps } from "./engine";
 import { hasPlaybooks, loadPlaybooks, projectProfiles } from "./loader";
 
@@ -104,6 +104,7 @@ describe("profiles", () => {
     expect(await setProjectProfile("shop", "coding", true, file)).toEqual(["louis", "coding"]);
     expect(await setProjectProfile("shop", "louis", true, file)).toEqual(["louis", "coding"]);
     expect(await setProjectProfile("shop", "default", true, file)).toEqual(["louis", "coding"]);
+    expect(await readFile(file, "utf8")).not.toMatch(/default/);
     expect(await readProjectProfiles("shop", file)).toEqual(["louis", "coding"]);
     expect(await readFile(file, "utf8")).toContain("other: keep");
     expect(await setProjectProfile("shop", "louis", false, file)).toEqual(["coding"]);
@@ -111,6 +112,55 @@ describe("profiles", () => {
     expect(await readProjectProfiles("shop", file)).toEqual(["louis"]);
     await writeFile(file, "::: not yaml [");
     expect(await readProjectProfiles("shop", file)).toEqual([]);
+  });
+
+  it("6a. turns default off per project, persisted as `default: false` and never in the active list", async () => {
+    const dir = await tempDir();
+    const file = path.join(dir, "config.yaml");
+    expect(await readProjectDefault("shop", file)).toBe(true); // no config, no entry: on
+    await setProjectProfile("shop", "louis", true, file);
+    expect(await readProjectDefault("shop", file)).toBe(true);
+    expect(await setProjectProfile("shop", "default", false, file)).toEqual(["louis"]);
+    expect(await readFile(file, "utf8")).toMatch(/default: false/);
+    expect(await readProjectDefault("shop", file)).toBe(false);
+    expect(await readProjectProfiles("shop", file)).toEqual(["louis"]);
+    expect(await readProjectDefault("blog", file)).toBe(true);
+    expect(await readProjectDefault("constructor", file)).toBe(true);
+    await setProjectProfile("shop", "default", true, file);
+    expect(await readProjectDefault("shop", file)).toBe(true);
+    await writeFile(file, "profiles:\n  projects:\n    shop:\n      default: nope\n");
+    expect(await readProjectDefault("shop", file)).toBe(true);
+  });
+
+  it("6c. default off hides its playbooks only; profiles stay; the project's other workspaces follow the same setting", async () => {
+    const dir = await workspace();
+    const off = await loadPlaybooks(dir, { activeProfiles: ["louis"], defaultActive: false });
+    expect(ids(off)).toEqual(["louis:deploy", "louis:personal"]);
+    expect(off.defaultActive).toBe(false);
+    expect(off.exists).toBe(true);
+    const on = await loadPlaybooks(dir, { activeProfiles: ["louis"] });
+    expect(on.defaultActive).toBe(true);
+    expect(ids(on)).toEqual(["deploy", "louis:deploy", "louis:personal", "review"]);
+  });
+
+  it("6d. reads default from the project's setting when loading, and offers it first", async () => {
+    const dir = await workspace();
+    const home = await tempDir();
+    const prev = process.env.PASEO_HOME;
+    process.env.PASEO_HOME = home;
+    try {
+      await setProjectProfile("shop", "default", false);
+      await setProjectProfile("shop", "coding", true);
+      expect(ids(await loadPlaybooks(dir, { projectId: "shop" }))).toEqual(["coding:build"]);
+      expect(ids(await loadPlaybooks(dir, { projectId: "blog" }))).toEqual(["deploy", "review"]);
+      expect(ids(await loadPlaybooks(dir))).toEqual(["deploy", "review"]);
+      const offered = await projectProfiles(dir, "shop");
+      expect(offered.profiles.map((p) => [p.id, p.active, p.playbooks])).toEqual([["default", false, 2], ["coding", true, 1], ["louis", false, 2]]);
+      expect((await projectProfiles(dir, "blog")).profiles[0]).toMatchObject({ id: "default", active: true });
+    } finally {
+      if (prev === undefined) delete process.env.PASEO_HOME;
+      else process.env.PASEO_HOME = prev;
+    }
   });
 
   it("6b. keeps projects apart: each has its own list, and a project without an entry has none", async () => {
@@ -151,7 +201,7 @@ describe("profiles", () => {
       expect(ids(await loadPlaybooks(main))).toEqual(["deploy", "review"]);
       // The profiles on offer are the main checkout's, with the project's setting applied.
       const offered = await projectProfiles(main, "shop");
-      expect(offered.profiles.map((profile) => [profile.id, profile.active])).toEqual([["coding", false], ["louis", true]]);
+      expect(offered.profiles.map((profile) => [profile.id, profile.active])).toEqual([["default", true], ["coding", false], ["louis", true]]);
     } finally {
       if (old === undefined) delete process.env.PASEO_HOME;
       else process.env.PASEO_HOME = old;
