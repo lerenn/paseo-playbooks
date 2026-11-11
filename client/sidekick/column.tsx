@@ -87,7 +87,7 @@ export function SidekickChat(props: Props) {
         </View>
       ) : null}
 
-      <ScrollView ref={scroller as never} style={{ flex: 1 }} contentContainerStyle={{ padding: 12, gap: 10 }}>
+      <ScrollView ref={scroller as never} style={{ flex: 1 }} contentContainerStyle={{ padding: 14, gap: 18 }}>
         {status.loading ? <Text style={{ color: muted }}>Starting the Sidekick…</Text> : null}
         {status.error ? <Text style={{ color: theme.colors.statusDanger }}>{status.error}</Text> : null}
         {state.connection === "error" && state.error ? <Text style={{ color: theme.colors.statusWarning }}>Reconnecting… {state.error}</Text> : null}
@@ -164,7 +164,7 @@ function ItemView({ theme, item }: { theme: Theme; item: Item }) {
     case "user":
       if (item.instructions) return <InstructionsLine theme={theme} text={item.text} />;
       return (
-        <View style={{ alignSelf: "flex-end", maxWidth: "90%", borderRadius: 10, backgroundColor: theme.colors.surface1, padding: 10 }}>
+        <View style={{ alignSelf: "flex-end", maxWidth: "90%", borderRadius: 10, backgroundColor: theme.colors.surface1, padding: 12, marginTop: 8 }}>
           <Text selectable style={{ color: theme.colors.foreground }}>{item.text}</Text>
         </View>
       );
