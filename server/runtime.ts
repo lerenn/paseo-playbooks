@@ -31,6 +31,7 @@ import * as engine from "./engine";
 import { checkoutSnapshot, currentRef, defaultBranch, fastForward, freshRef, removedGitlinks, snapshotDiff } from "./git";
 import { createWorktree, dirtyPaths, linkedSubmodules, listWorktreeDirs, pruneWorktrees, removeWorktree, repoOfWorktree, worktreeBranch, worktreePath } from "./worktree";
 import { chooseDefinition } from "./fresh";
+import { runWorktreeTeardown } from "./teardown";
 import { loadPlaybooks, loadSidekick } from "./loader";
 import { findEntry } from "../shared/repos";
 
@@ -1040,6 +1041,7 @@ export class Runtime {
       try {
         const origin = await repoOfWorktree(dir);
         const linked = origin ? await linkedSubmodules(dir) : [];
+        await this.teardownWorktree(dir, origin?.repo ?? this.worktreesDir);
         const result = await removeWorktree({ repo: origin?.repo ?? this.worktreesDir, dir, worktreesDir: this.worktreesDir, branch: origin?.branch ?? null, linked, force: true, ...(record?.worktree ? { baseSha: record.worktree.baseSha } : {}) });
         removed.push(dir);
         console.log(`[playbooks] removed orphan worktree ${dir}${result.dropped.length ? ` (dropped uncommitted: ${result.dropped.slice(0, 10).join(", ")})` : ""}${result.keptBranch ? `; kept branch ${result.keptBranch}` : ""}`);
@@ -1055,7 +1057,15 @@ export class Runtime {
 
   /** Removes a run's worktree and records nothing; callers write the history. */
   private async dropWorktree(runId: string, worktree: RunWorktree, repo: string, force: boolean): Promise<{ keptBranch: string | null; dropped: string[] }> {
-    return removeWorktree({ repo, dir: worktree.path || worktreePath(this.worktreesDir, runId), worktreesDir: this.worktreesDir, branch: worktree.branch, linked: worktree.linked, baseSha: worktree.baseSha, force });
+    const dir = worktree.path || worktreePath(this.worktreesDir, runId);
+    await this.teardownWorktree(dir, repo);
+    return removeWorktree({ repo, dir, worktreesDir: this.worktreesDir, branch: worktree.branch, linked: worktree.linked, baseSha: worktree.baseSha, force });
+  }
+
+  /** Runs the repository's `worktree.teardown` (its `paseo.json`) in a worktree about to be removed; failures are logged and never block the removal. */
+  private async teardownWorktree(dir: string, repo: string): Promise<void> {
+    const result = await runWorktreeTeardown({ dir, repo });
+    for (const failure of result.failed) console.error(`[playbooks] worktree teardown failed in ${dir} (${failure.command}): ${failure.reason}`);
   }
 
   private reservationFor(workspaceId: string, playbookId: string, inputs: Record<string, unknown>): Reservation | undefined {

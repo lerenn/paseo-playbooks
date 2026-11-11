@@ -181,6 +181,10 @@ with that tag.
 - `isolation: worktree` is prompt-directed: Paseo pins an agent's directory to its workspace, so agents
   start in the workspace and are told (and, by the guard, checked) to work only in the run's worktree.
   An agent that ignores the prompt fails its step; it is not prevented.
+- Before a run's worktree is removed (run cleanup, the orphan sweep, or a deleted workspace), the plugin runs the
+  repository's `worktree.teardown` commands from the worktree's `paseo.json` (a string or a list), in the worktree.
+  A failing command is logged and does not stop the removal, so a repository can stop what it started there
+  (for example a local stack). Paseo runs the same key itself when it archives a workspace it created.
 - A run with `isolation: worktree` reads its playbook and roles from its own worktree, off a freshly fetched
   `origin/<base>`, so merged rules reach new runs without fast-forwarding the workspace checkout. If the fetch fails
   (or the playbook is missing or invalid on origin) the workspace checkout's copy is used and `start_playbook` says so.
