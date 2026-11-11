@@ -81,6 +81,11 @@ for images. Images reach the agent as image content blocks, the way Paseo's own 
 files are saved on the host under the system temp folder (`paseo-playbooks-attachments/`, kept a week) and
 their paths are added to the message.
 
+While the Sidekick works, **Enter** sends the message into the running turn (steering it). **Cmd+Enter**
+(Ctrl+Enter elsewhere) or the **Queue** button holds it instead: it shows as a pending line above the box, with
+an x to cancel, and is sent when the turn ends. When the Sidekick is idle, Cmd+Enter just sends. The queue is
+kept by the column (per project, this session only), not by the daemon.
+
 ## Develop
 
 ```bash

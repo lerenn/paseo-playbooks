@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import type { QueuedMessage } from "./queue";
 import { clampColumnWidth, COLUMN_WIDTH } from "./width";
 
 /** The Sidekick column's UI state, kept outside the screen so it survives leaving and coming back (in-session only). */
@@ -10,10 +11,12 @@ export interface SidekickUi {
   width: number;
   /** The unsent message of each project's tab. */
   drafts: Record<string, string>;
+  /** The message of each project's tab waiting for the Sidekick's turn to end. */
+  queued: Record<string, QueuedMessage>;
 }
 
 export function createSidekickUiStore() {
-  let state: SidekickUi = { open: false, selectedProjectId: null, added: [], width: COLUMN_WIDTH, drafts: {} };
+  let state: SidekickUi = { open: false, selectedProjectId: null, added: [], width: COLUMN_WIDTH, drafts: {}, queued: {} };
   const listeners = new Set<() => void>();
   const set = (patch: Partial<SidekickUi>) => {
     const next = { ...state, ...patch };
@@ -34,6 +37,10 @@ export function createSidekickUiStore() {
     setDraft: (projectId: string, text: string) => {
       const { [projectId]: _old, ...rest } = state.drafts;
       set({ drafts: text ? { ...rest, [projectId]: text } : rest });
+    },
+    setQueued: (projectId: string, message: QueuedMessage | null) => {
+      const { [projectId]: _old, ...rest } = state.queued;
+      set({ queued: message ? { ...rest, [projectId]: message } : rest });
     },
   };
 }
