@@ -78,6 +78,6 @@ steps:
 - Every agent except step agents can list, cancel, restart or take over runs, and start
   manual after-tasks, from any chat. See the [tools](https://playbooks.paseo.lerenn.dev/how-it-works.html).
 - Requires Paseo 0.14 or later. Run state is kept in
-  `$PASEO_HOME/plugin-data/paseo-playbooks/runs/` until the run's worktree is archived.
+  `$PASEO_HOME/plugin-data/lerenn/paseo-playbooks/runs/` until the run's worktree is archived.
   Server code runs `git` in workspace folders, and runs script steps (executables from
   the playbook's `scripts/` folder) in the run's worktree.

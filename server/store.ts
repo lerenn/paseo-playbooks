@@ -1,12 +1,11 @@
 import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import path from "node:path";
+import { pluginDataDir } from "./data-dir";
 import { RunSchema, type Run } from "../shared/types";
 
-/** `$PASEO_HOME/plugin-data/paseo-playbooks/runs`, outside the plugins folder Paseo manages. */
+/** `<plugin data dir>/runs` (data-dir.ts), outside the plugins folder Paseo manages. */
 export function defaultRunsDir(): string {
-  const home = process.env.PASEO_HOME || path.join(homedir(), ".paseo");
-  return path.join(home, "plugin-data", "paseo-playbooks", "runs");
+  return path.join(pluginDataDir(), "runs");
 }
 
 /**

@@ -57,4 +57,4 @@ steps:
 - 1.0 之前：任何次版本都可能以不兼容的方式修改 playbook 格式。请固定到某个发布标签，升级前先阅读发布说明。
 - 步骤可以使用任何智能体模式，包括 `bypassPermissions`。只运行来自可信仓库的 playbook。
 - 除步骤智能体外，所有智能体都可以在任何对话中列出、取消、重新开始或接管运行，并启动手动收尾任务。参见[工具](https://playbooks.paseo.lerenn.dev/how-it-works.html)。
-- 需要 Paseo 0.14 或更高版本。运行状态保存在 `$PASEO_HOME/plugin-data/paseo-playbooks/runs/`，直到运行所在的 worktree 被归档。服务端代码会在工作区目录中运行 `git`，并在运行所在的 worktree 中执行脚本步骤（playbook 的 `scripts/` 目录中的可执行文件）。
+- 需要 Paseo 0.14 或更高版本。运行状态保存在 `$PASEO_HOME/plugin-data/lerenn/paseo-playbooks/runs/`，直到运行所在的 worktree 被归档。服务端代码会在工作区目录中运行 `git`，并在运行所在的 worktree 中执行脚本步骤（playbook 的 `scripts/` 目录中的可执行文件）。

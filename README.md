@@ -106,7 +106,7 @@ A profile is an extra, opt-in repository of playbooks, with the same layout as t
 repository, on unless a project turns it off in the same dropdown. Profiles are off by default and are turned on per project: in the "Profiles" tab of the
 Playbooks screen (one row per project) or in the same dropdown at the top of a Playbooks panel. The choice
 applies to every conversation of every workspace of the project, and is stored per user in
-`$PASEO_HOME/plugin-data/paseo-playbooks/config.yaml` as
+`$PASEO_HOME/plugin-data/lerenn/paseo-playbooks/config.yaml` as
 `profiles: { projects: { <project id>: { active: [louis], default: false } } }` (`default: false` only when default is
 off; the old global `profiles.active` is ignored).
 The profiles on offer are those of the project's main checkout. A profile's

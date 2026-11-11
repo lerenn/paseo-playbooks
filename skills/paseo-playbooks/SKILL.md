@@ -790,7 +790,7 @@ isolation: worktree                          # short form
 isolation: { mode: worktree, submodules: [ops/api, ops/web], base: main }   # block form
 ```
 
-- **Where**: `$PASEO_HOME/plugin-data/paseo-playbooks/worktrees/<runId>`, on a new branch
+- **Where**: `$PASEO_HOME/plugin-data/lerenn/paseo-playbooks/worktrees/<runId>`, on a new branch
   `playbooks/<playbook>-<id>` off a freshly fetched `origin/<base>` (`base` default: the project's default
   branch). The path and branch show in `list_runs` and `get_run`.
 - **Why a prompt, not a cwd**: Paseo pins an agent's directory to its workspace, so agents still start in the
