@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -170,7 +171,7 @@ function fakePaseo(roots: Record<string, string>) {
   return { paseo, created, sent, state, archive: (id: string) => (archivedAt[id] = new Date().toISOString()) };
 }
 
-async function setup(projects: Record<string, boolean>) {
+async function setup(projects: Record<string, boolean>, options: { debounceMs?: number } = {}) {
   const dir = await tempDir("sidekick-");
   const roots: Record<string, string> = {};
   for (const [name, configured] of Object.entries(projects)) {
@@ -181,7 +182,7 @@ async function setup(projects: Record<string, boolean>) {
   const store = new RunStore(path.join(dir, "data", "runs"));
   await store.init();
   const fake = fakePaseo(roots);
-  const runtime = new Runtime(store);
+  const runtime = new Runtime(store, options);
   runtimes.push(runtime);
   await runtime.attach(fake.paseo as never);
   return { runtime, store, dir, roots, ...fake };
@@ -389,7 +390,42 @@ describe("a Sidekick's session", () => {
     await runtime.onTurnEnded("sub-2xyzabc", "completed", "agent-1");
     expect(sent).toHaveLength(2);
   });
+
+  describe("event notices", () => {
+    const eventSetup = async () => {
+      const made = await setup({ shop: true }, { debounceMs: 0 });
+      made.runtime.bus.register({ type: "t.ping", description: "", payload: z.object({ n: z.number() }), line: (event) => `- t.ping ${event.payload.n}` });
+      await made.runtime.openSidekick("ws-shop");
+      await made.runtime.bus.subscribe("agent-1", { kind: "agent", target: "agent-1" }, ["t.ping"]);
+      const pings = () => made.sent.filter((message) => message.text.includes("t.ping"));
+      return { ...made, pings };
+    };
+
+    it("keep being delivered after the Sidekick's turns end", async () => {
+      const { runtime, pings } = await eventSetup();
+      await runtime.bus.emit("t.ping", { n: 1 }, { source: "test" });
+      await runtime.bus.flush();
+      expect(pings()).toHaveLength(1);
+      await runtime.onTurnEnded("agent-1", "completed");
+      await runtime.bus.emit("t.ping", { n: 2 }, { source: "test" });
+      await runtime.bus.flush();
+      expect(pings()).toHaveLength(2);
+    });
+
+    it("wait while the Sidekick is in a turn and go out when it ends", async () => {
+      const { runtime, pings, state } = await eventSetup();
+      runtime.onTurnStarted("agent-1");
+      state["agent-1"] = { status: "running", used: 0 };
+      await runtime.bus.emit("t.ping", { n: 1 }, { source: "test" });
+      await runtime.bus.flush();
+      expect(pings()).toHaveLength(0);
+      state["agent-1"] = { status: "idle", used: 0 };
+      await runtime.onTurnEnded("agent-1", "completed");
+      expect(pings()).toHaveLength(1);
+    });
+  });
 });
+
 
 describe("needYou", () => {
   it("counts the gates of the project's open runs that wait for a human", async () => {
