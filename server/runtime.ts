@@ -40,7 +40,7 @@ function lookup(entries: Parameters<typeof findEntry>[0], ref: string) {
   const found = findEntry(entries, ref);
   return "entry" in found ? found.entry : undefined;
 }
-import { DEFAULT_SIDEKICK_RESTART_TOKENS, DEFAULT_SIDEKICK_SUBAGENT, SIDEKICK_DISALLOWED_TOOLS, SIDEKICK_LABEL, SIDEKICK_PROJECT_LABEL, sidekickGateSweep, sidekickHandoffRequest, sidekickKickoff, SIDEKICK_PASEO_TOOLS, SIDEKICK_PLUGIN_TOOLS, SidekickRegistry, sidekickPrompt, sidekickTitle } from "./sidekick";
+import { DEFAULT_SIDEKICK_RESTART_TOKENS, DEFAULT_SIDEKICK_SUBAGENT, SIDEKICK_LABEL, SIDEKICK_PROJECT_LABEL, sidekickGateSweep, sidekickHandoffRequest, sidekickKickoff, SIDEKICK_PASEO_TOOLS, SIDEKICK_PLUGIN_TOOLS, SidekickRegistry, sidekickPrompt, sidekickTitle } from "./sidekick";
 import { BusError, EventBus, type BusEvent, type Notifier, type Subscription } from "./bus";
 import { OversightProducer, registerOversightTypes } from "./oversight-events";
 import { gateListing, listAttention, type GateFilter } from "./overseer";
@@ -73,7 +73,7 @@ export const MANAGER_TOOL_NAMES = [
 export const STEP_TOOL_NAMES = ["report_step_result"];
 export const GATE_TOOL_NAMES = ["report_gate_decision"];
 
-type AgentConfig = { provider: string; modeId?: string; thinkingOptionId?: string; options?: { allowedTools: string[]; disallowedTools?: string[] } };
+type AgentConfig = { provider: string; modeId?: string; thinkingOptionId?: string; options?: { allowedTools: string[] } };
 
 /** Pre-approves our own tools so unattended agents in `default` mode are not blocked on them. */
 /** A model the manager picks for one step attempt: `provider/model`, and optionally a thinking option. */
@@ -3112,7 +3112,6 @@ export class Runtime {
     preapprove(config, provider, SIDEKICK_PLUGIN_TOOLS);
     if (config.options) {
       config.options.allowedTools.push(...SIDEKICK_PASEO_TOOLS.map((tool) => `mcp__paseo__${tool}`));
-      config.options.disallowedTools = SIDEKICK_DISALLOWED_TOOLS;
     }
     // Reuse the hidden workspace while it is alive; otherwise make a new one on the project root.
     let workspaceId = known?.workspaceId ?? null;

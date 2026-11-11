@@ -169,7 +169,7 @@ describe("a project's Sidekick", () => {
     const { options } = created.agents[0]!;
     expect(options.labels[SIDEKICK_LABEL]).toBe("true");
     expect(options.title).toBe("Playbooks Sidekick · SHOP");
-    expect(options.config.options.disallowedTools).toEqual(expect.arrayContaining(["Bash", "Edit", "Write"]));
+    expect(options.config.options).not.toHaveProperty("disallowedTools");
     expect(options.config.options.allowedTools).toEqual(expect.arrayContaining(["mcp__paseo__create_agent", "mcp__paseo__list_gates"]));
     expect(options.prompt).toContain('Sidekick of the project "SHOP"');
     expect(options.prompt).toContain("Rules of shop.");

@@ -59,7 +59,7 @@ steps:
 - **A Sidekick per project**: a chat column on the Playbooks screen, one tab per project, with a
   coordinator agent defined by a `sidekick/` folder beside the playbooks. It watches the runs, judges
   which decisions could be automated, and sends subagents to change the playbooks in pull requests
-  you merge. It has no shell or file tools of its own.
+  you merge. Its prompt forbids it to edit files or run commands itself.
 
 ## Get started
 
