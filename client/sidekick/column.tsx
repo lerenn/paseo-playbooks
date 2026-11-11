@@ -1,7 +1,9 @@
 import { Icon, Markdown, ScrollView, TextInput, useToast } from "@getpaseo/plugin/client/ui";
 import { useEffect, useRef, useState } from "react";
-import { Pressable, Text, View } from "react-native";
+import { Image, Pressable, Text, View } from "react-native";
+import { formatSize } from "../../shared/attachments";
 import type { Theme } from "../theme";
+import { useAttachments } from "./attach";
 import { sidekickUi, useSidekickUi } from "./ui-state";
 import { describePermission } from "./describe";
 import { groupTools, type GroupState } from "./group";
@@ -11,7 +13,7 @@ import { useSidekickChat, type PermissionResponse } from "./use-chat";
 interface Props {
   theme: Theme;
   agentId: string | null;
-  /** Opens the agent as a native tab, where everything the chat lacks (attachments, model, mode) lives. */
+  /** Opens the agent as a native tab, where everything the chat lacks (model, mode) lives. */
   onOpenTab?: (() => void) | undefined;
   /** The project tab: its unsent message is kept in the UI store. */
   projectId: string;
@@ -28,16 +30,21 @@ export function SidekickChat(props: Props) {
   const draft = useSidekickUi().drafts[props.projectId] ?? "";
   const setDraft = (text: string) => sidekickUi.setDraft(props.projectId, text);
   const [sending, setSending] = useState(false);
+  const composer = useRef<unknown>(null);
+  const attachments = useAttachments(composer, (message) => toast.error(message));
   const scroller = useRef<{ scrollToEnd?: (options?: { animated?: boolean }) => void } | null>(null);
   useEffect(() => scroller.current?.scrollToEnd?.({ animated: false }), [state.items, state.permissions.length]);
 
   const submit = () => {
     const text = draft.trim();
-    if (!text || sending) return;
+    if ((!text && attachments.items.length === 0) || sending) return;
     setSending(true);
     chat
-      .send(text)
-      .then(() => setDraft(""))
+      .send(text, attachments.items)
+      .then(() => {
+        setDraft("");
+        attachments.clear();
+      })
       .catch((error: unknown) => toast.error(error instanceof Error ? error.message : "Could not send"))
       .finally(() => setSending(false));
   };
@@ -74,11 +81,27 @@ export function SidekickChat(props: Props) {
         ))}
       </ScrollView>
 
-      <View style={{ padding: 10, gap: 8, borderTopWidth: 1, borderColor: theme.colors.border }}>
+      <View ref={composer as never} style={{ padding: 10, gap: 8, borderTopWidth: 1, borderColor: attachments.dragging ? theme.colors.accent : theme.colors.border, backgroundColor: attachments.dragging ? theme.colors.surface1 : undefined }}>
+        {attachments.items.length > 0 ? (
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flexGrow: 0 }} contentContainerStyle={{ gap: 8 }}>
+            {attachments.items.map((item) => (
+              <View key={item.id} style={{ borderRadius: 8, borderWidth: 1, borderColor: theme.colors.border, padding: 4, flexDirection: "row", alignItems: "center", gap: 6, maxWidth: 200 }}>
+                {item.previewUri ? <Image source={{ uri: item.previewUri }} accessibilityLabel={`Preview of ${item.name}`} style={{ width: 36, height: 36, borderRadius: 4 }} /> : <Icon name="File" size={20} color={muted} />}
+                <View style={{ flexShrink: 1 }}>
+                  <Text numberOfLines={1} style={{ color: theme.colors.foreground, fontSize: 11 }}>{item.name}</Text>
+                  <Text style={{ color: muted, fontSize: 10 }}>{formatSize(item.size)}</Text>
+                </View>
+                <Pressable accessibilityRole="button" accessibilityLabel={`Remove ${item.name}`} hitSlop={8} onPress={() => attachments.remove(item.id)}>
+                  <Icon name="X" size={14} color={muted} />
+                </Pressable>
+              </View>
+            ))}
+          </ScrollView>
+        ) : null}
         <TextInput
           value={draft}
           onChangeText={setDraft}
-          placeholder={agentId ? (state.running ? "Message (sent into the running turn)" : "Message the Sidekick") : "Starting…"}
+          placeholder={agentId ? (state.running ? "Message (sent into the running turn)" : "Message the Sidekick (paste or drop files)") : "Starting…"}
           placeholderTextColor={muted}
           editable={agentId !== null}
           multiline
@@ -93,7 +116,7 @@ export function SidekickChat(props: Props) {
         />
         <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 8 }}>
           {state.running ? <ColumnButton theme={theme} label="Stop" onPress={stop} tone="danger" /> : null}
-          <ColumnButton theme={theme} label="Send" onPress={submit} disabled={!draft.trim() || sending || agentId === null} tone="primary" />
+          <ColumnButton theme={theme} label="Send" onPress={submit} disabled={(!draft.trim() && attachments.items.length === 0) || sending || agentId === null} tone="primary" />
         </View>
       </View>
     </View>

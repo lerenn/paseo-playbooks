@@ -214,3 +214,10 @@ export const createSidekickFilesRpc = defineRpc({
   input: z.object({ workspaceId: z.string() }),
   output: z.object({ files: z.array(z.string()) }),
 });
+
+/** Saves a file pasted into the Sidekick chat on the host and returns its path (images go to the agent as image blocks instead). */
+export const saveSidekickAttachmentRpc = defineRpc({
+  name: "sidekick.save-attachment",
+  input: z.object({ fileName: z.string().min(1), dataBase64: z.string().min(1) }),
+  output: z.object({ path: z.string() }),
+});
