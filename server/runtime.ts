@@ -39,7 +39,7 @@ function lookup(entries: Parameters<typeof findEntry>[0], ref: string) {
   const found = findEntry(entries, ref);
   return "entry" in found ? found.entry : undefined;
 }
-import { DEFAULT_SIDEKICK_RESTART_TOKENS, DEFAULT_SIDEKICK_SUBAGENT, SIDEKICK_DISALLOWED_TOOLS, SIDEKICK_LABEL, SIDEKICK_PROJECT_LABEL, sidekickHandoffRequest, sidekickKickoff, SIDEKICK_PASEO_TOOLS, SIDEKICK_PLUGIN_TOOLS, SidekickRegistry, sidekickPrompt, sidekickTitle } from "./sidekick";
+import { DEFAULT_SIDEKICK_RESTART_TOKENS, DEFAULT_SIDEKICK_SUBAGENT, SIDEKICK_DISALLOWED_TOOLS, SIDEKICK_LABEL, SIDEKICK_PROJECT_LABEL, sidekickGateSweep, sidekickHandoffRequest, sidekickKickoff, SIDEKICK_PASEO_TOOLS, SIDEKICK_PLUGIN_TOOLS, SidekickRegistry, sidekickPrompt, sidekickTitle } from "./sidekick";
 import { BusError, EventBus, type BusEvent, type Notifier, type Subscription } from "./bus";
 import { OversightProducer, registerOversightTypes } from "./oversight-events";
 import { gateListing, listAttention, type GateFilter } from "./overseer";
@@ -312,6 +312,8 @@ export class Runtime {
   /** Sidekick agents that handed off and restart when their turn ends; those already asked to hand off; finish notices held for a busy Sidekick. */
   private readonly sidekickRolling = new Set<string>();
   private readonly sidekickAsked = new Set<string>();
+  /** Gates (runId:gateId) already put to each Sidekick by an end-of-turn sweep, so a gate left for the human is not repeated every turn. */
+  private readonly sidekickSwept = new Map<string, Set<string>>();
   private readonly sidekickHeld = new Map<string, string[]>();
   private readonly sidekickOpening = new Map<string, Promise<{ projectId: string; workspaceId: string; agentId: string; created: boolean }>>();
 
@@ -3138,6 +3140,7 @@ export class Runtime {
   private async rollSidekick(projectId: string, record: { workspaceId: string; agentId: string; handoff?: string | undefined }): Promise<void> {
     this.sidekickRolling.delete(record.agentId);
     this.sidekickAsked.delete(record.agentId);
+    this.sidekickSwept.delete(record.agentId);
     const project = { ...(await this.projectOf(record.workspaceId)), projectId };
     const load = await loadSidekick(project.root);
     if (!load.config) return;
@@ -3179,6 +3182,16 @@ export class Runtime {
       }
       this.sidekickAsked.add(agentId);
       parts.push(sidekickHandoffRequest(used));
+    }
+    // End-of-turn sweep: open gates waiting for a human that this Sidekick was not yet told about.
+    const swept = this.sidekickSwept.get(agentId) ?? new Set<string>();
+    this.sidekickSwept.set(agentId, swept);
+    const open = this.store.list().filter((run) => run.projectId === own.projectId && !run.archivedAt).flatMap((run) => run.gates.filter(waitsForHuman).map((gate) => ({ runId: run.id, gate })));
+    const fresh = open.filter(({ runId, gate }) => !swept.has(`${runId}:${gate.id}`));
+    for (const key of [...swept]) if (!open.some(({ runId, gate }) => `${runId}:${gate.id}` === key)) swept.delete(key);
+    if (fresh.length > 0) {
+      for (const { runId, gate } of fresh) swept.add(`${runId}:${gate.id}`);
+      parts.push(sidekickGateSweep(fresh.map(({ runId, gate }) => ({ runId, gateId: gate.id, stepId: gate.stepId }))));
     }
     if (parts.length > 0) await this.api().agents.ref(agentId).send(parts.join("\n\n"));
     return true;

@@ -119,6 +119,12 @@ export function sidekickKickoff(handoff: string | undefined): string {
   return handoff ? `${SIDEKICK_KICKOFF}\n\nYou take over from a previous session of yours. Its hand-off (your decision ledger and what was open), to continue from:\n${handoff}` : SIDEKICK_KICKOFF;
 }
 
+/** Sent to a Sidekick at the end of a turn while gates it was not told about wait for a human. */
+export function sidekickGateSweep(gates: Array<{ runId: string; gateId: string; stepId: string }>): string {
+  const list = gates.map((gate) => `- ${gate.runId} · ${gate.stepId} (gate ${gate.gateId})`).join("\n");
+  return `Open gates wait for a human in your project:\n${list}\nTreat them now: read each with list_gates and get_run, decide the ones your rules let you decide, and put the others to the human. Then end your turn; the plugin will not repeat a gate it has already listed to you.`;
+}
+
 /** Sent to a Sidekick whose context grew past the threshold. */
 export function sidekickHandoffRequest(tokens: number): string {
   return `Your context is about ${Math.round(tokens / 1000)}k tokens. Hand off now: call sidekick_handoff with restart: true and a summary for a new session (your decision ledger, open questions, subagents and pull requests in flight, what to check next), then end your turn. The plugin restarts you with it.`;

@@ -280,6 +280,25 @@ describe("a Sidekick's session", () => {
     expect(await runtime.openSidekick("ws-shop")).toMatchObject({ agentId: "agent-2", created: false });
   });
 
+  it("is told at the end of a turn about open gates waiting for a human, once per gate", async () => {
+    const { runtime, store, sent } = await setup({ shop: true });
+    await runtime.openSidekick("ws-shop");
+    await runtime.onTurnEnded("agent-1", "completed");
+    expect(sent).toEqual([]);
+    const gate = (id: string) => ({ id, stepId: "review", status: "pending" }) as never;
+    await store.create({ id: "run_a", projectId: "shop", status: "waiting_gate", createdAt: "2026-01-01T00:00:00Z", steps: {}, after: {}, gates: [gate("g1")] } as never);
+    await runtime.onTurnEnded("agent-1", "completed");
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.text).toContain("run_a · review (gate g1)");
+    await runtime.onTurnEnded("agent-1", "completed");
+    expect(sent).toHaveLength(1);
+    await store.create({ id: "run_b", projectId: "shop", status: "waiting_gate", createdAt: "2026-01-01T00:00:00Z", steps: {}, after: {}, gates: [gate("g2")] } as never);
+    await runtime.onTurnEnded("agent-1", "completed");
+    expect(sent).toHaveLength(2);
+    expect(sent[1]?.text).toContain("run_b");
+    expect(sent[1]?.text).not.toContain("run_a");
+  });
+
   it("restarts from the last saved ledger when it does not hand off, and refuses a hand-off from other agents", async () => {
     const { runtime, created, state } = await setup({ shop: true });
     await runtime.openSidekick("ws-shop");
