@@ -6,6 +6,7 @@ import type { Theme } from "../theme";
 import { useAttachments } from "./attach";
 import { sidekickUi, useSidekickUi } from "./ui-state";
 import { describePermission } from "./describe";
+import { pluginMessage } from "./instructions";
 import { groupTools, type GroupState } from "./group";
 import type { Item, PermissionRequest } from "./reduce";
 import { useSidekickChat, type PermissionResponse } from "./use-chat";
@@ -163,6 +164,7 @@ function ItemView({ theme, item }: { theme: Theme; item: Item }) {
   switch (item.kind) {
     case "user":
       if (item.instructions) return <InstructionsLine theme={theme} text={item.text} />;
+      if (pluginMessage(item.text)) return <PluginMessageLine theme={theme} message={pluginMessage(item.text)!} />;
       return (
         <View style={{ alignSelf: "flex-end", maxWidth: "90%", borderRadius: 10, backgroundColor: theme.colors.surface1, padding: 12, marginTop: 8 }}>
           <Text selectable style={{ color: theme.colors.foreground }}>{item.text}</Text>
@@ -190,6 +192,23 @@ function ReasoningLine({ theme, text, streaming }: { theme: Theme; text: string;
         </Text>
       </Pressable>
       {open ? <Text selectable style={{ color: theme.colors.foregroundMuted, fontSize: 12, fontStyle: "italic", borderLeftWidth: 2, borderColor: theme.colors.border, paddingLeft: 8 }}>{text}</Text> : null}
+    </View>
+  );
+}
+
+/** A message the plugin sent (events, notices): a closed line with a badge, so it is not mistaken for something the human wrote; opens on click. */
+function PluginMessageLine({ theme, message }: { theme: Theme; message: { summary: string; body: string } }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <View style={{ gap: 8, borderRadius: 8, borderWidth: 1, borderColor: theme.colors.border, borderStyle: "dashed", padding: 8 }}>
+      <Pressable accessibilityRole="button" accessibilityLabel={`Message from the plugin: ${message.summary}`} accessibilityState={{ expanded: open }} onPress={() => setOpen(!open)} style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+        <Icon name="Workflow" size={13} color={theme.colors.foregroundMuted} />
+        <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12, flex: 1 }} numberOfLines={open ? undefined : 1}>
+          {message.summary}
+        </Text>
+        <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>{open ? "hide" : "show"}</Text>
+      </Pressable>
+      {open ? <Text selectable style={{ color: theme.colors.foregroundMuted, fontSize: 11, borderLeftWidth: 2, borderColor: theme.colors.border, paddingLeft: 8 }}>{message.body}</Text> : null}
     </View>
   );
 }
