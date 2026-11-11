@@ -626,6 +626,8 @@ after:
   `view: "full"` in the step's brief. The default `get_run` view is compact (per step: status,
   outcome, attempts, turn end and the first 300 characters of the summary), without reports
   or outputs.
+  `read_agent_conversation` (every agent but step agents) reads any agent's conversation as text, newest page first,
+  with reasoning and tool input opt-in and a `before` cursor for older entries.
 
 ### Variables
 
