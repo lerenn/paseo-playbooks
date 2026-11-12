@@ -8,7 +8,7 @@ import { askChoices, askTransitionOf, choicesOfGate, destinationOf, gateText, li
 import { conditionText } from "../shared/labels";
 import { attemptTimeoutMs, isPaused, isStepLive, restartBlocker, type Gate, type GateChoice, type Playbook, type Run, type RunSummary } from "../shared/types";
 import { SCRIPT_OUTPUT_POLL_MS, checkHeading, lastLines, scriptActivity } from "./script-output";
-import { stepTitle, stepTitleOf, type Theme } from "./theme";
+import { STEP_KINDS, stepTitle, stepTitleOf, type Theme } from "./theme";
 
 /** A poll interval as people say it: 30 s, 1 min, 2 h. */
 function formatInterval(ms: number): string {
@@ -359,6 +359,10 @@ export function StepSheet(props: {
   return (
     <Modal title={`${stepTitle(step)}${role ? ` · ${role.title}` : step.kind === "gate" ? " · Gate" : step.kind === "script" ? " · Script" : step.kind === "handoff" ? " · Hand-off" : step.kind === "branch" ? " · Branch" : step.kind === "fanout" ? " · Fan-out" : ""}`} open onOpenChange={(open) => !open && props.onClose()}>
       <Modal.Content>
+        <View accessible accessibilityLabel={`${STEP_KINDS[step.kind].label} step`} style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+          <Icon name={STEP_KINDS[step.kind].icon} size={14} color={theme.colors.foregroundMuted} />
+          <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12, fontWeight: "600" }}>{STEP_KINDS[step.kind].label}</Text>
+        </View>
         {state ? <Line theme={theme}>Status: {state.status}{latest ? ` · attempt ${latest.n}` : ""}{latest?.waiting && state.status === "running" ? ` · waiting for tokens until ${new Date(latest.waiting.until).toLocaleString()}` : ""}</Line> : null}
         {step.kind === "agent" ? (
           <Section theme={theme} title="Agent">

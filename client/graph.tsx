@@ -9,7 +9,7 @@ import { askChoices } from "../shared/gates";
 import { END, layerOf, layoutGraph, START, withTerminals } from "../shared/graph";
 import { isTerminal, type AfterTask, type Playbook, type Run, type Step } from "../shared/types";
 import { conditionText } from "../shared/labels";
-import { agentBackground, gateBackground, stepTitle, nodeColor, nodeIcon, nodeStateLabel, type NodeState, type Theme } from "./theme";
+import { agentBackground, gateBackground, stepTitle, nodeColor, nodeIcon, nodeStateLabel, STEP_KINDS, type NodeState, type Theme } from "./theme";
 
 /** Nodes grow with the panel between these widths; below the minimum the graph scrolls sideways. */
 const NODE_MIN = 132;
@@ -717,7 +717,7 @@ function Node(props: GraphProps & { step: Step; longNeeds: string[]; nodeWidth: 
       >
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel={`${stepTitle(step)}, ${subtitle}${stateLabel ? `, ${stateLabel}` : ""}${props.loops.map((loop) => `, on ${loop.outcome} loops back to ${loop.to}${loop.max !== undefined ? ` (${loop.count} of ${loop.max})` : ""}`).join("")}${latest ? `, attempt ${latest.n}` : ""}${latestAgent ? ", opens conversation" : ", opens details"}`}
+          accessibilityLabel={`${stepTitle(step)}, ${STEP_KINDS[step.kind].label} step, ${subtitle}${stateLabel ? `, ${stateLabel}` : ""}${props.loops.map((loop) => `, on ${loop.outcome} loops back to ${loop.to}${loop.max !== undefined ? ` (${loop.count} of ${loop.max})` : ""}`).join("")}${latest ? `, attempt ${latest.n}` : ""}${latestAgent ? ", opens conversation" : ", opens details"}`}
           onPress={onPress}
           style={{ paddingHorizontal: 8, paddingVertical: 6, gap: 2 }}
         >
@@ -735,9 +735,13 @@ function Node(props: GraphProps & { step: Step; longNeeds: string[]; nodeWidth: 
               <Icon name="Info" size={13} color={theme.colors.foregroundMuted} />
             </Pressable>
           </View>
-          <Text numberOfLines={1} style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>
-            {subtitle}
-          </Text>
+          {/* The kind icon sits on the subtitle row, apart from the status marker on the title row; the subtitle still names the kind. */}
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+            <Icon name={STEP_KINDS[step.kind].icon} size={11} color={theme.colors.foregroundMuted} />
+            <Text numberOfLines={1} style={{ flex: 1, color: theme.colors.foregroundMuted, fontSize: 11 }}>
+              {subtitle}
+            </Text>
+          </View>
           {stateLabel ? (
             <Text numberOfLines={1} style={{ color, fontSize: 10 }}>
               {stateLabel}

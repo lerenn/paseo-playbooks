@@ -25,6 +25,16 @@ export function nodeColor(theme: Theme, state: NodeState): string {
   }
 }
 
+/** The kind of a step as an icon (Lucide name) and a word. The icon never stands alone: the word always goes with it. */
+export const STEP_KINDS = {
+  agent: { icon: "Bot", label: "Agent" },
+  script: { icon: "Terminal", label: "Script" },
+  gate: { icon: "Hand", label: "Gate" },
+  handoff: { icon: "Send", label: "Hand-off" },
+  branch: { icon: "GitBranch", label: "Branch" },
+  fanout: { icon: "Split", label: "Fan-out" },
+} as const;
+
 export function nodeIcon(state: NodeState): string {
   switch (state) {
     case "completed":
