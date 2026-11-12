@@ -152,7 +152,7 @@ The **Run Playbook** button in the header of the overview screen (the one with t
 next to Sidekick) opens a form to start any valid playbook of a project in a new workspace: a project dropdown
 (preselected to the project chip selected on the screen; with "All projects" you choose one), a workspace name (optional; empty keeps the default title, the playbook title and the
 request), a playbook dropdown, then that playbook's inputs. **Start**, at the bottom, creates the workspace and the run;
-a failure shows in the form, a success as a toast. The name is a title only (one line, at most 80 characters): the
+a failure shows in the form, a success as a toast ("Started <playbook> in <workspace>"); the screen stays where it was, the new run appears in the list, and the new workspace is not opened. The name is a title only (one line, at most 80 characters): the
 branch is still `playbooks/<playbook>-<id>`. The same title is available to agents as `workspaceName` on
 `start_playbook` with `newWorkspace`. The button is shown when a project has a startable playbook (disabled while the
 lists load). The per-workspace Playbooks tab has no such button: its cards offer "Start in a new workspace", which

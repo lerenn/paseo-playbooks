@@ -21,6 +21,27 @@ function initialValues(playbook: Playbook): Record<string, string | boolean> {
   );
 }
 
+/** A playbook's description: a closed disclosure row (chevron and "Description") that expands to the full text. */
+export function DescriptionToggle(props: { theme: Theme; description: string }) {
+  const { theme } = props;
+  const [open, setOpen] = useState(false);
+  return (
+    <View style={{ gap: 6 }}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`${open ? "Hide" : "Show"} description`}
+        accessibilityState={{ expanded: open }}
+        onPress={() => setOpen((value) => !value)}
+        style={{ flexDirection: "row", alignItems: "center", gap: 4 }}
+      >
+        <Icon name={open ? "ChevronDown" : "ChevronRight"} size={16} color={theme.colors.foregroundMuted} />
+        <Text style={{ color: theme.colors.foreground, fontSize: 13, fontWeight: "600" }}>Description</Text>
+      </Pressable>
+      {open ? <Text style={{ color: theme.colors.foregroundMuted, fontSize: 13 }}>{props.description}</Text> : null}
+    </View>
+  );
+}
+
 export function StartForm(props: {
   theme: Theme;
   playbook: Playbook;
@@ -94,7 +115,8 @@ export function StartForm(props: {
         setDuplicate(result.message);
         return;
       }
-      toast.show(result.queued ? `Queued ${result.runId}: the agent starts it when its current turn ends` : `Started ${result.runId}`, { variant: "success" });
+      const where = props.target === "workspace" ? sanitizeWorkspaceName(workspaceName) || playbook.title : "this workspace";
+      toast.show(result.queued ? `Queued ${playbook.title} in ${where}: the agent starts it when its current turn ends` : `Started ${playbook.title} in ${where}`, { variant: "success" });
       props.onStarted({ workspaceId: result.workspaceId, managerAgentId: result.managerAgentId, sameWorkspace: props.target !== "workspace" });
     } catch (error) {
       setError(error instanceof Error ? error.message : String(error));
@@ -130,7 +152,6 @@ export function StartForm(props: {
             />
           </View>
         ) : null}
-        {playbook.description ? <Text style={{ color: theme.colors.foregroundMuted, fontSize: 13 }}>{playbook.description}</Text> : null}
         <Text style={{ color: current && !agents.isLoading && !manager ? theme.colors.statusWarning : theme.colors.foregroundMuted, fontSize: 12 }}>
           {props.target === "workspace"
             ? "Creates a new workspace (a worktree on a new branch from this one), with a new Playbook Manager agent in it."
@@ -142,6 +163,7 @@ export function StartForm(props: {
                 ? `${manager.title ?? manager.id.slice(0, 8)} manages the run, in this workspace on its current branch. It is reloaded to get the playbook tools, then receives the kickoff${manager.status === "running" ? " when its current turn ends (it is busy now; it is not interrupted)" : ""}.`
                 : "No agent in this workspace can manage the run. Use “Start on a new agent” instead."}
         </Text>
+        {playbook.description ? <DescriptionToggle theme={theme} description={playbook.description} /> : null}
         {Object.keys(playbook.inputs).length > 0 ? (
           <View style={{ borderRadius: 8, borderWidth: 1, borderColor: theme.colors.border }}>
             {Object.entries(playbook.inputs).map(([name, def], index) => (
