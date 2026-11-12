@@ -625,3 +625,69 @@ describe("event core: job events of a pipeline", () => {
     expect(sub).not.toBeInstanceOf(Error);
   });
 });
+
+describe("requeue_job: a failed job goes back on the pipeline", () => {
+  const FILES = { "apply.yaml": APPLY, "pr.yaml": PR, "forget.yaml": FORGET };
+  /** Fails the stage's batch twice (one retry): the job fails on the pipeline. */
+  async function failTwice(store: RunStore, runtime: Runtime) {
+    await until(() => batchAt(store, "dev") !== undefined);
+    const first = await decide(runtime, store, "dev", "rejected");
+    await until(() => batchAt(store, "dev") !== undefined && batchAt(store, "dev")!.id !== first.id);
+    const second = await decide(runtime, store, "dev", "rejected");
+    await until(() => pipelineOf(store).jobs[0]!.status === "failed" && batchAt(store, "dev") === undefined);
+    return second;
+  }
+
+  it("keeps the id and inputs, resets the rides, is carried by a new batch, and is idempotent", async () => {
+    const { store, runtime } = await setup(FILES);
+    await runtime.startPlaybook({ id: "m1", workspaceId: "ws1", cwd: "/" }, "forget", { pr_url: "7" });
+    const lost = await failTwice(store, runtime);
+    const id = pipelineOf(store).jobs[0]!.id;
+    expect(pipelineOf(store).jobs[0]).toMatchObject({ status: "failed", detached: true, failedRides: { dev: 2 } });
+    // Through a batch of the pipeline, as a manager or coordinator would hold it.
+    const result = await runtime.requeueJob(lost.id, id, "manager lost");
+    expect(result.changed).toBe(true);
+    await until(() => batchAt(store, "dev") !== undefined);
+    expect(pipelineOf(store).jobs).toHaveLength(1);
+    expect(pipelineOf(store).jobs[0]).toMatchObject({ id, status: "open", inputs: { pr_url: "7" }, failedRides: {}, outcome: null, endedAt: null });
+    expect(batchAt(store, "dev")!.jobs.map((job) => job.id)).toEqual([id]);
+    // Open now: nothing changes.
+    const again = await runtime.requeueJob(pipelineOf(store).id, id, "");
+    expect(again.changed).toBe(false);
+    expect(pipelineOf(store).jobs[0]!.batches).toHaveLength(1);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const events = (await runtime.bus.recent({ types: ["job.*"] })).events.filter((event) => event.type !== "job.boarded");
+    const names = events.map((event) => event.type);
+    expect(names.slice(-3)).toEqual(["job.reopened", "job.queued", "job.joined"]);
+    expect(events.find((event) => event.type === "job.reopened")!.payload).toMatchObject({ jobId: id, reason: "manager lost" });
+    expect(events.at(-2)!.payload).toMatchObject({ via: "reopened", stage: "dev" });
+    const pipeline = pipelineOf(store);
+    expect(pipeline.history.some((entry) => entry.type === "job_reopened")).toBe(true);
+    expect(verifyLog(EVENT_AREAS, pipeline, (await store.log.read(pipeline.id)).events)).toEqual([]);
+  });
+
+  it("refuses a job whose hand-off waits, a settled job, an unknown job and a run that is no pipeline", async () => {
+    const { store, runtime } = await setup(FILES);
+    const pr = await runtime.startPlaybook({ id: "m1", workspaceId: "ws1", cwd: "/" }, "pr", { pr_url: "1" });
+    await until(() => batchAt(store, "dev") !== undefined);
+    const id = pipelineOf(store).jobs[0]!.id;
+    const dev = batchAt(store, "dev")!;
+    await runtime.requestGate(dev.managerAgentId, dev.id, "dev", "ok?", "");
+    await runtime.settleJob(dev.managerAgentId, dev.id, id, { outcome: "rejected", summary: "no", outputs: {} });
+    await expect(runtime.requeueJob(pipelineOf(store).id, id, "")).rejects.toThrow(/is settled \(rejected\): only a failed job/);
+    await expect(runtime.requeueJob(pipelineOf(store).id, "job_nope", "")).rejects.toThrow(/has no job "job_nope"/);
+    await expect(runtime.requeueJob(pr.id, id, "")).rejects.toThrow(/not a singleton pipeline/);
+    await expect(runtime.requeueJob("run_nope", id, "")).rejects.toThrow(/unknown run/);
+  });
+
+  it("refuses a failed job that its waiting hand-off was told about", async () => {
+    const { store, runtime } = await setup(FILES);
+    await runtime.startPlaybook({ id: "m1", workspaceId: "ws1", cwd: "/" }, "pr", { pr_url: "1" });
+    await until(() => batchAt(store, "dev") !== undefined);
+    const first = await decide(runtime, store, "dev", "rejected");
+    await until(() => batchAt(store, "dev") !== undefined && batchAt(store, "dev")!.id !== first.id);
+    await decide(runtime, store, "dev", "rejected");
+    await until(() => pipelineOf(store).jobs[0]!.status === "failed");
+    await expect(runtime.requeueJob(pipelineOf(store).id, pipelineOf(store).jobs[0]!.id, "")).rejects.toThrow(/waits for its result/);
+  });
+});

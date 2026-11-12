@@ -175,7 +175,7 @@ event_core:
 
 The pipeline's jobs are also announced on the event bus, for `subscribe_events` and `list_events`:
 `job.queued` (waits at a stage: handed off, or unlocked by a passed stage; one event per stage),
-`job.joined`, `job.advanced` (passed a stage), `job.requeued` (its batch failed, retries left), `job.settled`
+`job.joined`, `job.advanced` (passed a stage), `job.requeued` (its batch failed, retries left), `job.reopened` (`requeue_job` put a failed job back; `job.queued` with `via: reopened` follows), `job.settled`
 (left with an outcome), `job.failed`, `job.withdrawn`, and, for a stage with `queue.admit`, `job.held`, `job.admitted`
 and `job.escalated`. Payload: `runId` (the pipeline), `playbook` (the singleton's id),
 `jobId`, `label`, `stage`, `batchRunId`, `outcome`, plus `via`, `nextStages`, `rides`/`retries`, `summary` or `reason`
