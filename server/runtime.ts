@@ -74,6 +74,7 @@ export const MANAGER_TOOL_NAMES = [
   "cancel_run",
   "restart_run",
   "archive_run",
+  "requeue_job",
   "validate_playbooks",
   "settle_job",
 ];
@@ -1930,6 +1931,26 @@ export class Runtime {
       if (isTerminal(batch.status)) continue;
       await this.enqueue(batchId, [`Job ${withdrawn.job.id} (from ${withdrawn.job.label}) was withdrawn: ${reason}. Leave it out of the rest of the batch; it no longer needs settle_job.`]);
       await this.deliver(batchId);
+    }
+  }
+
+  /**
+   * requeue_job: a failed, detached job of a pipeline waits again at its stages, with the same id. `runId` is the pipeline,
+   * or one of its batches. Idempotent: an open job is left as it is. Any agent may call it (like cancel_run).
+   */
+  async requeueJob(runId: string, jobId: string, reason: string): Promise<{ pipeline: Run; job: Job; changed: boolean }> {
+    const given = this.store.get(runId);
+    if (!given) throw new UserError(`unknown run "${runId}"`);
+    const pipeline = given.batch ? this.store.get(given.batch.pipelineId) : given;
+    if (!pipeline) throw new UserError(`the pipeline of batch ${given.id} no longer exists`);
+    if (!isPipeline(pipeline)) throw new UserError(`run ${pipeline.id} is not a singleton pipeline: it carries no jobs`);
+    try {
+      const result = await this.store.mutate(pipeline.id, (current) => engine.reopenJob(current, jobId, reason, nowIso()));
+      if (result.changed) await this.tick();
+      return { pipeline: this.store.get(pipeline.id)!, ...result };
+    } catch (error) {
+      if (error instanceof engine.EngineError) throw new UserError(error.message);
+      throw error;
     }
   }
 

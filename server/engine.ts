@@ -2074,6 +2074,37 @@ export function withdrawJob(pipeline: Run, jobId: string, reason: string, now: s
   return { job, batches };
 }
 
+/**
+ * `requeue_job`: a failed job goes back to waiting at the stages it may enter, keeping its id, its inputs, its outputs and the
+ * stages it passed; its failed rides start again. Only a detached job (the pipeline owns it): a job whose hand-off step is
+ * still waiting was already told "failure", and that step decides what happens next. Open already: nothing changes
+ * (`changed: false`). Settled, withdrawn, shipped (every stage passed) or not detached: refused, saying why.
+ */
+export function reopenJob(pipeline: Run, jobId: string, reason: string, now: string): { job: Job; changed: boolean } {
+  if (!isPipeline(pipeline) || isTerminal(pipeline.status)) throw new EngineError(`run ${pipeline.id} is not an active pipeline`);
+  const job = pipeline.jobs.find((candidate) => candidate.id === jobId);
+  if (!job) throw new EngineError(`pipeline ${pipeline.id} has no job "${jobId}" (its jobs: ${pipeline.jobs.filter((candidate) => candidate.status === "failed").map((candidate) => candidate.id).join(", ") || "none failed"})`);
+  if (job.status === "open") return { job, changed: false };
+  if (job.status !== "failed") throw new EngineError(`job ${jobId} is ${job.status}${job.outcome ? ` (${job.outcome})` : ""}: only a failed job can be requeued; hand its work off again for a new job`);
+  if (!job.detached) throw new EngineError(`job ${jobId} was handed off by a step that waits for its result (it was told "failure" and decides what happens next): restart that step, or hand the work off again`);
+  const stages = stagesOf(pipeline);
+  if (stages.length > 0 && stages.every((stage) => job.passed.includes(stage.id))) throw new EngineError(`job ${jobId} passed every stage: its work shipped, do not run it again`);
+  const probe: Job = { ...structuredClone(job), batches: [], waiting: [] };
+  queueNext(pipeline, probe, now);
+  // No stage may take it (the playbook changed): nothing is touched.
+  if (probe.waiting.length === 0) throw new EngineError(`job ${jobId} has no stage to wait at (stages: ${stages.map((stage) => stage.id).join(", ") || "none"}; passed: ${job.passed.join(", ") || "none"})`);
+  job.status = "open";
+  job.outcome = null;
+  job.summary = null;
+  job.endedAt = null;
+  job.batches = [];
+  job.waiting = probe.waiting;
+  job.failedRides = {};
+  record(pipeline, "job.reopened", { jobId, reason, waiting: job.waiting, failedRides: job.failedRides, passed: job.passed }, now);
+  log(pipeline, now, "job_reopened", null, `${jobId} at ${job.waiting.map((entry) => entry.stage).join(", ")}${reason ? ` (${reason.slice(0, 200)})` : ""}`);
+  return { job, changed: true };
+}
+
 /** The pipeline was canceled or failed: every open job fails. Returns them. */
 export function failOpenJobs(run: Run, reason: string, now: string): Job[] {
   return failJobs(run, run.jobs.filter((job) => job.status === "open").map((job) => job.id), reason, now);

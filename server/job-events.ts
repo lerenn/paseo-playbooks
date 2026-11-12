@@ -90,6 +90,20 @@ const reducers: Record<string, Reducer> = {
     target.waiting.push({ stage: d.stage, since: d.since, held: null, forced: false });
     note(run, event.at, "job_requeued", d.stage, `${d.jobId} after batch ${d.batchRunId} ${d.batchStatus} (${d.rides}/${d.retries})`);
   },
+  /** `requeue_job`: a failed job is open again and waits at `waiting`: `{ jobId, reason, waiting, failedRides, passed }`. */
+  "job.reopened": (run, event) => {
+    const d = event.data as { jobId: string; reason: string; waiting: Wait[]; failedRides: Record<string, number> };
+    const target = job(run, d.jobId);
+    if (!target) return;
+    target.status = "open";
+    target.outcome = null;
+    target.summary = null;
+    target.endedAt = null;
+    target.batches = [];
+    target.waiting = d.waiting.map(upcastWait);
+    target.failedRides = d.failedRides;
+    note(run, event.at, "job_reopened", null, `${d.jobId} at ${d.waiting.map((entry) => entry.stage).join(", ")}${d.reason ? ` (${d.reason.slice(0, 200)})` : ""}`);
+  },
   /** A stage's admission script holds a waiting job: `{ jobId, stage, reason, checkedAt }`. */
   "job.held": (run, event) => {
     const d = event.data as { jobId: string; stage: string; reason: string; checkedAt: string };
@@ -190,7 +204,7 @@ export const jobsArea: Area = {
     run.jobs = (from.jobs ?? []).map(upcastJob);
     run.gates = [...run.gates.filter((gate) => gate.kind !== "admission"), ...structuredClone(from.gates ?? [])];
   },
-  historyTypes: new Set(["job_queued", "job_settled", "job_failed", "job_withdrawn", "job_requeued", "job_outputs", "job_held", "job_admitted", "batch_started", "batch_ended", "train_departed", "train_ended", "gate_opened", "gate_decided"]),
+  historyTypes: new Set(["job_queued", "job_settled", "job_failed", "job_withdrawn", "job_requeued", "job_reopened", "job_outputs", "job_held", "job_admitted", "batch_started", "batch_ended", "train_departed", "train_ended", "gate_opened", "gate_decided"]),
 };
 
 // ------------------------------------------------------------------ public events
@@ -226,8 +240,8 @@ const batch = (p: { batchRunId: unknown }) => (p.batchRunId ? ` (batch ${String(
 export const JOB_TYPES: EventTypeDef[] = [
   {
     type: "job.queued",
-    description: "A job waits at a stage: it was handed to the pipeline (via handoff) or passed a stage that unlocks this one (via advanced). One event per stage.",
-    payload: z.object({ ...jobFields, via: z.enum(["handoff", "advanced"]) }),
+    description: "A job waits at a stage: it was handed to the pipeline (via handoff) passed a stage that unlocks this one (via advanced), or was requeued with requeue_job (via reopened). One event per stage.",
+    payload: z.object({ ...jobFields, via: z.enum(["handoff", "advanced", "reopened"]) }),
     line: (event) => jobLine(event, `is waiting${at(event.payload as { stage: unknown })} (${String(event.payload.via)})`),
   },
   {
@@ -253,6 +267,12 @@ export const JOB_TYPES: EventTypeDef[] = [
     description: "A batch failed with a job on it and the stage's retries allow another ride: the job waits again at the stage.",
     payload: z.object({ ...jobFields, rides: z.number().int(), retries: z.number().int() }),
     line: (event) => jobLine(event, `goes back to waiting${at(event.payload as { stage: unknown })} after a failed batch${batch(event.payload as { batchRunId: unknown })} (${String(event.payload.rides)}/${String(event.payload.retries)})`),
+  },
+  {
+    type: "job.reopened",
+    description: "requeue_job: a failed job is open again, with its id, inputs and outputs, and waits at its stages (a job.queued, via reopened, follows for each). reason is the caller's.",
+    payload: z.object({ ...jobFields, reason: z.string().nullable() }),
+    line: (event) => jobLine(event, `was requeued${event.payload.reason ? `: ${String(event.payload.reason).slice(0, 200)}` : ""}`),
   },
   {
     type: "job.held",
@@ -343,6 +363,12 @@ export function publicJobEvents(run: Run, events: readonly DomainEvent[]): Publi
       case "job.requeued":
         out.push({ type: "job.requeued", payload: { ...base(String(d.jobId), d.stage as string, d.batchRunId as string, null), rides: d.rides, retries: d.retries } });
         break;
+      case "job.reopened": {
+        const waiting = d.waiting as Wait[];
+        out.push({ type: "job.reopened", payload: { ...base(String(d.jobId), null, null, null), reason: d.reason ? String(d.reason) : null } });
+        for (const wait of waiting) out.push({ type: "job.queued", payload: { ...base(String(d.jobId), wait.stage, null, null), via: "reopened" } });
+        break;
+      }
       case "job.held":
         out.push({ type: "job.held", payload: { ...base(String(d.jobId), d.stage as string, null, null), reason: String(d.reason) } });
         break;

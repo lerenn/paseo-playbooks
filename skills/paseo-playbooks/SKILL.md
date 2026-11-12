@@ -548,6 +548,13 @@ steps:
   that output (YAML per job id) when the step completes, so no job is forgotten. A
   singleton's `outputs` need no source; a hand-off gets them all only with the first outcome
   (a job ended early brings what it has).
+- **Requeueing:** a batch that fails (a lost manager, a rejected gate) puts its jobs back at the stage by itself while the
+  stage's `retries` allow; past them the jobs are `failed`. `requeue_job { runId, jobId, reason? }` (any agent except
+  step and gate agents; `runId` is the pipeline or one of its batches) puts a **failed** job back: same id, inputs and
+  outputs, it waits at the stages it has not passed and its failed rides start again, so the next batch carries it. Only
+  a job handed off with `wait: false` (detached): a waiting hand-off was told "failure" and decides itself. Idempotent
+  (an open job is left alone, `changed: false`); refused for a settled or withdrawn job, a job that passed every stage and
+  an ended pipeline. Events: `job.reopened`, then `job.queued` (`via: reopened`).
 - Every role a singleton uses must be `readonly` (batches share one checkout). A singleton
   cannot set `concurrency` or `after`, and cannot be a sub-playbook or an after-task. When no
   batch is running, its workspace is fast-forwarded to `branch` and its playbook read again.

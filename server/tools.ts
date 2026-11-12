@@ -792,6 +792,25 @@ export function runTools(runtime: Runtime): AgentToolDefinition[] {
         }),
     }),
     defineAgentTool({
+      name: "requeue_job",
+      description:
+        "Put a failed job back on its singleton pipeline, with the same id and inputs (pr_urls, ticket, services, plan...), so the pipeline's next batch carries it: no waiting, nothing is handed off again. Use it for jobs a batch failure took out (e.g. \"manager lost\" past the stage's retries): runId is the pipeline or any of its batches (get_run, list_runs); jobId is a failed job (get_run `jobs` of the pipeline). The job waits at the stages it may enter (those it has not passed) and its failed rides start again. Idempotent: a job that is already open is left as it is (changed: false). Refused for a settled or withdrawn job, a job that passed every stage (its work shipped), a job handed off by a step that waits for its result (that step was told \"failure\"; restart it), and a pipeline that has ended. Emits job.reopened and job.queued (via reopened). Open jobs on a failed batch need no call: the pipeline requeues them by itself when the batch ends. Works on any run, like cancel_run.",
+      input: z.object({
+        runId: IdArg.describe("The pipeline run, or one of its batches"),
+        jobId: z.string().describe("A failed job of the pipeline"),
+        reason: z.string().default("").describe("Why, in a sentence (history and the job.reopened event)"),
+      }),
+      execute: ({ runId, jobId, reason }) =>
+        guard(async () => {
+          const { pipeline, job, changed } = await runtime.requeueJob(runId, jobId, reason);
+          const where = job.waiting.map((entry) => `"${entry.stage}"`).concat(job.batches.map((ride) => `batch ${ride.runId}`)).join(", ") || "no stage";
+          return ok(
+            changed ? `Job ${jobId} is open again at ${where} of pipeline ${pipeline.id}; its next batch carries it.` : `Job ${jobId} is already open (${where}); nothing changed.`,
+            { runId: pipeline.id, jobId, changed, status: job.status, waiting: job.waiting.map((entry) => entry.stage), batches: job.batches.map((ride) => ride.runId) },
+          );
+        }),
+    }),
+    defineAgentTool({
       name: "start_after_task",
       description:
         "Start a manual after-task (trigger: manual, e.g. a retro) of a finished run, the same as its Start button in the panel. Call it only when the human asks for it. It runs once. The run's manager is woken to run it; if you are that manager, start its ready steps with start_step. See get_run or list_runs for the run's after-tasks.",
