@@ -142,12 +142,15 @@ once, but if that agent is busy, its kickoff waits until its current turn ends).
 next to Start offers "Start on a new agent", which creates a new manager agent in the same
 workspace, and "Start in a new workspace", which creates a new worktree and manager.
 
-The **Run Playbook** button at the top left of the panel opens a form to start any valid playbook of the workspace's
-project in a new workspace: a workspace name (optional; empty keeps the default title, the playbook title and the
+The **Run Playbook** button in the header of the overview screen (the one with the Runs, Analytics and Profiles tabs,
+next to Sidekick) opens a form to start any valid playbook of a project in a new workspace: a project dropdown
+(preselected to the project chip selected on the screen; with "All projects" you choose one), a workspace name (optional; empty keeps the default title, the playbook title and the
 request), a playbook dropdown, then that playbook's inputs. **Start**, at the bottom, creates the workspace and the run;
 a failure shows in the form, a success as a toast. The name is a title only (one line, at most 80 characters): the
 branch is still `playbooks/<playbook>-<id>`. The same title is available to agents as `workspaceName` on
-`start_playbook` with `newWorkspace`.
+`start_playbook` with `newWorkspace`. The button is shown when a project has a startable playbook (disabled while the
+lists load). The per-workspace Playbooks tab has no such button: its cards offer "Start in a new workspace", which
+has the same workspace name field.
 
 ## Release
 

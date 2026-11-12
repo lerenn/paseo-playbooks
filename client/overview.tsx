@@ -1,9 +1,9 @@
 import { openExternalUrl, usePaseo, useRpc, type PluginIconProps, type PluginScreenProps, type PluginSidebarItemProps } from "@getpaseo/plugin/client";
 import { Icon, ScrollView, SidebarRow, useToast } from "@getpaseo/plugin/client/ui";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQueries, useQueryClient } from "@tanstack/react-query";
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { Animated, Easing, Pressable, Text, View } from "react-native";
-import { archiveRunRpc, markRunSeenRpc } from "../shared/contracts";
+import { archiveRunRpc, listPlaybooks, markRunSeenRpc } from "../shared/contracts";
 import { gateText } from "../shared/gates";
 import { isActive, isPaused, isPipeline, isTerminal, type Gate, type RunSummary, type StepSummary } from "../shared/types";
 import { AnalyticsView } from "./analytics";
@@ -15,7 +15,9 @@ import { PreReleaseFlag } from "./pre-release";
 import { ProfilesView } from "./profiles";
 import { SidekickPane } from "./sidekick/pane";
 import { sidekickUi, useSidekickUi } from "./sidekick/ui-state";
+import { defaultProject, projectsOf, runButtonState, runnablePlaybooks } from "./run-form";
 import { Button, GateActions } from "./sheet";
+import { OverviewRunForm, RunPlaybookButton } from "./start-form";
 import { openJobsLabel, Stations, trainName } from "./stations";
 import { stepShortTitle, stepTitle, stepTitleOf, withAlpha, type Theme } from "./theme";
 
@@ -317,6 +319,20 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
   const setSidekickOpen = sidekickUi.setOpen;
   useEffect(() => store.watchRuns(), [store]);
   const queryClient = useQueryClient();
+  // Run Playbook: each project's playbooks are listed from its first workspace (the panel's query, same cache key).
+  const listDefinitions = useRpc(listPlaybooks);
+  const runProjects = useMemo(() => projectsOf(workspaces), [workspaces]);
+  const definitions = useQueries({
+    queries: runProjects.map((candidate) => ({
+      queryKey: ["playbooks", "definitions", candidate.workspaceId],
+      queryFn: () => listDefinitions({ workspaceId: candidate.workspaceId }),
+      refetchInterval: 30_000,
+    })),
+  });
+  const runnableOf = new Map(runProjects.map((candidate, index) => [candidate.projectId, runnablePlaybooks(definitions[index]?.data?.entries ?? [])]));
+  const runnableProjects = runProjects.filter((candidate) => (runnableOf.get(candidate.projectId)?.length ?? 0) > 0);
+  const runState = runButtonState(runnableProjects.length, definitions.some((query) => query.isLoading));
+  const [runForm, setRunForm] = useState(false);
 
   const byId = useMemo(() => new Map(workspaces.map((workspace) => [workspace.id, workspace])), [workspaces]);
   const names = useMemo(() => new Map(workspaces.map((workspace) => [workspace.id, workspace.label])), [workspaces]);
@@ -379,6 +395,7 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
               </>
             ) : null}
           </Text>
+          {runState !== "hidden" ? <RunPlaybookButton theme={theme} loading={runState === "loading"} onPress={() => setRunForm(true)} /> : null}
           {!layout.compact ? (
             <Pressable
               accessibilityRole="button"
@@ -521,6 +538,21 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
           </>
         )}
       </ScrollView>
+      {runForm && runnableProjects.length > 0 ? (
+        <OverviewRunForm
+          theme={theme}
+          projects={runnableProjects}
+          playbooksOf={runnableOf}
+          initial={defaultProject(runnableProjects, project)}
+          compact={layout.compact}
+          onClose={() => setRunForm(false)}
+          onStarted={(result) => {
+            setRunForm(false);
+            void queryClient.invalidateQueries({ queryKey: ["playbooks"] });
+            navigation?.openWorkspace({ workspaceId: result.workspaceId });
+          }}
+        />
+      ) : null}
       {!layout.compact && sidekickOpen ? (
         <SidekickPane
           theme={theme}
