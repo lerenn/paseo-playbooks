@@ -123,6 +123,28 @@ paseo plugin reload paseo-playbooks
 paseo plugin logs paseo-playbooks
 ```
 
+### Event log and job events
+
+Run state is still one JSON file per run. Next to it, a pipeline (a singleton's run) and its trains keep an
+append-only **event log**, `<run id>.events.jsonl`, in the plugin's `runs/` folder: one line per fact about its jobs
+(`job.queued`, `job.boarded`, `job.advanced`, ...), the first step of the event core (ADR
+`docs/adrs/2026-11-12-event-core.md`). In this version the log changes nothing: the run file stays the source of truth,
+and the log is checked against it. Two settings in the user config
+(`$PASEO_HOME/plugin-data/lerenn/paseo-playbooks/config.yaml`, read when the plugin starts, so reload after editing):
+
+```yaml
+event_core:
+  log: true        # false: write no log and check nothing (the way back; state is the same either way)
+  parity: warn     # warn: log a line when the log's reducers and the run state disagree; off: no check
+```
+
+The pipeline's jobs are also announced on the event bus, for `subscribe_events` and `list_events`:
+`job.queued` (waits at a station: handed off, or unlocked by a passed station; one event per station),
+`job.boarded`, `job.advanced` (passed a station), `job.requeued` (its train failed, retries left), `job.settled`
+(left with an outcome), `job.failed`, `job.withdrawn`. Payload: `runId` (the pipeline), `playbook` (the singleton's id),
+`jobId`, `label`, `station`, `trainRunId`, `outcome`, plus `via`, `nextStations`, `rides`/`retries`, `summary` or `reason`
+per type. `filter` matches them by equality, e.g. `{ playbook: "release_trains", station: "stg" }`.
+
 ### Profiles
 
 A profile is an extra, opt-in repository of playbooks, with the same layout as the playbooks folder

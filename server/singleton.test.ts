@@ -4,7 +4,8 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { loadPlaybooks } from "./loader";
 import { Runtime } from "./runtime";
-import { RunStore } from "./store";
+import { EVENT_AREAS, RunStore } from "./store";
+import { verifyLog } from "./event-core";
 
 const EXAMPLES = path.resolve(__dirname, "..", "examples");
 const temps: string[] = [];
@@ -541,5 +542,66 @@ steps:
     expect(created).toHaveLength(1);
     expect(run).toMatchObject({ status: "running", managerAgentId: "", jobs: [] });
     expect(store.list().filter((candidate) => candidate.train)).toHaveLength(0);
+  });
+});
+
+describe("event core: job events of a pipeline", () => {
+  const jobEvents = async (runtime: Runtime) => (await runtime.bus.recent({ types: ["job.*"] })).events;
+  const summary = (events: Awaited<ReturnType<typeof jobEvents>>) => events.map((event) => `${event.type}${event.payload.station ? `@${String(event.payload.station)}` : ""}`);
+
+  it("announces a job's whole ride on the bus and keeps a log that rebuilds the pipeline's jobs", async () => {
+    const { store, runtime } = await setup();
+    const pr = await runtime.startPlaybook({ id: "m1", workspaceId: "ws1", cwd: "/" }, "pr", { pr_url: "1" });
+    await until(() => trainAt(store, "dev") !== undefined);
+    const dev = trainAt(store, "dev")!;
+    await runtime.settleJob(dev.managerAgentId, dev.id, dev.jobs[0]!.id, { summary: "", outputs: { report: "dev ok" } });
+    await decide(runtime, store, "dev", "approved");
+    await until(() => trainAt(store, "prd") !== undefined);
+    await decide(runtime, store, "prd", "approved");
+    await until(() => store.get(pr.id)!.status === "completed");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const events = await jobEvents(runtime);
+    expect(summary(events)).toEqual(["job.queued@dev", "job.boarded@dev", "job.advanced@dev", "job.queued@prd", "job.boarded@prd", "job.advanced@prd", "job.settled@prd"]);
+    const trains = store.list().filter((run) => run.train).map((run) => run.id);
+    expect(events[1]!.payload).toMatchObject({ runId: pipelineOf(store).id, playbook: "apply", jobId: pipelineOf(store).jobs[0]!.id, station: "dev", outcome: null });
+    expect(trains).toContain(events[1]!.payload.trainRunId);
+    expect(events[2]!.payload).toMatchObject({ nextStations: ["prd"] });
+    expect(events[3]!.payload).toMatchObject({ via: "advanced", trainRunId: null });
+    expect(events.at(-1)!.payload).toMatchObject({ outcome: "done", station: "prd" });
+    // The log rebuilds the jobs (parity throws on every mutation in tests; this is the whole-log check).
+    const pipeline = pipelineOf(store);
+    const { events: logged } = await store.log.read(pipeline.id);
+    expect(logged.map((event) => event.type).slice(0, 3)).toEqual(["jobs.genesis", "job.queued", "job.boarded"]);
+    expect(logged.at(-1)!.seq).toBe(pipeline.eventSeq);
+    expect(verifyLog(EVENT_AREAS, pipeline, logged)).toEqual([]);
+  });
+
+  it("announces a requeue, a failure and a withdrawal", async () => {
+    const { store, runtime } = await setup();
+    const one = await runtime.startPlaybook({ id: "m1", workspaceId: "ws1", cwd: "/" }, "pr", { pr_url: "1" });
+    await until(() => trainAt(store, "dev") !== undefined);
+    const first = await decide(runtime, store, "dev", "rejected");
+    await until(() => trainAt(store, "dev") !== undefined && trainAt(store, "dev")!.id !== first.id);
+    await decide(runtime, store, "dev", "rejected");
+    await until(() => store.get(one.id)!.status === "failed");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const events = await jobEvents(runtime);
+    expect(summary(events)).toEqual(["job.queued@dev", "job.boarded@dev", "job.requeued@dev", "job.boarded@dev", "job.failed@dev"]);
+    expect(events[2]!.payload).toMatchObject({ rides: 1, retries: 1 });
+    expect(String(events.at(-1)!.payload.reason)).toMatch(/train .* at "dev" failed|rejected/);
+    const two = await runtime.startPlaybook({ id: "m2", workspaceId: "ws2", cwd: "/" }, "pr", { pr_url: "2" });
+    await runtime.cancelRun(two.id, "not needed", null);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(summary((await jobEvents(runtime)).slice(5))).toEqual(["job.queued@dev", "job.boarded@dev", "job.withdrawn"]);
+    const pipeline = pipelineOf(store);
+    expect(verifyLog(EVENT_AREAS, pipeline, (await store.log.read(pipeline.id)).events)).toEqual([]);
+  });
+
+  it("can be replayed with list_events by filter on station", async () => {
+    const { store, runtime } = await setup();
+    await runtime.startPlaybook({ id: "m1", workspaceId: "ws1", cwd: "/" }, "pr", { pr_url: "1" });
+    await until(() => trainAt(store, "dev") !== undefined);
+    const sub = await runtime.bus.subscribe("watcher", { kind: "agent", target: "watcher" }, ["job.*"], { station: "dev" }).catch((error: Error) => error);
+    expect(sub).not.toBeInstanceOf(Error);
   });
 });

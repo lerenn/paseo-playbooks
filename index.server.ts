@@ -35,7 +35,7 @@ import {
   startRun,
 } from "./shared/contracts";
 import { summarizeRun } from "./shared/types";
-import { setProjectProfile } from "./server/config";
+import { readEventCoreConfig, setProjectProfile } from "./server/config";
 import { hasPlaybooks, loadPlaybooks, projectProfiles } from "./server/loader";
 import { GATE_LABEL, Runtime, STEP_LABEL, UserError } from "./server/runtime";
 import { saveAttachment } from "./server/attachments";
@@ -57,8 +57,12 @@ function installSafetyNet(): void {
 export default function contribute(server: PluginServerContext) {
   installSafetyNet();
   migrateDataDir();
+  // `event_core` of config.yaml is read once, at start: change it, then reload the plugin.
   const store = new RunStore(defaultRunsDir());
-  const ready = store.init();
+  const ready = readEventCoreConfig().then((eventCore) => {
+    store.configure(eventCore);
+    return store.init();
+  });
   const runtime = new Runtime(store);
 
   /** Every entry point waits for the store and hands the runtime the daemon API. */

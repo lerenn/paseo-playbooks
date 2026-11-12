@@ -68,3 +68,25 @@ export async function setProjectProfile(projectId: string, profile: string, acti
   await rename(tmp, file);
   return next;
 }
+
+/** `event_core` of the user config (ADR 2026-11-12-event-core): the event log and its parity check. */
+export interface EventCoreConfig {
+  /** Write the per-run event log (`<run>.events.jsonl`). Off: no log file is written and no parity is checked; run state is unchanged either way. */
+  log: boolean;
+  /** `warn`: compare what the reducers rebuild with the state the mutators produced, log a mismatch; `off`: no check. */
+  parity: "warn" | "off";
+}
+
+export const DEFAULT_EVENT_CORE: EventCoreConfig = { log: true, parity: "warn" };
+
+/**
+ * `event_core: { log: true | false, parity: warn | off }`. Anything missing or malformed falls back to the default
+ * (log on, parity warn): a bad config never blocks loading. Read once when the plugin starts.
+ */
+export async function readEventCoreConfig(file: string = userConfigFile()): Promise<EventCoreConfig> {
+  const block = asRecord((await readConfig(file)).event_core);
+  return {
+    log: typeof block.log === "boolean" ? block.log : DEFAULT_EVENT_CORE.log,
+    parity: block.parity === "off" ? "off" : DEFAULT_EVENT_CORE.parity,
+  };
+}
