@@ -45,6 +45,7 @@ const PLAYBOOKS: Record<string, string> = {
   "human.yaml": `title: Human\nsteps:\n  - id: approve\n    gate: { question: Ship it?, choices: { approved: { label: Approve }, rejected: { label: Reject, comment: required } } }\n    on: { rejected: fail }\n`,
   "role.yaml": `title: Role\nsteps:\n  - id: approve\n    gate: { question: Ship it?, decider: { by: role, role: reviewer } }\n`,
   "manager.yaml": `title: Manager\nsteps:\n  - id: approve\n    gate: { question: Ship it?, decider: { by: manager } }\n`,
+  "flow.yaml": `title: Flow\nsteps:\n  - id: work\n    role: { name: investigator }\n    outcomes: [success, failure]\n    retries: 1\n  - id: wrap\n    role: { name: investigator }\n`,
   "ask.yaml": `title: Ask\nsteps:\n  - id: work\n    role: { name: investigator }\n    outcomes: [success, unsure]\n    on:\n      unsure: { ask: "Which way?", decider: { by: manager } }\n`,
 };
 
@@ -140,10 +141,10 @@ describe("event log", () => {
     await runtime.decideGate(a.id, gate.id, { decision: "approved", comment: "ok", by: "U1", via: "panel", now: now() });
     await runtime.watchEvents();
     const { events, lastSeq } = await runtime.bus.recent();
-    expect(events.map((event) => [event.seq, event.type])).toEqual([[1, "gate.opened"], [2, "gate.decided"]]);
+    expect(events.map((event) => [event.seq, event.type])).toEqual([[1, "gate.opened"], [2, "gate.decided"], [3, "step.completed"], [4, "run.completed"]]);
     expect(events[1]!.payload).toMatchObject({ decision: "approved", decidedVia: "panel", comment: "ok" });
-    expect(lastSeq).toBe(2);
-    expect((await runtime.bus.recent({ since: 1 })).events.map((event) => event.type)).toEqual(["gate.decided"]);
+    expect(lastSeq).toBe(4);
+    expect((await runtime.bus.recent({ since: 1 })).events.map((event) => event.type)).toEqual(["gate.decided", "step.completed", "run.completed"]);
   });
 });
 
@@ -517,5 +518,80 @@ describe("delivery: idle", () => {
     const text = toAgent(again.sent, "watcher");
     expect(text).toContain("50 events");
     expect(text).toContain("3 earlier events were dropped");
+  });
+});
+
+describe("step and run events", () => {
+  const base = (run: { id: string }) => ({ runId: run.id, playbook: "flow", runName: null, projectId: "p" });
+
+  it("emits step.started, step.completed (failure and retry included) and run.completed once each, in order", async () => {
+    const { runtime, sent } = await setup();
+    await runtime.subscribeEvents("watcher", ["step.*", "run.*"], {}, "steer");
+    await runtime.subscribeEvents("byPlaybook", ["step.completed"], { playbook: "flow", stepId: "work" }, "steer");
+    await runtime.subscribeEvents("other", ["step.started"], { playbook: "human" });
+    await runtime.watchEvents();
+    const run = await runtime.startPlaybook(mgr("m1"), "flow", {});
+    await runtime.startStep("m1", run.id, "work", "");
+    await runtime.watchEvents();
+    await runtime.completeStep("m1", run.id, "work", { outcome: "failure", summary: "nope" });
+    await runtime.watchEvents();
+    await runtime.startStep("m1", run.id, "work", "");
+    await runtime.completeStep("m1", run.id, "work", { outcome: "success", summary: "ok" });
+    await runtime.startStep("m1", run.id, "wrap", "");
+    await runtime.completeStep("m1", run.id, "wrap", { outcome: "success", summary: "ok" });
+    await runtime.watchEvents();
+    await runtime.watchEvents();
+    const { events } = await runtime.bus.recent();
+    expect(events.map((event) => [event.type, event.payload.stepId ?? null, event.payload.attempt ?? null, event.payload.outcome ?? null])).toEqual([
+      ["step.started", "work", 1, null],
+      ["step.completed", "work", 1, "failure"],
+      ["step.started", "work", 2, null],
+      ["step.completed", "work", 2, "success"],
+      ["step.started", "wrap", 1, null],
+      ["step.completed", "wrap", 1, "success"],
+      ["run.completed", null, null, null],
+    ]);
+    expect(events[1]!.payload).toMatchObject({ ...base(run), workspaceDir: expect.any(String) });
+    expect(toAgent(sent, "watcher")).toMatch(/step.completed: step work \(attempt 1\) of run [\s\S]*ended with outcome failure/);
+    expect(toAgent(sent, "byPlaybook").match(/step.completed/g)).toHaveLength(2);
+    expect(toAgent(sent, "byPlaybook")).not.toMatch(/step.started|wrap/);
+    expect(toAgent(sent, "other")).toBe("");
+    expect((await runtime.bus.recent({ types: ["run.completed"] })).events).toHaveLength(1);
+  });
+
+  it("emits run.canceled with its reason", async () => {
+    const { runtime } = await setup();
+    await runtime.watchEvents();
+    const run = await runtime.startPlaybook(mgr("m1"), "flow", {});
+    await runtime.cancelRun(run.id, "changed my mind", "U1");
+    await runtime.watchEvents();
+    const { events } = await runtime.bus.recent({ types: ["run.canceled"] });
+    expect(events).toHaveLength(1);
+    expect(events[0]!.payload).toMatchObject({ ...base(run), reason: "changed my mind" });
+  });
+
+  it("does not announce past transitions again after a daemon restart", async () => {
+    const first = await setup();
+    await first.runtime.watchEvents();
+    const run = await first.runtime.startPlaybook(mgr("m1"), "flow", {});
+    await first.runtime.startStep("m1", run.id, "work", "");
+    await first.runtime.completeStep("m1", run.id, "work", { outcome: "success", summary: "ok" });
+    await first.runtime.watchEvents();
+    const before = (await first.runtime.bus.recent()).events.length;
+    await first.runtime.dispose();
+    const again = await setup({}, { dir: first.dir, file: "" });
+    await again.runtime.watchEvents();
+    await again.runtime.watchEvents();
+    expect((await again.runtime.bus.recent()).events).toHaveLength(before);
+    await again.runtime.startStep("m1", run.id, "wrap", "");
+    await again.runtime.watchEvents();
+    expect((await again.runtime.bus.recent({ since: before })).events.map((event) => event.type)).toEqual(["step.started"]);
+  });
+
+  it("accepts the new types and fields in subscriptions and refuses unknown filter keys", async () => {
+    const { runtime } = await setup();
+    await runtime.subscribeEvents("a", ["step.started", "step.completed", "run.completed", "run.canceled"], { runId: (await runtime.startPlaybook(mgr("m1"), "flow", {})).id });
+    await runtime.subscribeEvents("a", ["step.completed"], { outcome: "failure", stepId: "work" });
+    await expect(runtime.subscribeEvents("a", ["run.completed"], { outcome: "x" })).rejects.toThrow(/not a field/);
   });
 });
