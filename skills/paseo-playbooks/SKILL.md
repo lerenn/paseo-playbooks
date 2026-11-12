@@ -572,6 +572,20 @@ steps:
   a job handed off with `wait: false` (detached): a waiting hand-off was told "failure" and decides itself. Idempotent
   (an open job is left alone, `changed: false`); refused for a settled or withdrawn job, a job that passed every stage and
   an ended pipeline. Events: `job.reopened`, then `job.queued` (`via: reopened`).
+- **Hand-off pending (detached jobs that ended):** a job handed off with `wait: false` that a batch settles with an outcome
+  other than the first (`ejected`, `no_deploy`...) is told to nobody: only the batch's manager can start what follows (the
+  playbook's instructions say what, e.g. a rework run). Each such job needs a **follow-up recorded**: `start_playbook` with
+  `newWorkspace` (or `workspaceId`) and `forJob: "<jobId>"` records the run it starts; `record_followup { runId, jobId,
+  followUpRunId?, note? }` (any agent; `runId` is the pipeline or a batch) records a run started otherwise, or, without
+  `followUpRunId`, "none needed" with a `note`. Until then the plugin keeps the batch's manager open (a next batch of the
+  stage does not retire it) and wakes it with the list, up to 3 times, each time it ends its turn; the run itself still
+  ends normally. **To see it** (and to avoid starting a duplicate): `get_run` of the pipeline or the batch lists, per
+  detached job, `followUps: [{ runId, note, at }]`, and on the pipeline `followUpPending: true` while none is recorded;
+  events `job.followup_pending` (a batch ended with such a job) and `job.followup` (`followUpRunId`, `note`); the
+  Playbooks panel shows "Hand-off pending" on the stage. Not for a job a waiting hand-off told (it was told `failure`
+  or the outcome) nor one settled with the first outcome.
+- **Empty batch:** when every job has left a batch (ejected, requeued or settled), its steps not started are skipped
+  (history `step_skipped`: "no job left in this batch") and the batch completes; they never run on an empty batch.
 - Every role a singleton uses must be `readonly` (batches share one checkout). A singleton
   cannot set `concurrency` or `after`, and cannot be a sub-playbook or an after-task. When no
   batch is running, its workspace is fast-forwarded to `branch` and its playbook read again.

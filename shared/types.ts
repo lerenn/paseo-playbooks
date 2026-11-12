@@ -759,6 +759,12 @@ export const JobSchema = z.object({
   requeued: z.object({ stage: z.string(), outcome: z.string(), reason: z.string(), blocker: z.string().nullable(), at: z.string() }).nullable().default(null),
   /** Pipelines: how many times an outcome requeued it, by stage (capped by the stage's `queue.max_requeues`). */
   requeues: z.record(z.string(), z.number().int()).default({}),
+  /**
+   * What the batch's manager did after the job ended with a non-first outcome while detached (nobody was told): a follow-up run
+   * it started (`runId`) or an explicit "none needed" (`runId` null, with a `note`). Empty = the hand-off is still pending
+   * (ADR 2026-11-12-pending-follow-ups).
+   */
+  followUps: z.array(z.object({ runId: z.string().nullable(), note: z.string().nullable(), by: z.string().nullable(), at: z.string() })).default([]),
 });
 export type Job = z.infer<typeof JobSchema>;
 
@@ -898,6 +904,8 @@ export type StepSummary = z.infer<typeof StepSummarySchema>;
 
 /** The part of a playbook the Playbooks screen needs: its identity, stages, block titles and step summaries. */
 export const PlaybookSummarySchema = PlaybookSchema.pick({ id: true, title: true, description: true, singleton: true, blocks: true, slowWarning: true }).extend({
+  /** A singleton's outcomes (the first is the normal finish): what tells a job whose hand-off is pending. */
+  outcomes: z.array(z.string()).default([]),
   steps: z.array(StepSummarySchema),
 });
 export type PlaybookSummary = z.infer<typeof PlaybookSummarySchema>;
@@ -934,7 +942,7 @@ export const RunSummarySchema = z.object({
   /** After-tasks' statuses. */
   after: z.record(z.string(), z.object({ status: AfterTaskStatusSchema })),
   /** Jobs without their inputs and outputs: what the stages and the job counts show. */
-  jobs: z.array(JobSchema.pick({ id: true, label: true, status: true, waiting: true, requeued: true })),
+  jobs: z.array(JobSchema.pick({ id: true, label: true, status: true, waiting: true, requeued: true, detached: true, outcome: true, followUps: true })),
   batch: RunSchema.shape.batch,
   /** Set on a run a fan-out step started: its parent run, step and the item's key. */
   parent: RunSchema.shape.parent.default(null),
@@ -947,11 +955,12 @@ const TITLE_MAX = 200;
 
 export function summarizeRun(run: Run): RunSummary {
   const text = Object.values(run.inputs).find((value): value is string => typeof value === "string" && value.trim() !== "");
-  const { id, title, description, singleton, blocks, slowWarning } = run.playbook;
+  const { id, title, description, singleton, blocks, slowWarning, outcomes } = run.playbook;
   return {
     id: run.id,
     playbook: {
       id,
+      outcomes,
       title,
       description,
       singleton,
@@ -984,7 +993,7 @@ export function summarizeRun(run: Run): RunSummary {
     steps: Object.fromEntries(Object.entries(run.steps).map(([stepId, step]) => [stepId, { status: step.status, ...stepTiming(step) }])),
     gates: run.gates.filter((gate) => gate.status === "pending"),
     after: Object.fromEntries(Object.entries(run.after).map(([taskId, task]) => [taskId, { status: task.status }])),
-    jobs: run.jobs.map(({ id, label, status, waiting, requeued }) => ({ id, label, status, waiting, requeued })),
+    jobs: run.jobs.map(({ id, label, status, waiting, requeued, detached, outcome, followUps }) => ({ id, label, status, waiting, requeued, detached, outcome, followUps })),
     batch: run.batch,
     parent: run.parent,
     fanouts: Object.fromEntries(

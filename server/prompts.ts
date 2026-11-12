@@ -318,6 +318,11 @@ complete_step: the plugin takes it from the step's report (a value of yours repl
 entries). Never turn an outcome the agent did not give into one (no_deploy, ejected...): send the step back.
 A step that reports an outcome with an \`ask\` (asking, needs_input) has its ask opened by the plugin at once: it
 is answered through that ask (the human, or resume), never by a nudge_step.
+A detached job that ends with an outcome (ejected, no_deploy...) is told to nobody: you are the only one who can start what
+follows (for example its rework). Start it with start_playbook (newWorkspace: true, forJob: "<jobId>": the plugin records the
+run), or call record_followup with a note when none is needed. Until every such job has a follow-up recorded, the plugin keeps
+you alive and reminds you: do not end your turn first. get_run shows each job's followUps (do not start a second one). If
+every job has left the batch, the steps not started are skipped.
 When the batch completes, its jobs still open pass this stage and go on to the next ones. If the batch
 fails, they wait here for the next batch (within the stage's retries), then fail.
 ${jobs ? `Jobs on this batch:\n${jobs}` : "This batch carries no job."}

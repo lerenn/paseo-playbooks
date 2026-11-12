@@ -131,6 +131,8 @@ export function Stages(props: { theme: Theme; pipeline: StageRun; runs: readonly
           .sort((a, b) => a.waiting.find((place) => place.stage === stage.id)!.since.localeCompare(b.waiting.find((place) => place.stage === stage.id)!.since));
         const batch = batches.find((candidate) => candidate.batch!.stage === stage.id && !isTerminal(candidate.status));
         const last = batches.find((candidate) => candidate.batch!.stage === stage.id && isTerminal(candidate.status));
+        // Detached jobs this stage's last batch settled with an outcome (ejected...) that nobody started a follow-up for.
+        const handOff = last && pipeline.playbook.outcomes.length > 0 ? pipeline.jobs.filter((job) => job.detached && job.status === "settled" && job.outcome !== null && job.outcome !== pipeline.playbook.outcomes[0] && job.followUps.length === 0 && last.jobs.some((copy) => copy.id === job.id)) : [];
         const inBatch = batch ? batch.jobs.filter((job) => job.status === "open").length : 0;
         return (
           <Fragment key={stage.id}>
@@ -169,6 +171,11 @@ export function Stages(props: { theme: Theme; pipeline: StageRun; runs: readonly
                     {last ? `None running · last ${last.id.replace(/^run_/, "")} ${last.status}` : "None yet"}
                   </Text>
                 )}
+                {handOff.length > 0 ? (
+                  <Text accessibilityLabel={`${jobsLabel(handOff.length)} ended without a follow-up started`} style={{ color: theme.colors.statusWarning, fontSize: 11 }}>
+                    Hand-off pending: {jobsLabel(handOff.length)} ended ({[...new Set(handOff.map((job) => job.outcome))].join(", ")}), no follow-up started
+                  </Text>
+                ) : null}
               </View>
             </View>
           </Fragment>

@@ -61,6 +61,8 @@ function jobStatus(run: Run, full = false) {
     from: job.label,
     status: job.status,
     outcome: job.outcome,
+    // A detached job ended by a batch: whether anyone started what follows (record_followup, start_playbook forJob). pending: true = nobody did yet.
+    ...(job.detached ? { detached: true, followUps: job.followUps.map((entry) => ({ runId: entry.runId, note: entry.note, at: entry.at })), ...(isPipeline(run) && job.status === "settled" && job.outcome !== null && job.outcome !== run.playbook.outcomes[0] ? { followUpPending: job.followUps.length === 0 } : {}) } : {}),
     ...(isPipeline(run)
       ? {
           passed: job.passed,
@@ -379,16 +381,25 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
           .max(200)
           .optional()
           .describe("With newWorkspace: the title of the new workspace (trimmed to one line, at most 80 characters; default: the playbook title and the request). It does not change the branch name"),
+        forJob: z
+          .string()
+          .optional()
+          .describe("A batch manager starting the follow-up (rework) of a detached job it settled with an outcome (ejected...): its job id. The plugin records the run you start as that job's follow-up (record_followup, get_run `jobs[].followUps`) so the batch is not left with a hand-off pending. Needs newWorkspace or workspaceId"),
         autoStart: z
           .boolean()
           .default(true)
           .describe("Start the run's ready agent steps right away, as start_step would with no brief (default true). false: leave them ready; with workspaceId or a Sidekick, the new manager then waits to be told to start them"),
       }),
-      execute: ({ playbook, inputs, name, newWorkspace, workspaceId, autoStart, workspaceName }, { agent }) =>
+      execute: ({ playbook, inputs, name, newWorkspace, workspaceId, autoStart, workspaceName, forJob }, { agent }) =>
         guard(async () => {
+          if (forJob) {
+            if (!newWorkspace && !workspaceId) throw new UserError("forJob records the run you start as the job's follow-up: start it elsewhere (newWorkspace: true, or workspaceId), not as your own run");
+            runtime.checkFollowUp(forJob);
+          }
           if (workspaceName?.trim() && !newWorkspace) throw new UserError("workspaceName names the new workspace: pass it with newWorkspace");
           if (workspaceId || (await runtime.isSidekick(agent.id))) {
             const started = await runtime.startPlaybookInWorkspace(agent, { playbook, inputs, workspaceId, newWorkspace, autoStart, workspaceName });
+            if (forJob) await runtime.recordFollowUp(forJob, { runId: started.runId, note: null, by: agent.id });
             return ok(
               `Run ${started.runId} of "${playbook}" is starting in ${newWorkspace ? "a new workspace" : "workspace"} ${started.workspaceId} with ${started.managerAgentId ? `its own Playbook Manager (${started.managerAgentId})` : "no Playbook Manager (manager.mode: none): the plugin drives it"}. You do not manage it: the plugin tells you how it goes through your event subscription (list_runs shows it).`,
               started,
@@ -396,6 +407,7 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
           }
           if (newWorkspace) {
             const started = await runtime.startPlaybookElsewhere(agent, playbook, inputs, workspaceName);
+            if (forJob) await runtime.recordFollowUp(forJob, { runId: started.runId, note: null, by: agent.id });
             return ok(
               `Run ${started.runId} of "${playbook}" is starting in a new workspace (${started.workspaceId}) with ${started.managerAgentId ? `its own Playbook Manager (${started.managerAgentId})` : "no Playbook Manager (manager.mode: none): the plugin drives it"}. You do not manage it: carry on with your own run.`,
               started,
@@ -792,6 +804,22 @@ export function runTools(runtime: Runtime): AgentToolDefinition[] {
         guard(async () => {
           const { run, already } = await runtime.archiveRunByAgent(runId, force);
           return ok(already ? `Run ${run.id} was already archived.` : `Run ${run.id} archived.`, runListing(run));
+        }),
+    }),
+    defineAgentTool({
+      name: "record_followup",
+      description:
+        "Batches of a singleton pipeline: say what was done for a detached job (handed off with wait: false, so nobody was told) that a batch settled with an outcome other than the singleton's first (ejected, no_deploy...). The plugin keeps that batch's manager open and reminds it until every such job has a follow-up recorded: either the run you started for it (start_playbook with forJob records it for you), or, with no followUpRunId, an explicit \"none needed\" and a note saying why. More than one may be recorded. Refused for a job that is open, failed, settled with the first outcome, or handed off by a step that waits (that step is told by the plugin). get_run `jobs[].followUps` (pipeline and batch) shows what is recorded, and list_events has job.followup_pending and job.followup. Works from any agent.",
+      input: z.object({
+        runId: IdArg.describe("The pipeline run, or one of its batches"),
+        jobId: z.string().describe("A settled, detached job of the pipeline"),
+        followUpRunId: z.string().optional().describe("The run you started for this job (omit when none is needed)"),
+        note: z.string().optional().describe("What was done, or why none is needed (required without followUpRunId)"),
+      }),
+      execute: ({ runId, jobId, followUpRunId, note }, { agent }) =>
+        guard(async () => {
+          const { pipeline, job } = await runtime.recordFollowUp(jobId, { runId: followUpRunId ?? null, note: note ?? null, by: agent.id }, runId);
+          return ok(`Follow-up recorded for job ${jobId}: ${followUpRunId ? `run ${followUpRunId}` : "none needed"}. Follow-ups of the job: ${job.followUps.length}.`, { runId: pipeline.id, jobId, followUps: job.followUps });
         }),
     }),
     defineAgentTool({

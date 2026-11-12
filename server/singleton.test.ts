@@ -766,3 +766,99 @@ describe("requeue_job: a failed job goes back on the pipeline", () => {
     await expect(runtime.requeueJob(pipelineOf(store).id, pipelineOf(store).jobs[0]!.id, "")).rejects.toThrow(/waits for its result/);
   });
 });
+
+describe("detached jobs a batch ended: pending follow-ups and the empty-batch guard", () => {
+  const SUB = `
+title: Rel
+hidden: true
+steps:
+  - id: a
+    role: { name: reviewer, prompt: "{{ run.jobs }}" }
+  - id: b
+    needs: [a]
+    role: { name: reviewer, prompt: "{{ run.jobs }}" }
+`;
+  const TRAIN = `
+title: Train
+singleton: {}
+inputs:
+  pr_url: { type: string, required: true }
+outcomes: [done, ejected]
+steps:
+  - id: dev
+    playbook: { name: rel }
+`;
+  const HAND = `
+title: Hand
+inputs:
+  pr_url: { type: string, required: true }
+steps:
+  - id: go
+    handoff: { name: train, wait: false }
+    inputs: { pr_url: ~ }
+`;
+  const FILES = { "rel.yaml": SUB, "train.yaml": TRAIN, "hand.yaml": HAND };
+
+  async function ejected(setupResult: Awaited<ReturnType<typeof setup>>) {
+    const { store, runtime } = setupResult;
+    await runtime.startPlaybook({ id: "m1", workspaceId: "ws1", cwd: "/" }, "hand", { pr_url: "1" });
+    await until(() => batchAt(store, "dev") !== undefined);
+    const batch = batchAt(store, "dev")!;
+    const jobId = batch.jobs[0]!.id;
+    await runtime.startStep(batch.managerAgentId, batch.id, "dev.a", "");
+    await runtime.settleJob(batch.managerAgentId, batch.id, jobId, { outcome: "ejected", summary: "provenance gap", outputs: {} });
+    return { batch, jobId };
+  }
+
+  it("skips the steps not started once every job left the batch, with the reason in the history", async () => {
+    const s = await setup(FILES);
+    const { batch } = await ejected(s);
+    await s.runtime.completeStep(batch.managerAgentId, batch.id, "dev.a", { outcome: "success", outputs: {} });
+    const after = s.store.get(batch.id)!;
+    expect(after.steps["dev.b"]!.status).toBe("skipped");
+    expect(after.status).toBe("completed");
+    expect(after.history.find((entry) => entry.type === "step_skipped" && entry.stepId === "dev.b")!.detail).toMatch(/no job left in this batch/);
+  });
+
+  it("flags a detached job that ended with an outcome until a follow-up is recorded, keeps the manager, and answers the query", async () => {
+    const s = await setup(FILES);
+    const { batch, jobId } = await ejected(s);
+    await s.runtime.completeStep(batch.managerAgentId, batch.id, "dev.a", { outcome: "success", outputs: {} });
+    await until(() => engine.pendingFollowUps(pipelineOf(s.store), s.store.get(batch.id)!).length === 1);
+    expect(pipelineOf(s.store).history.some((entry) => entry.type === "job_followup_pending")).toBe(true);
+    // The manager is reminded when its turn ends, and not archived.
+    await s.runtime.onManagerTurnEnded(batch.managerAgentId);
+    await until(() => s.sent.some((entry) => entry.agentId === batch.managerAgentId && /no follow-up is recorded/.test(entry.text)));
+    expect(s.archived).not.toContain(batch.managerAgentId);
+    // Nothing to record for a job that is not detached-and-ended; an unknown job is refused.
+    await expect(s.runtime.recordFollowUp("job_nope", { runId: null, note: "x", by: null })).rejects.toThrow(/no pipeline has a job/);
+    await expect(s.runtime.recordFollowUp(jobId, { runId: null, note: " ", by: null })).rejects.toThrow(/give a note/);
+    s.runtime.checkFollowUp(jobId);
+    const recorded = await s.runtime.recordFollowUp(jobId, { runId: "run_rework", note: null, by: batch.managerAgentId }, batch.id);
+    expect(recorded.job.followUps).toMatchObject([{ runId: "run_rework", by: batch.managerAgentId }]);
+    expect(engine.pendingFollowUps(pipelineOf(s.store), s.store.get(batch.id)!)).toEqual([]);
+    // The batch's own copy shows it too; the query is the job's followUps.
+    expect(s.store.get(batch.id)!.jobs[0]!.followUps).toHaveLength(1);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const events = (await s.runtime.bus.recent({ types: ["job.followup", "job.followup_pending"] })).events;
+    expect(events.map((event) => event.type)).toEqual(["job.followup_pending", "job.followup"]);
+    expect(events[1]!.payload).toMatchObject({ jobId, followUpRunId: "run_rework", outcome: "ejected" });
+    const pipeline = pipelineOf(s.store);
+    expect(verifyLog(EVENT_AREAS, pipeline, (await s.store.log.read(pipeline.id)).events)).toEqual([]);
+  });
+
+  it("holds the retirement of a batch's manager while a follow-up is pending, and retires it once recorded", async () => {
+    const s = await setup(FILES);
+    const { batch, jobId } = await ejected(s);
+    await s.runtime.completeStep(batch.managerAgentId, batch.id, "dev.a", { outcome: "success", outputs: {} });
+    await until(() => engine.pendingFollowUps(pipelineOf(s.store), s.store.get(batch.id)!).length === 1);
+    await s.runtime.startPlaybook({ id: "m2", workspaceId: "ws2", cwd: "/" }, "hand", { pr_url: "2" });
+    await until(() => s.store.list().filter((run) => run.batch?.stage === "dev").length === 2);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(s.archived).not.toContain(batch.managerAgentId);
+    await s.runtime.recordFollowUp(jobId, { runId: null, note: "rework not needed", by: null });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await s.runtime.onManagerTurnEnded(batch.managerAgentId);
+    await until(() => s.archived.includes(batch.managerAgentId));
+  });
+});

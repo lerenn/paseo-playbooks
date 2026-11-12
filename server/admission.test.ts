@@ -165,7 +165,7 @@ function pipeline(playbook: Playbook): Run {
 }
 
 function job(id: string, inputs: Job["inputs"] = {}): Job {
-  return { id, fromRunId: "r1", fromStepId: "apply", attempt: 1, label: `PR ${id}`, inputs, status: "open", outcome: null, summary: null, outputs: {}, createdAt: T0, endedAt: null, passed: [], waiting: [], batches: [], failedRides: {}, detached: false, requeued: null, requeues: {} };
+  return { id, fromRunId: "r1", fromStepId: "apply", attempt: 1, label: `PR ${id}`, inputs, status: "open", outcome: null, summary: null, outputs: {}, createdAt: T0, endedAt: null, passed: [], waiting: [], batches: [], failedRides: {}, detached: false, requeued: null, requeues: {}, followUps: [] };
 }
 
 /** Runs a mutator on a copy and checks the reducers rebuild what it did (parity), including the admission gates. */

@@ -59,6 +59,9 @@ import { holdsBlock, planAdmissions, slotHolders } from "../shared/slots";
 
 export class UserError extends Error {}
 
+/** How often a batch's manager is reminded of detached jobs without a follow-up before the plugin stops holding it. */
+const FOLLOW_UP_REMINDERS = 3;
+
 /** Plugin tools reach agents through Paseo's MCP server; Claude sees them as mcp__paseo__<name>. */
 export const MANAGER_TOOL_NAMES = [
   "list_playbooks",
@@ -77,6 +80,7 @@ export const MANAGER_TOOL_NAMES = [
   "requeue_job",
   "validate_playbooks",
   "settle_job",
+  "record_followup",
 ];
 export const STEP_TOOL_NAMES = ["report_step_result"];
 /** A run with no manager also lets its step agents put a human gate's question in their conversation. */
@@ -353,6 +357,10 @@ export class Runtime {
    * again (sending to an archived agent brings it back).
    */
   private readonly retiredManagers = new Set<string>();
+  /** Managers whose retirement waits for the follow-ups of their batch's detached jobs (manager id -> batch run id). */
+  private readonly heldManagers = new Map<string, string>();
+  /** Reminders sent to a batch's manager about detached jobs without a follow-up (batch run id -> count). */
+  private readonly followUpReminders = new Map<string, number>();
   /** Batch gates announced to the runs of their jobs, as "<batchId>/<gateId>". */
   private readonly batchGates = new Set<string>();
   /** Batch step attempts whose `settle` output was applied, as "<batchId>/<stepId>/<attempt>". */
@@ -737,6 +745,8 @@ export class Runtime {
   async onManagerTurnEnded(agentId: string): Promise<void> {
     this.busyManagers.delete(agentId);
     if (this.retiredManagers.has(agentId)) return this.archiveStepAgent(agentId);
+    // A manager that ends its turn with a hand-off pending (see chaseFollowUps) is woken again, or retired once none is.
+    await this.chaseFollowUps();
     for (const run of this.runsOfManager(agentId)) await this.deliver(run.id);
     await this.compactManager(agentId);
     // Event notices held while this agent was in its turn (unless the above started a new one).
@@ -1253,6 +1263,7 @@ export class Runtime {
         await this.runDeciders();
         await this.noticeBatchGates();
         await this.endBatches();
+        await this.chaseFollowUps();
         await this.startBatches();
         await this.cleanupEndedWorktrees();
         await this.archiveEndedWorkspaces();
@@ -1689,6 +1700,7 @@ export class Runtime {
       detached: step.handoffWait === false,
       requeued: null,
       requeues: {},
+      followUps: [],
     };
     await this.store.mutate(pipeline.id, (current) => engine.addJob(current, job, nowIso()));
     await this.store.mutate(run.id, (current) => {
@@ -1805,7 +1817,7 @@ export class Runtime {
     await this.store.create(batch);
     await this.store.mutate(pipelineId, (current) => engine.joinBatch(current, stageId, batch.id, jobs.map((job) => job.id), nowIso()));
     // The stage's previous batch manager is done: one manager per stage in the workspace.
-    if (previous && previous.managerAgentId !== manager.id) await this.retireManager(previous.managerAgentId);
+    if (previous && previous.managerAgentId !== manager.id) await this.retireManager(previous.managerAgentId, previous.id);
     for (const job of jobs) await this.noteHandoff(job, `On the "${stageId}" batch (${batch.id}) of "${pipeline.playbook.title}", with ${jobs.length} job(s).`);
     const started = this.store.get(batch.id)!;
     await manager.send(singletonKickoff(started, engine.readySteps(started)));
@@ -1817,9 +1829,92 @@ export class Runtime {
    * Archives a previous batch's manager, after its current turn: it is often still in the
    * complete_step call that ended its batch, and archiving it there fails that call.
    */
-  private async retireManager(agentId: string): Promise<void> {
+  private async retireManager(agentId: string, batchRunId?: string): Promise<void> {
+    // The manager of a batch that settled detached jobs with an outcome is the only one who can start their follow-up: it stays
+    // until each has one recorded (or it was reminded FOLLOW_UP_REMINDERS times; see chaseFollowUps).
+    if (batchRunId && this.followUpsPending(batchRunId).length > 0 && (this.followUpReminders.get(batchRunId) ?? 0) < FOLLOW_UP_REMINDERS) {
+      this.heldManagers.set(agentId, batchRunId);
+      return;
+    }
+    this.heldManagers.delete(agentId);
     this.retiredManagers.add(agentId);
     if (!this.busyManagers.has(agentId)) await this.archiveStepAgent(agentId);
+  }
+
+  /** The detached jobs this batch settled with an outcome that still have no follow-up recorded. */
+  private followUpsPending(batchRunId: string): Job[] {
+    const batch = this.store.get(batchRunId);
+    const pipeline = batch?.batch ? this.store.get(batch.batch.pipelineId) : undefined;
+    return batch && pipeline ? engine.pendingFollowUps(pipeline, batch) : [];
+  }
+
+  /**
+   * A batch that ended with detached jobs settled with an outcome and no follow-up (ADR 2026-11-12-pending-follow-ups): its manager
+   * is reminded (up to FOLLOW_UP_REMINDERS times, each time it is idle) and, if its retirement was held, retired once
+   * every job has a follow-up or the reminders ran out. The batch's jobs stay visible as "hand-off pending".
+   */
+  private async chaseFollowUps(): Promise<void> {
+    for (const batch of this.store.list()) {
+      if (!batch.batch || !isTerminal(batch.status)) continue;
+      const held = this.heldManagers.get(batch.managerAgentId) === batch.id;
+      const pending = this.followUpsPending(batch.id);
+      const sent = this.followUpReminders.get(batch.id) ?? 0;
+      if (pending.length === 0 || sent >= FOLLOW_UP_REMINDERS || batch.status === "canceled") {
+        if (held) await this.retireManager(batch.managerAgentId);
+        continue;
+      }
+      if (!batch.managerAgentId || this.busyManagers.has(batch.managerAgentId) || this.retiredManagers.has(batch.managerAgentId) || batch.inbox.length > 0) continue;
+      const manager = await this.api().agents.ref(batch.managerAgentId).refresh().catch(() => null);
+      if (!manager || manager.agent.archivedAt) {
+        this.followUpReminders.set(batch.id, FOLLOW_UP_REMINDERS);
+        continue;
+      }
+      this.followUpReminders.set(batch.id, sent + 1);
+      const lines = pending.map((job) => `- ${job.id} (${job.label}): ${job.outcome}${job.summary ? `, ${job.summary.slice(0, 200)}` : ""}`);
+      await this.enqueue(batch.id, [
+        `Batch ${batch.id} ended, but ${pending.length} job(s) it settled were handed off without waiting (detached) and nobody was told: no follow-up is recorded for them, and you are the only one who can start it (reminder ${sent + 1}/${FOLLOW_UP_REMINDERS}). Do not end your turn before each has one:\n${lines.join("\n")}\nFor each, per your playbook's instructions, start the follow-up with start_playbook (newWorkspace: true, forJob: "<jobId>": the plugin records the run you started), or, when none is needed, call record_followup ({ runId: "${batch.id}", jobId, note: "why" }). get_run on the pipeline shows each job's followUps: do not start one that already has a run.`,
+      ]);
+      await this.deliver(batch.id);
+    }
+  }
+
+  /** Finds the pipeline that owns a job, by id. */
+  private pipelineOfJob(jobId: string): Run {
+    const pipeline = this.store.list().find((run) => isPipeline(run) && run.jobs.some((job) => job.id === jobId));
+    if (!pipeline) throw new UserError(`no pipeline has a job "${jobId}" (get_run on a batch lists its jobs)`);
+    return pipeline;
+  }
+
+  /** Checks, without changing anything, that a follow-up can be recorded for the job (start_playbook forJob checks it before it starts a run). */
+  checkFollowUp(jobId: string): void {
+    const pipeline = this.pipelineOfJob(jobId);
+    try {
+      engine.recordFollowUp(structuredClone(pipeline), jobId, { runId: null, note: "check", by: null, now: nowIso() });
+    } catch (error) {
+      if (error instanceof engine.EngineError) throw new UserError(error.message);
+      throw error;
+    }
+  }
+
+  /** record_followup / start_playbook forJob: what was done for a detached job that ended with an outcome. */
+  async recordFollowUp(jobId: string, input: { runId: string | null; note: string | null; by: string | null }, scope?: string): Promise<{ pipeline: Run; job: Job }> {
+    const pipeline = this.pipelineOfJob(jobId);
+    if (scope) {
+      const given = this.store.get(scope);
+      if (!given) throw new UserError(`unknown run "${scope}"`);
+      if ((given.batch ? given.batch.pipelineId : given.id) !== pipeline.id) throw new UserError(`job ${jobId} belongs to pipeline ${pipeline.id}, not to run ${scope}`);
+    }
+    try {
+      const job = await this.store.mutate(pipeline.id, (current) => engine.recordFollowUp(current, jobId, { ...input, now: nowIso() }));
+      for (const batch of this.store.list().filter((candidate) => candidate.batch?.pipelineId === pipeline.id && candidate.jobs.some((copy) => copy.id === jobId))) {
+        await this.store.mutate(batch.id, (current) => engine.mirrorJob(current, job));
+      }
+      await this.chaseFollowUps();
+      return { pipeline: this.store.get(pipeline.id)!, job };
+    } catch (error) {
+      if (error instanceof engine.EngineError) throw new UserError(error.message);
+      throw error;
+    }
   }
 
   /**
