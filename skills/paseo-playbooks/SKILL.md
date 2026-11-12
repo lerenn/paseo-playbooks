@@ -238,7 +238,7 @@ steps:
 | `title` | Full name, shown in the step's details and on its graph node. Default: the id, capitalised (`investigate` → Investigate). On a playbook step it names the block's frame. |
 | `short_title` | Name in the Playbooks screen's step columns. Default: `title`. Not on playbook steps (their own steps are the columns). |
 | `needs` | Steps that must complete first. No `needs` = starts with the run. Steps ready together run in parallel. File order does not matter. |
-| `role` / `gate` / `playbook` / `script` / `handoff` | Exactly one, as a block: an agent step, a human gate, a sub-playbook, a script the plugin runs itself, or a hand-off to a singleton playbook (see "Step kinds" and "Singleton playbooks and hand-off steps" below). |
+| `role` / `gate` / `playbook` / `script` / `handoff` / `branch` / `fanout` | Exactly one, as a block: an agent step, a human gate, a sub-playbook, a script the plugin runs itself, a hand-off to a singleton playbook, a branch, or a fan-out of one run per list item (see "Step kinds", "List values and fan-out steps" and "Singleton playbooks and hand-off steps" below). |
 | `when` | Run the step only for some values of the run's inputs: `{ env: prd }` or `{ env: [stg, prd] }`, or on the step's own loop count, `{ loop: ">=2" }`; otherwise it is skipped (see Conditional steps). |
 | `queue` | A singleton's stations only: `{ mode: fifo }` (default, one job per train) or `{ mode: merge }` (every waiting job per train). |
 | `settle` | Role or script steps: `{ output: <name> }`, a string output holding YAML per job id (`{ outputs: {...}, outcome?, reason? }`). When the step completes on a train of a singleton pipeline, the plugin settles those jobs itself, as `settle_job` would; `complete_step` refuses entries that do not apply. Has no effect outside a train. |
@@ -430,6 +430,52 @@ A case may end the run: `{ name: nothing, if: {...}, end: nothing_to_do }` (`end
 `validate_playbooks` refuses a missing or misplaced `else`, an unreachable case (an earlier case holds whenever it
 does), duplicate names, and unknown steps, outputs, outcomes or values. A branch does not apply to after-tasks or
 singleton stations. `get_run` shows the case taken (`chosen`) and why a step was skipped.
+
+### List values and fan-out steps
+
+A variable may have the type `list`: a JSON array of strings, numbers, booleans or flat objects of those (no
+nesting), at most 200 items and 32,000 characters. It is stored and rendered as its JSON text, so
+`{{ steps.x.outputs.items }}` shows `["a","b"]` anywhere a template is rendered (a gate question included). A script
+reports one as a JSON array in the last line's `outputs`; an agent reports it as a JSON string.
+
+A **fan-out step** (`fanout:`) starts one run of a playbook of the same folder per item of a list, each in its **own new
+workspace** with its own Playbook Manager, keeps at most `max_active` going, and completes when every run has ended:
+
+```yaml
+- id: spawn
+  needs: [list]
+  inputs: { items: "{{ steps.list.outputs.items }}" }   # a list output of an earlier step
+  fanout:
+    playbook: batch_item                                  # not this playbook, not a singleton
+    items: "{{ inputs.items }}"                           # exactly one reference to a declared input
+    key: "{{ item.id }}"                                  # stable per item; default: the item (scalars only)
+    inputs: { item_id: "{{ item.id }}", title: "{{ item.title }}" }   # the child's inputs
+    workspace_name: "Batch: {{ item.id }}"                # optional, per item
+    max_active: 3                                         # default 1, at most 50
+    cancel_children: true                                 # default true
+  on: { some_failed: complete }                           # default: some_failed fails the run
+  timeout: 8h
+```
+
+- Per-item templates may use `{{ item }}`, `{{ item.<field> }}`, `{{ index }}` and `{{ inputs.<name> }}`. A reference that
+  is not set makes that item `not_started` with the reason (never "(none)"). Keys must be unique (else the step fails).
+- A child run is never started twice for one key: the plugin records each child (key, run id) in the step before creating
+  it. After a daemon restart it follows the recorded children; a child whose creation was cut by the restart is
+  `not_started`.
+- `max_active` counts children being started or running. A child playbook's `concurrency` is respected: a child waits for a
+  free slot. Duplicate-run refusal applies (a child with the same inputs as an active run is `not_started`).
+- **Outcomes**: `all_completed` (continues), `some_failed` (any child failed, was canceled or not started; fails the run
+  unless `on` routes it) and `failure` (bad list, duplicate keys, timeout). A child that fails never stops the others:
+  the step waits for all, then reports.
+- **Outputs** (fixed): `results` (list of `{key, runId, outcome, error?, output_<name>…}`; outcome is `completed`,
+  `failed`, `canceled` or `not_started`), `total`, `started`, `completed`, `failed`, `canceled`, `not_started` (numbers),
+  `any_failed` (boolean). An empty list completes at once with `all_completed`.
+- Canceling or failing the parent run, resetting the step with a `goto`, or its `timeout` cancels the active children and
+  drops the waiting ones (`cancel_children: false` leaves them running). Archiving the ended parent does not touch them.
+- A loop works with the existing mechanisms: a script step after the fan-out with outcomes `[done, more]` and
+  `on: { more: { goto: list, max_loops: 10 } }`. Earlier passes' children stay viewable.
+- The plugin does the waiting (no agent, no tokens). Each child has its own manager: set `manager:` on the child playbook
+  to make it cheap.
 
 ### Singleton playbooks and hand-off steps
 
@@ -770,6 +816,9 @@ error.
 - after-tasks have no `needs`, and only after-tasks have `trigger`
 - `isolation` is `none`, `worktree`, or a block `{ mode, submodules, base, allow_gitlink_removal }` (mistyped keys fail); a singleton cannot ask for `worktree`
 - a `script` names an existing, executable file of `scripts/`; `poll` goes in the `script:` block
+- a `fanout` names a playbook of the same folder that is valid, not a singleton and not this one (directly or through
+  another fan-out, hand-off or sub-playbook), maps every required input of it, reads a declared step input in `items`, and
+  uses only `item`, `item.<field>`, `index` and `inputs.<name>` in its per-item templates
 - a `handoff` names a singleton playbook of the same folder, and does not lead back to its
   own playbook; a singleton is never a sub-playbook or an after-task, its steps never wire a
   job's input, its roles are all `readonly`, and its stations do not `goto` each other;

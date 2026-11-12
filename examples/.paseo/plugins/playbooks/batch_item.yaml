@@ -1,0 +1,10 @@
+title: Batch item
+description: One item of a batch, run in its own workspace by the Batch playbook.
+hidden: true
+inputs:
+  item_id: { type: string, required: true }
+  title: { type: string }
+steps:
+  - id: work
+    role: { name: implementer }
+    outputs: { result: { description: What was done for the item } }

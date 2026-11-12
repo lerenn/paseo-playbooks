@@ -201,6 +201,7 @@ with that tag.
   (and `thinking`) for that attempt; on `nudge_step` a new agent takes over the same attempt. `get_run`
   shows the model of each step and, in view `full`, the models of each attempt
   (see `docs/adrs/2026-11-11-step-model-override-failover.md`).
+- **Fan-out steps** start one run of a playbook per item of a `list` value, each in its own workspace, `max_active` at a time, and join them with per-item results (`all_completed` / `some_failed`). The Playbooks screen draws one lane per child inside the parent run. See `docs/adrs/2026-11-12-fanout-join.md` and the `batch` example.
 - `archive_run` archives an ended run like the panel's archive button (refused while active, or while its hand-off job is still open unless `force: true`; idempotent). `list_runs` hides archived runs unless `archived: true`. See `docs/adrs/2026-11-10-archive-run.md`.
 - `list_playbooks` and `validate_playbooks` return a compact view by default (`results[].id`, `.valid`, `.errors`); `view: "full"` and `playbookId` give the detail.
 - Loop feedback (a `goto` back) goes in `complete_step`'s `summary`, not in `outputs`.

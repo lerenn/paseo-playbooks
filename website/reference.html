@@ -105,7 +105,7 @@ role:               # defaults for the role block of every agent step
 <table><thead><tr><th>Field</th><th>Meaning</th></tr></thead><tbody><tr><td><code>title</code></td><td>Display title. Defaults to the file name.</td></tr><tr><td><code>description</code></td><td>Shown in the Start form. Also returned to agents by <code>list_playbooks</code> and <code>validate_playbooks</code>.</td></tr><tr><td><code>hidden</code></td><td><code>true</code> moves the playbook to the collapsed "Hidden playbooks" section at the bottom of the Playbooks panel, for one only meant as a sub-playbook or after-task (a retro, say). It can still be started from there or by <code>start_playbook</code>, and used by other playbooks; while it has runs of its own, its card is in the main list. Default <code>false</code>.</td></tr><tr><td><code>agent</code></td><td>Agent settings for all steps of this playbook.</td></tr><tr><td><code>manager</code></td><td>A block, <code>{ prompt }</code>: instructions added to the Playbook Manager's protocol for runs that use this playbook, itself or as a sub-playbook. See <a href="#manager-instructions">manager instructions</a>.</td></tr><tr><td><code>inputs</code></td><td>Typed variables. They make up the Start form, and <code>start_playbook</code> takes them. See <a href="#variables">variables</a>.</td></tr><tr><td><code>outputs</code></td><td>Typed run results, resolved when the run completes. <code>value</code> maps them from step outputs or playbook inputs; without it they are matched by name.</td></tr><tr><td><code>isolation</code></td><td><code>worktree</code> (or <code>{ mode: worktree, submodules, base }</code>): each run works in a private git worktree the plugin creates and deletes, and several runs may share a workspace. Default <code>none</code>. See <a href="#isolation">isolated runs</a>.</td></tr><tr><td><code>concurrency</code></td><td>Maximum active runs of this playbook in the Paseo project, across all worktrees, and also the number of runs that may be inside it as a sub-playbook (see Sub-playbooks). Unlimited when absent.</td></tr><tr><td><code>singleton</code></td><td>A block, <code>{ branch }</code> (<code>{}</code> for the defaults; absent = an ordinary playbook): the playbook takes jobs from <a href="#singletons">hand-off steps</a>, with a waiting list per key value. Replaces <code>concurrency</code> on that playbook.</td></tr><tr><td><code>steps</code></td><td>At least one step.</td></tr><tr><td><code>after</code></td><td>Tasks run once the run has ended, without changing its result. See <a href="#after">after-tasks</a>.</td></tr></tbody></table>
 
 <h2 id="steps">Step fields</h2>
-<p>A step is an agent step (<code>role</code>), a human gate (<code>gate</code>), a script step (<code>script</code>), a sub-playbook (<code>playbook</code>) or a hand-off to a singleton playbook (<code>handoff</code>), exactly one of them. The kind's key holds a block with the options of that kind; the other fields sit on the step. The order of steps in the file does not matter.</p>
+<p>A step is an agent step (<code>role</code>), a human gate (<code>gate</code>), a script step (<code>script</code>), a sub-playbook (<code>playbook</code>) a hand-off to a singleton playbook (<code>handoff</code>), a branch (<code>branch</code>) or a fan-out of one run per list item (<code>fanout</code>, see <a href="#fanout">fan-out steps</a>), exactly one of them. The kind's key holds a block with the options of that kind; the other fields sit on the step. The order of steps in the file does not matter.</p>
 <pre><code>- id: review
   role: { name: reviewer, prompt: "Review {{ inputs.pr_url }}" }
 - id: approve
@@ -205,6 +205,22 @@ on:
   - id: done
     needs: [trains, by_hand]               # the join</code></pre>
 
+<h2 id="fanout">List values and fan-out steps</h2>
+<p>A variable of type <code>list</code> is a JSON array of strings, numbers, booleans or flat objects (at most 200 items, 32,000 characters), stored and rendered as JSON text: <code>{{ steps.x.outputs.items }}</code> shows it anywhere, a gate question included. A script reports one as an array in its last line's <code>outputs</code>.</p>
+<p>A <strong>fan-out step</strong> starts one run of a playbook of the same folder per item, each in its own new workspace with its own manager, at most <code>max_active</code> at once, and completes when all have ended.</p>
+<pre><code>- id: spawn
+  needs: [list]
+  inputs: { items: "{{ steps.list.outputs.items }}" }
+  fanout:
+    playbook: batch_item
+    items: "{{ inputs.items }}"
+    key: "{{ item.id }}"
+    inputs: { item_id: "{{ item.id }}" }
+    workspace_name: "Batch: {{ item.id }}"
+    max_active: 3
+    cancel_children: true
+  on: { some_failed: complete }</code></pre>
+<p>Outcomes: <code>all_completed</code>, <code>some_failed</code> (any child failed, was canceled or not started; fails the run unless <code>on</code> routes it) and <code>failure</code>. A failing child never stops its siblings. Outputs: <code>results</code> (list of <code>{key, runId, outcome}</code>), <code>total</code>, <code>started</code>, <code>completed</code>, <code>failed</code>, <code>canceled</code>, <code>not_started</code>, <code>any_failed</code>. A child is never started twice for one key, restarts included. Canceling or failing the parent (or resetting the step) cancels the active children unless <code>cancel_children: false</code>. The run view draws one lane per child, with earlier passes of a loop kept.</p>
 <h2 id="singletons">Singleton playbooks and hand-offs</h2>
 <p>A <strong>singleton playbook</strong> is a pipeline that takes work (<em>jobs</em>) from other runs: one long-lived run per project, in one shared workspace. Its top-level steps are <strong>stations</strong>, ordered by <code>needs</code>; jobs move through them. Its inputs, outputs and outcomes are each job's.</p>
 <pre><code>title: Release trains
