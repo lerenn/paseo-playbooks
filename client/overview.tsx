@@ -403,7 +403,7 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
               accessibilityState={{ expanded: sidekickOpen }}
               hitSlop={8}
               onPress={() => setSidekickOpen(!sidekickOpen)}
-              style={{ flexDirection: "row", alignItems: "center", gap: 6 }}
+              style={{ flexDirection: "row", alignItems: "center", gap: 6, borderRadius: 8, borderWidth: 1, borderColor: sidekickOpen ? theme.colors.accent : theme.colors.border, paddingHorizontal: 10, paddingVertical: 6 }}
             >
               <Icon name="Bot" size={16} color={sidekickOpen ? theme.colors.accent : theme.colors.foregroundMuted} />
               <Text style={{ color: sidekickOpen ? theme.colors.accent : theme.colors.foregroundMuted, fontSize: 12, fontWeight: "600" }}>Sidekick</Text>
@@ -417,6 +417,7 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
               store.refresh();
               void queryClient.invalidateQueries({ queryKey: ["playbooks"] });
             }}
+            style={{ borderRadius: 8, borderWidth: 1, borderColor: theme.colors.border, padding: 7 }}
           >
             <Icon name="RefreshCw" size={16} color={theme.colors.foregroundMuted} />
           </Pressable>
