@@ -6,6 +6,8 @@ import { Animated, Easing, Pressable, Text, View } from "react-native";
 import { archiveRunRpc, listPlaybooks, markRunSeenRpc } from "../shared/contracts";
 import { gateText } from "../shared/gates";
 import { isActive, isPaused, isPipeline, isTerminal, type Gate, type RunSummary, type StepSummary } from "../shared/types";
+import { slowDetail, slowView } from "../shared/slow";
+import { useSlowSteps } from "./slow";
 import { AnalyticsView } from "./analytics";
 import { useReduceMotion } from "./graph";
 import { LABEL_WIDTH, labelLayout, ROW_HEIGHT } from "./layout";
@@ -927,6 +929,9 @@ function RunRow(props: {
   const { theme, run, compact } = props;
   const state = progress(run);
   const color = toneColor(theme, state.tone);
+  const history = useMemo(() => [...props.runs.values()].map(slowView), [props.runs]);
+  const slow = useSlowSteps(slowView(run), history);
+  const slowIds = Object.keys(slow);
   const columns = [...mainSteps(run).map(stepShortTitle), "Done"];
   const markSeen = useRpc(markRunSeenRpc);
   const refresh = useStoreRefresh();
@@ -960,6 +965,14 @@ function RunRow(props: {
         <Text numberOfLines={1} style={{ color: theme.colors.foreground, fontSize: 13, fontWeight: "500" }}>
           {runTitle(run)}
         </Text>
+        {slowIds.length > 0 ? (
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }} accessible accessibilityLabel={`Slow step ${slowIds[0]}: ${slowDetail(slow[slowIds[0]!]!)}`}>
+            <Icon name="TriangleAlert" size={11} color={theme.colors.statusWarning} />
+            <Text numberOfLines={1} style={{ flex: 1, color: theme.colors.foregroundMuted, fontSize: 11 }}>
+              {slowIds[0]}: {slowDetail(slow[slowIds[0]!]!)}
+            </Text>
+          </View>
+        ) : null}
         <Text numberOfLines={1} style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>
           {shortId(run)} · <Text style={{ color: state.tone === "seen" || state.tone === "paused" ? theme.colors.foregroundMuted : color }}>{state.status}</Text> ·{" "}
           {ago(run.updatedAt)}

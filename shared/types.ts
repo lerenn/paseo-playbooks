@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { stepTiming } from "./slow";
 
 /** Plain values that inputs and outputs carry. */
 export const VarValueSchema = z.union([z.string(), z.number(), z.boolean()]);
@@ -392,6 +393,8 @@ export const PlaybookSchema = z.object({
    * Unset on runs from before manager instructions.
    */
   managerInstructions: z.array(z.object({ playbook: z.string().nullable(), text: z.string() })).default([]),
+  /** `slow_warning`: how the slow-step warning is computed (ADR 2026-11-12-slow-step-warning). */
+  slowWarning: z.object({ runs: z.number().int().min(3), factor: z.number().gt(1) }).default({ runs: 10, factor: 2 }),
   /**
    * Sub-playbooks expanded into this one, by id prefix ("pr", or "release.deploy" when
    * nested): their steps are named "<prefix>.<step>". Used to draw a frame around them.
@@ -883,7 +886,7 @@ export const StepSummarySchema = StepSchema.pick({
 export type StepSummary = z.infer<typeof StepSummarySchema>;
 
 /** The part of a playbook the Playbooks screen needs: its identity, stages, block titles and step summaries. */
-export const PlaybookSummarySchema = PlaybookSchema.pick({ id: true, title: true, description: true, singleton: true, blocks: true }).extend({
+export const PlaybookSummarySchema = PlaybookSchema.pick({ id: true, title: true, description: true, singleton: true, blocks: true, slowWarning: true }).extend({
   steps: z.array(StepSummarySchema),
 });
 export type PlaybookSummary = z.infer<typeof PlaybookSummarySchema>;
@@ -913,7 +916,8 @@ export const RunSummarySchema = z.object({
   updatedAt: z.string(),
   seenAt: z.string().nullable(),
   pausedAt: z.string().nullable(),
-  steps: z.record(z.string(), z.object({ status: StepStatusSchema })),
+  /** Each step's status, and when its work started and ended (for the slow-step warning). */
+  steps: z.record(z.string(), z.object({ status: StepStatusSchema, startedAt: z.string().nullable().default(null), endedAt: z.string().nullable().default(null) })),
   /** Open gates only (the decided ones are in the full run). */
   gates: z.array(GateSchema),
   /** After-tasks' statuses. */
@@ -932,7 +936,7 @@ const TITLE_MAX = 200;
 
 export function summarizeRun(run: Run): RunSummary {
   const text = Object.values(run.inputs).find((value): value is string => typeof value === "string" && value.trim() !== "");
-  const { id, title, description, singleton, blocks } = run.playbook;
+  const { id, title, description, singleton, blocks, slowWarning } = run.playbook;
   return {
     id: run.id,
     playbook: {
@@ -941,6 +945,7 @@ export function summarizeRun(run: Run): RunSummary {
       description,
       singleton,
       blocks,
+      slowWarning,
       steps: run.playbook.steps.map(({ id, title, shortTitle, kind, when, branch, needs, outcomes, on, choices, afterTask }) => ({
         id,
         title,
@@ -965,7 +970,7 @@ export function summarizeRun(run: Run): RunSummary {
     updatedAt: run.updatedAt,
     seenAt: run.seenAt,
     pausedAt: run.pausedAt,
-    steps: Object.fromEntries(Object.entries(run.steps).map(([stepId, step]) => [stepId, { status: step.status }])),
+    steps: Object.fromEntries(Object.entries(run.steps).map(([stepId, step]) => [stepId, { status: step.status, ...stepTiming(step) }])),
     gates: run.gates.filter((gate) => gate.status === "pending"),
     after: Object.fromEntries(Object.entries(run.after).map(([taskId, task]) => [taskId, { status: task.status }])),
     jobs: run.jobs.map(({ id, label, status, waiting }) => ({ id, label, status, waiting })),

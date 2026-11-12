@@ -69,7 +69,7 @@ describe("summarizeRun", () => {
     const summary = summarizeRun(run);
     expect(RunSummarySchema.parse(summary)).toEqual(summary);
     expect(summary).toMatchObject({ id: "run_heavy", workspaceId: "ws", projectId: "proj", managerAgentId: "manager", name: "flaky-fix", status: run.status, pausedAt: run.pausedAt, seenAt: run.seenAt, batch: null });
-    expect(summary.steps[first.id]).toEqual({ status: "running" });
+    expect(summary.steps[first.id]).toEqual({ status: "running", startedAt: null, endedAt: null });
     expect(Object.keys(summary.steps)).toEqual(Object.keys(run.steps));
     expect(summary.playbook.steps.map((step) => step.id)).toEqual(playbook.steps.map((step) => step.id));
     expect(summary.playbook.title).toBe(playbook.title);

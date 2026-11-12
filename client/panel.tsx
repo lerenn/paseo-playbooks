@@ -6,6 +6,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Animated, Pressable, Text, View } from "react-native";
 import { archiveRunRpc, cancelRunRpc, createExampleRpc, listPlaybooks, listRuns, pauseRunRpc, resumeRunRpc } from "../shared/contracts";
 import { isActive, isPaused, isPipeline, isTerminal, type Playbook, type PlaybookEntry, type Run } from "../shared/types";
+import { slowView } from "../shared/slow";
+import { useSlowSteps } from "./slow";
 import { useAgentEvents } from "./events";
 import { Graph, useReduceMotion } from "./graph";
 import { PreReleaseFlag } from "./pre-release";
@@ -258,6 +260,8 @@ function PlaybookCard(props: {
   const runId = current ?? shown.find((candidate) => isActive(candidate))?.id ?? shown[0]?.id ?? "definition";
   const run = runId === "definition" ? null : tabs.find((candidate) => candidate.id === runId) ?? null;
   const playbook: Playbook | null = run?.playbook ?? card.entry?.playbook ?? null;
+  const slowViews = useMemo(() => card.runs.map(slowView), [card.runs]);
+  const slow = useSlowSteps(run ? slowView(run) : null, slowViews);
   const title = pipeline?.playbook.title ?? playbook?.title ?? card.entry?.title ?? card.id;
   const errors = card.entry?.errors ?? [];
 
@@ -378,6 +382,7 @@ function PlaybookCard(props: {
           onOpenAgent={props.onOpenAgent}
           onOpenSheet={setSheet}
           hostLabel={props.hostLabel}
+          slow={slow}
         />
       ) : null}
       {sheet && playbook ? (

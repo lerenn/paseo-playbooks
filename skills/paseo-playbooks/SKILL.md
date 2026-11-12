@@ -95,6 +95,7 @@ providers:             # provider failover
   # max_wait: 12h      # with wait: give up and fail to the manager after this long (default: no limit)
   fallback: [codex/gpt-5.5, claude/claude-opus-5-5]  # provider/model targets every step falls back to, after its own tier (default none)
 timeout: 1h            # default step timeout (optional)
+slow_warning: { runs: 10, factor: 2 }  # warn when a step takes more than factor x the mean of its last `runs` completed runs (defaults shown; also allowed in a playbook)
 role:                  # defaults for agent steps, in the shape of a step's `role:` block
   silence: 30m         # remind a step agent after this long without activity (default 30m; off to disable)
   archive_agents: true # archive step agents once the run no longer needs them (default true)

@@ -243,6 +243,11 @@ with that tag.
 - After a daemon restart, recovery starts at the plugin's first event (the app connecting, an
   agent opening a session), not when the daemon starts. A step's timeout keeps counting while
   the daemon is down.
+- Slow-step warning: a step that takes more than `factor` (default 2) times the mean duration of its last `runs`
+  (default 10, at least 3) completed runs of the same playbook and step gets a yellow triangle in the run's row on the
+  Playbooks screen and on the step in the panel, with e.g. "12m, 3.1x the usual 4m". It needs 3 completed runs;
+  it is computed from the run history the panel has loaded (nothing is stored) and, once shown, stays on screen.
+  Set `slow_warning: { runs, factor }` in a playbook or in `defaults/main.yaml` (the playbook's wins, field by field).
 - After a plugin update, idle agents whose session holds the old plugin's tools are reloaded (history
   kept) so they stop failing with "Tool not found"; an agent mid-turn is reloaded when its turn ends,
   never one waiting on a permission or question. Turn off with `reload_stale_sessions: false` in
