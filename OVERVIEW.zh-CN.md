@@ -44,7 +44,7 @@ steps:
 - **提供商回退**：`defaults/main.yaml` 中的一个 tier 可以列出多个提供商。步骤智能体的 token 用尽时，同一次尝试会在下一个提供商上重新开始；用尽的提供商在 `providers: { exhausted_for }`（默认 1h）之后会被再次尝试。
 - **实时流程图**：工作区侧边栏中的 Playbooks 面板实时显示每次运行。可以在面板中启动、暂停、恢复或取消运行，或从某个步骤重新开始。
 - **所有运行一屏总览**：Paseo 左侧边栏中的 Playbooks 入口以徽标显示等待你处理的审批数，并按 playbook 分组列出所有工作区的运行及其在各步骤间的进度。无需打开工作区即可在这里完成审批。
-- **每个项目一个 Sidekick**：Playbooks 屏幕右侧的聊天栏，每个项目一个标签页，由 playbook 旁的 `sidekick/` 文件夹定义协调智能体。它监视运行，判断哪些决策可以自动化，并派出子智能体在拉取请求中修改 playbook，由你合并。它自己没有 shell 和文件工具。
+- **每个项目一个 Sidekick**：Playbooks 屏幕右侧的聊天栏，每个项目一个标签页，由 playbook 旁的 `sidekick/` 文件夹定义协调智能体。它监视运行，判断哪些决策可以自动化，并派出子智能体在拉取请求中修改 playbook，由你合并。它的提示词禁止它自己编辑文件或运行命令。
 
 ## 快速开始
 
@@ -56,5 +56,5 @@ steps:
 
 - 1.0 之前：任何次版本都可能以不兼容的方式修改 playbook 格式。请固定到某个发布标签，升级前先阅读发布说明。
 - 步骤可以使用任何智能体模式，包括 `bypassPermissions`。只运行来自可信仓库的 playbook。
-- 除步骤智能体外，所有智能体都可以在任何对话中列出、取消、重新开始或接管运行，并启动手动收尾任务。参见[工具](https://playbooks.paseo.lerenn.dev/how-it-works.html)。
+- 除步骤智能体和审批决策智能体外，所有智能体都可以在任何对话中列出、取消、重新开始或接管运行，并启动手动收尾任务。参见[工具](https://playbooks.paseo.lerenn.dev/how-it-works.html)。
 - 需要 Paseo 0.14 或更高版本。运行状态保存在 `$PASEO_HOME/plugin-data/lerenn/paseo-playbooks/runs/`，直到运行所在的 worktree 被归档。服务端代码会在工作区目录中运行 `git`，并在运行所在的 worktree 中执行脚本步骤（playbook 的 `scripts/` 目录中的可执行文件）。

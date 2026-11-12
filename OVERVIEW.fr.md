@@ -69,8 +69,8 @@ steps:
 - **Un Sidekick par projet** : une colonne de discussion sur l'écran Playbooks, un onglet par
   projet, avec un agent coordinateur défini par un dossier `sidekick/` à côté des playbooks. Il
   surveille les exécutions, juge quelles décisions pourraient être automatisées et envoie des
-  sous-agents modifier les playbooks dans des pull requests que vous fusionnez. Il n'a ni shell
-  ni outils de fichiers.
+  sous-agents modifier les playbooks dans des pull requests que vous fusionnez. Son prompt lui
+  interdit d'éditer des fichiers ou de lancer des commandes lui-même.
 
 ## Pour commencer
 
@@ -87,7 +87,7 @@ steps:
 - Avant la 1.0 : toute version mineure peut modifier le format des playbooks de façon incompatible. Épinglez une version et lisez les notes de version avant de mettre à jour.
 - Les étapes peuvent utiliser n'importe quel mode d'agent, `bypassPermissions` compris. Ne
   lancez que des playbooks de dépôts en lesquels vous avez confiance.
-- Tous les agents, sauf ceux des étapes, peuvent lister, annuler, relancer ou reprendre
+- Tous les agents, sauf ceux des étapes et des gates, peuvent lister, annuler, relancer ou reprendre
   des exécutions, et lancer des after-tasks manuelles, depuis n'importe quelle
   conversation. Voir [les outils](https://playbooks.paseo.lerenn.dev/how-it-works.html).
 - Nécessite Paseo 0.14 ou plus récent. L'état des exécutions est conservé dans

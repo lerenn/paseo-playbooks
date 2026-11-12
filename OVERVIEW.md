@@ -75,7 +75,7 @@ steps:
 - Pre-1.0: any minor release may change the playbook format in breaking ways. Pin a release tag and read the release notes before upgrading.
 - Steps may run in any agent mode, `bypassPermissions` included. Only start playbooks from
   repositories you trust.
-- Every agent except step agents can list, cancel, restart or take over runs, and start
+- Every agent except step and gate agents can list, cancel, restart or take over runs, and start
   manual after-tasks, from any chat. See the [tools](https://playbooks.paseo.lerenn.dev/how-it-works.html).
 - Requires Paseo 0.14 or later. Run state is kept in
   `$PASEO_HOME/plugin-data/lerenn/paseo-playbooks/runs/` until the run's worktree is archived.
