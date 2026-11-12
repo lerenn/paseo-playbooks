@@ -25,6 +25,9 @@ import type {
   When,
 } from "../shared/types";
 import { AgentSettingsSchema, DEFAULT_EXHAUSTED_FOR_MS, DEFAULT_MANAGER_COMPACT, DEFAULT_MANAGER_MODE, ManagerCompactSchema, ManagerModeSchema, type ManagerMode, type Isolation, VarTypeSchema, VarValueSchema } from "../shared/types";
+import { BusError, checkTypes, FilterValueSchema } from "./bus";
+import { JOB_TYPES } from "./job-events";
+import { OVERSIGHT_TYPES } from "./oversight-events";
 import { readProjectDefault, readProjectProfiles } from "./config";
 import { bareId, DEFAULT_REPO, qualified } from "../shared/repos";
 import { coerceValue, parseDuration, replaceRefs, singleRef, templateRefs, typeCompatible } from "../shared/vars";
@@ -176,12 +179,29 @@ const RawGateStepSchema = z
   })
   .strict();
 
+/** The event types a script's `wake_on` can name: those the runtime registers on its bus. */
+const WAKE_TYPES = [...OVERSIGHT_TYPES, ...JOB_TYPES];
+
 /** A script step: an executable in the folder's scripts/, run by the plugin itself. */
 const RawScriptStepSchema = z
   .object({
     run: z.string().min(1),
     /** Rerun the script this often while it exits with SCRIPT_NOT_YET (`30s`, `1m`). */
     poll: z.string().optional(),
+    /** Run a check at once when a matching bus event is emitted, instead of waiting for the next poll. Needs `poll` (the safety net). */
+    wake_on: z
+      .array(
+        z
+          .object({
+            /** Event types: exact (`job.settled`) or globs (`job.*`), as `subscribe_events` takes them. */
+            types: z.array(z.string()).min(1),
+            /** Payload fields that must equal these values (declared fields of the chosen types). */
+            filter: z.record(z.string(), FilterValueSchema).default({}),
+          })
+          .strict(),
+      )
+      .min(1)
+      .optional(),
   })
   .strict();
 
@@ -307,6 +327,8 @@ const RawStepSchema = z.object({
     agent: z.unknown().optional(),
     choices: z.unknown().optional(),
     poll: z.unknown().optional(),
+    /** Only on a script step (inside `script:`); read here to refuse it flat. */
+    wake_on: z.unknown().optional(),
     /** Only on after-tasks; read here to refuse it on a step. */
     trigger: z.unknown().optional(),
   });
@@ -1453,6 +1475,8 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     }
     let script: string | undefined;
     let pollMs: number | undefined;
+    let wakeOn: Array<{ types: string[]; filter: Record<string, string | number | boolean> }> | undefined;
+    if (rawStep.wake_on !== undefined) err(`${where}: \`wake_on\` only applies to a script step (under \`script:\`)`);
     if (scriptStep) {
       const checked = await checkScript(root, scriptStep.run);
       if ("error" in checked) err(`${where}: script.run: ${checked.error}`);
@@ -1460,6 +1484,20 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
       if (scriptStep.poll !== undefined) {
         pollMs = parseDuration(scriptStep.poll) ?? undefined;
         if (pollMs === undefined) err(`${where}: script.poll: expected a duration such as 30s or 1m`);
+      }
+      if (scriptStep.wake_on) {
+        if (scriptStep.poll === undefined) err(`${where}: script.wake_on needs \`poll\`: events are a hint, the poll is the safety net (write \`script: { run: ${scriptStep.run}, poll: 10m, wake_on: [...] }\`)`);
+        wakeOn = [];
+        scriptStep.wake_on.forEach((wake, index) => {
+          try {
+            if ("olderThanMinutes" in wake.filter) throw new BusError("filter \"olderThanMinutes\" is only for subscribe_events");
+            checkTypes(WAKE_TYPES, wake.types, wake.filter, false);
+            wakeOn!.push({ types: [...new Set(wake.types)], filter: wake.filter });
+          } catch (error) {
+            if (!(error instanceof BusError)) throw error;
+            err(`${where}: script.wake_on[${index}]: ${error.message}`);
+          }
+        });
       }
     }
     const choices: GateChoice[] = Object.entries(gateStep?.choices ?? {}).map(([id, raw]) => {
@@ -1613,6 +1651,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     if (gateDecider) step.decider = gateDecider;
     if (script !== undefined) step.script = script;
     if (pollMs !== undefined) step.pollMs = pollMs;
+    if (wakeOn && wakeOn.length > 0) step.wakeOn = wakeOn;
     if (rawStep.settle !== undefined && !isGate && !task) step.settle = { output: rawStep.settle.output };
     if (timeoutMs !== undefined && !isGate) step.timeoutMs = timeoutMs;
     if (timeoutTemplate !== undefined && !isGate) step.timeout = timeoutTemplate;

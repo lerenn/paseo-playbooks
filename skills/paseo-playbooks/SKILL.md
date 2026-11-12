@@ -292,6 +292,7 @@ several lines:
 | `gate.choices` | The buttons, in order. Each key is an outcome, with `label`, `comment: none \| optional \| required` and `color: primary \| neutral \| success \| warning \| danger` (theme colours; default primary for the first, neutral for the others). Without `choices`, the default Reject is `danger`. |
 | `script.run` | Required: an executable of `scripts/` (see "Script steps"). |
 | `script.poll` | Rerun the script this often (`30s`, `1m`) while it exits with 75. |
+| `script.wake_on` | Needs `poll`. A list of `{ types: [<event type or glob>…], filter: { <payload field>: <value> } }`: a matching bus event (the types of `subscribe_events`; `filter` matches payload fields by equality) runs a check at once instead of waiting for the poll, which stays as the safety net. See "Script steps". |
 | `playbook.name` | Required: a playbook of the same folder (see "Sub-playbooks"). |
 
 `outputs`, `outcomes` and `timeout` stay on the step (agent and script steps share them).
@@ -366,6 +367,13 @@ The script contract:
   `timeout` and `needs` work as for agent steps. A failure with retries left runs again by
   itself; the manager is woken only with the final result. Without `timeout` (here or in
   `defaults/main.yaml`) a polling script waits forever.
+- **Waking on events:** `script: { run: check.sh, poll: 10m, wake_on: [{ types: [job.advanced, job.settled], filter: { playbook: other_pipeline, station: production } }] }`
+  runs a check as soon as a matching event is emitted (another pipeline's job events, a step or run of
+  another run…), then goes back to polling. `poll` is required: an event is a hint that something may have
+  changed, never the truth, so the script still looks. A check already running is not interrupted: a burst of
+  events during it causes one more check after it. Checks of a step are at least 5 s apart and never overlap.
+  Events about the step itself (same run and `stepId`) never wake it. The step's sheet says what started each
+  check: first run, poll, or "woken by <type>". Nothing is emitted for a wake-up.
 - Pausing the run lets a running script keep checking; its result waits for the resume.
   Canceling the run, or a `goto` that resets the step, kills it.
 
@@ -817,7 +825,7 @@ error.
   `run.failure`); inputs only reference ancestors (after-tasks also main steps and `run.*`)
 - after-tasks have no `needs`, and only after-tasks have `trigger`
 - `isolation` is `none`, `worktree`, or a block `{ mode, submodules, base, allow_gitlink_removal }` (mistyped keys fail); a singleton cannot ask for `worktree`
-- a `script` names an existing, executable file of `scripts/`; `poll` goes in the `script:` block
+- a `script` names an existing, executable file of `scripts/`; `poll` and `wake_on` go in the `script:` block; `wake_on` needs `poll`, names known event types and, in `filter`, fields of those types
 - a `fanout` names a playbook of the same folder that is valid, not a singleton and not this one (directly or through
   another fan-out, hand-off or sub-playbook), maps every required input of it, reads a declared step input in `items`, and
   uses only `item`, `item.<field>`, `index` and `inputs.<name>` in its per-item templates

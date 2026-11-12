@@ -84,7 +84,15 @@ A script step's sheet in the run graph shows whether a check is **running now** 
 check in ~30 s"), the running check's output (refreshed about every 2 s) and the last five checks with their
 outcome and exit code. The output is kept in memory only (the last 4000 characters per check, gone when the step
 ends or the daemon restarts, after which the run's recorded last-check output is shown) and is not redacted:
-anyone who can see the panel sees what the script prints.
+anyone who can see the panel sees what the script prints. Each check says what started it: the first run, the poll,
+or an event ("woken by job.settled").
+
+A script step can also wake on events: `script: { run: check.sh, poll: 10m, wake_on: [{ types: [job.advanced, job.settled],
+filter: { playbook: other_pipeline, station: production } }] }` runs a check at once when a matching event is emitted
+(`types` take globs; `filter` matches payload fields by equality), and `poll` stays as the safety net (required). Events
+during a running check cause one more check after it, never two at once; checks are at least 5 s apart; a step is not woken
+by events about itself. See `examples/.paseo/plugins/playbooks/wait_for_upstream.yaml` and
+`docs/adrs/2026-11-12-script-wake-on.md`.
 
 The Sidekick can start playbook runs with `start_playbook` (`workspaceId` of a visible workspace of its project, or
 that with `newWorkspace`, and `workspaceName` to title the new workspace; never its own hidden workspace), and `list_playbooks` shows what is on offer. When you ask

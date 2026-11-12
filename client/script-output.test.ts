@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { checkHeading, formatSeconds, lastLines, scriptActivity } from "./script-output";
+import { checkHeading, triggerLabel, formatSeconds, lastLines, scriptActivity } from "./script-output";
 
 const out = (over: Partial<Parameters<typeof scriptActivity>[0] & object> = {}) => ({ running: false, since: null, tail: "", checks: [], ...over });
 const T = Date.parse("2026-11-12T10:00:30Z");
@@ -17,7 +17,10 @@ describe("script output helpers", () => {
     expect(scriptActivity(out(), "2026-11-12T10:01:00Z", false, T).kind).toBe("idle");
   });
   it("heads a check", () => {
-    expect(checkHeading({ n: 3, startedAt: "", endedAt: "2026-11-12T10:00:00Z", outcome: "not_yet", exitCode: 75, tail: "" })).toMatch(/^Check 3 · not yet · exit 75 · /);
+    expect(checkHeading({ n: 3, startedAt: "", endedAt: "2026-11-12T10:00:00Z", outcome: "not_yet", exitCode: 75, tail: "", trigger: "poll" })).toMatch(/^Check 3 · not yet · exit 75 · poll · /);
+    expect(checkHeading({ n: 4, startedAt: "", endedAt: "2026-11-12T10:00:00Z", outcome: "not_yet", exitCode: 75, tail: "", trigger: "event:job.settled" })).toContain("woken by job.settled");
+    expect(triggerLabel("first")).toBe("first run");
+    expect(scriptActivity(out({ running: true, since: "2026-11-12T10:00:00Z", trigger: "event:job.settled" }), null, true, T).text).toBe("Running now · 30 s · woken by job.settled");
   });
   it("keeps the last lines", () => {
     expect(lastLines("a\nb\nc\n", 2)).toBe("b\nc");

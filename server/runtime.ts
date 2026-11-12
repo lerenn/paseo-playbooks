@@ -46,7 +46,7 @@ function lookup(entries: Parameters<typeof findEntry>[0], ref: string) {
   return "entry" in found ? found.entry : undefined;
 }
 import { DEFAULT_SIDEKICK_RESTART_TOKENS, DEFAULT_SIDEKICK_SUBAGENT, SIDEKICK_LABEL, SIDEKICK_PROJECT_LABEL, sidekickGateSweep, sidekickHandoffRequest, sidekickKickoff, SIDEKICK_PASEO_TOOLS, SIDEKICK_PLUGIN_TOOLS, SidekickRegistry, sidekickPrompt, sidekickTitle } from "./sidekick";
-import { BusError, EventBus, type BusEvent, type Notifier, type Subscription } from "./bus";
+import { BusError, EventBus, globToRegExp, type BusEvent, type Notifier, type Subscription } from "./bus";
 import { OversightProducer, registerOversightTypes } from "./oversight-events";
 import { JOB_TYPES, publicJobEvents } from "./job-events";
 import { gateListing, listAttention, type GateFilter } from "./overseer";
@@ -232,9 +232,29 @@ function scriptEnv(run: Run, stepId: string, attempt: Run["steps"][string]["atte
 /** How many ended checks of a running script attempt the panel can show. */
 const SCRIPT_CHECKS_KEPT = 5;
 
+/** Least time between the end of a check and the start of one an event asks for (ADR 2026-11-12-script-wake-on). */
+export const DEFAULT_WAKE_GAP_MS = 5000;
+
+/** A script attempt that listens for events (`script.wake_on`): who it is, what it matches, and its coalescing state. */
+interface Waker {
+  runId: string;
+  stepId: string;
+  rules: Array<{ types: RegExp[]; filter: Array<[string, string | number | boolean]> }>;
+  /** A check is in flight, or has ended and its follow-up is not scheduled yet: an event only sets `dirty`. */
+  busy: boolean;
+  /** An event matched while busy: one more check runs once it is over. First type that did, for the sheet. */
+  dirty: string | null;
+  /** A check an event asked for waits out the gap in `slot.next`. */
+  gapWait: boolean;
+  /** ms since epoch the last check ended; 0 before the first. */
+  endedAt: number;
+}
+
 interface ScriptLive {
   /** ISO time the running check started; null between checks. */
   runningSince: string | null;
+  /** What started the running check: "first", "poll" or "event:<type>". */
+  trigger: string | null;
   /** Latest output of the running check (stdout and stderr, in arrival order), bounded by SCRIPT_OUTPUT_MAX. */
   tail: string;
   /** Ended checks, oldest first. */
@@ -324,6 +344,8 @@ export class Runtime {
   private readonly scripts = new Map<string, { child: ChildProcess | null; next: ReturnType<typeof setTimeout> | null }>();
   /** What a script attempt's checks printed, by attempt id: the running check's live tail and the last few checks. In memory only; dropped when the attempt stops. */
   private readonly scriptLive = new Map<string, ScriptLive>();
+  /** Script attempts with `wake_on`, by attempt id. One bus listener serves all of them. */
+  private readonly wakers = new Map<string, Waker>();
   /** Feedback a script attempt started with (after a goto), passed to each of its checks. */
   private readonly scriptFeedback = new Map<string, string>();
   /** Pipelines being created (with their workspace), by project and playbook. */
@@ -356,7 +378,7 @@ export class Runtime {
 
   constructor(
     private readonly store: RunStore,
-    private readonly options: { dataDir?: string; debounceMs?: number; pollMs?: number } = {},
+    private readonly options: { dataDir?: string; debounceMs?: number; pollMs?: number; wakeGapMs?: number } = {},
   ) {
     const dir = options.dataDir ?? path.dirname(store.dir);
     this.worktreesDir = path.join(dir, "worktrees");
@@ -373,6 +395,8 @@ export class Runtime {
         jobEvents = jobEvents.then(() => this.bus.emit(event.type, event.payload, { runId: run.id, source: "pipelines" })).catch((error: unknown) => console.error(`[playbooks] could not emit ${event.type}:`, errorText(error)));
       }
     });
+    // Script steps with `wake_on` (script-wake.ts logic below): an internal listener, not an agent subscription.
+    this.bus.onEmit((event) => this.wakeScripts(event));
     this.bus.registerNotifier("agent", this.agentNotifier());
     this.producer = new OversightProducer(this.bus);
   }
@@ -471,7 +495,7 @@ export class Runtime {
         if (isScriptAttempt(attempt.agentId)) {
           // Checks are idempotent: the one cut by the restart runs again.
           this.armTimeout(run, stepId);
-          this.runCheck(run.id, stepId, attempt.agentId);
+          this.runCheck(run.id, stepId, attempt.agentId, "first");
           continue;
         }
         if (isHandoffAttempt(attempt.agentId) || isFanoutAttempt(attempt.agentId)) {
@@ -1967,25 +1991,44 @@ export class Runtime {
         if (!started) continue;
         if (started.feedback) this.scriptFeedback.set(started.id, started.feedback);
         this.armTimeout(this.store.get(run.id)!, stepId);
-        this.runCheck(run.id, stepId, started.id);
+        this.runCheck(run.id, stepId, started.id, "first");
       }
     }
   }
 
   /** Runs the script once in the run's worktree. "Not yet" schedules the next check; anything else ends the attempt. */
-  private runCheck(runId: string, stepId: string, attemptId: string): void {
+  private runCheck(runId: string, stepId: string, attemptId: string, trigger: string): void {
     const run = this.store.get(runId);
     const attempt = run?.steps[stepId]?.attempts.at(-1);
-    if (!run || attempt?.agentId !== attemptId || run.steps[stepId]!.status !== "running") return;
+    if (!run || attempt?.agentId !== attemptId || run.steps[stepId]!.status !== "running") return this.stopScript(attemptId);
     const step = engine.stepDef(run, stepId);
+    if (step.wakeOn && !this.wakers.has(attemptId)) {
+      this.wakers.set(attemptId, {
+        runId,
+        stepId,
+        rules: step.wakeOn.map((rule) => ({ types: rule.types.map(globToRegExp), filter: Object.entries(rule.filter) })),
+        busy: false,
+        dirty: null,
+        gapWait: false,
+        endedAt: 0,
+      });
+    }
+    const waker = this.wakers.get(attemptId);
+    if (waker) {
+      // Events before this start are covered by this check.
+      waker.busy = true;
+      waker.dirty = null;
+      waker.gapWait = false;
+    }
     const slot = { child: null as ChildProcess | null, next: null as ReturnType<typeof setTimeout> | null };
     this.scripts.set(attemptId, slot);
     let stdout = "";
     let stderr = "";
     let settled = false;
-    const live = this.scriptLive.get(attemptId) ?? { runningSince: null, tail: "", checks: [] };
+    const live = this.scriptLive.get(attemptId) ?? { runningSince: null, trigger: null, tail: "", checks: [] };
     this.scriptLive.set(attemptId, live);
     live.runningSince = nowIso();
+    live.trigger = trigger;
     live.tail = "";
     const done = (exit: { code: number | null; signal: string | null }, spawnError?: string) => {
       if (settled) return;
@@ -2003,10 +2046,13 @@ export class Runtime {
         outcome: typeof result === "string" ? result : result.outcome,
         exitCode: exit.code,
         tail: tailOf([stdout.trimEnd(), stderr.trimEnd()].filter(Boolean).join("\n")),
+        trigger,
       });
       if (live.checks.length > SCRIPT_CHECKS_KEPT) live.checks.splice(0, live.checks.length - SCRIPT_CHECKS_KEPT);
       live.runningSince = null;
+      live.trigger = null;
       live.tail = "";
+      if (waker) waker.endedAt = Date.now();
       this.onCheckEnded(runId, stepId, attemptId, result, tailOf([stdout.trimEnd(), stderr.trimEnd()].filter(Boolean).join("\n"))).catch((error: unknown) => console.error(`[playbooks] script check of "${stepId}" failed:`, error));
     };
     try {
@@ -2056,8 +2102,14 @@ export class Runtime {
     if (result === "not_yet") {
       const slot = this.scripts.get(attemptId);
       if (!slot) return;
-      slot.next = setTimeout(() => this.runCheck(runId, stepId, attemptId), step.pollMs!);
+      slot.next = setTimeout(() => this.runCheck(runId, stepId, attemptId, "poll"), step.pollMs!);
       (slot.next as unknown as { unref?: () => void }).unref?.();
+      const waker = this.wakers.get(attemptId);
+      if (waker) {
+        waker.busy = false;
+        // An event came in while the check ran: one more check, after the gap, instead of the poll.
+        if (waker.dirty) await this.scheduleWake(attemptId, waker, waker.dirty);
+      }
       return;
     }
     await this.finishScript(runId, stepId, attemptId, result, "completed");
@@ -2128,7 +2180,50 @@ export class Runtime {
     const attempt = this.store.get(runId)?.steps[stepId]?.attempts.at(-1);
     const live = attempt ? this.scriptLive.get(attempt.agentId ?? "") : undefined;
     if (!attempt || !live) return { running: false, since: null, tail: "", checks: [] };
-    return { running: live.runningSince !== null, since: live.runningSince, tail: live.tail, checks: live.checks.map((check) => ({ ...check })) };
+    return { running: live.runningSince !== null, since: live.runningSince, tail: live.tail, ...(live.trigger ? { trigger: live.trigger } : {}), checks: live.checks.map((check) => ({ ...check })) };
+  }
+
+  /**
+   * The bus listener of `script.wake_on` (ADR 2026-11-12-script-wake-on). An event that matches a waiting script step
+   * runs its check now; during a check it only marks the step, which then runs once more (a burst is one extra check).
+   * Events about the script's own step (same run and stepId) are not delivered to it. Nothing is emitted back.
+   */
+  private wakeScripts(event: BusEvent): void {
+    for (const [attemptId, waker] of this.wakers) {
+      if (event.runId === waker.runId && event.payload.stepId === waker.stepId) continue;
+      const hit = waker.rules.some((rule) => rule.types.some((type) => type.test(event.type)) && rule.filter.every(([key, value]) => event.payload[key] === value));
+      if (!hit) continue;
+      const run = this.store.get(waker.runId);
+      if (!run || run.steps[waker.stepId]?.status !== "running" || run.steps[waker.stepId]!.attempts.at(-1)?.agentId !== attemptId) {
+        this.stopScript(attemptId);
+        continue;
+      }
+      if (waker.busy) waker.dirty ??= event.type;
+      else if (!waker.gapWait) void this.scheduleWake(attemptId, waker, event.type).catch((error: unknown) => console.error(`[playbooks] could not wake "${waker.stepId}":`, errorText(error)));
+    }
+  }
+
+  /** Replaces the poll timer by a check now, or when the gap since the last one has passed. */
+  private async scheduleWake(attemptId: string, waker: Waker, type: string): Promise<void> {
+    const slot = this.scripts.get(attemptId);
+    if (!slot || slot.child || waker.gapWait) return;
+    if (slot.next) clearTimeout(slot.next);
+    waker.dirty = null;
+    const wait = Math.max(0, waker.endedAt + (this.options.wakeGapMs ?? DEFAULT_WAKE_GAP_MS) - Date.now());
+    const start = () => this.runCheck(waker.runId, waker.stepId, attemptId, `event:${type}`);
+    if (wait === 0) {
+      slot.next = null;
+      return start();
+    }
+    waker.gapWait = true;
+    slot.next = setTimeout(start, wait);
+    (slot.next as unknown as { unref?: () => void }).unref?.();
+    // The panel's "next check in" follows the wake-up, not the poll it replaced.
+    const at = new Date(Date.now() + wait).toISOString();
+    await this.store.mutate(waker.runId, (run) => {
+      const attempt = run.steps[waker.stepId]?.attempts.at(-1);
+      if (attempt?.agentId === attemptId) attempt.nextCheckAt = at;
+    }).catch(() => undefined);
   }
 
   /** Kills a script's running check and drops its next one. */
@@ -2137,6 +2232,7 @@ export class Runtime {
     this.scripts.delete(attemptId);
     this.scriptFeedback.delete(attemptId);
     this.scriptLive.delete(attemptId);
+    this.wakers.delete(attemptId);
     if (!slot) return;
     if (slot.next) clearTimeout(slot.next);
     slot.child?.kill("SIGTERM");

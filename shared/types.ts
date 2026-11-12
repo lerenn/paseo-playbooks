@@ -212,6 +212,8 @@ export const StepSchema = z.object({
   settle: z.object({ output: z.string() }).optional(),
   /** Script steps: rerun the script this often while it exits with SCRIPT_NOT_YET. Unset = run it once. */
   pollMs: z.number().int().positive().optional(),
+  /** Script steps: events that run a check at once instead of waiting for the next poll (`poll` stays the safety net). */
+  wakeOn: z.array(z.object({ types: z.array(z.string()).min(1), filter: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])) })).optional(),
   needs: z.array(z.string()),
   prompt: z.string(),
   inputs: z.record(z.string(), InputWiringSchema),
@@ -732,6 +734,8 @@ export const ScriptOutputSchema = z.object({
   since: z.string().nullable(),
   /** The running check's latest output, bounded. */
   tail: z.string(),
+  /** What started the running check (see `checks[].trigger`); null between checks. */
+  trigger: z.string().nullable().optional(),
   /** Ended checks, oldest first, each with its own bounded tail. */
   checks: z.array(
     z.object({
@@ -742,6 +746,8 @@ export const ScriptOutputSchema = z.object({
       outcome: z.string(),
       exitCode: z.number().int().nullable(),
       tail: z.string(),
+      /** What started the check: "first" run, the "poll" timer, or an event ("woken by job.settled"). Default "poll" for older readers. */
+      trigger: z.string().default("poll"),
     }),
   ),
 });

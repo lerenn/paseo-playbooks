@@ -367,6 +367,36 @@ steps:
 </code></pre>
 <p>The Release to dev roles, <code>dev_env_releaser</code> and <code>dev_env_qa</code>, deploy and check the change with the process your repository documents, and report a failure when there is none. <code>completion.auto</code> lets the plugin apply the outcomes it lists without waking the manager, as long as an agent or script step follows (<a href="reference.html#steps">reference</a>).</p>
 
+<h2 id="wait-for-upstream">Wait for upstream (script wake_on)</h2>
+<p>From <a href="https://github.com/lerenn/paseo-playbooks/tree/main/examples/.paseo/plugins/playbooks"><code>examples/.paseo/plugins/playbooks/</code></a>. A script step that polls slowly and is woken at once by another pipeline's job events. <code>poll</code> is the safety net and is required with <code>wake_on</code>.</p>
+<p class="file">wait_for_upstream.yaml</p>
+<pre><code>title: Wait for upstream
+description: Wait until another pipeline has settled a job at a station, woken by its job events (with a slow poll as the safety net), then announce it.
+
+inputs:
+  job:
+    type: string
+    required: true
+    description: The job to wait for
+
+steps:
+  - id: wait_settled
+    # The script is rerun every 10 minutes while it says "not yet" (exit 75), and at once when the pipeline
+    # `upstream` advances or settles a job at its `production` station.
+    script:
+      run: check_upstream.sh
+      poll: 10m
+      wake_on:
+        - { types: [job.advanced, job.settled], filter: { playbook: upstream, station: production } }
+    timeout: 6h
+    inputs: [job]
+    outputs: { outcome_seen: {} }
+
+  - id: announce
+    needs: [wait_settled]
+    role: { name: reviewer, prompt: "The job {{ inputs.job }} settled upstream ({{ inputs.outcome_seen }}). Say so in one line." }
+    inputs: [job, outcome_seen]
+</code></pre>
 <h2 id="docs">Docs check</h2>
 <p>From <a href="https://github.com/lerenn/paseo-playbooks/tree/main/.paseo/plugins/playbooks"><code>.paseo/plugins/playbooks/</code></a> at the root of this repository, the playbook that checks this repository's own docs. Every role only reads or edits files, so <code>default</code> and <code>acceptEdits</code> are enough. The verdict step loops back to the writer at most twice, and a rejected gate sends the work back with your comment.</p>
 <pre><code>investigate ─▶ write ─┬─▶ review ──────┬─▶ verdict ─▶ ◆ approve ─▶ end

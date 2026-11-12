@@ -460,6 +460,68 @@ steps:
       expect(errors).toContain(`${at}: step "other": \`poll\` only applies to a script step (under \`script:\`)`);
     });
 
+    it("loads script.wake_on and refuses its misuse", async () => {
+      const files = {
+        "scripts/wait.sh": "#!/bin/sh\n",
+        "ok.yaml": `
+steps:
+  - id: wait
+    script:
+      run: wait.sh
+      poll: 10m
+      wake_on:
+        - { types: [job.advanced, job.settled], filter: { playbook: other_pipeline, station: production } }
+        - { types: ["step.*"] }
+`,
+        "schema.yaml": `
+steps:
+  - id: e
+    role: { name: reviewer, wake_on: [{ types: [job.settled] }] }
+`,
+        "empty.yaml": `
+steps:
+  - id: f
+    script: { run: wait.sh, poll: 1m, wake_on: [] }
+`,
+        "bad.yaml": `
+steps:
+  - id: a
+    script: { run: wait.sh, wake_on: [{ types: [job.settled] }] }
+  - id: b
+    needs: [a]
+    script: { run: wait.sh, poll: 1m, wake_on: [{ types: [job.settledd] }] }
+  - id: c
+    needs: [b]
+    script: { run: wait.sh, poll: 1m, wake_on: [{ types: [job.settled], filter: { nope: 1 } }] }
+  - id: d
+    needs: [c]
+    role: { name: reviewer }
+    wake_on: [{ types: [job.settled] }]
+  - id: g
+    needs: [d]
+    script: { run: wait.sh, poll: 1m, wake_on: [{ types: [job.settled], filter: { olderThanMinutes: 5 } }] }
+`,
+      };
+      const dir = await workspace(files);
+      await chmod(path.join(dir, ".paseo/plugins/playbooks/scripts/wait.sh"), 0o755);
+      const result = await loadPlaybooks(dir);
+      const ok = result.entries.find((candidate) => candidate.id === "ok")!;
+      expect(ok.errors).toEqual([]);
+      const wait = ok.playbook!.steps.find((step) => step.id === "wait")!;
+      expect(wait.wakeOn).toEqual([
+        { types: ["job.advanced", "job.settled"], filter: { playbook: "other_pipeline", station: "production" } },
+        { types: ["step.*"], filter: {} },
+      ]);
+      const errors = result.entries.find((candidate) => candidate.id === "bad")!.errors.join("\n");
+      expect(errors).toMatch(/step "a": script.wake_on needs `poll`/);
+      expect(errors).toMatch(/step "b": script.wake_on\[0\]: no event type matches "job.settledd" \(known: .*job.settled/);
+      expect(errors).toMatch(/step "c": script.wake_on\[0\]: filter "nope" is not a field of job.settled \(fields: .*station/);
+      expect(errors).toContain('step "d": `wake_on` only applies to a script step (under `script:`)');
+      expect(result.entries.find((candidate) => candidate.id === "schema")!.errors.join("\n")).toMatch(/steps.0.role: Unrecognized key: "wake_on"/);
+      expect(result.entries.find((candidate) => candidate.id === "empty")!.errors.join("\n")).toMatch(/steps.0.script.wake_on/);
+      expect(errors).toMatch(/step "g": script.wake_on\[0\]: filter "olderThanMinutes" is only for subscribe_events/);
+    });
+
     it("refuses an unknown key or a missing required field in a block", async () => {
       expect(await errorsOf({ "pb.yaml": "steps:\n  - id: a\n    role: { name: reviewer, promt: hi }\n" })).toEqual([
         '.paseo/plugins/playbooks/pb.yaml: steps.0.role: Unrecognized key: "promt"',
