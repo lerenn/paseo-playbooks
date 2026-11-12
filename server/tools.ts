@@ -554,20 +554,23 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
     defineAgentTool({
       name: "settle_job",
       description:
-        "Batches of a singleton pipeline: settle one job your batch carries (see get_run `jobs`, or {{ run.jobs }} in the step prompts). Without outcome: set its outputs (e.g. a release tag later stages read); it goes on with the batch. With an outcome of the singleton (e.g. ejected): it ends now and the run that handed it off is told at once; the batch goes on with the others. Jobs still open when the batch completes pass to the next stage.",
+        "Batches of a singleton pipeline: settle one job your batch carries (see get_run `jobs`, or {{ run.jobs }} in the step prompts). Without outcome: set its outputs (e.g. a release tag later stages read); it goes on with the batch. With an outcome of the singleton (e.g. ejected): it ends now and the run that handed it off is told at once; the batch goes on with the others. What an outcome does is declared by the playbook (settle.effects of the stage's settle step, see get_run): it ends the job (default), continues it in the batch, or requeues it: the job leaves this batch and goes back to its stage's queue with no failed ride (summary is the reason, blocker an optional opaque string it waits for; the stage's queue.max_requeues caps how often, past it the job fails). A requeued job is no longer in {{ run.jobs }}. Jobs still open when the batch completes pass to the next stage.",
       input: z.object({
         runId: IdArg,
         jobId: z.string(),
-        outcome: z.string().optional().describe("One of the singleton's outcomes, to end the job now; omit to only set outputs"),
-        summary: z.string().describe("What happened to this job, for the run that handed it off"),
+        outcome: z.string().optional().describe("One of the singleton's outcomes (ends the job, continues it or requeues it, as the playbook declares); omit to only set outputs"),
+        summary: z.string().describe("What happened to this job, for the run that handed it off (for a requeue: why it goes back)"),
+        blocker: z.string().optional().describe("Only with an outcome that requeues: what the job waits for (any text, e.g. a URL); stored and shown, never interpreted"),
         outputs: z.record(z.string(), VarValueSchema).default({}).describe("The playbook's outputs for this job"),
       }),
-      execute: ({ runId, jobId, outcome, summary, outputs }, { agent }) =>
+      execute: ({ runId, jobId, outcome, summary, outputs, blocker }, { agent }) =>
         guard(async () => {
-          const run = await runtime.settleJob(agent.id, runId, jobId, { outcome, summary, outputs });
-          const open = run.jobs.filter((job) => job.status === "open").map((job) => job.id);
+          const run = await runtime.settleJob(agent.id, runId, jobId, { outcome, summary, outputs, blocker });
+          const open = run.jobs.filter((job) => job.status === "open" && !job.requeued).map((job) => job.id);
           return ok(
-            outcome === undefined
+            run.jobs.find((job) => job.id === jobId)?.requeued
+              ? `Job ${jobId} requeued: it left this batch and waits at its stage again (no failed ride). Open jobs on this batch: ${open.join(", ") || "none"}.`
+              : outcome === undefined
               ? `Outputs of job ${jobId} set; it goes on with the batch. Open jobs: ${open.join(", ") || "none"}.`
               : `Job ${jobId} ended with "${outcome}"; its run was told. Open jobs on this batch: ${open.join(", ") || "none"}.`,
             runChange(run),

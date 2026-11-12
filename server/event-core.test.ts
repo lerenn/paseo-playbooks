@@ -59,7 +59,7 @@ function pipelineRun(): Run {
 }
 
 function newJob(id: string, services?: string): Job {
-  return { id, fromRunId: "r1", fromStepId: "apply", attempt: 1, label: "PR", inputs: services ? { services } : {}, status: "open", outcome: null, summary: null, outputs: {}, createdAt: T0, endedAt: null, passed: [], waiting: [], batches: [], failedRides: {}, detached: false };
+  return { id, fromRunId: "r1", fromStepId: "apply", attempt: 1, label: "PR", inputs: services ? { services } : {}, status: "open", outcome: null, summary: null, outputs: {}, createdAt: T0, endedAt: null, passed: [], waiting: [], batches: [], failedRides: {}, detached: false, requeued: null, requeues: {} };
 }
 
 /** Runs a mutator on a copy of the pipeline and checks the reducers rebuild what it did. */
@@ -102,6 +102,44 @@ describe("job reducers: parity with the engine's mutators", () => {
     pipe = step(pipe, (copy) => engine.addJob(copy, newJob("j4"), at(13)));
     pipe = step(pipe, (copy) => void engine.failOpenJobs(copy, "pipeline failed", at(14)));
     expect(pipe.jobs.map((job) => job.status)).toEqual(["failed", "settled", "withdrawn", "failed"]);
+  });
+
+  it("requeues a job by an outcome the playbook declares: back at its place, no failed ride, capped, mirrored on the batch's copy and rebuilt by the reducers", () => {
+    const playbook = structuredClone(apply);
+    playbook.outcomes = [...playbook.outcomes, "blocked", "held"];
+    const dev = playbook.singleton!.stages.find((stage) => stage.id === "dev")!;
+    dev.effects = { blocked: "requeue", held: "continue" };
+    dev.maxRequeues = 1;
+    let pipe = engine.newPipelineRun({ id: "pipe", playbook, workspaceId: "ws", workspaceDir: "/w", projectId: "p", branch: "main", now: T0 });
+    pipe = step(pipe, (copy) => engine.addJob(copy, newJob("j1"), at(1)));
+    pipe = step(pipe, (copy) => engine.addJob(copy, newJob("j2"), at(2)));
+    pipe = step(pipe, (copy) => engine.joinBatch(copy, "dev", "t1", ["j1", "j2"], at(3)));
+    const batch = engine.newBatchRun({ id: "t1", pipeline: pipe, stage: "dev", jobs: pipe.jobs, managerAgentId: "m", now: at(3) });
+    const settle = (outcome: string, extra: { summary?: string; blocker?: string } = {}) => (copy: Run) => engine.settleJob(copy, "t1", "j2", { outcome, summary: extra.summary ?? "", outputs: {}, ...(extra.blocker ? { blocker: extra.blocker } : {}), now: at(4) });
+    expect(() => settle("blocked")(structuredClone(pipe))).toThrow(/needs a reason/);
+    expect(() => settle("rejected", { blocker: "x" })(structuredClone(pipe))).toThrow(/blocker only goes with an outcome that requeues/);
+    // `continue`: the job stays in the batch.
+    expect(settle("held", { summary: "ok" })(structuredClone(pipe))).toMatchObject({ ended: false, job: { batches: [{ runId: "t1" }], requeued: null } });
+    // The blocker is any text, never parsed.
+    pipe = step(pipe, (copy) => void settle("blocked", { summary: "needs the pin", blocker: "ticket ABC-1" })(copy));
+    expect(pipe.jobs[1]).toMatchObject({ status: "open", batches: [], failedRides: {}, requeues: { dev: 1 }, waiting: [{ stage: "dev", since: at(2), held: null }], requeued: { stage: "dev", outcome: "blocked", reason: "needs the pin", blocker: "ticket ABC-1" } });
+    // The batch no longer lists it, and it is not on the batch any more.
+    const copy = structuredClone(batch);
+    engine.mirrorJob(copy, pipe.jobs[1]!);
+    expect(engine.openJobs(copy).map((job) => job.id)).toEqual(["j1"]);
+    expect(() => engine.settleJob(structuredClone(pipe), "t1", "j2", { summary: "", outputs: { report: "x" }, now: at(5) })).toThrow(/not on this batch/);
+    // The batch ends, completed: j1 passes, j2 stays queued; a batch taking j2 clears the mark; a second requeue passes the cap and fails the job.
+    const done = { ...structuredClone(copy), status: "completed" as const };
+    pipe = step(pipe, (c) => void engine.batchEnded(c, done, at(6)));
+    expect(pipe.jobs[0]).toMatchObject({ passed: ["dev"] });
+    expect(pipe.jobs[1]).toMatchObject({ passed: [], failedRides: {}, requeued: { reason: "needs the pin" } });
+    pipe = step(pipe, (c) => engine.joinBatch(c, "dev", "t2", ["j2"], at(7)));
+    expect(pipe.jobs[1]!.requeued).toBeNull();
+    const result = { value: undefined as unknown };
+    pipe = step(pipe, (c) => void (result.value = engine.settleJob(c, "t2", "j2", { outcome: "blocked", summary: "still blocked", outputs: {}, blocker: "ticket ABC-1", now: at(8) })));
+    expect(result.value).toMatchObject({ ended: true });
+    expect(pipe.jobs[1]).toMatchObject({ status: "failed", requeues: { dev: 1 } });
+    expect(pipe.jobs[1]!.summary).toMatch(/queue\.max_requeues.*blocked: still blocked \(blocker: ticket ABC-1\)/);
   });
 
   it("reports a mismatch when a reducer and its mutator disagree", () => {

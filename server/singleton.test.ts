@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { loadPlaybooks } from "./loader";
 import { Runtime } from "./runtime";
 import { EVENT_AREAS, RunStore } from "./store";
+import * as engine from "./engine";
 import { verifyLog } from "./event-core";
 import { checkTypes, matchesFilter } from "./bus";
 import { JOB_TYPES } from "./job-events";
@@ -141,8 +142,8 @@ describe("singleton pipelines: validation", () => {
     expect(apply.playbook!.singleton).toEqual({
       branch: "main",
       stages: [
-        { id: "dev", title: "Dev", needs: [], mode: "merge", retries: 1, steps: ["dev"] },
-        { id: "prd", title: "Prd", needs: ["dev"], mode: "fifo", retries: 0, steps: ["prd"] },
+        { id: "dev", title: "Dev", needs: [], mode: "merge", retries: 1, effects: {}, steps: ["dev"] },
+        { id: "prd", title: "Prd", needs: ["dev"], mode: "fifo", retries: 0, effects: {}, steps: ["prd"] },
       ],
     });
     expect(pr.playbook!.steps[0]).toMatchObject({ kind: "handoff", handoff: "apply", outcomes: ["done", "rejected", "failure"] });
@@ -453,6 +454,80 @@ steps:
     await until(() => store.get(one.id)!.status === "completed");
     expect(store.get(one.id)!.steps.apply!.attempts.at(-1)!.outcome).toBe("skipped_out");
     expect(pipelineOf(store).jobs[0]).toMatchObject({ status: "settled", outcome: "skipped_out", summary: "docs only", passed: [] });
+  });
+
+  it("requeue a job from a step's `settle` output by a declared outcome: the batch ends without it, no failed ride, and a later batch takes it", async () => {
+    const release = `
+title: Release
+singleton: { branch: main }
+inputs:
+  pr_url: { type: string, required: true }
+outputs:
+  report: { type: string }
+outcomes: [done, blocked]
+steps:
+  - id: dev
+    role: { name: reviewer, prompt: "{{ run.jobs }}" }
+    outputs: { job_results: {} }
+    queue: { mode: merge, max_requeues: 2 }
+    settle: { output: job_results, effects: { blocked: requeue } }
+`;
+    const handing = `
+title: PR
+inputs:
+  pr_url: { type: string, required: true }
+steps:
+  - id: apply
+    handoff: { name: release, wait: false }
+    inputs: { pr_url: ~ }
+`;
+    // The effect is declared in the playbook, checked at load.
+    expect(await errorsOf({ "r.yaml": release.replace("blocked: requeue", "nope: requeue") }, "r")).toMatch(/settle.effects.nope: not an outcome of this playbook/);
+    expect(await errorsOf({ "r.yaml": release.replace("blocked: requeue", "done: requeue") }, "r")).toMatch(/settle.effects.done: the first outcome is the normal finish/);
+    expect(await errorsOf({ "r.yaml": release.replace("blocked: requeue", "blocked: fly") }, "r")).toMatch(/Invalid option/);
+    expect(await errorsOf({ "r.yaml": release.replace("max_requeues: 2", "max_requeues: 2").replace("settle: { output: job_results, effects: { blocked: requeue } }", "settle: { output: job_results }") }, "r")).toMatch(/queue.max_requeues: no `settle.effects`/);
+    const { store, runtime } = await setup({ "release.yaml": release, "pr.yaml": handing });
+    await runtime.startPlaybook({ id: "m1", workspaceId: "ws1", cwd: "/" }, "pr", { pr_url: "https://x/pull/1" });
+    await until(() => batchAt(store, "dev") !== undefined);
+    const alone = batchAt(store, "dev")!;
+    await runtime.startPlaybook({ id: "m2", workspaceId: "ws2", cwd: "/" }, "pr", { pr_url: "https://x/pull/2" });
+    await runtime.startPlaybook({ id: "m3", workspaceId: "ws3", cwd: "/" }, "pr", { pr_url: "https://x/pull/3" });
+    await runtime.startStep(alone.managerAgentId, alone.id, "dev", "");
+    await runtime.completeStep(alone.managerAgentId, alone.id, "dev", { outcome: "success", outputs: { job_results: `${alone.jobs[0]!.id}: { outputs: { report: ok } }` } });
+    await until(() => batchAt(store, "dev") !== undefined && batchAt(store, "dev")!.id !== alone.id);
+    const batch = batchAt(store, "dev")!;
+    const [fine, blocked] = batch.jobs.map((job) => job.id) as [string, string];
+    await runtime.startStep(batch.managerAgentId, batch.id, "dev", "");
+    await expect(runtime.completeStep(batch.managerAgentId, batch.id, "dev", { outcome: "success", outputs: { job_results: `${blocked}: { outcome: blocked }` } })).rejects.toThrow(/needs a reason/);
+    await expect(runtime.completeStep(batch.managerAgentId, batch.id, "dev", { outcome: "success", outputs: { job_results: `${blocked}: { outcome: done, blocker: x }` } })).rejects.toThrow(/blocker only goes with an outcome that requeues/);
+    await runtime.completeStep(batch.managerAgentId, batch.id, "dev", {
+      outcome: "success",
+      outputs: { job_results: `${fine}: { outputs: { report: ok } }\n${blocked}:\n  outcome: blocked\n  reason: blocker PR not queued\n  blocker: https://example.test/pull/9` },
+    });
+    await until(() => store.get(batch.id)!.status === "completed");
+    await until(() => batchAt(store, "dev") !== undefined && batchAt(store, "dev")!.id !== batch.id);
+    expect(batchAt(store, "dev")!.jobs.map((job) => job.id)).toEqual([blocked]);
+    const pipeline = pipelineOf(store);
+    const after = (id: string) => pipeline.jobs.find((job) => job.id === id)!;
+    expect(after(fine)).toMatchObject({ status: "settled", outcome: "done" });
+    expect(after(blocked)).toMatchObject({ status: "open", failedRides: {}, requeues: { dev: 1 }, requeued: null });
+    expect(pipeline.history.find((entry) => entry.type === "job_requeued")!.detail).toMatch(/blocked: blocker PR not queued \(blocker: https:\/\/example.test\/pull\/9\)/);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const event = (await runtime.bus.recent({ types: ["job.requeued"] })).events.find((candidate) => candidate.payload.cause === "outcome")!;
+    expect(event.payload).toMatchObject({ jobId: blocked, stage: "dev", outcome: "blocked", reason: "blocker PR not queued", blocker: "https://example.test/pull/9", requeues: 1 });
+  });
+
+  it("settle_job with an outcome the playbook declares requeue puts the job back in its stage's queue", async () => {
+    const release = APPLY.replace("outcomes: [done, rejected]", "outcomes: [done, rejected, blocked]").replace("    queue: { mode: merge }", "    queue: { mode: merge }\n    settle: { output: r }\n    outputs: { r: {} }").replace("gate: { question: Applied on dev? }", "role: { name: reviewer, prompt: x }");
+    const { store, runtime } = await setup({ "apply.yaml": release.replace("settle: { output: r }", "settle: { output: r, effects: { blocked: requeue } }"), "pr.yaml": PR });
+    await runtime.startPlaybook({ id: "m1", workspaceId: "ws1", cwd: "/" }, "pr", { pr_url: "1" });
+    await until(() => batchAt(store, "dev") !== undefined);
+    const dev = batchAt(store, "dev")!;
+    const id = dev.jobs[0]!.id;
+    await runtime.settleJob(dev.managerAgentId, dev.id, id, { outcome: "blocked", summary: "waits", outputs: {}, blocker: "anything" });
+    expect(store.get(dev.id)!.jobs[0]).toMatchObject({ status: "open", requeued: { stage: "dev", outcome: "blocked", blocker: "anything" } });
+    expect(engine.openJobs(store.get(dev.id)!)).toEqual([]);
+    expect(pipelineOf(store).jobs[0]).toMatchObject({ status: "open", failedRides: {} });
   });
 
   it("tell the handing-off run when its batch waits for a human, and when that is decided", async () => {

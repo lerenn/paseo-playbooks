@@ -24,6 +24,8 @@ export interface AdmissionJob {
   since: string;
   /** Its own inputs, all of them (long strings cut). */
   inputs: Record<string, string | number | boolean>;
+  /** Set when a batch requeued the job (an outcome the playbook declares `requeue`): the outcome, the batch's reason and its blocker (opaque strings; null when none). */
+  requeued?: { outcome: string; reason: string; blocker: string | null };
 }
 
 function clip(inputs: Job["inputs"]): AdmissionJob["inputs"] {
@@ -36,7 +38,7 @@ export function admissionInput(pipeline: Run, stageId: string): { jobs: Admissio
   const jobs: AdmissionJob[] = [];
   let chars = 2;
   for (const job of waiting) {
-    const item: AdmissionJob = { id: job.id, label: job.label, since: job.waiting.find((entry) => entry.stage === stageId)!.since, inputs: clip(job.inputs) };
+    const item: AdmissionJob = { id: job.id, label: job.label, since: job.waiting.find((entry) => entry.stage === stageId)!.since, inputs: clip(job.inputs), ...(job.requeued?.stage === stageId ? { requeued: { outcome: job.requeued.outcome, reason: job.requeued.reason, blocker: job.requeued.blocker } } : {}) };
     const size = JSON.stringify(item).length + 1;
     if (jobs.length > 0 && (jobs.length >= ADMISSION_JOBS_MAX || chars + size > ADMISSION_JOBS_CHARS)) break;
     jobs.push(item);

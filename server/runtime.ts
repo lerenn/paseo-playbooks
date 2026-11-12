@@ -1687,6 +1687,8 @@ export class Runtime {
       batches: [],
       failedRides: {},
       detached: step.handoffWait === false,
+      requeued: null,
+      requeues: {},
     };
     await this.store.mutate(pipeline.id, (current) => engine.addJob(current, job, nowIso()));
     await this.store.mutate(run.id, (current) => {
@@ -1955,7 +1957,7 @@ export class Runtime {
   }
 
   /** A batch's manager settles one of its jobs: sets its outputs, or ends it (its hand-off is told at once). */
-  async settleJob(managerId: string, runId: string, jobId: string, input: { outcome?: string | undefined; summary: string; outputs: Record<string, unknown> }): Promise<Run> {
+  async settleJob(managerId: string, runId: string, jobId: string, input: { outcome?: string | undefined; summary: string; outputs: Record<string, unknown>; blocker?: string | undefined }): Promise<Run> {
     const batch = this.ownedRun(managerId, runId);
     if (!batch.batch) throw new UserError(`run ${batch.id} is not a batch of a singleton pipeline: it carries no job`);
     if (isTerminal(batch.status)) throw new UserError(`batch ${batch.id} is ${batch.status}`);
@@ -1963,7 +1965,7 @@ export class Runtime {
     if (!this.store.get(pipelineId)) throw new UserError(`the pipeline of batch ${batch.id} no longer exists`);
     const settled = await this.store.mutate(pipelineId, (current) => engine.settleJob(current, batch.id, jobId, { ...input, now: nowIso() }));
     await this.store.mutate(batch.id, (current) => engine.mirrorJob(current, settled.job));
-    if (settled.ended) await this.deliverJob(settled.job, { outcome: settled.job.outcome!, summary: settled.job.summary ?? "", outputs: settled.job.outputs });
+    if (settled.ended) await this.deliverJob(settled.job, settled.job.status === "settled" ? { outcome: settled.job.outcome!, summary: settled.job.summary ?? "", outputs: settled.job.outputs } : { outcome: "failure", summary: settled.job.summary ?? "", outputs: {} });
     return this.store.get(batch.id)!;
   }
 
@@ -2018,7 +2020,7 @@ export class Runtime {
       try {
         const settled = await this.store.mutate(batch.batch.pipelineId, (current) => engine.settleJob(current, batchId, result.jobId, { ...result, now: nowIso() }));
         await this.store.mutate(batchId, (current) => engine.mirrorJob(current, settled.job));
-        if (settled.ended) await this.deliverJob(settled.job, { outcome: settled.job.outcome!, summary: settled.job.summary ?? "", outputs: settled.job.outputs });
+        if (settled.ended) await this.deliverJob(settled.job, settled.job.status === "settled" ? { outcome: settled.job.outcome!, summary: settled.job.summary ?? "", outputs: settled.job.outputs } : { outcome: "failure", summary: settled.job.summary ?? "", outputs: {} });
         settledIds.push(`${result.jobId}${result.outcome ? ` (${result.outcome})` : ""}`);
       } catch (error) {
         problems.push(`Could not settle ${result.jobId} from "${stepId}": ${errorText(error)}. Call settle_job for it.`);

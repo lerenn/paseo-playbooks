@@ -246,8 +246,8 @@ steps:
 | `needs` | Steps that must complete first. No `needs` = starts with the run. Steps ready together run in parallel. File order does not matter. |
 | `role` / `gate` / `playbook` / `script` / `handoff` / `branch` / `fanout` | Exactly one, as a block: an agent step, a human gate, a sub-playbook, a script the plugin runs itself, a hand-off to a singleton playbook, a branch, or a fan-out of one run per list item (see "Step kinds", "List values and fan-out steps" and "Singleton playbooks and hand-off steps" below). |
 | `when` | Run the step only for some values of the run's inputs: `{ env: prd }` or `{ env: [stg, prd] }`, or on the step's own loop count, `{ loop: ">=2" }`; otherwise it is skipped (see Conditional steps). |
-| `queue` | A singleton's stages only: `{ mode: fifo }` (default, one job per batch) or `{ mode: merge }` (every waiting job per batch). |
-| `settle` | Role or script steps: `{ output: <name> }`, a string output holding YAML per job id (`{ outputs: {...}, outcome?, reason? }`). When the step completes on a batch of a singleton pipeline, the plugin settles those jobs itself, as `settle_job` would; `complete_step` refuses entries that do not apply. Has no effect outside a batch. |
+| `queue` | A singleton's stages only: `{ mode: fifo }` (default, one job per batch) or `{ mode: merge }` (every waiting job per batch), `max_requeues: N` (how often an outcome may requeue one job here, see Requeue by outcome; unset = no cap), and `admit`. |
+| `settle` | Role or script steps: `{ output: <name> }`, a string output holding YAML per job id (`{ outputs: {...}, outcome?, reason?, blocker? }`), with `effects: { <outcome>: continue | requeue }` saying what an outcome does to the job (unlisted: it ends the job); see Requeue by outcome. When the step completes on a batch of a singleton pipeline, the plugin settles those jobs itself, as `settle_job` would; `complete_step` refuses entries that do not apply. Has no effect outside a batch. |
 | `inputs` | List of names (auto-matched) or map of name → source (`"{{ playbook.inputs.x }}"`, `"{{ steps.<id>.outputs.y }}"`) or `~`. |
 | `outputs` | Typed values the step must return with any outcome except `failure` (a failure report skips output validation). All are required then. |
 | `outcomes` | Default `[success, failure]`. See "Outcomes" below. |
@@ -549,6 +549,22 @@ steps:
   that output (YAML per job id) when the step completes, so no job is forgotten. A
   singleton's `outputs` need no source; a hand-off gets them all only with the first outcome
   (a job ended early brings what it has).
+- **Requeue by outcome:** a batch with some jobs fine and some blocked does not have to fail. The playbook says what
+  each outcome of a `settle` step does to a job: `settle: { output: job_results, effects: { blocked: requeue, wait: continue } }`
+  (outcomes of the singleton, never the first; unlisted = `terminal`: the job ends, as `ejected`). `continue`: it stays in the
+  batch (outputs set). `requeue`: it leaves the batch and goes back to the queue of the batch's stage at the place it had,
+  **without** a failed ride (`failedRides`, `retries` untouched), keeping its outputs and passed stages; the batch goes on
+  without it (it is gone from `{{ run.jobs }}` / `PLAYBOOK_JOBS`, so a later step only sees the jobs still in the batch). The
+  step completes `success` with per-job results: `job_a: { outputs: {...} }` and
+  `job_b: { outcome: blocked, reason: "pin not merged", blocker: "https://example.test/pull/9" }`. Mid-batch,
+  `settle_job { runId, jobId, outcome: "blocked", summary: <reason>, blocker?: <text> }` does the same. `reason` (required for
+  a requeue) and `blocker` (optional) are opaque strings the plugin stores and shows (`requeued` on the job, events, UI,
+  `get_run`), never interprets (a URL, a ticket, a sentence). `queue: { max_requeues: N }` caps how often one job is requeued
+  at a stage (unset = no cap); past it the job fails with the reason and blocker in its summary. A job can be requeued
+  several times, up to the cap. To take a requeued job only once its blocker is gone, give the stage `queue.admit`: the job is
+  held until the script looked again, and the script gets `requeued: { outcome, reason, blocker }` on the job in
+  `PLAYBOOK_JOBS`; without `admit` the next batch may take it at once (the plugin never polls anything). Events:
+  `job.requeued` with `cause: outcome` (`outcome`, `reason`, `blocker`, `requeues`).
 - **Requeueing:** a batch that fails (a lost manager, a rejected gate) puts its jobs back at the stage by itself while the
   stage's `retries` allow; past them the jobs are `failed`. `requeue_job { runId, jobId, reason? }` (any agent except
   step and gate agents; `runId` is the pipeline or one of its batches) puts a **failed** job back: same id, inputs and
