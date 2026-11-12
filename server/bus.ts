@@ -88,6 +88,30 @@ export function globToRegExp(pattern: string): RegExp {
   return new RegExp(`^${pattern.split("*").map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*")}$`);
 }
 
+/**
+ * Checks type patterns and filter keys against event type definitions; throws a BusError that says what is
+ * known. Shared by `subscribe_events` and the `wake_on` of script steps (the loader). `thresholds: false`
+ * refuses `olderThanMinutes`, which only a subscription to a threshold type can use.
+ */
+export function checkTypes(defs: EventTypeDef[], types: string[], filter: Record<string, string | number | boolean>, thresholds = true): void {
+  const names = defs.map((def) => def.type).sort();
+  for (const pattern of types) {
+    if (!names.some((type) => globToRegExp(pattern).test(type))) throw new BusError(`no event type matches "${pattern}" (known: ${names.join(", ")})`);
+  }
+  const chosen = defs.filter((def) => matchesType(types, def.type));
+  const fields = new Set(chosen.flatMap((def) => Object.keys(def.payload.shape)));
+  if (thresholds && chosen.some((def) => def.threshold)) fields.add("olderThanMinutes");
+  for (const key of Object.keys(filter)) {
+    if (!fields.has(key)) throw new BusError(`filter "${key}" is not a field of ${types.join(", ")} (fields: ${[...fields].sort().join(", ")})`);
+  }
+}
+
+/** Does an event match type patterns and an equality filter on its payload? (The rule of `wake_on`; a subscription adds threshold handling.) */
+export function matchesFilter(types: string[], filter: Record<string, string | number | boolean>, event: BusEvent): boolean {
+  if (!matchesType(types, event.type)) return false;
+  return Object.entries(filter).every(([key, value]) => event.payload[key] === value);
+}
+
 export function matchesType(patterns: string[], type: string): boolean {
   return patterns.some((pattern) => globToRegExp(pattern).test(type));
 }
@@ -119,7 +143,11 @@ export interface EmitMeta {
   at?: string;
 }
 
+/** An in-process listener of committed events (ADR 2026-11-12-event-core-internal-wakeups): sees every emitted event, is not an agent subscription (no cap, no debounce, no delivery). */
+export type EmitListener = (event: BusEvent) => void;
+
 export class EventBus {
+  private readonly emitListeners = new Set<EmitListener>();
   private readonly types = new Map<string, EventTypeDef>();
   private readonly notifiers = new Map<string, Notifier>();
   private log: BusEvent[] = [];
@@ -214,7 +242,20 @@ export class EventBus {
       this.queues.set(subscription.id, queue);
     }
     this.savePending();
+    for (const listener of [...this.emitListeners]) {
+      try {
+        listener(event);
+      } catch (error) {
+        console.error(`[playbooks] a listener of ${type} failed:`, error instanceof Error ? error.message : error);
+      }
+    }
     return event;
+  }
+
+  /** Calls `listener` for every event emitted from now on, in order, after it is recorded. A listener that throws is logged and skipped. Returns the function that removes it. */
+  onEmit(listener: EmitListener): () => void {
+    this.emitListeners.add(listener);
+    return () => void this.emitListeners.delete(listener);
   }
 
   private cap(queue: PendingQueue): void {
@@ -283,15 +324,7 @@ export class EventBus {
 
   /** Checks type patterns and filter keys against the registry; throws a BusError that says what is known. */
   private check(types: string[], filter: Record<string, string | number | boolean>): void {
-    for (const pattern of types) {
-      if (![...this.types.keys()].some((type) => globToRegExp(pattern).test(type))) throw new BusError(`no event type matches "${pattern}" (known: ${this.typeNames().join(", ")})`);
-    }
-    const chosen = [...this.types.values()].filter((def) => matchesType(types, def.type));
-    const fields = new Set(chosen.flatMap((def) => Object.keys(def.payload.shape)));
-    if (chosen.some((def) => def.threshold)) fields.add("olderThanMinutes");
-    for (const key of Object.keys(filter)) {
-      if (!fields.has(key)) throw new BusError(`filter "${key}" is not a field of ${types.join(", ")} (fields: ${[...fields].sort().join(", ")})`);
-    }
+    checkTypes([...this.types.values()], types, filter);
   }
 
   async subscribe(owner: string, sink: { kind: string; target: string }, types: string[], filter: Record<string, string | number | boolean> = {}, delivery: "idle" | "steer" = "idle"): Promise<Subscription> {

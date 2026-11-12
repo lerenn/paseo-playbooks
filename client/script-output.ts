@@ -18,10 +18,18 @@ export function formatSeconds(seconds: number): string {
   return minutes % 60 ? `${Math.floor(minutes / 60)} h ${minutes % 60} min` : `${Math.floor(minutes / 60)} h`;
 }
 
+/** What started a check, as the sheet says it: "first run", "poll", "woken by job.settled" (stored as "first", "poll", "event:<type>"). */
+export function triggerLabel(trigger: string | null | undefined): string {
+  if (!trigger) return "";
+  if (trigger === "first") return "first run";
+  if (trigger.startsWith("event:")) return `woken by ${trigger.slice(6)}`;
+  return trigger;
+}
+
 /** Whether a script step has a check running now, or waits for its next one. `stepRunning`: the step's status is "running". */
 export function scriptActivity(output: ScriptOutput | undefined, nextCheckAt: string | null | undefined, stepRunning: boolean, now: number): ScriptActivity {
   if (!stepRunning) return { kind: "idle", text: "" };
-  if (output?.running && output.since) return { kind: "running", text: `Running now · ${formatSeconds((now - Date.parse(output.since)) / 1000)}` };
+  if (output?.running && output.since) return { kind: "running", text: `Running now · ${formatSeconds((now - Date.parse(output.since)) / 1000)}${output.trigger ? ` · ${triggerLabel(output.trigger)}` : ""}` };
   if (nextCheckAt) {
     const seconds = (Date.parse(nextCheckAt) - now) / 1000;
     return { kind: "waiting", text: seconds > 1 ? `Waiting · next check in ~${formatSeconds(seconds)}` : "Waiting · next check starting" };
@@ -34,7 +42,8 @@ export function scriptActivity(output: ScriptOutput | undefined, nextCheckAt: st
 export function checkHeading(check: ScriptOutput["checks"][number]): string {
   const outcome = check.outcome === "not_yet" ? "not yet" : check.outcome;
   const exit = check.exitCode === null ? "" : ` · exit ${check.exitCode}`;
-  return `Check ${check.n} · ${outcome}${exit} · ${new Date(check.endedAt).toLocaleTimeString()}`;
+  const why = check.trigger ? ` · ${triggerLabel(check.trigger)}` : "";
+  return `Check ${check.n} · ${outcome}${exit}${why} · ${new Date(check.endedAt).toLocaleTimeString()}`;
 }
 
 /** The last `max` lines of a tail, so a long one does not fill the sheet. */
