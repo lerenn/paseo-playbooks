@@ -33,6 +33,7 @@
 <li><a href="#agents">Agent settings</a></li>
 <li><a href="#readonly">Readonly roles and concurrency</a></li>
 <li><a href="#validation">Validation</a></li>
+<li><a href="#slow-steps">Slow steps</a></li>
 <li><a href="#pitfalls">YAML pitfall</a></li>
 </ul></div>
 
@@ -388,6 +389,8 @@ steps:
 <li>the same playbook id in both folders</li>
 </ul>
 
+<h2 id="slow-steps">Slow steps</h2>
+<p>A step that takes more than <code>factor</code> times the mean duration of its last <code>runs</code> completed runs (<code>slow_warning</code>, defaults 2 and 10, at least 3 samples) is flagged in the panel with a yellow triangle. Agents see the same rule on the server's whole run history: <code>get_run</code> gives a slow step <code>slow: { elapsedMs, baselineMs, factor, ratio, samples, running }</code> and the run <code>slowSteps</code>; <code>list_runs</code> rows have <code>slowSteps</code>, and <code>list_runs { slow: true }</code> lists only the runs with a step that is slow right now. <code>subscribe_events</code> type <code>step.slow</code> (<code>stepId</code>, <code>elapsedMs</code>, <code>baselineMs</code>, <code>factor</code>, <code>ratio</code>, <code>samples</code>) fires once when a running step first goes past the threshold, checked every 30 seconds.</p>
 <h2 id="pitfalls">YAML pitfall</h2>
 <p>Inside a flow mapping (<code>{ ... }</code>), a comma ends the value. Quote text that contains a comma, or use block style:</p>
 <pre><code>outputs:

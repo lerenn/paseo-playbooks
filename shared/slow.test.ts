@@ -48,7 +48,7 @@ describe("slowSteps", () => {
 
 describe("keepSlow", () => {
   it("keeps a warning that is no longer computed", () => {
-    const info = { elapsedMs: 3, baselineMs: 1, ratio: 3 };
+    const info = { elapsedMs: 3, baselineMs: 1, ratio: 3, samples: 3 };
     expect(keepSlow({ build: info }, {})).toEqual({ build: info });
   });
 });

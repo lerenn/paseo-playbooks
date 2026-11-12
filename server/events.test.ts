@@ -588,6 +588,34 @@ describe("step and run events", () => {
     expect((await again.runtime.bus.recent({ since: before })).events.map((event) => event.type)).toEqual(["step.started"]);
   });
 
+  it("emits step.slow once when a running step passes factor x its usual duration, never for a restart or without a baseline", async () => {
+    const { runtime, store } = await setup();
+    await runtime.subscribeEvents("watcher", ["step.slow"], { playbook: "flow" }, "steer");
+    await runtime.watchEvents();
+    const t0 = Date.now() - 3_600_000;
+    for (let i = 0; i < 3; i++) {
+      const done = await runtime.startPlaybook(mgr(`h${i}`), "flow", {});
+      await runtime.startStep(`h${i}`, done.id, "work", "");
+      await runtime.completeStep(`h${i}`, done.id, "work", { outcome: "success", summary: "ok" });
+      await store.mutate(done.id, (run) => {
+        const attempt = run.steps.work!.attempts[0]!;
+        attempt.startedAt = new Date(t0 + i * 600_000).toISOString();
+        attempt.endedAt = new Date(t0 + i * 600_000 + 240_000).toISOString();
+      });
+    }
+    const run = await runtime.startPlaybook(mgr("m1"), "flow", {});
+    await runtime.startStep("m1", run.id, "work", "");
+    await store.mutate(run.id, (r) => void (r.steps.work!.attempts[0]!.startedAt = new Date(Date.now() - 6 * 60_000).toISOString()));
+    await runtime.watchEvents(Date.now());
+    expect((await runtime.bus.recent({ types: ["step.slow"] })).events).toHaveLength(0);
+    await store.mutate(run.id, (r) => void (r.steps.work!.attempts[0]!.startedAt = new Date(Date.now() - 12 * 60_000).toISOString()));
+    await runtime.watchEvents(Date.now() + 60_000);
+    await runtime.watchEvents(Date.now() + 120_000);
+    const { events } = await runtime.bus.recent({ types: ["step.slow"] });
+    expect(events).toHaveLength(1);
+    expect(events[0]!.payload).toMatchObject({ runId: run.id, stepId: "work", baselineMs: 240_000, factor: 2, samples: 3 });
+  });
+
   it("accepts the new types and fields in subscriptions and refuses unknown filter keys", async () => {
     const { runtime } = await setup();
     await runtime.subscribeEvents("a", ["step.started", "step.completed", "run.completed", "run.canceled"], { runId: (await runtime.startPlaybook(mgr("m1"), "flow", {})).id });

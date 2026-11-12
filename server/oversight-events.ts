@@ -2,12 +2,15 @@ import { z } from "zod";
 import type { Gate, Run } from "../shared/types";
 import { isActive } from "../shared/types";
 import { type BusEvent, type EventBus, type EventTypeDef } from "./bus";
+import { slowEntry, SlowIndex } from "./slow";
 import { failedListing, gateListing, type GateListing } from "./overseer";
 
 /** The first producers of the bus: gates opening, waiting too long and being decided, and runs failing. */
 
 export const DEFAULT_STALE_MINUTES = 30;
 const SOURCE = "runs";
+/** How often running steps are measured for step.slow (the panel measures every 30 s too). */
+const SLOW_CHECK_MS = 30_000;
 
 const runFields = { runId: z.string(), playbook: z.string(), runName: z.string().nullable(), projectId: z.string(), workspaceDir: z.string() };
 const stepFields = { ...runFields, stepId: z.string(), attempt: z.number().int().nullable() };
@@ -102,6 +105,15 @@ export const OVERSIGHT_TYPES: EventTypeDef[] = [
     line: (event) => stepLine(event, `ended with outcome ${String(event.payload.outcome)}`),
   },
   {
+    type: "step.slow",
+    description: "A running step first went past `factor` times its usual duration (the panel's attention triangle; shared/slow.ts): stepId, elapsedMs, baselineMs, factor, ratio, samples. Once per step run.",
+    payload: z.object({ ...stepFields, elapsedMs: z.number(), baselineMs: z.number(), factor: z.number(), ratio: z.number(), samples: z.number().int() }),
+    line: (event) => {
+      const p = event.payload as { stepId: string; elapsedMs: number; baselineMs: number; ratio: number };
+      return `- step.slow: step ${p.stepId} of ${runName(event.payload)} has run ${Math.round(p.elapsedMs / 1000)}s, ${p.ratio}x the usual ${Math.round(p.baselineMs / 1000)}s. It may be stuck. Tools: get_run { runId: "${event.runId}" }, read_agent_conversation.`;
+    },
+  },
+  {
     type: "run.completed",
     description: "A run completed (its main steps are done; after-tasks may still run).",
     payload: z.object(runFields),
@@ -155,6 +167,9 @@ export class OversightProducer {
   private readonly attempts = new Map<string, number>();
   private readonly reported = new Set<string>();
   private seeded = false;
+  /** Step runs already announced as slow (run, step, first start), and when the last look was. */
+  private readonly slowDone = new Set<string>();
+  private slowAt = 0;
 
   constructor(private readonly bus: EventBus) {}
 
@@ -167,6 +182,7 @@ export class OversightProducer {
     this.seeded = true;
     const thresholds = await this.bus.thresholds("gate.stale");
     const open = new Set<string>();
+    await this.slow(runs, now, seeding);
     for (const run of runs) {
       if (run.archivedAt) {
         if (seeding) this.cursor.set(run.id, run.seq);
@@ -263,5 +279,30 @@ export class OversightProducer {
       { ...gatePayload(listing), heldBefore: by, heldBeforeRole: by === "role" ? gate.decider.role ?? null : null, reason: gate.escalated, escalatedAt: gate.escalatedAt ?? null, waitingForHuman: true },
       { runId: run.id, source: SOURCE, actors },
     );
+  }
+
+  /** step.slow: at most every SLOW_CHECK_MS, and only while a step runs; a daemon restart does not announce the ones already slow. */
+  private async slow(runs: Run[], now: number, seeding: boolean): Promise<void> {
+    if (!seeding && now - this.slowAt < SLOW_CHECK_MS) return;
+    const running = runs.filter((run) => !run.archivedAt && !run.batch && isActive(run) && Object.values(run.steps).some((state) => state.status === "running"));
+    if (running.length === 0) return;
+    this.slowAt = now;
+    const index = new SlowIndex(runs);
+    for (const run of running) {
+      for (const [stepId, info] of Object.entries(index.of(run, now))) {
+        const state = run.steps[stepId]!;
+        if (state.status !== "running") continue;
+        const key = `${run.id}/${stepId}/${state.attempts[0]?.startedAt ?? ""}`;
+        if (this.slowDone.has(key)) continue;
+        this.slowDone.add(key);
+        if (seeding) continue;
+        const { factor, ratio, samples } = slowEntry(run, stepId, info);
+        await this.bus.emit(
+          "step.slow",
+          { runId: run.id, playbook: run.playbook.id, runName: run.name ?? null, projectId: run.projectId, workspaceDir: run.workspaceDir, stepId, attempt: state.attempts.at(-1)?.n ?? null, elapsedMs: info.elapsedMs, baselineMs: Math.round(info.baselineMs), factor, ratio, samples },
+          { runId: run.id, source: SOURCE },
+        );
+      }
+    }
   }
 }

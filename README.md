@@ -248,6 +248,11 @@ with that tag.
   Playbooks screen and on the step in the panel, with e.g. "12m, 3.1x the usual 4m". It needs 3 completed runs;
   it is computed from the run history the panel has loaded (nothing is stored) and, once shown, stays on screen.
   Set `slow_warning: { runs, factor }` in a playbook or in `defaults/main.yaml` (the playbook's wins, field by field).
+- Slow steps for agents (same rule, `shared/slow.ts`, but on the server's whole run history): `get_run` shows
+  `slow: { elapsedMs, baselineMs, factor, ratio, samples, running }` on a slow step and `slowSteps` on the run;
+  `list_runs` rows have `slowSteps`, and `list_runs { slow: true }` lists only runs with a step that is slow right
+  now; `subscribe_events` type `step.slow` fires once when a running step first goes past the threshold (checked
+  every 30 s). See `docs/adrs/2026-11-12-slow-steps-in-tools.md`.
 - After a plugin update, idle agents whose session holds the old plugin's tools are reloaded (history
   kept) so they stop failing with "Tool not found"; an agent mid-turn is reloaded when its turn ends,
   never one waiting on a permission or question. Turn off with `reload_stale_sessions: false` in

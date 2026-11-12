@@ -5,7 +5,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import type { Playbook, Run } from "../shared/types";
 import { completeStep, endTurn, newRun, recordReport, startAttempt } from "./engine";
 import { loadPlaybooks } from "./loader";
-import { COMPACT_SUMMARY_MAX, defaultRunToCancel, describeEntries, gateSummaryMissing, runChange, runCompact, runFull } from "./tools";
+import { COMPACT_SUMMARY_MAX, defaultRunToCancel, describeEntries, gateSummaryMissing, runChange, runCompact, runFull, runListing } from "./tools";
 
 /** Only the fields defaultRunToCancel reads. */
 function run(id: string, managerAgentId: string, workspaceId: string, status: Run["status"] = "running"): Run {
@@ -135,5 +135,46 @@ describe("playbook views", () => {
 
   it("request_gate without a summary says what to give and where loop feedback goes", () => {
     expect(gateSummaryMissing("approve")).toMatch(/"summary".*complete_step's "summary"/s);
+  });
+});
+
+describe("slow steps in tools (ADR 2026-11-12-slow-steps-in-tools)", () => {
+  const T0 = Date.parse("2026-11-12T10:00:00.000Z");
+  const iso = (minutes: number) => new Date(T0 + minutes * 60_000).toISOString();
+
+  /** A run of the views playbook whose `investigate` took `minutes`, starting at `at`; running when `ended` is false. */
+  async function timed(id: string, at: number, minutes: number | null): Promise<Run> {
+    const run = structuredClone(await viewsRun());
+    run.id = id;
+    const step = run.steps.investigate!;
+    step.attempts[0]!.startedAt = iso(at);
+    step.attempts[0]!.endedAt = minutes === null ? null : iso(at + minutes);
+    if (minutes === null) step.status = "running";
+    return run;
+  }
+
+  it("get_run flags the slow step with its numbers, and lists it in slowSteps", async () => {
+    const past = [await timed("a", 0, 4), await timed("b", 10, 4), await timed("c", 20, 4)];
+    const current = await timed("now", 100, null);
+    const { SlowIndex } = await import("./slow");
+    const slow = new SlowIndex([...past, current]).of(current, T0 + 112 * 60_000);
+    const compact = runCompact(current, undefined, slow);
+    expect(compact.slowSteps).toEqual(["investigate"]);
+    expect(compact.steps.investigate).toMatchObject({ slow: { elapsedMs: 12 * 60_000, baselineMs: 4 * 60_000, factor: 2, ratio: 3, samples: 3, running: true } });
+    expect(runFull(current, undefined, slow).steps.investigate).toMatchObject({ slow: { ratio: 3 } });
+    expect(runCompact(current).slowSteps).toEqual([]);
+    expect(runCompact(current).steps.investigate).not.toHaveProperty("slow");
+  });
+
+  it("runListing carries slowSteps; no baseline (fewer than 3 samples) means no flag", async () => {
+    const { SlowIndex } = await import("./slow");
+    const current = await timed("now", 100, null);
+    const few = new SlowIndex([await timed("a", 0, 4), current]).of(current, T0 + 500 * 60_000);
+    expect(few).toEqual({});
+    expect(runListing(current, few).slowSteps).toEqual([]);
+    const all = [await timed("a", 0, 4), await timed("b", 10, 4), await timed("c", 20, 4), current];
+    const listing = runListing(current, new SlowIndex(all).of(current, T0 + 112 * 60_000));
+    expect(listing.slowSteps).toEqual(["investigate"]);
+    expect(listing).toMatchObject({ slow: { investigate: { running: true, samples: 3 } } });
   });
 });

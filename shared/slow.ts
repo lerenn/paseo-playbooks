@@ -30,6 +30,8 @@ export interface SlowInfo {
   baselineMs: number;
   /** elapsed / baseline. */
   ratio: number;
+  /** How many completed runs the baseline is the mean of. */
+  samples: number;
 }
 
 /** When a step's work began (its first attempt) and ended (the last attempt, once the step is over). */
@@ -68,6 +70,11 @@ export function elapsedMs(step: SlowStepView, now: number): number | null {
  * itself left out; null with fewer than MIN_SLOW_SAMPLES.
  */
 export function baselineMs(history: readonly SlowRunView[], playbook: string, stepId: string, runs: number, except: string): number | null {
+  return baseline(history, playbook, stepId, runs, except)?.mean ?? null;
+}
+
+/** The baseline and the number of samples it is the mean of; null with fewer than MIN_SLOW_SAMPLES. */
+export function baseline(history: readonly SlowRunView[], playbook: string, stepId: string, runs: number, except: string): { mean: number; samples: number } | null {
   const samples: Array<{ end: number; duration: number }> = [];
   for (const run of history) {
     if (run.id === except || run.playbook.id !== playbook) continue;
@@ -80,7 +87,7 @@ export function baselineMs(history: readonly SlowRunView[], playbook: string, st
   }
   const latest = samples.sort((a, b) => b.end - a.end).slice(0, runs);
   if (latest.length < MIN_SLOW_SAMPLES) return null;
-  return latest.reduce((sum, sample) => sum + sample.duration, 0) / latest.length;
+  return { mean: latest.reduce((sum, sample) => sum + sample.duration, 0) / latest.length, samples: latest.length };
 }
 
 /** The slow steps of a run, by step id: elapsed time over `factor` times the baseline. */
@@ -90,9 +97,9 @@ export function slowSteps(run: SlowRunView, history: readonly SlowRunView[], now
   for (const [stepId, step] of Object.entries(run.steps)) {
     const elapsed = elapsedMs(step, now);
     if (elapsed === null) continue;
-    const baseline = baselineMs(history, run.playbook.id, stepId, runs, run.id);
-    if (baseline === null || baseline <= 0 || elapsed <= factor * baseline) continue;
-    slow[stepId] = { elapsedMs: elapsed, baselineMs: baseline, ratio: elapsed / baseline };
+    const base = baseline(history, run.playbook.id, stepId, runs, run.id);
+    if (base === null || base.mean <= 0 || elapsed <= factor * base.mean) continue;
+    slow[stepId] = { elapsedMs: elapsed, baselineMs: base.mean, ratio: elapsed / base.mean, samples: base.samples };
   }
   return slow;
 }

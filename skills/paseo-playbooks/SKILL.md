@@ -1074,3 +1074,18 @@ such a run. A fan-out child uses its own playbook's mode.
 With no manager, a human gate is shown in the panel and also put to the human in the conversation of the step agent just before it, when
 that agent is still alive (`role: { archive_agents: false }`, idle): the plugin asks it to use `AskUserQuestion`, then `answer_gate`
 (a tool only those step agents have). Answering in the panel or in the conversation closes the gate; the other surface is dismissed.
+
+## Slow steps
+
+The panel marks a step with a yellow "attention" triangle when it takes more than `factor` (default 2) times the
+mean duration of its last `runs` (default 10, at least 3) completed runs of the same playbook and step
+(`slow_warning`). Agents can see the same thing:
+
+- "Which steps take longer than usual right now?": `list_runs { slow: true }`. Each run listed has `slowSteps`
+  (step ids) and `slow` (per step: `elapsedMs`, `baselineMs`, `factor`, `ratio`, `samples`, `running`).
+- One run: `get_run { runId }` (compact or full): `slowSteps` on the run and `slow` on each slow step. A slow step
+  that already ended is listed there too (`running: false`).
+- Normal `list_runs` rows carry `slowSteps` as well. A step with fewer than 3 completed runs has no baseline and is never slow.
+- `subscribe_events` with type `step.slow` (scoped, like the other step events): one message when a running step
+  first goes past the threshold (measured every 30 s; not repeated, and not announced for steps already slow when the
+  daemon restarts). A slow step is often stuck: read its agent with `read_agent_conversation` before nudging it.
