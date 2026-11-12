@@ -37,7 +37,7 @@ function fakePaseo(dir: string) {
   return { paseo, sent };
 }
 
-// Two stations, each one reviewer step that settles jobs; `pin` is required to leave the pipeline.
+// Two stages, each one reviewer step that settles jobs; `pin` is required to leave the pipeline.
 const RELEASE = `
 title: Release
 singleton: { branch: main }
@@ -92,7 +92,7 @@ steps:
 `;
 
 async function setup(release: string) {
-  const dir = await mkdtemp(path.join(tmpdir(), "train-safety-"));
+  const dir = await mkdtemp(path.join(tmpdir(), "batch-safety-"));
   temps.push(dir);
   const root = path.join(dir, ".paseo/plugins/playbooks");
   await mkdir(root, { recursive: true });
@@ -117,20 +117,20 @@ async function until(check: () => boolean, ms = 3000): Promise<void> {
 }
 
 const now = () => new Date().toISOString();
-const trainAt = (store: RunStore, station: string) =>
-  store.list().find((run) => run.train?.station === station && (run.status === "running" || run.status === "waiting_gate"));
-const pipelineOf = (store: RunStore) => store.list().find((run) => run.playbook.singleton && run.train === null)!;
+const batchAt = (store: RunStore, stage: string) =>
+  store.list().find((run) => run.batch?.stage === stage && (run.status === "running" || run.status === "waiting_gate"));
+const pipelineOf = (store: RunStore) => store.list().find((run) => run.playbook.singleton && run.batch === null)!;
 
 async function hand(runtime: Runtime, services = "pg-migrations") {
   return runtime.startPlaybook({ id: "m1", workspaceId: "ws1", cwd: "/" }, "pr", { pr_url: "1", services });
 }
 
-describe("train safety", () => {
-  it("keeps the settle output of the report against a manager's empty value, and checks outputs before the train completes", async () => {
+describe("batch safety", () => {
+  it("keeps the settle output of the report against a manager's empty value, and checks outputs before the batch completes", async () => {
     const { store, runtime } = await setup(RELEASE);
     await hand(runtime);
-    await until(() => trainAt(store, "dev") !== undefined);
-    const dev = trainAt(store, "dev")!;
+    await until(() => batchAt(store, "dev") !== undefined);
+    const dev = batchAt(store, "dev")!;
     const job = dev.jobs[0]!.id;
     const { agentId } = await runtime.startStep(dev.managerAgentId, dev.id, "dev", "");
     await runtime.report(agentId, { outcome: "success", summary: "ok", outputs: { job_results: `${job}: { outputs: { pin: abc } }` } });
@@ -140,9 +140,9 @@ describe("train safety", () => {
     await runtime.completeStep(dev.managerAgentId, dev.id, "dev", { outcome: "success" });
     expect(pipelineOf(store).jobs[0]!.outputs).toEqual({ pin: "abc" });
 
-    // At the last station, a report that sets nothing for a job without `pin`: the train would end it without its output.
-    await until(() => trainAt(store, "prd") !== undefined);
-    const prd = trainAt(store, "prd")!;
+    // At the last stage, a report that sets nothing for a job without `pin`: the batch would end it without its output.
+    await until(() => batchAt(store, "prd") !== undefined);
+    const prd = batchAt(store, "prd")!;
     pipelineOf(store).jobs[0]!.outputs = {};
     await store.mutate(pipelineOf(store).id, (run) => void (run.jobs[0]!.outputs = {}));
     await store.mutate(prd.id, (run) => void (run.jobs[0]!.outputs = {}));
@@ -153,14 +153,14 @@ describe("train safety", () => {
     expect(store.get(prd.id)!.status).toBe("running");
   });
 
-  it("does not hand a job off again when it passed every station and only lacks an output", async () => {
+  it("does not hand a job off again when it passed every stage and only lacks an output", async () => {
     const { store, runtime } = await setup(GATES);
     const pr = await hand(runtime);
-    for (const station of ["dev", "prd"]) {
-      await until(() => trainAt(store, station) !== undefined);
-      const train = trainAt(store, station)!;
-      await runtime.requestGate(train.managerAgentId, train.id, station, "ok?", "");
-      await runtime.decideGate(train.id, station, { decision: "approved", comment: null, by: null, via: "panel", now: now() });
+    for (const stage of ["dev", "prd"]) {
+      await until(() => batchAt(store, stage) !== undefined);
+      const batch = batchAt(store, stage)!;
+      await runtime.requestGate(batch.managerAgentId, batch.id, stage, "ok?", "");
+      await runtime.decideGate(batch.id, stage, { decision: "approved", comment: null, by: null, via: "panel", now: now() });
     }
     await until(() => store.get(pr.id)!.status === "failed");
     const pipeline = pipelineOf(store);
@@ -173,22 +173,22 @@ describe("train safety", () => {
   it("opens the ask of a step that reports an ask outcome, and refuses nudge_step on it", async () => {
     const { store, runtime } = await setup(RELEASE);
     await hand(runtime);
-    await until(() => trainAt(store, "dev") !== undefined);
-    const dev = trainAt(store, "dev")!;
+    await until(() => batchAt(store, "dev") !== undefined);
+    const dev = batchAt(store, "dev")!;
     const { agentId } = await runtime.startStep(dev.managerAgentId, dev.id, "dev", "");
     await runtime.report(agentId, { outcome: "asking", summary: "Which database?", outputs: {} });
     await runtime.onStepTurnEnded(dev.id, agentId, "completed");
-    const train = store.get(dev.id)!;
-    expect(train.gates).toMatchObject([{ kind: "ask", stepId: "dev", status: "pending" }]);
-    expect(train.steps.dev!.status).toBe("waiting");
+    const batch = store.get(dev.id)!;
+    expect(batch.gates).toMatchObject([{ kind: "ask", stepId: "dev", status: "pending" }]);
+    expect(batch.steps.dev!.status).toBe("waiting");
     await expect(runtime.nudgeStep(dev.id, "dev", "the answer is pg")).rejects.toThrow(/resume/);
   });
 
   it("refuses no_deploy for a job whose services deploy, and an unknown outcome in a report", async () => {
     const { store, runtime } = await setup(RELEASE);
     await hand(runtime);
-    await until(() => trainAt(store, "dev") !== undefined);
-    const dev = trainAt(store, "dev")!;
+    await until(() => batchAt(store, "dev") !== undefined);
+    const dev = batchAt(store, "dev")!;
     const job = dev.jobs[0]!.id;
     await expect(runtime.settleJob(dev.managerAgentId, dev.id, job, { outcome: "no_deploy", summary: "", outputs: {} })).rejects.toThrow(/only for a job whose services is none/);
     const { agentId } = await runtime.startStep(dev.managerAgentId, dev.id, "dev", "");
@@ -199,8 +199,8 @@ describe("train safety", () => {
   it("accepts no_deploy for a job whose services is none", async () => {
     const { store, runtime } = await setup(RELEASE);
     await hand(runtime, "none");
-    await until(() => trainAt(store, "dev") !== undefined);
-    const dev = trainAt(store, "dev")!;
+    await until(() => batchAt(store, "dev") !== undefined);
+    const dev = batchAt(store, "dev")!;
     await runtime.settleJob(dev.managerAgentId, dev.id, dev.jobs[0]!.id, { outcome: "no_deploy", summary: "docs", outputs: {} });
     expect(pipelineOf(store).jobs[0]).toMatchObject({ status: "settled", outcome: "no_deploy" });
   });

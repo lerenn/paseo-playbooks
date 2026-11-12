@@ -38,7 +38,7 @@ steps:
   - id: wait
     script: { run: wait.sh, poll: ${poll}, wake_on: ${wake} }
 `;
-const JOB_SETTLED = "[{ types: [job.settled], filter: { playbook: other_pipeline, station: production } }]";
+const JOB_SETTLED = "[{ types: [job.settled], filter: { playbook: other_pipeline, stage: production } }]";
 
 async function setup(yaml: string, wakeGapMs = 100) {
   const dir = await mkdtemp(path.join(tmpdir(), "wake-"));
@@ -71,7 +71,11 @@ async function until(check: () => boolean | Promise<boolean>, ms = 5000): Promis
   }
 }
 
-const jobSettled = (over: Record<string, unknown> = {}) => ({ runId: "pipe", playbook: "other_pipeline", runName: null, projectId: "p", workspaceDir: "/", jobId: "job-1", label: "x", station: "production", trainRunId: null, outcome: "success", summary: null, ...over });
+const jobSettled = (over: Record<string, unknown> = {}) => {
+  const payload = { runId: "pipe", playbook: "other_pipeline", runName: null, projectId: "p", workspaceDir: "/", jobId: "job-1", label: "x", stage: "production", batchRunId: null, outcome: "success", summary: null, ...over };
+  // The events carry the deprecated names next to the new ones (ADR 2026-11-12-stage-batch-rename).
+  return { station: payload.stage, trainRunId: payload.batchRunId, ...payload };
+};
 const stepCompleted = (runId: string, stepId: string) => ({ runId, playbook: "wait", runName: null, projectId: "p", workspaceDir: "/", stepId, attempt: 1, outcome: "success" });
 const wakers = (runtime: Runtime) => (runtime as unknown as { wakers: Map<string, unknown> }).wakers;
 
@@ -79,7 +83,7 @@ describe("script wake_on", () => {
   it("is shown by the wait_for_upstream example", async () => {
     const entry = (await loadPlaybooks(EXAMPLES)).entries.find((candidate) => candidate.id === "wait_for_upstream")!;
     expect(entry.errors).toEqual([]);
-    expect(entry.playbook!.steps.find((step) => step.id === "wait_settled")).toMatchObject({ pollMs: 600_000, wakeOn: [{ types: ["job.advanced", "job.settled"], filter: { playbook: "upstream", station: "production" } }] });
+    expect(entry.playbook!.steps.find((step) => step.id === "wait_settled")).toMatchObject({ pollMs: 600_000, wakeOn: [{ types: ["job.advanced", "job.settled"], filter: { playbook: "upstream", stage: "production" } }] });
   });
 
   it("runs an idle step's check at once on a matching event, and says why", async () => {
@@ -95,7 +99,7 @@ describe("script wake_on", () => {
   it("ignores events that do not match (type, filter)", async () => {
     const { dir, runtime } = await setup(playbook("1h", JOB_SETTLED));
     await until(async () => (await count(dir)) === 1);
-    await runtime.bus.emit("job.settled", jobSettled({ station: "staging" }), { runId: "pipe", source: "pipelines" });
+    await runtime.bus.emit("job.settled", jobSettled({ stage: "staging" }), { runId: "pipe", source: "pipelines" });
     await runtime.bus.emit("job.settled", jobSettled({ playbook: "else" }), { runId: "pipe", source: "pipelines" });
     await runtime.bus.emit("job.failed", { ...jobSettled(), summary: undefined, reason: null }, { runId: "pipe", source: "pipelines" });
     await sleep(400);
@@ -202,9 +206,9 @@ describe("script wake_on", () => {
   it("matches many listeners quickly", async () => {
     const { runtime } = await setup(playbook("1h", JOB_SETTLED));
     const map = wakers(runtime) as Map<string, unknown>;
-    for (let i = 0; i < 2000; i++) map.set(`fake-${i}`, { runId: `r${i}`, stepId: "s", rules: [{ types: [/^job\.settled$/], filter: [["station", `st-${i}`]] }], busy: false, dirty: null, gapWait: false, endedAt: 0 });
+    for (let i = 0; i < 2000; i++) map.set(`fake-${i}`, { runId: `r${i}`, stepId: "s", rules: [{ types: [/^job\.settled$/], filter: [["stage", `st-${i}`]] }], busy: false, dirty: null, gapWait: false, endedAt: 0 });
     const started = performance.now();
-    for (let i = 0; i < 500; i++) await runtime.bus.emit("job.settled", jobSettled({ station: "none" }), { runId: "pipe", source: "pipelines" });
+    for (let i = 0; i < 500; i++) await runtime.bus.emit("job.settled", jobSettled({ stage: "none" }), { runId: "pipe", source: "pipelines" });
     expect(performance.now() - started).toBeLessThan(5000);
     expect(map.size).toBe(2001);
   });

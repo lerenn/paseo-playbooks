@@ -27,7 +27,7 @@ steps:
   - id: ship
     needs: [route]
     when: { steps.route.outcome: service }
-    gate: { question: Hand this service change to the release train? }
+    gate: { question: Hand this service change to the release batch? }
   - id: apply
     needs: [route]
     when: { steps.route.outcome: infra }

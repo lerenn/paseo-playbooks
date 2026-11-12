@@ -6,6 +6,8 @@ import { loadPlaybooks } from "./loader";
 import { Runtime } from "./runtime";
 import { EVENT_AREAS, RunStore } from "./store";
 import { verifyLog } from "./event-core";
+import { checkTypes, matchesFilter } from "./bus";
+import { JOB_TYPES } from "./job-events";
 
 const EXAMPLES = path.resolve(__dirname, "..", "examples");
 const temps: string[] = [];
@@ -111,25 +113,25 @@ async function errorsOf(files: Record<string, string>, id: string): Promise<stri
 
 const now = () => new Date().toISOString();
 
-/** The running train of a station, once it has started. */
-function trainAt(store: RunStore, station: string) {
-  return store.list().find((run) => run.train?.station === station && (run.status === "running" || run.status === "waiting_gate"));
+/** The running batch of a stage, once it has started. */
+function batchAt(store: RunStore, stage: string) {
+  return store.list().find((run) => run.batch?.stage === stage && (run.status === "running" || run.status === "waiting_gate"));
 }
 
-/** The station's gate decides its train: approve passes its jobs on, reject fails the train. */
-async function decide(runtime: Runtime, store: RunStore, station: string, decision: "approved" | "rejected") {
-  const train = trainAt(store, station)!;
-  await runtime.requestGate(train.managerAgentId, train.id, station, "ok?", "");
-  await runtime.decideGate(train.id, station, { decision, comment: null, by: null, via: "panel", now: now() });
-  return train;
+/** The stage's gate decides its batch: approve passes its jobs on, reject fails the batch. */
+async function decide(runtime: Runtime, store: RunStore, stage: string, decision: "approved" | "rejected") {
+  const batch = batchAt(store, stage)!;
+  await runtime.requestGate(batch.managerAgentId, batch.id, stage, "ok?", "");
+  await runtime.decideGate(batch.id, stage, { decision, comment: null, by: null, via: "panel", now: now() });
+  return batch;
 }
 
 function pipelineOf(store: RunStore) {
-  return store.list().find((run) => run.playbook.singleton && run.train === null)!;
+  return store.list().find((run) => run.playbook.singleton && run.batch === null)!;
 }
 
 describe("singleton pipelines: validation", () => {
-  it("load stations from the top-level steps, and the hand-off's contract from the singleton", async () => {
+  it("load stages from the top-level steps, and the hand-off's contract from the singleton", async () => {
     const { dir } = await setup();
     const entries = (await loadPlaybooks(dir)).entries;
     const apply = entries.find((entry) => entry.id === "apply")!;
@@ -138,7 +140,7 @@ describe("singleton pipelines: validation", () => {
     expect(pr.errors).toEqual([]);
     expect(apply.playbook!.singleton).toEqual({
       branch: "main",
-      stations: [
+      stages: [
         { id: "dev", title: "Dev", needs: [], mode: "merge", retries: 1, steps: ["dev"] },
         { id: "prd", title: "Prd", needs: ["dev"], mode: "fifo", retries: 0, steps: ["prd"] },
       ],
@@ -146,10 +148,10 @@ describe("singleton pipelines: validation", () => {
     expect(pr.playbook!.steps[0]).toMatchObject({ kind: "handoff", handoff: "apply", outcomes: ["done", "rejected", "failure"] });
   });
 
-  it("expand a sub-playbook station, with its constant inputs reaching `when` inside it", async () => {
+  it("expand a sub-playbook stage, with its constant inputs reaching `when` inside it", async () => {
     const { dir } = await setup({
-      "train.yaml": `
-title: Train
+      "batch.yaml": `
+title: Batch
 hidden: true
 inputs:
   env: { type: enum, values: [dev, prd], required: true }
@@ -161,49 +163,49 @@ steps:
     needs: [go]
     gate: { question: Checked? }
 `,
-      "trains.yaml": `
-title: Trains
+      "batches.yaml": `
+title: Batches
 singleton: {}
 inputs:
   pr_url: { type: string, required: true }
 steps:
   - id: dev
-    playbook: { name: train }
+    playbook: { name: batch }
     inputs: { env: dev }
   - id: prd
     needs: [dev]
-    playbook: { name: train }
+    playbook: { name: batch }
     inputs: { env: prd }
 `,
     });
-    const trains = (await loadPlaybooks(dir)).entries.find((entry) => entry.id === "trains")!;
-    expect(trains.errors).toEqual([]);
-    expect(trains.playbook!.singleton!.stations.map((station) => [station.id, station.steps])).toEqual([
+    const batches = (await loadPlaybooks(dir)).entries.find((entry) => entry.id === "batches")!;
+    expect(batches.errors).toEqual([]);
+    expect(batches.playbook!.singleton!.stages.map((stage) => [stage.id, stage.steps])).toEqual([
       ["dev", ["dev.go", "dev.check"]],
       ["prd", ["prd.go", "prd.check"]],
     ]);
-    expect(trains.playbook!.steps.find((step) => step.id === "prd.go")!.when).toEqual([{ input: "env", source: "prd", values: ["prd"] }]);
+    expect(batches.playbook!.steps.find((step) => step.id === "prd.go")!.when).toEqual([{ input: "env", source: "prd", values: ["prd"] }]);
   });
 
-  it("refuse the v0.30.0 concurrency, `queue` outside a singleton, an editing role, a goto between stations, and `after`", async () => {
+  it("refuse the v0.30.0 concurrency, `queue` outside a singleton, an editing role, a goto between stages, and `after`", async () => {
     const old = await errorsOf({ "apply.yaml": "title: A\nsingleton: { concurrency: { key: [env] } }\nsteps:\n  - id: a\n    gate: { question: ok }\n" }, "apply");
-    expect(old).toMatch(/singleton.concurrency was removed: each top-level step is a station/);
+    expect(old).toMatch(/singleton.concurrency was removed: each top-level step is a stage/);
     const queue = await errorsOf({ "w.yaml": "title: W\nsteps:\n  - id: a\n    gate: { question: ok }\n    queue: { mode: merge }\n" }, "w");
     expect(queue).toMatch(/`queue` only applies to a step of a singleton playbook/);
     const editing = await errorsOf({ "s.yaml": "title: S\nsingleton: {}\nsteps:\n  - id: a\n    role: { name: implementer }\n" }, "s");
-    expect(editing).toMatch(/role "implementer" is not readonly; a singleton's trains share one workspace/);
+    expect(editing).toMatch(/role "implementer" is not readonly; a singleton's batches share one workspace/);
     const back = await errorsOf(
       { "s.yaml": "title: S\nsingleton: {}\nsteps:\n  - id: a\n    gate: { question: ok }\n  - id: b\n    needs: [a]\n    gate: { question: ok, choices: { ok: ~, again: ~ } }\n    on: { again: { goto: a } }\n" },
       "s",
     );
-    expect(back).toMatch(/goto "a" leaves station "b"; jobs only move forward/);
+    expect(back).toMatch(/goto "a" leaves stage "b"; jobs only move forward/);
     const after = await errorsOf({ "s.yaml": "title: S\nsingleton: {}\nsteps:\n  - id: a\n    gate: { question: ok }\nafter:\n  - id: r\n    gate: { question: ok }\n" }, "s");
     expect(after).toMatch(/`after` does not apply to a singleton playbook/);
     const across = await errorsOf(
       { "s.yaml": "title: S\nsingleton: {}\nsteps:\n  - id: a\n    role: { name: reviewer }\n    outputs: { tag: {} }\n  - id: b\n    needs: [a]\n    role: { name: reviewer }\n    inputs: [tag]\n" },
       "s",
     );
-    expect(across).toMatch(/reads step "a" of another station/);
+    expect(across).toMatch(/reads step "a" of another stage/);
   });
 
   it("refuse reading a job's input from a step, `when` on it, a hand-off to a non-singleton, a singleton sub-playbook, and a loop of hand-offs", async () => {
@@ -261,9 +263,9 @@ describe("singleton pipelines: hand-offs without waiting", () => {
     expect(pipelineOf(store).jobs[0]).toMatchObject({ status: "open", detached: true, fromRunId: run.id, fromStepId: "apply" });
     await runtime.cancelRun(run.id, "moved on", null);
     expect(pipelineOf(store).jobs[0]!.status).toBe("open");
-    // The train still carries it; a gate there is not announced to the canceled run, and ejecting it records on the pipeline only.
-    await until(() => trainAt(store, "dev") !== undefined);
-    const dev = trainAt(store, "dev")!;
+    // The batch still carries it; a gate there is not announced to the canceled run, and ejecting it records on the pipeline only.
+    await until(() => batchAt(store, "dev") !== undefined);
+    const dev = batchAt(store, "dev")!;
     expect(dev.jobs[0]!.detached).toBe(true);
     await runtime.requestGate(dev.managerAgentId, dev.id, "dev", "Applied?", "");
     await runtime.settleJob(dev.managerAgentId, dev.id, dev.jobs[0]!.id, { outcome: "rejected", summary: "broke dev", outputs: {} });
@@ -272,11 +274,11 @@ describe("singleton pipelines: hand-offs without waiting", () => {
     expect(sent.filter((entry) => entry.agentId === "m1" && /waits for a human|ended rejected/.test(entry.text))).toHaveLength(0);
   });
 
-  it("let a train's manager start rework in a new workspace with start_playbook", async () => {
+  it("let a batch's manager start rework in a new workspace with start_playbook", async () => {
     const { store, runtime, created, sent } = await setup({ "apply.yaml": APPLY, "forget.yaml": FORGET });
     await runtime.startPlaybook({ id: "m1", workspaceId: "ws1", cwd: "/" }, "forget", { pr_url: "1" });
-    await until(() => trainAt(store, "dev") !== undefined);
-    const dev = trainAt(store, "dev")!;
+    await until(() => batchAt(store, "dev") !== undefined);
+    const dev = batchAt(store, "dev")!;
     expect(sent.find((entry) => entry.agentId === dev.managerAgentId)!.text).toMatch(/start_playbook with newWorkspace: true/);
     await expect(runtime.startPlaybook({ id: dev.managerAgentId, workspaceId: dev.workspaceId, cwd: "/" }, "forget", { pr_url: "1" })).rejects.toThrow(/already has an active run/);
     const started = await runtime.startPlaybookElsewhere({ workspaceId: dev.workspaceId, cwd: "/" }, "forget", { pr_url: "1" });
@@ -288,8 +290,8 @@ describe("singleton pipelines: hand-offs without waiting", () => {
   it("titles the new workspace with workspaceName (sanitized), never changing the branch, in start_playbook and the panel RPC", async () => {
     const { store, runtime, created } = await setup({ "apply.yaml": APPLY, "forget.yaml": FORGET });
     await runtime.startPlaybook({ id: "m1", workspaceId: "ws1", cwd: "/" }, "forget", { pr_url: "1" });
-    await until(() => trainAt(store, "dev") !== undefined);
-    const dev = trainAt(store, "dev")!;
+    await until(() => batchAt(store, "dev") !== undefined);
+    const dev = batchAt(store, "dev")!;
     await runtime.startPlaybookElsewhere({ workspaceId: dev.workspaceId, cwd: "/" }, "forget", { pr_url: "1" }, "  My \n named   workspace ");
     expect(created.at(-1)).toMatchObject({ title: "My named workspace", source: { branchName: expect.stringMatching(/^playbooks\/forget-/) } });
     const viaPanel = await runtime.startFromPanel({ workspaceId: dev.workspaceId, playbook: "forget", inputs: { pr_url: "2" }, force: false, workspaceName: "Panel name" });
@@ -302,14 +304,14 @@ describe("singleton pipelines: hand-offs without waiting", () => {
     await expect(runtime.startFromPanel({ workspaceId: dev.workspaceId, playbook: "forget", inputs: { pr_url: "4" }, force: false, sameWorkspace: true, workspaceName: "x" })).rejects.toThrow(/workspaceName/);
     await expect(runtime.startPlaybookInWorkspace({ id: "m1", workspaceId: "ws1" }, { playbook: "forget", inputs: {}, workspaceId: dev.workspaceId, newWorkspace: false, workspaceName: "x" })).rejects.toThrow(/with newWorkspace/);
   });
-  it("give a train's manager the repository's, the pipeline's and its own station's instructions only", async () => {
+  it("give a batch's manager the repository's, the pipeline's and its own stage's instructions only", async () => {
     const { store, runtime, sent } = await setup({
       "deploy.yaml": `
 title: Deploy
 singleton: {}
 inputs:
   pr_url: { type: string, required: true }
-manager: { prompt: One train at a time. }
+manager: { prompt: One batch at a time. }
 steps:
   - { id: dev, playbook: { name: on_dev } }
   - { id: prd, playbook: { name: on_prd }, needs: [dev] }
@@ -320,71 +322,71 @@ steps:
       "defaults/manager.md": "Write in English.",
     });
     await runtime.startPlaybook({ id: "m1", workspaceId: "ws1", cwd: "/" }, "pr", { pr_url: "1" });
-    await until(() => trainAt(store, "dev") !== undefined);
-    const kickoff = sent.find((entry) => entry.agentId === trainAt(store, "dev")!.managerAgentId)!.text;
-    expect(kickoff).toContain("- repository: Write in English.\n- deploy: One train at a time.\n- on_dev: Dev is cheap.");
+    await until(() => batchAt(store, "dev") !== undefined);
+    const kickoff = sent.find((entry) => entry.agentId === batchAt(store, "dev")!.managerAgentId)!.text;
+    expect(kickoff).toContain("- repository: Write in English.\n- deploy: One batch at a time.\n- on_dev: Dev is cheap.");
     expect(kickoff).not.toContain("Prd needs care.");
   });
 });
 
-describe("singleton pipelines: jobs through the stations", () => {
-  it("create the pipeline and its workspace once, run each station's train, and deliver the job's result", async () => {
+describe("singleton pipelines: jobs through the stages", () => {
+  it("create the pipeline and its workspace once, run each stage's batch, and deliver the job's result", async () => {
     const { store, runtime, created, sent } = await setup();
     const pr = await runtime.startPlaybook({ id: "m1", workspaceId: "ws1", cwd: "/" }, "pr", { pr_url: "https://x/pull/1" });
-    await until(() => trainAt(store, "dev") !== undefined);
+    await until(() => batchAt(store, "dev") !== undefined);
     expect(created).toHaveLength(1);
     expect(created[0]).toMatchObject({ title: "Apply", source: { kind: "worktree", action: "branch-off", refName: "main" } });
-    const dev = trainAt(store, "dev")!;
+    const dev = batchAt(store, "dev")!;
     expect(dev.jobs.map((job) => job.inputs.pr_url)).toEqual(["https://x/pull/1"]);
     expect(dev.workspaceId).toBe(pipelineOf(store).workspaceId);
-    expect(sent.find((entry) => entry.agentId === dev.managerAgentId)!.text).toMatch(/train of station "dev"/);
+    expect(sent.find((entry) => entry.agentId === dev.managerAgentId)!.text).toMatch(/batch of stage "dev"/);
     // Outputs set on dev, read later; the job goes on.
     await runtime.settleJob(dev.managerAgentId, dev.id, dev.jobs[0]!.id, { summary: "", outputs: { report: "dev ok" } });
     await decide(runtime, store, "dev", "approved");
-    await until(() => trainAt(store, "prd") !== undefined);
-    expect(trainAt(store, "prd")!.jobs[0]!.outputs).toEqual({ report: "dev ok" });
-    expect(store.get(pr.id)!.steps.apply!.attempts.at(-1)!.lastMessage).toMatch(/On the "prd" train/);
+    await until(() => batchAt(store, "prd") !== undefined);
+    expect(batchAt(store, "prd")!.jobs[0]!.outputs).toEqual({ report: "dev ok" });
+    expect(store.get(pr.id)!.steps.apply!.attempts.at(-1)!.lastMessage).toMatch(/On the "prd" batch/);
     await decide(runtime, store, "prd", "approved");
     await until(() => store.get(pr.id)!.status === "completed");
     expect(store.get(pr.id)!.steps.apply!.outputs).toEqual({ report: "dev ok" });
     expect(created).toHaveLength(1);
   });
 
-  it("merge: jobs that piled up ride the next train together; fifo: one at a time", async () => {
+  it("merge: jobs that piled up ride the next batch together; fifo: one at a time", async () => {
     const { store, runtime } = await setup();
     await runtime.startPlaybook({ id: "m1", workspaceId: "ws1", cwd: "/" }, "pr", { pr_url: "1" });
-    await until(() => trainAt(store, "dev") !== undefined);
+    await until(() => batchAt(store, "dev") !== undefined);
     await runtime.startPlaybook({ id: "m2", workspaceId: "ws2", cwd: "/" }, "pr", { pr_url: "2" });
     await runtime.startPlaybook({ id: "m3", workspaceId: "ws3", cwd: "/" }, "pr", { pr_url: "3" });
     const first = await decide(runtime, store, "dev", "approved");
-    await until(() => trainAt(store, "dev") !== undefined && trainAt(store, "dev")!.id !== first.id);
-    expect(trainAt(store, "dev")!.jobs.map((job) => job.inputs.pr_url)).toEqual(["2", "3"]);
+    await until(() => batchAt(store, "dev") !== undefined && batchAt(store, "dev")!.id !== first.id);
+    expect(batchAt(store, "dev")!.jobs.map((job) => job.inputs.pr_url)).toEqual(["2", "3"]);
     // prd is fifo: job 1 alone, then the others one by one.
-    await until(() => trainAt(store, "prd") !== undefined);
-    expect(trainAt(store, "prd")!.jobs.map((job) => job.inputs.pr_url)).toEqual(["1"]);
+    await until(() => batchAt(store, "prd") !== undefined);
+    expect(batchAt(store, "prd")!.jobs.map((job) => job.inputs.pr_url)).toEqual(["1"]);
   });
 
-  it("keep one manager per station: the previous train's is archived when the next leaves", async () => {
+  it("keep one manager per stage: the previous batch's is archived when the next leaves", async () => {
     const { store, runtime, archived } = await setup();
     await runtime.startPlaybook({ id: "m1", workspaceId: "ws1", cwd: "/" }, "pr", { pr_url: "1" });
-    await until(() => trainAt(store, "dev") !== undefined);
+    await until(() => batchAt(store, "dev") !== undefined);
     await runtime.startPlaybook({ id: "m2", workspaceId: "ws2", cwd: "/" }, "pr", { pr_url: "2" });
     // Its manager is idle: it is archived right away.
-    await runtime.onManagerTurnEnded(trainAt(store, "dev")!.managerAgentId);
+    await runtime.onManagerTurnEnded(batchAt(store, "dev")!.managerAgentId);
     const first = await decide(runtime, store, "dev", "approved");
-    await until(() => trainAt(store, "dev") !== undefined && trainAt(store, "dev")!.id !== first.id);
+    await until(() => batchAt(store, "dev") !== undefined && batchAt(store, "dev")!.id !== first.id);
     expect(archived).toContain(first.managerAgentId);
   });
 
   it("archive a busy previous manager only when its turn ends, and never wake it again", async () => {
     const { store, runtime, archived, sent } = await setup();
     await runtime.startPlaybook({ id: "m1", workspaceId: "ws1", cwd: "/" }, "pr", { pr_url: "1" });
-    await until(() => trainAt(store, "dev") !== undefined);
+    await until(() => batchAt(store, "dev") !== undefined);
     await runtime.startPlaybook({ id: "m2", workspaceId: "ws2", cwd: "/" }, "pr", { pr_url: "2" });
-    // Its manager is still in its turn (here the kickoff's) when its train ends.
-    const first = trainAt(store, "dev")!;
+    // Its manager is still in its turn (here the kickoff's) when its batch ends.
+    const first = batchAt(store, "dev")!;
     await decide(runtime, store, "dev", "approved");
-    await until(() => trainAt(store, "dev") !== undefined && trainAt(store, "dev")!.id !== first.id);
+    await until(() => batchAt(store, "dev") !== undefined && batchAt(store, "dev")!.id !== first.id);
     expect(archived).not.toContain(first.managerAgentId);
     await store.mutate(first.id, (run) => void run.inbox.push("late note"));
     const before = sent.filter((entry) => entry.agentId === first.managerAgentId).length;
@@ -439,42 +441,42 @@ steps:
 
     const { store, runtime } = await setup({ "release.yaml": release, "pr.yaml": handing });
     const one = await runtime.startPlaybook({ id: "m1", workspaceId: "ws1", cwd: "/" }, "pr", { pr_url: "1" });
-    await until(() => trainAt(store, "dev") !== undefined);
-    const dev = trainAt(store, "dev")!;
+    await until(() => batchAt(store, "dev") !== undefined);
+    const dev = batchAt(store, "dev")!;
     const job = dev.jobs[0]!.id;
     await runtime.startStep(dev.managerAgentId, dev.id, "dev", "");
-    await expect(runtime.completeStep(dev.managerAgentId, dev.id, "dev", { outcome: "empty", outputs: { job_results: `job_nope: { outcome: skipped_out }` } })).rejects.toThrow(/settle.output "job_results" of "dev": job "job_nope" is not on this train/);
+    await expect(runtime.completeStep(dev.managerAgentId, dev.id, "dev", { outcome: "empty", outputs: { job_results: `job_nope: { outcome: skipped_out }` } })).rejects.toThrow(/settle.output "job_results" of "dev": job "job_nope" is not on this batch/);
     await expect(runtime.completeStep(dev.managerAgentId, dev.id, "dev", { outcome: "empty", outputs: { job_results: `${job}: { outcome: maybe }` } })).rejects.toThrow(/outcome "maybe" is not an outcome of "release"/);
     expect(store.get(dev.id)!.steps.dev!.status).toBe("running");
-    // The manager does not call settle_job: the plugin ends the job from the output, then the train ends.
+    // The manager does not call settle_job: the plugin ends the job from the output, then the batch ends.
     await runtime.completeStep(dev.managerAgentId, dev.id, "dev", { outcome: "empty", outputs: { job_results: `# nothing to deploy\n${job}:\n  outcome: skipped_out\n  reason: docs only` } });
     await until(() => store.get(one.id)!.status === "completed");
     expect(store.get(one.id)!.steps.apply!.attempts.at(-1)!.outcome).toBe("skipped_out");
     expect(pipelineOf(store).jobs[0]).toMatchObject({ status: "settled", outcome: "skipped_out", summary: "docs only", passed: [] });
   });
 
-  it("tell the handing-off run when its train waits for a human, and when that is decided", async () => {
+  it("tell the handing-off run when its batch waits for a human, and when that is decided", async () => {
     const { store, runtime, sent } = await setup();
     const pr = await runtime.startPlaybook({ id: "m1", workspaceId: "ws1", cwd: "/" }, "pr", { pr_url: "1" });
-    await until(() => trainAt(store, "dev") !== undefined);
-    const dev = trainAt(store, "dev")!;
+    await until(() => batchAt(store, "dev") !== undefined);
+    const dev = batchAt(store, "dev")!;
     await runtime.requestGate(dev.managerAgentId, dev.id, "dev", "Applied?", "");
     await until(() => sent.some((entry) => entry.agentId === "m1" && /waits for a human at gate dev/.test(entry.text)));
     expect(sent.find((entry) => entry.agentId === "m1" && /waits for a human/.test(entry.text))!.text).toMatch(/Playbooks panel \(the "Apply" card\), not with resume/);
     expect(store.get(pr.id)!.steps.apply!.attempts.at(-1)!.lastMessage).toMatch(/Waiting for a human at dev/);
     await runtime.onManagerTurnEnded("m1");
     await runtime.decideGate(dev.id, "dev", { decision: "approved", comment: "ship it", by: "louis", via: "panel", now: now() });
-    await until(() => sent.some((entry) => entry.agentId === "m1" && /dev of the "dev" train .* was decided: approved by louis: "ship it"/.test(entry.text)));
+    await until(() => sent.some((entry) => entry.agentId === "m1" && /dev of the "dev" batch .* was decided: approved by louis: "ship it"/.test(entry.text)));
     // Announced once: later ticks do not repeat it.
-    await until(() => trainAt(store, "prd") !== undefined);
+    await until(() => batchAt(store, "prd") !== undefined);
     expect(sent.filter((entry) => entry.agentId === "m1" && /waits for a human at gate dev/.test(entry.text))).toHaveLength(1);
   });
 
-  it("end a job early with an outcome: its run is told at once, the train goes on", async () => {
+  it("end a job early with an outcome: its run is told at once, the batch goes on", async () => {
     const { store, runtime } = await setup();
     const pr = await runtime.startPlaybook({ id: "m1", workspaceId: "ws1", cwd: "/" }, "pr", { pr_url: "1" });
-    await until(() => trainAt(store, "dev") !== undefined);
-    const dev = trainAt(store, "dev")!;
+    await until(() => batchAt(store, "dev") !== undefined);
+    const dev = batchAt(store, "dev")!;
     await expect(runtime.settleJob(dev.managerAgentId, dev.id, dev.jobs[0]!.id, { outcome: "maybe", summary: "", outputs: {} })).rejects.toThrow(/not an outcome of "apply"/);
     await expect(runtime.settleJob(dev.managerAgentId, dev.id, dev.jobs[0]!.id, { outcome: "done", summary: "", outputs: {} })).rejects.toThrow(/missing output "report"/);
     await runtime.settleJob(dev.managerAgentId, dev.id, dev.jobs[0]!.id, { outcome: "rejected", summary: "broke dev", outputs: {} });
@@ -482,12 +484,12 @@ steps:
     expect(store.get(dev.id)!.status).toBe("running");
   });
 
-  it("put a failed train's jobs back at the front of its station, within its retries, then fail them", async () => {
+  it("put a failed batch's jobs back at the front of its stage, within its retries, then fail them", async () => {
     const { store, runtime } = await setup();
     const pr = await runtime.startPlaybook({ id: "m1", workspaceId: "ws1", cwd: "/" }, "pr", { pr_url: "1" });
-    await until(() => trainAt(store, "dev") !== undefined);
+    await until(() => batchAt(store, "dev") !== undefined);
     const first = await decide(runtime, store, "dev", "rejected");
-    await until(() => trainAt(store, "dev") !== undefined && trainAt(store, "dev")!.id !== first.id);
+    await until(() => batchAt(store, "dev") !== undefined && batchAt(store, "dev")!.id !== first.id);
     expect(pipelineOf(store).jobs[0]!.failedRides).toEqual({ dev: 1 });
     await decide(runtime, store, "dev", "rejected");
     await until(() => store.get(pr.id)!.status === "failed");
@@ -497,33 +499,33 @@ steps:
   it("hold a result while the handing-off run is paused, and complete it on resume", async () => {
     const { store, runtime } = await setup();
     const pr = await runtime.startPlaybook({ id: "m1", workspaceId: "ws1", cwd: "/" }, "pr", { pr_url: "1" });
-    await until(() => trainAt(store, "dev") !== undefined);
+    await until(() => batchAt(store, "dev") !== undefined);
     await runtime.pauseRun(pr.id);
-    const dev = trainAt(store, "dev")!;
+    const dev = batchAt(store, "dev")!;
     await runtime.settleJob(dev.managerAgentId, dev.id, dev.jobs[0]!.id, { outcome: "done", summary: "", outputs: { report: "ok" } });
     expect(store.get(pr.id)!.steps.apply!.status).toBe("reported");
     await runtime.resumeRun(pr.id);
     expect(store.get(pr.id)!.status).toBe("completed");
   });
 
-  it("withdraw a job when its run is canceled: it leaves the waiting list, and its train is told", async () => {
+  it("withdraw a job when its run is canceled: it leaves the waiting list, and its batch is told", async () => {
     const { store, runtime, sent } = await setup();
     const one = await runtime.startPlaybook({ id: "m1", workspaceId: "ws1", cwd: "/" }, "pr", { pr_url: "1" });
-    await until(() => trainAt(store, "dev") !== undefined);
+    await until(() => batchAt(store, "dev") !== undefined);
     const two = await runtime.startPlaybook({ id: "m2", workspaceId: "ws2", cwd: "/" }, "pr", { pr_url: "2" });
     await runtime.cancelRun(two.id, "not needed", null);
     expect(pipelineOf(store).jobs.find((job) => job.inputs.pr_url === "2")).toMatchObject({ status: "withdrawn", waiting: [] });
     await runtime.cancelRun(one.id, "not needed", null);
-    // Its manager is busy (it was just started): the note waits in the train's inbox.
-    const dev = trainAt(store, "dev")!;
+    // Its manager is busy (it was just started): the note waits in the batch's inbox.
+    const dev = batchAt(store, "dev")!;
     expect([...store.get(dev.id)!.inbox, ...sent.filter((entry) => entry.agentId === dev.managerAgentId).map((entry) => entry.text)].some((text) => /was withdrawn/.test(text))).toBe(true);
   });
 
-  it("fail the open jobs and cancel the trains when the pipeline is canceled", async () => {
+  it("fail the open jobs and cancel the batches when the pipeline is canceled", async () => {
     const { store, runtime } = await setup();
     const pr = await runtime.startPlaybook({ id: "m1", workspaceId: "ws1", cwd: "/" }, "pr", { pr_url: "1" });
-    await until(() => trainAt(store, "dev") !== undefined);
-    const dev = trainAt(store, "dev")!;
+    await until(() => batchAt(store, "dev") !== undefined);
+    const dev = batchAt(store, "dev")!;
     await runtime.cancelRun(pipelineOf(store).id, "stop", null);
     await until(() => store.get(pr.id)!.status === "failed");
     expect(store.get(dev.id)!.status).toBe("canceled");
@@ -536,72 +538,90 @@ steps:
     expect(pipelineOf(store).jobs[0]!.status).toBe("withdrawn");
   });
 
-  it("start a singleton by hand: its pipeline and workspace exist, with no train", async () => {
+  it("start a singleton by hand: its pipeline and workspace exist, with no batch", async () => {
     const { store, runtime, created } = await setup();
     const run = await runtime.startPlaybook({ id: "m1", workspaceId: "ws1", cwd: "/" }, "apply", {});
     expect(created).toHaveLength(1);
     expect(run).toMatchObject({ status: "running", managerAgentId: "", jobs: [] });
-    expect(store.list().filter((candidate) => candidate.train)).toHaveLength(0);
+    expect(store.list().filter((candidate) => candidate.batch)).toHaveLength(0);
   });
 });
 
 describe("event core: job events of a pipeline", () => {
-  const jobEvents = async (runtime: Runtime) => (await runtime.bus.recent({ types: ["job.*"] })).events;
-  const summary = (events: Awaited<ReturnType<typeof jobEvents>>) => events.map((event) => `${event.type}${event.payload.station ? `@${String(event.payload.station)}` : ""}`);
+  // `job.boarded` is the deprecated twin of `job.joined` (ADR 2026-11-12-stage-batch-rename): the order tests leave it out.
+  const allJobEvents = async (runtime: Runtime) => (await runtime.bus.recent({ types: ["job.*"] })).events;
+  const jobEvents = async (runtime: Runtime) => (await allJobEvents(runtime)).filter((event) => event.type !== "job.boarded");
+  const summary = (events: Awaited<ReturnType<typeof jobEvents>>) => events.map((event) => `${event.type}${event.payload.stage ? `@${String(event.payload.stage)}` : ""}`);
 
   it("announces a job's whole ride on the bus and keeps a log that rebuilds the pipeline's jobs", async () => {
     const { store, runtime } = await setup();
     const pr = await runtime.startPlaybook({ id: "m1", workspaceId: "ws1", cwd: "/" }, "pr", { pr_url: "1" });
-    await until(() => trainAt(store, "dev") !== undefined);
-    const dev = trainAt(store, "dev")!;
+    await until(() => batchAt(store, "dev") !== undefined);
+    const dev = batchAt(store, "dev")!;
     await runtime.settleJob(dev.managerAgentId, dev.id, dev.jobs[0]!.id, { summary: "", outputs: { report: "dev ok" } });
     await decide(runtime, store, "dev", "approved");
-    await until(() => trainAt(store, "prd") !== undefined);
+    await until(() => batchAt(store, "prd") !== undefined);
     await decide(runtime, store, "prd", "approved");
     await until(() => store.get(pr.id)!.status === "completed");
     await new Promise((resolve) => setTimeout(resolve, 50));
     const events = await jobEvents(runtime);
-    expect(summary(events)).toEqual(["job.queued@dev", "job.boarded@dev", "job.advanced@dev", "job.queued@prd", "job.boarded@prd", "job.advanced@prd", "job.settled@prd"]);
-    const trains = store.list().filter((run) => run.train).map((run) => run.id);
-    expect(events[1]!.payload).toMatchObject({ runId: pipelineOf(store).id, playbook: "apply", jobId: pipelineOf(store).jobs[0]!.id, station: "dev", outcome: null });
-    expect(trains).toContain(events[1]!.payload.trainRunId);
-    expect(events[2]!.payload).toMatchObject({ nextStations: ["prd"] });
-    expect(events[3]!.payload).toMatchObject({ via: "advanced", trainRunId: null });
-    expect(events.at(-1)!.payload).toMatchObject({ outcome: "done", station: "prd" });
+    expect(summary(events)).toEqual(["job.queued@dev", "job.joined@dev", "job.advanced@dev", "job.queued@prd", "job.joined@prd", "job.advanced@prd", "job.settled@prd"]);
+    const batches = store.list().filter((run) => run.batch).map((run) => run.id);
+    expect(events[1]!.payload).toMatchObject({ runId: pipelineOf(store).id, playbook: "apply", jobId: pipelineOf(store).jobs[0]!.id, stage: "dev", outcome: null });
+    expect(batches).toContain(events[1]!.payload.batchRunId);
+    expect(events[2]!.payload).toMatchObject({ nextStages: ["prd"] });
+    expect(events[3]!.payload).toMatchObject({ via: "advanced", batchRunId: null });
+    expect(events.at(-1)!.payload).toMatchObject({ outcome: "done", stage: "prd" });
     // The log rebuilds the jobs (parity throws on every mutation in tests; this is the whole-log check).
     const pipeline = pipelineOf(store);
     const { events: logged } = await store.log.read(pipeline.id);
-    expect(logged.map((event) => event.type).slice(0, 3)).toEqual(["jobs.genesis", "job.queued", "job.boarded"]);
+    expect(logged.map((event) => event.type).slice(0, 3)).toEqual(["jobs.genesis", "job.queued", "job.joined"]);
     expect(logged.at(-1)!.seq).toBe(pipeline.eventSeq);
     expect(verifyLog(EVENT_AREAS, pipeline, logged)).toEqual([]);
+  });
+
+  it("sends the deprecated names next to the new ones: job.boarded with job.joined, station and trainRunId with stage and batchRunId", async () => {
+    const { store, runtime } = await setup();
+    await runtime.startPlaybook({ id: "m1", workspaceId: "ws1", cwd: "/" }, "pr", { pr_url: "1" });
+    await until(() => batchAt(store, "dev") !== undefined);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const events = await allJobEvents(runtime);
+    const joined = events.find((event) => event.type === "job.joined")!;
+    const boarded = events.find((event) => event.type === "job.boarded")!;
+    expect(joined.payload).toMatchObject({ stage: "dev", station: "dev", batchRunId: batchAt(store, "dev")!.id, trainRunId: batchAt(store, "dev")!.id });
+    expect(boarded.payload).toEqual(joined.payload);
+    // An old subscription (type and filter with the old names) still matches the same event.
+    expect(matchesFilter(["job.boarded"], { station: "dev" }, boarded)).toBe(true);
+    expect(matchesFilter(["job.joined"], { stage: "dev" }, joined)).toBe(true);
+    expect(() => checkTypes(JOB_TYPES, ["job.boarded"], { station: "dev", trainRunId: "x" })).not.toThrow();
   });
 
   it("announces a requeue, a failure and a withdrawal", async () => {
     const { store, runtime } = await setup();
     const one = await runtime.startPlaybook({ id: "m1", workspaceId: "ws1", cwd: "/" }, "pr", { pr_url: "1" });
-    await until(() => trainAt(store, "dev") !== undefined);
+    await until(() => batchAt(store, "dev") !== undefined);
     const first = await decide(runtime, store, "dev", "rejected");
-    await until(() => trainAt(store, "dev") !== undefined && trainAt(store, "dev")!.id !== first.id);
+    await until(() => batchAt(store, "dev") !== undefined && batchAt(store, "dev")!.id !== first.id);
     await decide(runtime, store, "dev", "rejected");
     await until(() => store.get(one.id)!.status === "failed");
     await new Promise((resolve) => setTimeout(resolve, 50));
     const events = await jobEvents(runtime);
-    expect(summary(events)).toEqual(["job.queued@dev", "job.boarded@dev", "job.requeued@dev", "job.boarded@dev", "job.failed@dev"]);
+    expect(summary(events)).toEqual(["job.queued@dev", "job.joined@dev", "job.requeued@dev", "job.joined@dev", "job.failed@dev"]);
     expect(events[2]!.payload).toMatchObject({ rides: 1, retries: 1 });
-    expect(String(events.at(-1)!.payload.reason)).toMatch(/train .* at "dev" failed|rejected/);
+    expect(String(events.at(-1)!.payload.reason)).toMatch(/batch .* at "dev" failed|rejected/);
     const two = await runtime.startPlaybook({ id: "m2", workspaceId: "ws2", cwd: "/" }, "pr", { pr_url: "2" });
     await runtime.cancelRun(two.id, "not needed", null);
     await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(summary((await jobEvents(runtime)).slice(5))).toEqual(["job.queued@dev", "job.boarded@dev", "job.withdrawn"]);
+    expect(summary((await jobEvents(runtime)).slice(5))).toEqual(["job.queued@dev", "job.joined@dev", "job.withdrawn"]);
     const pipeline = pipelineOf(store);
     expect(verifyLog(EVENT_AREAS, pipeline, (await store.log.read(pipeline.id)).events)).toEqual([]);
   });
 
-  it("can be replayed with list_events by filter on station", async () => {
+  it("can be replayed with list_events by filter on stage", async () => {
     const { store, runtime } = await setup();
     await runtime.startPlaybook({ id: "m1", workspaceId: "ws1", cwd: "/" }, "pr", { pr_url: "1" });
-    await until(() => trainAt(store, "dev") !== undefined);
-    const sub = await runtime.bus.subscribe("watcher", { kind: "agent", target: "watcher" }, ["job.*"], { station: "dev" }).catch((error: Error) => error);
+    await until(() => batchAt(store, "dev") !== undefined);
+    const sub = await runtime.bus.subscribe("watcher", { kind: "agent", target: "watcher" }, ["job.*"], { stage: "dev" }).catch((error: Error) => error);
     expect(sub).not.toBeInstanceOf(Error);
   });
 });

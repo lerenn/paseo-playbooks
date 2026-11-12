@@ -2,7 +2,7 @@ import type { Run } from "../shared/types";
 
 /**
  * The event core's vocabulary (ADR 2026-11-12-event-core). A domain event is a fact about a run
- * ("job X boarded train Y"), recorded by a mutator in the same place it changes the state. A
+ * ("job X joined batch Y"), recorded by a mutator in the same place it changes the state. A
  * reducer turns an event back into the state change, with no other input. In stage 1 the mutators
  * still produce the state and the reducers are checked against them (parity); later stages let the
  * reducers produce it.
@@ -10,7 +10,7 @@ import type { Run } from "../shared/types";
 
 /** What a mutator records: the fact, when, and the data a reducer needs to apply it. */
 export interface DomainEvent {
-  /** `<area>.<fact>`, e.g. "job.boarded". */
+  /** `<area>.<fact>`, e.g. "job.joined". */
   type: string;
   at: string;
   data: Record<string, unknown>;

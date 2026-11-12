@@ -167,7 +167,7 @@ export const WhenSchema = z.object({
 });
 export type When = z.infer<typeof WhenSchema>;
 
-/** Events that wake a script step or a station's admission check at once (`wake_on`): a rule matches a type and equal payload fields. */
+/** Events that wake a script step or a stage's admission check at once (`wake_on`): a rule matches a type and equal payload fields. */
 export const WakeOnSchema = z.array(z.object({ types: z.array(z.string()).min(1), filter: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])) }));
 export type WakeOn = z.infer<typeof WakeOnSchema>;
 
@@ -212,7 +212,7 @@ export const StepSchema = z.object({
       cancelChildren: z.boolean(),
     })
     .optional(),
-  /** On a train of a singleton pipeline: the plugin settles its jobs from this output when the step completes. */
+  /** On a batch of a singleton pipeline: the plugin settles its jobs from this output when the step completes. */
   settle: z.object({ output: z.string() }).optional(),
   /** Script steps: rerun the script this often while it exits with SCRIPT_NOT_YET. Unset = run it once. */
   pollMs: z.number().int().positive().optional(),
@@ -267,21 +267,21 @@ export const AfterTaskSchema = z.object({
 });
 export type AfterTask = z.infer<typeof AfterTaskSchema>;
 
-/** A top-level step of a singleton: a waiting list of jobs, and one train at a time. */
-export const StationSchema = z.object({
+/** A top-level step of a singleton: a waiting list of jobs, and one batch at a time. */
+export const StageSchema = z.object({
   id: z.string(),
   title: z.string(),
-  /** Stations a job must have passed before it waits here. */
+  /** Stages a job must have passed before it waits here. */
   needs: z.array(z.string()),
-  /** fifo: one job per train, oldest first; merge: every waiting job per train. */
+  /** fifo: one job per batch, oldest first; merge: every waiting job per batch. */
   mode: z.enum(["fifo", "merge"]),
-  /** Failed trains a job may ride again here before it fails. */
+  /** Failed batches a job may be retried here before it fails. */
   retries: z.number().int().min(0),
   /** Its steps in `Playbook.steps` (one, or the expanded steps of its sub-playbook). */
   steps: z.array(z.string()),
   /**
-   * `queue.admit`: a script the plugin runs on the waiting list (no train, no agent) that says which waiting jobs may board.
-   * Unset = every waiting job may board (ADR 2026-11-12-queue-admission-impl).
+   * `queue.admit`: a script the plugin runs on the waiting list (no batch, no agent) that says which waiting jobs may join.
+   * Unset = every waiting job may join (ADR 2026-11-12-queue-admission-impl).
    */
   admit: z
     .object({
@@ -289,12 +289,12 @@ export const StationSchema = z.object({
       script: z.string(),
       /** Safety-net interval between checks. */
       pollMs: z.number().int().positive(),
-      /** Events that run a check at once; a job queued at this station always does (not listed here). */
+      /** Events that run a check at once; a job queued at this stage always does (not listed here). */
       wakeOn: WakeOnSchema.default([]),
     })
     .optional(),
 });
-export type Station = z.infer<typeof StationSchema>;
+export type Stage = z.infer<typeof StageSchema>;
 
 /** `isolation:` of a playbook: `worktree` gives each run a private git worktree (see ADR 2026-11-09-isolation-worktree). */
 export const IsolationSchema = z.object({
@@ -347,14 +347,14 @@ export const PlaybookSchema = z.object({
   concurrency: z.number().int().positive().optional(),
   /**
    * Set on a singleton playbook: one long-lived pipeline per project, in one shared workspace.
-   * Its top-level steps are stations; its inputs, outputs and outcomes are each job's.
+   * Its top-level steps are stages; its inputs, outputs and outcomes are each job's.
    */
   singleton: z
     .object({
       /** Branch its workspace branches off; unset = the project's default branch. */
       branch: z.string().optional(),
-      /** Its stations, in file order (unset on runs from before pipelines). */
-      stations: z.array(StationSchema).default([]),
+      /** Its stages, in file order (unset on runs from before pipelines). */
+      stages: z.array(StageSchema).default([]),
     })
     .optional(),
   /**
@@ -567,7 +567,7 @@ export const AttemptSchema = z.object({
   nextCheckAt: z.string().nullable().default(null),
   /** Hand-off steps: the job this attempt handed off, and the singleton run that holds it. */
   job: z.object({ runId: z.string(), jobId: z.string() }).nullable().default(null),
-  /** Hand-off steps: the job passed every station, so a failure here is never retried (its work shipped). */
+  /** Hand-off steps: the job passed every stage, so a failure here is never retried (its work shipped). */
   noRetry: z.boolean().default(false),
   /** Agent steps: the `provider/model` the attempt's agent runs on, and the prompt it was started with (to restart it on the next target). */
   target: z.string().default(""),
@@ -654,7 +654,7 @@ export type RunStep = z.infer<typeof RunStepSchema>;
 export const GateSchema = z.object({
   id: z.string(),
   kind: z.enum(["gate", "loop_limit", "ask", "admission"]),
-  /** An `admission` gate: the station it is about (its `stepId`) and the held job it asks about. Null on the other kinds. */
+  /** An `admission` gate: the stage it is about (its `stepId`) and the held job it asks about. Null on the other kinds. */
   jobId: z.string().nullable().default(null),
   stepId: z.string(),
   /** For loop_limit and ask gates: the step the goto leads to (an ask gate's first choice's). */
@@ -725,27 +725,27 @@ export const JobSchema = z.object({
   outputs: z.record(z.string(), VarValueSchema),
   createdAt: z.string(),
   endedAt: z.string().nullable(),
-  /** Pipelines: the stations it has passed. */
+  /** Pipelines: the stages it has passed. */
   passed: z.array(z.string()).default([]),
-  /** Pipelines: the stations it waits at, and since when (orders the waiting list). */
+  /** Pipelines: the stages it waits at, and since when (orders the waiting list). */
   waiting: z
     .array(
       z.object({
-        station: z.string(),
+        stage: z.string(),
         since: z.string(),
         /**
-         * Admission (`queue.admit`): why the job may not board now, and when that was decided; `checkedAt` null = the
-         * first check has not run yet. Null = it may board. Never set at a station without `admit`.
+         * Admission (`queue.admit`): why the job may not join now, and when that was decided; `checkedAt` null = the
+         * first check has not run yet. Null = it may join. Never set at a stage without `admit`.
          */
         held: z.object({ reason: z.string(), checkedAt: z.string().nullable() }).nullable().default(null),
-        /** A human admitted it anyway: the script no longer holds it, and it leaves this list when it boards. */
+        /** A human admitted it anyway: the script no longer holds it, and it leaves this list when it joins. */
         forced: z.boolean().default(false),
       }),
     )
     .default([]),
-  /** Pipelines: the trains (runs) carrying it now, by station. */
-  riding: z.array(z.object({ station: z.string(), runId: z.string(), since: z.string() })).default([]),
-  /** Pipelines: failed trains it rode, by station (capped by the station's `retries`). */
+  /** Pipelines: the batches (runs) carrying it now, by stage. */
+  batches: z.array(z.object({ stage: z.string(), runId: z.string(), since: z.string() })).default([]),
+  /** Pipelines: failed batches it rode, by stage (capped by the stage's `retries`). */
   failedRides: z.record(z.string(), z.number().int()).default({}),
   /** Handed off with `wait: false`: the pipeline owns it; its run is never told of it and never withdraws it. */
   detached: z.boolean().default(false),
@@ -787,7 +787,7 @@ export const ScriptOutputSchema = z.object({
 });
 export type ScriptOutput = z.infer<typeof ScriptOutputSchema>;
 
-/** A station's admission check (`queue.admit`), live in memory: running or waiting, the last outcome and the last failure. */
+/** A stage's admission check (`queue.admit`), live in memory: running or waiting, the last outcome and the last failure. */
 export const AdmissionStatusSchema = z.object({
   /** A check is running now. */
   running: z.boolean(),
@@ -799,7 +799,7 @@ export const AdmissionStatusSchema = z.object({
   tail: z.string(),
   /** When the next check is due (poll timer or a wake-up waiting out the gap); null while one runs or nothing waits. */
   nextCheckAt: z.string().nullable(),
-  /** Checks that ended since the plugin started tracking this station. */
+  /** Checks that ended since the plugin started tracking this stage. */
   checks: z.number().int(),
   lastCheckAt: z.string().nullable(),
   lastOutcome: z.enum(["ok", "not_yet", "failed"]).nullable(),
@@ -859,10 +859,10 @@ export const RunSchema = z.object({
   inbox: z.array(z.string()),
   /** Set on a run a fan-out step started: the parent run, its step and the item's key. */
   parent: z.object({ runId: z.string(), stepId: z.string(), key: z.string() }).nullable().default(null),
-  /** A pipeline: every job handed to it. A train: copies of the jobs it carries (its work). */
+  /** A pipeline: every job handed to it. A batch: copies of the jobs it carries (its work). */
   jobs: z.array(JobSchema).default([]),
-  /** Set on a train: the pipeline run and the station it runs for. */
-  train: z.object({ pipelineId: z.string(), playbook: z.string(), station: z.string() }).nullable().default(null),
+  /** Set on a batch: the pipeline run and the stage it runs for. */
+  batch: z.object({ pipelineId: z.string(), playbook: z.string(), stage: z.string() }).nullable().default(null),
   history: z.array(HistoryEventSchema),
   seq: z.number().int(),
   /** The last event-log entry (`<run>.events.jsonl`) this snapshot includes; 0 before the run has a log (ADR 2026-11-12-event-core). */
@@ -886,7 +886,7 @@ export const StepSummarySchema = StepSchema.pick({
 });
 export type StepSummary = z.infer<typeof StepSummarySchema>;
 
-/** The part of a playbook the Playbooks screen needs: its identity, stations, block titles and step summaries. */
+/** The part of a playbook the Playbooks screen needs: its identity, stages, block titles and step summaries. */
 export const PlaybookSummarySchema = PlaybookSchema.pick({ id: true, title: true, description: true, singleton: true, blocks: true }).extend({
   steps: z.array(StepSummarySchema),
 });
@@ -922,9 +922,9 @@ export const RunSummarySchema = z.object({
   gates: z.array(GateSchema),
   /** After-tasks' statuses. */
   after: z.record(z.string(), z.object({ status: AfterTaskStatusSchema })),
-  /** Jobs without their inputs and outputs: what the stations and the job counts show. */
+  /** Jobs without their inputs and outputs: what the stages and the job counts show. */
   jobs: z.array(JobSchema.pick({ id: true, label: true, status: true, waiting: true })),
-  train: RunSchema.shape.train,
+  batch: RunSchema.shape.batch,
   /** Set on a run a fan-out step started: its parent run, step and the item's key. */
   parent: RunSchema.shape.parent.default(null),
   /** Fan-out steps that started: the current pass's children, and the last passes before it (oldest first), by step id. */
@@ -973,7 +973,7 @@ export function summarizeRun(run: Run): RunSummary {
     gates: run.gates.filter((gate) => gate.status === "pending"),
     after: Object.fromEntries(Object.entries(run.after).map(([taskId, task]) => [taskId, { status: task.status }])),
     jobs: run.jobs.map(({ id, label, status, waiting }) => ({ id, label, status, waiting })),
-    train: run.train,
+    batch: run.batch,
     parent: run.parent,
     fanouts: Object.fromEntries(
       Object.entries(run.steps).flatMap(([stepId, step]) =>
@@ -1024,14 +1024,14 @@ export function isAgentlessAttempt(agentId: string): boolean {
   return isScriptAttempt(agentId) || isHandoffAttempt(agentId) || isFanoutAttempt(agentId);
 }
 
-/** A singleton's pipeline run: it keeps the waiting lists and jobs; its trains are other runs. */
+/** A singleton's pipeline run: it keeps the waiting lists and jobs; its batches are other runs. */
 /** A run with no Playbook Manager (`manager: { mode: none }`): the plugin drives it. */
-export function isManagerless(run: { playbook: { managerMode?: string | undefined; singleton?: unknown }; train?: unknown }): boolean {
-  return run.playbook.managerMode === "none" && !run.playbook.singleton && !run.train;
+export function isManagerless(run: { playbook: { managerMode?: string | undefined; singleton?: unknown }; batch?: unknown }): boolean {
+  return run.playbook.managerMode === "none" && !run.playbook.singleton && !run.batch;
 }
 
-export function isPipeline(run: { playbook: { singleton?: unknown }; train: unknown }): boolean {
-  return run.playbook.singleton !== undefined && run.train === null;
+export function isPipeline(run: { playbook: { singleton?: unknown }; batch: unknown }): boolean {
+  return run.playbook.singleton !== undefined && run.batch === null;
 }
 
 export const TERMINAL_RUN_STATUSES: readonly RunStatus[] = ["completed", "failed", "canceled"];

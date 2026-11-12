@@ -72,7 +72,7 @@ steps:
         - { name: infra, if: { steps.scan.outputs.kind: [infra, docs], env: prd } }
         - { name: unset, if: { steps.opt.outputs.url: { empty: true } } }
         - { name: other }
-  - id: train
+  - id: batch
     needs: [route]
     when: { steps.route.outcome: service }
     role: { name: reviewer }
@@ -85,7 +85,7 @@ steps:
     when: { steps.route.outcome: [unset, other] }
     role: { name: reviewer }
   - id: done
-    needs: [train, apply, nothing]
+    needs: [batch, apply, nothing]
     gate: { question: Done? }
 `;
 
@@ -208,7 +208,7 @@ describe("branch steps: runtime", () => {
     report(service, "scan", { kind: "service", repos: "api" });
     expect(status(service, "route")).toBe("completed");
     expect(service.steps.route!.branch).toBe("service");
-    expect(readySteps(service)).toEqual(["train"]);
+    expect(readySteps(service)).toEqual(["batch"]);
     expect(status(service, "apply")).toBe("skipped");
     expect(status(service, "nothing")).toBe("skipped");
     expect(service.history.find((event) => event.type === "step_skipped" && event.stepId === "apply")?.detail).toBe("when: steps.route.outcome is service, not infra");
@@ -233,7 +233,7 @@ describe("branch steps: runtime", () => {
     const run = start(playbook);
     report(run, "scan", { kind: "service", repos: "api" });
     expect(status(run, "done")).toBe("pending");
-    report(run, "train", {});
+    report(run, "batch", {});
     expect(status(run, "done")).toBe("ready");
   });
 

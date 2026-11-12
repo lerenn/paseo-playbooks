@@ -3,11 +3,11 @@ import { SCRIPT_NOT_YET } from "../shared/types";
 import { admissionJobs, type AdmissionResult } from "./engine";
 
 /**
- * The admission check of a station's queue (`queue.admit`, ADR 2026-11-12-queue-admission-impl): what the plugin gives
+ * The admission check of a stage's queue (`queue.admit`, ADR 2026-11-12-queue-admission-impl): what the plugin gives
  * the script and how it reads the answer. Running it (coalescing, timers, the panel's status) is the runtime's.
  */
 
-/** Most jobs one check is given, oldest first; the rest are looked at once these board or leave. */
+/** Most jobs one check is given, oldest first; the rest are looked at once these join or leave. */
 export const ADMISSION_JOBS_MAX = 100;
 /** Most characters of PLAYBOOK_JOBS (an environment variable has an OS limit); at least one job is always sent. */
 export const ADMISSION_JOBS_CHARS = 100_000;
@@ -20,7 +20,7 @@ export const ADMISSION_TIMEOUT_MS = 5 * 60 * 1000;
 export interface AdmissionJob {
   id: string;
   label: string;
-  /** When it started waiting at this station. */
+  /** When it started waiting at this stage. */
   since: string;
   /** Its own inputs, all of them (long strings cut). */
   inputs: Record<string, string | number | boolean>;
@@ -30,13 +30,13 @@ function clip(inputs: Job["inputs"]): AdmissionJob["inputs"] {
   return Object.fromEntries(Object.entries(inputs).map(([name, value]) => [name, typeof value === "string" && value.length > ADMISSION_INPUT_CHARS ? `${value.slice(0, ADMISSION_INPUT_CHARS)}…` : value])) as AdmissionJob["inputs"];
 }
 
-/** The station's waiting jobs a check is given (PLAYBOOK_JOBS), within the caps, and how many were left for a later check. */
-export function admissionInput(pipeline: Run, stationId: string): { jobs: AdmissionJob[]; omitted: number } {
-  const waiting = admissionJobs(pipeline, stationId);
+/** The stage's waiting jobs a check is given (PLAYBOOK_JOBS), within the caps, and how many were left for a later check. */
+export function admissionInput(pipeline: Run, stageId: string): { jobs: AdmissionJob[]; omitted: number } {
+  const waiting = admissionJobs(pipeline, stageId);
   const jobs: AdmissionJob[] = [];
   let chars = 2;
   for (const job of waiting) {
-    const item: AdmissionJob = { id: job.id, label: job.label, since: job.waiting.find((entry) => entry.station === stationId)!.since, inputs: clip(job.inputs) };
+    const item: AdmissionJob = { id: job.id, label: job.label, since: job.waiting.find((entry) => entry.stage === stageId)!.since, inputs: clip(job.inputs) };
     const size = JSON.stringify(item).length + 1;
     if (jobs.length > 0 && (jobs.length >= ADMISSION_JOBS_MAX || chars + size > ADMISSION_JOBS_CHARS)) break;
     jobs.push(item);

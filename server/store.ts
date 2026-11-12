@@ -1,6 +1,7 @@
 import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pluginDataDir } from "./data-dir";
+import { upcastRunNames } from "../shared/legacy-names";
 import { RunSchema, type Run } from "../shared/types";
 import { DEFAULT_EVENT_CORE, type EventCoreConfig } from "./config";
 import { areaOfEvent, checkParity, genesisType, takeEvents, verifyLog, type Area, type DomainEvent } from "./event-core";
@@ -61,7 +62,7 @@ export class RunStore {
     for (const name of await readdir(this.dir)) {
       if (!name.endsWith(".json")) continue;
       try {
-        const run = RunSchema.parse(JSON.parse(await readFile(path.join(this.dir, name), "utf8")));
+        const run = RunSchema.parse(upcastRunNames(JSON.parse(await readFile(path.join(this.dir, name), "utf8"))));
         this.runs.set(run.id, run);
       } catch (error) {
         console.error(`[playbooks] skipping unreadable run file ${name}:`, (error as Error).message);

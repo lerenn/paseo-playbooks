@@ -53,7 +53,7 @@ function compactGate(gate: Run["gates"][number]) {
   return { id: gate.id, kind: gate.kind, ...(gate.jobId ? { jobId: gate.jobId } : {}), stepId: gate.stepId, status: gate.status, summary: gate.summary, comment: clip(gate.comment), decidedBy: gate.decidedBy };
 }
 
-/** A train's (or pipeline's) jobs: id, where from, status and outcome (inputs with view "full"). */
+/** A batch's (or pipeline's) jobs: id, where from, status and outcome (inputs with view "full"). */
 function jobStatus(run: Run, full = false) {
   return run.jobs.map((job) => ({
     id: job.id,
@@ -63,10 +63,12 @@ function jobStatus(run: Run, full = false) {
     ...(isPipeline(run)
       ? {
           passed: job.passed,
-          waiting: job.waiting.map((place) => place.station),
-          riding: job.riding.map((ride) => `${ride.station} (${ride.runId})`),
-          // Held by a station's admission script: why, since when it waits, and when that was decided (null: not checked yet).
-          ...(job.waiting.some((place) => place.held) ? { held: Object.fromEntries(job.waiting.flatMap((place) => (place.held ? [[place.station, { reason: place.held.reason, since: place.since, checkedAt: place.held.checkedAt }]] : []))) } : {}),
+          waiting: job.waiting.map((place) => place.stage),
+          batches: job.batches.map((ride) => `${ride.stage} (${ride.runId})`),
+          // Deprecated name of `batches`, until the end of the stage/batch aliases (ADR 2026-11-12-stage-batch-rename).
+          riding: job.batches.map((ride) => `${ride.stage} (${ride.runId})`),
+          // Held by a stage's admission script: why, since when it waits, and when that was decided (null: not checked yet).
+          ...(job.waiting.some((place) => place.held) ? { held: Object.fromEntries(job.waiting.flatMap((place) => (place.held ? [[place.stage, { reason: place.held.reason, since: place.since, checkedAt: place.held.checkedAt }]] : []))) } : {}),
         }
       : {}),
     ...(full ? { inputs: job.inputs, outputs: job.outputs, summary: job.summary } : { summary: clip(job.summary) }),
@@ -92,7 +94,7 @@ export function runChange(run: Run, stepId?: string) {
     running: runningSteps(run),
     gates: run.gates.filter((gate) => gate.status === "pending").map(compactGate),
     ...(isTerminal(run.status) ? { outputs: run.outputs } : {}),
-    ...(run.jobs.length > 0 || run.train ? { jobs: jobStatus(run) } : {}),
+    ...(run.jobs.length > 0 || run.batch ? { jobs: jobStatus(run) } : {}),
     after: afterStatus(run),
   };
 }
@@ -168,7 +170,7 @@ export function runCompact(run: Run, only?: string[]) {
     ),
     gates: run.gates.map(compactGate),
     loops: run.loops,
-    ...(run.jobs.length > 0 || run.train ? { jobs: jobStatus(run) } : {}),
+    ...(run.jobs.length > 0 || run.batch ? { jobs: jobStatus(run) } : {}),
     after: afterStatus(run),
   };
 }
@@ -226,7 +228,7 @@ export function runFull(run: Run, only?: string[]) {
     ),
     gates: run.gates,
     loops: run.loops,
-    ...(run.jobs.length > 0 || run.train ? { jobs: jobStatus(run, true) } : {}),
+    ...(run.jobs.length > 0 || run.batch ? { jobs: jobStatus(run, true) } : {}),
     after: run.playbook.after.map((task) => ({ ...task, ...(run.after[task.id] ?? { status: "pending" }) })),
   };
 }
@@ -266,7 +268,11 @@ function describeEntry(entry: PlaybookEntry) {
     outputs: Object.fromEntries(Object.entries(pb.outputs).map(([name, def]) => [name, { type: def.type, from: def.label }])),
     concurrency: pb.concurrency ?? null,
     ...(pb.singleton
-      ? { singleton: { branch: pb.singleton.branch ?? "(default branch)", stations: pb.singleton.stations.map((station) => ({ id: station.id, needs: station.needs, queue: station.mode, retries: station.retries })) } }
+      ? (() => {
+          const stages = pb.singleton.stages.map((stage) => ({ id: stage.id, needs: stage.needs, queue: stage.mode, retries: stage.retries }));
+          // `stations` is the deprecated name of `stages`, until the end of the aliases (ADR 2026-11-12-stage-batch-rename).
+          return { singleton: { branch: pb.singleton.branch ?? "(default branch)", stages, stations: stages } };
+        })()
       : {}),
     after: pb.after.map((task) => ({ id: task.id, title: task.title, trigger: task.trigger, steps: task.steps })),
     steps: pb.steps.map((step) => ({
@@ -351,7 +357,7 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
     defineAgentTool({
       name: "start_playbook",
       description:
-        "Create a run of a playbook with you as its manager, in your workspace (a Sidekick, or any caller that passes workspaceId, starts it in that workspace instead, with a new Playbook Manager) (one active run per workspace, unless the playbook has `isolation: worktree`: it gets a private git worktree, and runs may share the workspace). Returns the run id and the ready steps. With newWorkspace, the run gets a new workspace and its own Playbook Manager instead (for example a train's manager starting rework for an ejected job).",
+        "Create a run of a playbook with you as its manager, in your workspace (a Sidekick, or any caller that passes workspaceId, starts it in that workspace instead, with a new Playbook Manager) (one active run per workspace, unless the playbook has `isolation: worktree`: it gets a private git worktree, and runs may share the workspace). Returns the run id and the ready steps. With newWorkspace, the run gets a new workspace and its own Playbook Manager instead (for example a batch's manager starting rework for an ejected job).",
       input: z.object({
         playbook: z.string().describe("Playbook id (its file name without .yaml)"),
         inputs: z.record(z.string(), VarValueSchema).default({}).describe("Playbook inputs by name"),
@@ -397,7 +403,7 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
           const run = await runtime.startPlaybook(agent, playbook, inputs, { name });
           if (run.playbook.singleton) {
             return ok(
-              `"${playbook}" is a singleton: its pipeline is run ${run.id}, in its own workspace. Hand-off steps give it jobs; each station's trains get their own Playbook Manager there. You do not manage it.`,
+              `"${playbook}" is a singleton: its pipeline is run ${run.id}, in its own workspace. Hand-off steps give it jobs; each stage's batches get their own Playbook Manager there. You do not manage it.`,
               { runId: run.id, status: run.status },
             );
           }
@@ -547,7 +553,7 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
     defineAgentTool({
       name: "settle_job",
       description:
-        "Trains of a singleton pipeline: settle one job your train carries (see get_run `jobs`, or {{ run.jobs }} in the step prompts). Without outcome: set its outputs (e.g. a release tag later stations read); it goes on with the train. With an outcome of the singleton (e.g. ejected): it ends now and the run that handed it off is told at once; the train goes on with the others. Jobs still open when the train completes pass to the next station.",
+        "Batches of a singleton pipeline: settle one job your batch carries (see get_run `jobs`, or {{ run.jobs }} in the step prompts). Without outcome: set its outputs (e.g. a release tag later stages read); it goes on with the batch. With an outcome of the singleton (e.g. ejected): it ends now and the run that handed it off is told at once; the batch goes on with the others. Jobs still open when the batch completes pass to the next stage.",
       input: z.object({
         runId: IdArg,
         jobId: z.string(),
@@ -561,8 +567,8 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
           const open = run.jobs.filter((job) => job.status === "open").map((job) => job.id);
           return ok(
             outcome === undefined
-              ? `Outputs of job ${jobId} set; it goes on with the train. Open jobs: ${open.join(", ") || "none"}.`
-              : `Job ${jobId} ended with "${outcome}"; its run was told. Open jobs on this train: ${open.join(", ") || "none"}.`,
+              ? `Outputs of job ${jobId} set; it goes on with the batch. Open jobs: ${open.join(", ") || "none"}.`
+              : `Job ${jobId} ended with "${outcome}"; its run was told. Open jobs on this batch: ${open.join(", ") || "none"}.`,
             runChange(run),
           );
         }),
@@ -772,7 +778,7 @@ export function runTools(runtime: Runtime): AgentToolDefinition[] {
     defineAgentTool({
       name: "archive_run",
       description:
-        "Archive a run that has ended (completed, failed or canceled), exactly like the archive button on its row in the Playbooks panel: it is hidden from the panel and from list_runs (unless archived: true); its state and agents are kept, and restart_run can still reopen it. Use it to clean up after a run is canceled or finished and its job is settled (e.g. after cancel_run, once the human no longer needs it). Refused while the run is active, running, paused or waiting at a gate (cancel_run it first), and while a job it handed to a pipeline is still open at a station or train, unless force: true. Archiving twice is fine. Works on any run, like cancel_run.",
+        "Archive a run that has ended (completed, failed or canceled), exactly like the archive button on its row in the Playbooks panel: it is hidden from the panel and from list_runs (unless archived: true); its state and agents are kept, and restart_run can still reopen it. Use it to clean up after a run is canceled or finished and its job is settled (e.g. after cancel_run, once the human no longer needs it). Refused while the run is active, running, paused or waiting at a gate (cancel_run it first), and while a job it handed to a pipeline is still open at a stage or batch, unless force: true. Archiving twice is fine. Works on any run, like cancel_run.",
       input: z.object({
         runId: IdArg,
         force: z.boolean().default(false).describe("Archive even though a job the run handed to a pipeline is still open (not settled)"),

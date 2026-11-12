@@ -1,12 +1,12 @@
 import type { AdmissionStatus } from "../shared/types";
 import { formatSeconds } from "./script-output";
 
-/** How often the station view asks for the admission checks' status while a station has waiting jobs. */
+/** How often the stage view asks for the admission checks' status while a stage has waiting jobs. */
 export const ADMISSION_POLL_MS = 3000;
 
-/** A waiting job's entry at a station, as the pipeline summary has it. */
+/** A waiting job's entry at a stage, as the pipeline summary has it. */
 export interface WaitEntry {
-  station: string;
+  stage: string;
   since: string;
   held: { reason: string; checkedAt: string | null } | null;
   forced: boolean;
@@ -26,7 +26,7 @@ export function agoText(iso: string, now: number): string {
   return seconds < 5 ? "just now" : `${formatSeconds(seconds)} ago`;
 }
 
-/** What the station shows for a waiting job: null when it may board (or was admitted by a human). */
+/** What the stage shows for a waiting job: null when it may join (or was admitted by a human). */
 export function heldView(entry: WaitEntry, now: number): HeldView | null {
   if (!entry.held) return null;
   const waiting = `waiting ${formatSeconds((now - Date.parse(entry.since)) / 1000)}`;
@@ -42,7 +42,7 @@ export interface AdmissionLine {
   error: { message: string; tail: string; when: string } | null;
 }
 
-/** The station's admission line. `waiting`: jobs the check looks at now; with none, nothing runs. */
+/** The stage's admission line. `waiting`: jobs the check looks at now; with none, nothing runs. */
 export function admissionLine(status: AdmissionStatus | undefined, waiting: number, now: number): AdmissionLine {
   const failed = status?.error ? { message: status.error.message, tail: status.error.tail, when: agoText(status.error.at, now) } : null;
   if (status?.running && status.since) {

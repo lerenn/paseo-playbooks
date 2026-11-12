@@ -23,7 +23,7 @@ afterEach(async () => {
 const T0 = "2026-11-12T10:00:00.000Z";
 const at = (n: number) => `2026-11-12T10:00:${String(n).padStart(2, "0")}.000Z`;
 
-/** A pipeline whose first station (dev) and last (prd) both have an admission script. */
+/** A pipeline whose first stage (dev) and last (prd) both have an admission script. */
 const APPLY = (admit = "{ script: admit.sh, poll: 1h }", mode = "fifo") => `
 title: Apply
 singleton: { branch: main }
@@ -58,7 +58,7 @@ steps:
 
 /** Logs each check, records what it was given, and answers with verdict.json (`{}` by default); `exit` makes it exit with that code. */
 const ADMIT_SH = `#!/bin/sh
-echo "$PLAYBOOK_CHECK $PLAYBOOK_STATION $PLAYBOOK_PIPELINE $PLAYBOOK_RUN_ID $PLAYBOOK_STEP_ID $PWD" >> "$PWD/admit.log"
+echo "$PLAYBOOK_CHECK $PLAYBOOK_STAGE $PLAYBOOK_PIPELINE $PLAYBOOK_RUN_ID $PLAYBOOK_STEP_ID $PWD" >> "$PWD/admit.log"
 echo "$PLAYBOOK_JOBS" > "$PWD/jobs-seen.json"
 echo "$PLAYBOOK_JOBS_OMITTED" > "$PWD/omitted-seen"
 [ -f "$PWD/slow" ] && sleep 0.3
@@ -117,22 +117,22 @@ async function errorsOf(yaml: string, scripts?: Record<string, string>): Promise
 }
 
 describe("queue.admit: loading", () => {
-  it("reads the block into the station: script path, poll, wake_on", async () => {
-    const { entries } = await loaded({ "apply.yaml": APPLY("{ script: admit.sh, poll: 10m, wake_on: [{ types: [job.settled, job.advanced], filter: { playbook: other, station: stg } }] }", "merge") });
+  it("reads the block into the stage: script path, poll, wake_on", async () => {
+    const { entries } = await loaded({ "apply.yaml": APPLY("{ script: admit.sh, poll: 10m, wake_on: [{ types: [job.settled, job.advanced], filter: { playbook: other, stage: stg } }] }", "merge") });
     const apply = entries.find((entry) => entry.id === "apply")!;
     expect(apply.errors).toEqual([]);
-    expect(apply.playbook!.singleton!.stations[0]).toMatchObject({
+    expect(apply.playbook!.singleton!.stages[0]).toMatchObject({
       id: "dev",
       mode: "merge",
-      admit: { script: ".paseo/plugins/playbooks/scripts/admit.sh", pollMs: 600_000, wakeOn: [{ types: ["job.settled", "job.advanced"], filter: { playbook: "other", station: "stg" } }] },
+      admit: { script: ".paseo/plugins/playbooks/scripts/admit.sh", pollMs: 600_000, wakeOn: [{ types: ["job.settled", "job.advanced"], filter: { playbook: "other", stage: "stg" } }] },
     });
-    expect(apply.playbook!.singleton!.stations[1]!.admit).toBeUndefined();
+    expect(apply.playbook!.singleton!.stages[1]!.admit).toBeUndefined();
   });
 
   it("accepts the staged_release example", async () => {
     const entry = (await loadPlaybooks(EXAMPLES)).entries.find((candidate) => candidate.id === "staged_release")!;
     expect(entry.errors).toEqual([]);
-    expect(entry.playbook!.singleton!.stations[1]!.admit).toMatchObject({ pollMs: 600_000, wakeOn: [{ types: ["job.advanced", "job.settled"], filter: { playbook: "qa_pipeline", station: "smoke" } }] });
+    expect(entry.playbook!.singleton!.stages[1]!.admit).toMatchObject({ pollMs: 600_000, wakeOn: [{ types: ["job.advanced", "job.settled"], filter: { playbook: "qa_pipeline", stage: "smoke" } }] });
   });
 
   it("accepts the new job events as wake_on types, and their declared fields as filters", async () => {
@@ -165,7 +165,7 @@ function pipeline(playbook: Playbook): Run {
 }
 
 function job(id: string, inputs: Job["inputs"] = {}): Job {
-  return { id, fromRunId: "r1", fromStepId: "apply", attempt: 1, label: `PR ${id}`, inputs, status: "open", outcome: null, summary: null, outputs: {}, createdAt: T0, endedAt: null, passed: [], waiting: [], riding: [], failedRides: {}, detached: false };
+  return { id, fromRunId: "r1", fromStepId: "apply", attempt: 1, label: `PR ${id}`, inputs, status: "open", outcome: null, summary: null, outputs: {}, createdAt: T0, endedAt: null, passed: [], waiting: [], batches: [], failedRides: {}, detached: false };
 }
 
 /** Runs a mutator on a copy and checks the reducers rebuild what it did (parity), including the admission gates. */
@@ -179,7 +179,7 @@ function step<T = void>(run: Run, fn: (copy: Run) => T): { run: Run; value: T } 
 }
 
 const verdict = (over: Partial<engine.AdmissionResult>): engine.AdmissionResult => ({ admit: [], hold: {}, escalate: {}, ...over });
-const heldOf = (run: Run, id: string, station = "dev") => run.jobs.find((candidate) => candidate.id === id)!.waiting.find((entry) => entry.station === station)!;
+const heldOf = (run: Run, id: string, stage = "dev") => run.jobs.find((candidate) => candidate.id === id)!.waiting.find((entry) => entry.stage === stage)!;
 const decision = (choice: string, comment: string | null = null) => ({ decision: choice, comment, by: "Ada", via: "panel" as const, now: at(30) });
 
 describe("queue.admit: the engine", () => {
@@ -188,11 +188,11 @@ describe("queue.admit: the engine", () => {
     return entries.find((entry) => entry.id === "apply")!.playbook!;
   }
 
-  it("holds a job at a station with admit until its first check; a station without one is untouched", async () => {
+  it("holds a job at a stage with admit until its first check; a stage without one is untouched", async () => {
     let run = pipeline(await apply());
     run = step(run, (copy) => engine.addJob(copy, job("j1"), at(1))).run;
     expect(heldOf(run, "j1")).toMatchObject({ held: { reason: engine.ADMISSION_PENDING, checkedAt: null }, forced: false });
-    expect(engine.nextTrainJobs(run, "dev")).toEqual([]);
+    expect(engine.nextBatchJobs(run, "dev")).toEqual([]);
     // prd has no admit block: a job that reaches it waits unheld.
     run.jobs[0]!.passed.push("dev");
     run.jobs[0]!.waiting = [];
@@ -210,7 +210,7 @@ describe("queue.admit: the engine", () => {
       expect(heldOf(run, "j1").held).toEqual({ reason: "QA not passed", checkedAt: at(5) });
       expect(heldOf(run, "j2").held).toBeNull();
       // j1 is the oldest, yet fifo takes j2: the held head does not block the queue.
-      expect(engine.nextTrainJobs(run, "dev").map((candidate) => candidate.id)).toEqual(mode === "fifo" ? ["j2"] : ["j2", "j3"]);
+      expect(engine.nextBatchJobs(run, "dev").map((candidate) => candidate.id)).toEqual(mode === "fifo" ? ["j2"] : ["j2", "j3"]);
     }
   });
 
@@ -237,7 +237,7 @@ describe("queue.admit: the engine", () => {
     engine.applyAdmission(again, "dev", ["j1"], verdict({ admit: ["j1"] }), at(3));
     expect(takeEvents(again)).toEqual([]);
     run = step(run, (copy) => engine.applyAdmission(copy, "dev", ["j1"], verdict({ hold: { j1: "CI red again" } }), at(4))).run;
-    expect(engine.nextTrainJobs(run, "dev")).toEqual([]);
+    expect(engine.nextBatchJobs(run, "dev")).toEqual([]);
   });
 
   it("ignores ids that were not sent (with a warning), and takes the strictest verdict for a job named twice", async () => {
@@ -264,7 +264,7 @@ describe("queue.admit: the engine", () => {
     expect(run.gates).toHaveLength(1);
   });
 
-  it("answers an admission gate: retry keeps holding, admit lets it board for good, withdraw ends the job", async () => {
+  it("answers an admission gate: retry keeps holding, admit lets it join for good, withdraw ends the job", async () => {
     let base = pipeline(await apply());
     for (const [index, id] of ["j1", "j2"].entries()) base = step(base, (copy) => engine.addJob(copy, job(id), at(index + 1))).run;
     base = step(base, (copy) => engine.applyAdmission(copy, "dev", ["j1", "j2"], verdict({ escalate: { j1: "dep failed", j2: "dep failed" } }), at(3))).run;
@@ -275,10 +275,10 @@ describe("queue.admit: the engine", () => {
     expect(retried.gates[0]).toMatchObject({ status: "retry", comment: "try again", decidedBy: "Ada", decidedVia: "panel" });
     expect(heldOf(retried, "j1").held).not.toBeNull();
 
-    // admit anyway: it boards, and the script no longer holds it nor is it given to the next check.
+    // admit anyway: it joins, and the script no longer holds it nor is it given to the next check.
     const admitted = step(base, (copy) => engine.decideGate(copy, g1!.id, decision("admit", "ok by me"))).run;
     expect(heldOf(admitted, "j1")).toMatchObject({ held: null, forced: true });
-    expect(engine.nextTrainJobs(admitted, "dev").map((candidate) => candidate.id)).toEqual(["j1"]);
+    expect(engine.nextBatchJobs(admitted, "dev").map((candidate) => candidate.id)).toEqual(["j1"]);
     expect(engine.admissionJobs(admitted, "dev").map((candidate) => candidate.id)).toEqual(["j2"]);
     const rechecked = step(admitted, (copy) => engine.applyAdmission(copy, "dev", ["j1", "j2"], verdict({}), at(40))).run;
     expect(heldOf(rechecked, "j1").held).toBeNull();
@@ -293,28 +293,28 @@ describe("queue.admit: the engine", () => {
     expect(() => engine.decideGate(structuredClone(base), g1!.id, decision("nope"))).toThrow(/not a choice/);
   });
 
-  it("closes an open ask when the script admits the job, when it is withdrawn by its run, and when its station is removed", async () => {
+  it("closes an open ask when the script admits the job, when it is withdrawn by its run, and when its stage is removed", async () => {
     let run = pipeline(await apply());
     for (const [index, id] of ["j1", "j2", "j3"].entries()) run = step(run, (copy) => engine.addJob(copy, job(id), at(index + 1))).run;
     run = step(run, (copy) => engine.applyAdmission(copy, "dev", ["j1", "j2", "j3"], verdict({ escalate: { j1: "x", j2: "x", j3: "x" } }), at(5))).run;
     const [g1, g2, g3] = run.gates;
     run = step(run, (copy) => engine.applyAdmission(copy, "dev", ["j1"], verdict({ admit: ["j1"] }), at(6))).run;
     expect(run.gates[0]).toMatchObject({ id: g1!.id, status: "dismissed", decidedBy: null });
-    // A held job is withdrawn by its parent run like any waiting one, and a removed station fails it as today.
+    // A held job is withdrawn by its parent run like any waiting one, and a removed stage fails it as today.
     run = step(run, (copy) => void engine.withdrawJob(copy, "j2", "run canceled", at(7))).run;
     expect(run.jobs[1]).toMatchObject({ status: "withdrawn" });
     expect(run.gates.find((gate) => gate.id === g2!.id)!.status).toBe("dismissed");
-    run = step(run, (copy) => void engine.failJobs(copy, ["j3"], "its station was removed from the playbook", at(8))).run;
+    run = step(run, (copy) => void engine.failJobs(copy, ["j3"], "its stage was removed from the playbook", at(8))).run;
     expect(run.jobs[2]).toMatchObject({ status: "failed", waiting: [] });
     expect(run.gates.find((gate) => gate.id === g3!.id)!.status).toBe("dismissed");
   });
 
-  it("lets held jobs board once the station no longer has an admit block", async () => {
+  it("lets held jobs join once the stage no longer has an admit block", async () => {
     let run = pipeline(await apply());
     run = step(run, (copy) => engine.addJob(copy, job("j1"), at(1))).run;
-    expect(engine.nextTrainJobs(run, "dev")).toEqual([]);
-    run.playbook.singleton!.stations[0] = { ...run.playbook.singleton!.stations[0]!, admit: undefined };
-    expect(engine.nextTrainJobs(run, "dev").map((candidate) => candidate.id)).toEqual(["j1"]);
+    expect(engine.nextBatchJobs(run, "dev")).toEqual([]);
+    run.playbook.singleton!.stages[0] = { ...run.playbook.singleton!.stages[0]!, admit: undefined };
+    expect(engine.nextBatchJobs(run, "dev").map((candidate) => candidate.id)).toEqual(["j1"]);
   });
 
   it("works the same with the event log off: state identical, no log file", async () => {
@@ -348,9 +348,9 @@ describe("queue.admit: the engine", () => {
     await store.mutate("pipe", (run) => engine.addJob(run, job("j1"), at(1)));
     await store.mutate("pipe", (run) => engine.addJob(run, job("j2"), at(2)));
     await store.mutate("pipe", (run) => void engine.applyAdmission(run, "dev", ["j1", "j2"], verdict({ admit: ["j1"], escalate: { j2: "x" } }), at(3)));
-    await store.mutate("pipe", (run) => engine.boardTrain(run, "dev", "t1", ["j1"], at(4)));
-    const train = engine.newTrainRun({ id: "t1", pipeline: store.get("pipe")!, station: "dev", jobs: store.get("pipe")!.jobs, managerAgentId: "m", now: at(4) });
-    await store.mutate("pipe", (run) => void engine.trainEnded(run, { ...train, status: "failed", failure: "boom" }, at(5)));
+    await store.mutate("pipe", (run) => engine.joinBatch(run, "dev", "t1", ["j1"], at(4)));
+    const batch = engine.newBatchRun({ id: "t1", pipeline: store.get("pipe")!, stage: "dev", jobs: store.get("pipe")!.jobs, managerAgentId: "m", now: at(4) });
+    await store.mutate("pipe", (run) => void engine.batchEnded(run, { ...batch, status: "failed", failure: "boom" }, at(5)));
     // The failed ride waits again, admitted (a retry is not checked again from scratch).
     expect(heldOf(store.get("pipe")!, "j1")).toMatchObject({ held: null, forced: false });
     await store.mutate("pipe", (run) => void engine.decideGate(run, run.gates[0]!.id, decision("withdraw")));
@@ -363,10 +363,10 @@ describe("queue.admit: the engine", () => {
 
   it("loads a run saved before admission: waiting entries get held null, gates a null jobId", async () => {
     const saved = JSON.parse(JSON.stringify(pipeline(await apply()))) as Record<string, unknown>;
-    saved.jobs = [{ ...job("j1"), waiting: [{ station: "dev", since: T0 }] }];
+    saved.jobs = [{ ...job("j1"), waiting: [{ stage: "dev", since: T0 }] }];
     saved.gates = [{ id: "g", kind: "gate", stepId: "s", gotoTarget: null, status: "pending", message: "", requestedAt: T0, comment: null, decidedBy: null, decidedVia: null, decidedAt: null }];
     const legacy = RunSchema.parse(saved);
-    expect(legacy.jobs[0]!.waiting[0]).toEqual({ station: "dev", since: T0, held: null, forced: false });
+    expect(legacy.jobs[0]!.waiting[0]).toEqual({ stage: "dev", since: T0, held: null, forced: false });
     expect(legacy.gates[0]!.jobId).toBeNull();
   });
 
@@ -435,51 +435,51 @@ async function setup(admit = "{ script: admit.sh, poll: 1h }", wakeGapMs = 100) 
   const events: BusEvent[] = [];
   runtime.bus.onEmit((event) => void events.push(event));
   const handOff = (n: number, inputs: Record<string, string> = {}) => runtime.startPlaybook({ id: `m${n}`, workspaceId: `ws${n}`, cwd: "/" }, "pr", { pr_url: `https://example.test/pr/${n}`, ...inputs });
-  const pipe = () => store.list().find((run) => run.playbook.singleton && run.train === null)!;
+  const pipe = () => store.list().find((run) => run.playbook.singleton && run.batch === null)!;
   const checks = async () => (await readFile(path.join(dir, "admit.log"), "utf8").catch(() => "")).split("\n").filter(Boolean);
   const types = (type: string) => events.filter((event) => event.type === type);
   const write = (name: string, body: string) => writeFile(path.join(dir, name), body);
   const status = () => runtime.admissionStatus(pipe().id).dev!;
-  const train = () => store.list().find((run) => run.train?.station === "dev");
-  return { dir, store, runtime, events, handOff, pipe, checks, types, write, status, train, ...fake };
+  const batch = () => store.list().find((run) => run.batch?.stage === "dev");
+  return { dir, store, runtime, events, handOff, pipe, checks, types, write, status, batch, ...fake };
 }
 
 describe("queue.admit: the runtime", () => {
   it("runs the script in the pipeline's workspace with the waiting jobs, and holds what it does not name", async () => {
-    const { dir, handOff, pipe, checks, types, status, train, runtime } = await setup();
+    const { dir, handOff, pipe, checks, types, status, batch, runtime } = await setup();
     const parent = await handOff(1, { ticket: "T-1" });
     await until(async () => (await checks()).length === 1 && pipe().jobs[0]?.waiting[0]?.held?.checkedAt != null);
-    // First check: nothing named, the job is held with the default reason, and no train departs.
+    // First check: nothing named, the job is held with the default reason, and no batch starts.
     expect(pipe().jobs[0]!.waiting[0]!.held).toMatchObject({ reason: "not admitted by the script" });
     expect((await checks())[0]).toBe(`1 dev apply ${pipe().id} dev ${await realpathOf(dir)}`);
     const seen = JSON.parse(await readFile(path.join(dir, "jobs-seen.json"), "utf8")) as Array<Record<string, unknown>>;
     expect(seen).toEqual([{ id: pipe().jobs[0]!.id, label: expect.any(String), since: expect.any(String), inputs: { pr_url: "https://example.test/pr/1", ticket: "T-1" } }]);
     expect(await readFile(path.join(dir, "omitted-seen"), "utf8")).toBe("0\n");
     await sleep(300);
-    expect(train()).toBeUndefined();
+    expect(batch()).toBeUndefined();
     expect(types("job.held")).toHaveLength(1);
-    expect(types("job.held")[0]!.payload).toMatchObject({ jobId: pipe().jobs[0]!.id, station: "dev", reason: "not admitted by the script", playbook: "apply" });
+    expect(types("job.held")[0]!.payload).toMatchObject({ jobId: pipe().jobs[0]!.id, stage: "dev", reason: "not admitted by the script", playbook: "apply" });
     expect(status()).toMatchObject({ running: false, checks: 1, lastOutcome: "ok", error: null });
     expect(status().nextCheckAt).not.toBeNull();
     expect(runtime.attention().gates).toEqual([]);
     expect(parent.status).toBeDefined();
   });
 
-  it("admits what the script names, which boards the next train; job.admitted says via script", async () => {
-    const { handOff, pipe, write, checks, types, train, runtime } = await setup("{ script: admit.sh, poll: 1h, wake_on: [{ types: [job.settled], filter: { playbook: other } }] }");
+  it("admits what the script names, which joins the next batch; job.admitted says via script", async () => {
+    const { handOff, pipe, write, checks, types, batch, runtime } = await setup("{ script: admit.sh, poll: 1h, wake_on: [{ types: [job.settled], filter: { playbook: other } }] }");
     await handOff(1);
     await until(async () => (await checks()).length === 1 && pipe().jobs[0]?.waiting[0]?.held?.checkedAt != null);
     const id = pipe().jobs[0]!.id;
     await write("verdict.json", JSON.stringify({ admit: [id] }));
-    await runtime.bus.emit("job.settled", { runId: "x", playbook: "other", runName: null, projectId: "p", workspaceDir: "/", jobId: "z", label: "z", station: "stg", trainRunId: null, outcome: "done", summary: null }, { runId: "x", source: "pipelines" });
-    await until(() => train() !== undefined && pipe().jobs[0]!.riding.length === 1);
-    expect(pipe().jobs[0]).toMatchObject({ waiting: [], riding: [expect.objectContaining({ station: "dev" })] });
+    await runtime.bus.emit("job.settled", { runId: "x", playbook: "other", runName: null, projectId: "p", workspaceDir: "/", jobId: "z", label: "z", stage: "stg", batchRunId: null, station: "stg", trainRunId: null, outcome: "done", summary: null }, { runId: "x", source: "pipelines" });
+    await until(() => batch() !== undefined && pipe().jobs[0]!.batches.length === 1);
+    expect(pipe().jobs[0]).toMatchObject({ waiting: [], batches: [expect.objectContaining({ stage: "dev" })] });
     expect(types("job.admitted")).toHaveLength(1);
-    expect(types("job.admitted")[0]!.payload).toMatchObject({ jobId: id, station: "dev", via: "script", reason: null });
-    expect(types("job.boarded")).toHaveLength(1);
+    expect(types("job.admitted")[0]!.payload).toMatchObject({ jobId: id, stage: "dev", via: "script", reason: null });
+    expect(types("job.joined")).toHaveLength(1);
     // The queue is empty now: no more checks, even on a wake-up.
     const before = (await checks()).length;
-    await runtime.bus.emit("job.settled", { runId: "x", playbook: "other", runName: null, projectId: "p", workspaceDir: "/", jobId: "z", label: "z", station: "stg", trainRunId: null, outcome: "done", summary: null }, { runId: "x", source: "pipelines" });
+    await runtime.bus.emit("job.settled", { runId: "x", playbook: "other", runName: null, projectId: "p", workspaceDir: "/", jobId: "z", label: "z", stage: "stg", batchRunId: null, station: "stg", trainRunId: null, outcome: "done", summary: null }, { runId: "x", source: "pipelines" });
     await sleep(400);
     expect((await checks()).length).toBe(before);
   });
@@ -515,7 +515,7 @@ describe("queue.admit: the runtime", () => {
 
   it("leaves everything as it is on exit 75, and shows a failed check (exit, no result, timeout) as an alert", async () => {
     const { handOff, pipe, write, checks, status, runtime } = await setup("{ script: admit.sh, poll: 1h, wake_on: [{ types: [job.settled], filter: { playbook: other } }] }");
-    const wake = () => runtime.bus.emit("job.settled", { runId: "x", playbook: "other", runName: null, projectId: "p", workspaceDir: "/", jobId: "z", label: "z", station: "stg", trainRunId: null, outcome: "done", summary: null }, { runId: "x", source: "pipelines" });
+    const wake = () => runtime.bus.emit("job.settled", { runId: "x", playbook: "other", runName: null, projectId: "p", workspaceDir: "/", jobId: "z", label: "z", stage: "stg", batchRunId: null, station: "stg", trainRunId: null, outcome: "done", summary: null }, { runId: "x", source: "pipelines" });
     await handOff(1);
     await until(() => pipe().jobs[0]?.waiting[0]?.held?.checkedAt != null);
     const held = structuredClone(pipe().jobs[0]!.waiting[0]!.held);
@@ -559,7 +559,7 @@ describe("queue.admit: the runtime", () => {
     await handOff(1);
     await until(() => pipe().jobs[0]?.waiting[0]?.held?.checkedAt != null);
     await rm(path.join(dir, ".paseo/plugins/playbooks/scripts/admit.sh"));
-    await runtime.bus.emit("job.settled", { runId: "x", playbook: "other", runName: null, projectId: "p", workspaceDir: "/", jobId: "z", label: "z", station: "stg", trainRunId: null, outcome: "done", summary: null }, { runId: "x", source: "pipelines" });
+    await runtime.bus.emit("job.settled", { runId: "x", playbook: "other", runName: null, projectId: "p", workspaceDir: "/", jobId: "z", label: "z", stage: "stg", batchRunId: null, station: "stg", trainRunId: null, outcome: "done", summary: null }, { runId: "x", source: "pipelines" });
     await until(() => status().lastOutcome === "failed");
     expect(status().error!.message).toMatch(/admit\.sh not found in the pipeline's workspace/);
     expect(pipe().jobs[0]!.waiting[0]!.held!.reason).toBe("not admitted by the script");
@@ -570,24 +570,24 @@ describe("queue.admit: the runtime", () => {
     await handOff(1);
     await until(() => pipe().jobs[0]?.waiting[0]?.held?.checkedAt != null);
     await write("verdict.json", JSON.stringify({ hold: { ghost: "who?", [pipe().jobs[0]!.id]: "real" } }));
-    await runtime.bus.emit("job.settled", { runId: "x", playbook: "other", runName: null, projectId: "p", workspaceDir: "/", jobId: "z", label: "z", station: "stg", trainRunId: null, outcome: "done", summary: null }, { runId: "x", source: "pipelines" });
+    await runtime.bus.emit("job.settled", { runId: "x", playbook: "other", runName: null, projectId: "p", workspaceDir: "/", jobId: "z", label: "z", stage: "stg", batchRunId: null, station: "stg", trainRunId: null, outcome: "done", summary: null }, { runId: "x", source: "pipelines" });
     await until(() => status().warnings.length === 1);
     expect(status().warnings[0]).toMatch(/unknown job id "ghost"/);
     expect(pipe().jobs[0]!.waiting[0]!.held!.reason).toBe("real");
   });
 
-  it("escalates: one ask in list_gates, answered by retry (checks again), admit (boards) or withdraw (tells the hand-off)", async () => {
-    const { handOff, pipe, write, checks, types, status, train, runtime, store } = await setup();
+  it("escalates: one ask in list_gates, answered by retry (checks again), admit (joins) or withdraw (tells the hand-off)", async () => {
+    const { handOff, pipe, write, checks, types, status, batch, runtime, store } = await setup();
     await runtime.watchEvents();
     const parent = await handOff(1);
     await until(() => pipe().jobs[0]?.waiting[0]?.held?.checkedAt != null);
     const id = pipe().jobs[0]!.id;
     await write("verdict.json", JSON.stringify({ escalate: { [id]: "dependency failed" } }));
-    // Make the script run again through the station's own wake-up (a second job).
+    // Make the script run again through the stage's own wake-up (a second job).
     await handOff(2);
     await until(() => pipe().gates.length === 1);
     expect(types("job.escalated")).toHaveLength(1);
-    expect(types("job.escalated")[0]!.payload).toMatchObject({ jobId: id, station: "dev", reason: "dependency failed", gateId: pipe().gates[0]!.id });
+    expect(types("job.escalated")[0]!.payload).toMatchObject({ jobId: id, stage: "dev", reason: "dependency failed", gateId: pipe().gates[0]!.id });
     expect(types("gate.opened")).toHaveLength(0);
     await runtime.watchEvents();
     expect(types("gate.opened")[0]!.payload).toMatchObject({ kind: "admission", jobId: id, stepId: "dev", choices: [{ id: "retry" }, { id: "withdraw" }, { id: "admit" }] });
@@ -609,12 +609,12 @@ describe("queue.admit: the runtime", () => {
     await until(() => store.get(parent.id)!.steps.apply!.status !== "running");
     expect(store.get(parent.id)!.steps.apply!.attempts.at(-1)).toMatchObject({ report: { outcome: "failure", summary: expect.stringContaining("withdrawn from the \"Dev\" queue by Ada: not shipping") } });
     expect(types("job.withdrawn")).toHaveLength(1);
-    expect(train()).toBeUndefined();
+    expect(batch()).toBeUndefined();
     void status;
   });
 
-  it("admit anyway boards the job and the script no longer holds it", async () => {
-    const { handOff, pipe, write, types, train, runtime } = await setup();
+  it("admit anyway joins the job and the script no longer holds it", async () => {
+    const { handOff, pipe, write, types, batch, runtime } = await setup();
     await handOff(1);
     await until(() => pipe().jobs[0]?.waiting[0]?.held?.checkedAt != null);
     const id = pipe().jobs[0]!.id;
@@ -622,10 +622,10 @@ describe("queue.admit: the runtime", () => {
     await handOff(2);
     await until(() => pipe().gates.length === 1);
     await runtime.decideGate(pipe().id, pipe().gates[0]!.id, { decision: "admit", comment: "I checked", by: "Ada", via: "panel", now: new Date().toISOString() });
-    await until(() => train() !== undefined);
-    expect(train()!.jobs.map((job) => job.id)).toEqual([id]);
+    await until(() => batch() !== undefined);
+    expect(batch()!.jobs.map((job) => job.id)).toEqual([id]);
     expect(types("job.admitted").at(-1)!.payload).toMatchObject({ jobId: id, via: "human", reason: "I checked" });
-    // The other job is still held: only one boards at a time (fifo), and the escalated one was the oldest.
+    // The other job is still held: only one joins at a time (fifo), and the escalated one was the oldest.
     expect(pipe().jobs[1]!.waiting[0]!.held).not.toBeNull();
   });
 
@@ -634,7 +634,7 @@ describe("queue.admit: the runtime", () => {
     await handOff(1);
     await until(() => pipe().jobs[0]?.waiting[0]?.held?.checkedAt != null);
     await write("slow", "");
-    const wake = () => runtime.bus.emit("job.settled", { runId: "x", playbook: "other", runName: null, projectId: "p", workspaceDir: "/", jobId: "z", label: "z", station: "stg", trainRunId: null, outcome: "done", summary: null }, { runId: "x", source: "pipelines" });
+    const wake = () => runtime.bus.emit("job.settled", { runId: "x", playbook: "other", runName: null, projectId: "p", workspaceDir: "/", jobId: "z", label: "z", stage: "stg", batchRunId: null, station: "stg", trainRunId: null, outcome: "done", summary: null }, { runId: "x", source: "pipelines" });
     await sleep(150);
     await wake();
     await until(async () => (await checks()).length === 2);
@@ -651,7 +651,7 @@ describe("queue.admit: the runtime", () => {
     runtimes.push(again);
     await again.attach(fakePaseo(dir).paseo as never);
     await until(async () => (await checks()).length === 4);
-    expect(store2.list().find((run) => run.train === null)!.jobs[0]!.waiting[0]!.held!.reason).toBe("not admitted by the script");
+    expect(store2.list().find((run) => run.batch === null)!.jobs[0]!.waiting[0]!.held!.reason).toBe("not admitted by the script");
     void store;
   });
 });

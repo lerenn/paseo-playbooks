@@ -470,8 +470,9 @@ steps:
       run: wait.sh
       poll: 10m
       wake_on:
-        - { types: [job.advanced, job.settled], filter: { playbook: other_pipeline, station: production } }
+        - { types: [job.advanced, job.settled], filter: { playbook: other_pipeline, stage: production } }
         - { types: ["step.*"] }
+        - { types: [job.boarded, job.joined], filter: { station: staging, trainRunId: b1 } }
 `,
         "schema.yaml": `
 steps:
@@ -509,13 +510,15 @@ steps:
       expect(ok.errors).toEqual([]);
       const wait = ok.playbook!.steps.find((step) => step.id === "wait")!;
       expect(wait.wakeOn).toEqual([
-        { types: ["job.advanced", "job.settled"], filter: { playbook: "other_pipeline", station: "production" } },
+        { types: ["job.advanced", "job.settled"], filter: { playbook: "other_pipeline", stage: "production" } },
         { types: ["step.*"], filter: {} },
+        // The deprecated names (ADR 2026-11-12-stage-batch-rename) still load: the events carry both.
+        { types: ["job.boarded", "job.joined"], filter: { station: "staging", trainRunId: "b1" } },
       ]);
       const errors = result.entries.find((candidate) => candidate.id === "bad")!.errors.join("\n");
       expect(errors).toMatch(/step "a": script.wake_on needs `poll`/);
       expect(errors).toMatch(/step "b": script.wake_on\[0\]: no event type matches "job.settledd" \(known: .*job.settled/);
-      expect(errors).toMatch(/step "c": script.wake_on\[0\]: filter "nope" is not a field of job.settled \(fields: .*station/);
+      expect(errors).toMatch(/step "c": script.wake_on\[0\]: filter "nope" is not a field of job.settled \(fields: .*stage/);
       expect(errors).toContain('step "d": `wake_on` only applies to a script step (under `script:`)');
       expect(result.entries.find((candidate) => candidate.id === "schema")!.errors.join("\n")).toMatch(/steps.0.role: Unrecognized key: "wake_on"/);
       expect(result.entries.find((candidate) => candidate.id === "empty")!.errors.join("\n")).toMatch(/steps.0.script.wake_on/);

@@ -53,13 +53,13 @@ beforeAll(async () => {
   apply = entry.playbook;
 });
 
-/** A pipeline of two stations: dev (merge, one retry), then prd. */
+/** A pipeline of two stages: dev (merge, one retry), then prd. */
 function pipelineRun(): Run {
   return engine.newPipelineRun({ id: "pipe", playbook: apply, workspaceId: "ws", workspaceDir: "/w", projectId: "p", branch: "main", now: T0 });
 }
 
 function newJob(id: string, services?: string): Job {
-  return { id, fromRunId: "r1", fromStepId: "apply", attempt: 1, label: "PR", inputs: services ? { services } : {}, status: "open", outcome: null, summary: null, outputs: {}, createdAt: T0, endedAt: null, passed: [], waiting: [], riding: [], failedRides: {}, detached: false };
+  return { id, fromRunId: "r1", fromStepId: "apply", attempt: 1, label: "PR", inputs: services ? { services } : {}, status: "open", outcome: null, summary: null, outputs: {}, createdAt: T0, endedAt: null, passed: [], waiting: [], batches: [], failedRides: {}, detached: false };
 }
 
 /** Runs a mutator on a copy of the pipeline and checks the reducers rebuild what it did. */
@@ -73,29 +73,29 @@ function step(run: Run, fn: (copy: Run) => void): Run {
 }
 
 describe("job reducers: parity with the engine's mutators", () => {
-  it("covers a job through both stations, with a retry, mid-ride outputs, a settle, a failure and a withdrawal", () => {
+  it("covers a job through both stages, with a retry, mid-ride outputs, a settle, a failure and a withdrawal", () => {
     let pipe = pipelineRun();
     pipe = step(pipe, (copy) => engine.addJob(copy, newJob("j1"), at(1)));
     pipe = step(pipe, (copy) => engine.addJob(copy, newJob("j2"), at(2)));
-    expect(pipe.jobs[0]!.waiting).toEqual([{ station: "dev", since: at(1), held: null, forced: false }]);
-    pipe = step(pipe, (copy) => engine.boardTrain(copy, "dev", "t1", ["j1", "j2"], at(3)));
-    const train = engine.newTrainRun({ id: "t1", pipeline: pipe, station: "dev", jobs: pipe.jobs, managerAgentId: "m", now: at(3) });
-    // A manager sets outputs, then the train fails once: back to waiting; rides again.
+    expect(pipe.jobs[0]!.waiting).toEqual([{ stage: "dev", since: at(1), held: null, forced: false }]);
+    pipe = step(pipe, (copy) => engine.joinBatch(copy, "dev", "t1", ["j1", "j2"], at(3)));
+    const batch = engine.newBatchRun({ id: "t1", pipeline: pipe, stage: "dev", jobs: pipe.jobs, managerAgentId: "m", now: at(3) });
+    // A manager sets outputs, then the batch fails once: back to waiting; rides again.
     pipe = step(pipe, (copy) => engine.settleJob(copy, "t1", "j1", { summary: "", outputs: { report: "dev ok" }, now: at(4) }));
-    const failed = { ...structuredClone(train), status: "failed" as const, failure: "boom" };
-    pipe = step(pipe, (copy) => void engine.trainEnded(copy, failed, at(5)));
-    expect(pipe.jobs[0]).toMatchObject({ waiting: [{ station: "dev", since: at(1) }], riding: [], failedRides: { dev: 1 }, outputs: { report: "dev ok" } });
-    pipe = step(pipe, (copy) => engine.boardTrain(copy, "dev", "t2", ["j1", "j2"], at(6)));
-    // j2 is settled early by the manager (its ride lingers until the train ends); the train completes: j1 advances to prd, j2's ride is released.
+    const failed = { ...structuredClone(batch), status: "failed" as const, failure: "boom" };
+    pipe = step(pipe, (copy) => void engine.batchEnded(copy, failed, at(5)));
+    expect(pipe.jobs[0]).toMatchObject({ waiting: [{ stage: "dev", since: at(1) }], batches: [], failedRides: { dev: 1 }, outputs: { report: "dev ok" } });
+    pipe = step(pipe, (copy) => engine.joinBatch(copy, "dev", "t2", ["j1", "j2"], at(6)));
+    // j2 is settled early by the manager (its ride lingers until the batch ends); the batch completes: j1 advances to prd, j2's ride is released.
     pipe = step(pipe, (copy) => engine.settleJob(copy, "t2", "j2", { outcome: "rejected", summary: "no", outputs: {}, now: at(7) }));
-    const done = { ...structuredClone(train), id: "t2", status: "completed" as const, jobs: pipe.jobs.map((job) => structuredClone(job)) };
-    pipe = step(pipe, (copy) => void engine.trainEnded(copy, done, at(8)));
-    expect(pipe.jobs[0]).toMatchObject({ passed: ["dev"], waiting: [{ station: "prd", since: at(8) }], riding: [] });
-    expect(pipe.jobs[1]).toMatchObject({ status: "settled", riding: [] });
-    // prd has no retries: a failed train fails the job; the pipeline failing fails the rest; a withdrawal.
-    pipe = step(pipe, (copy) => engine.boardTrain(copy, "prd", "t3", ["j1"], at(9)));
-    const prd = { ...structuredClone(train), id: "t3", status: "failed" as const, failure: "x", train: { pipelineId: "pipe", playbook: "apply", station: "prd" } };
-    pipe = step(pipe, (copy) => void engine.trainEnded(copy, prd, at(10)));
+    const done = { ...structuredClone(batch), id: "t2", status: "completed" as const, jobs: pipe.jobs.map((job) => structuredClone(job)) };
+    pipe = step(pipe, (copy) => void engine.batchEnded(copy, done, at(8)));
+    expect(pipe.jobs[0]).toMatchObject({ passed: ["dev"], waiting: [{ stage: "prd", since: at(8) }], batches: [] });
+    expect(pipe.jobs[1]).toMatchObject({ status: "settled", batches: [] });
+    // prd has no retries: a failed batch fails the job; the pipeline failing fails the rest; a withdrawal.
+    pipe = step(pipe, (copy) => engine.joinBatch(copy, "prd", "t3", ["j1"], at(9)));
+    const prd = { ...structuredClone(batch), id: "t3", status: "failed" as const, failure: "x", batch: { pipelineId: "pipe", playbook: "apply", stage: "prd" } };
+    pipe = step(pipe, (copy) => void engine.batchEnded(copy, prd, at(10)));
     expect(pipe.jobs[0]).toMatchObject({ status: "failed" });
     pipe = step(pipe, (copy) => engine.addJob(copy, newJob("j3"), at(11)));
     pipe = step(pipe, (copy) => void engine.withdrawJob(copy, "j3", "run canceled", at(12)));
@@ -118,7 +118,7 @@ describe("job reducers: parity with the engine's mutators", () => {
     const pipe = pipelineRun();
     const copy = structuredClone(pipe);
     engine.addJob(copy, newJob("j1"), at(1));
-    engine.boardTrain(copy, "dev", "t1", ["j1"], at(2));
+    engine.joinBatch(copy, "dev", "t1", ["j1"], at(2));
     engine.settleJob(copy, "t1", "j1", { summary: "", outputs: { report: "x" }, now: at(3) });
     const events = takeEvents(copy);
     const once = structuredClone(pipe);
@@ -139,13 +139,13 @@ describe("job reducers: parity with the engine's mutators", () => {
     expect(takeEvents(pipe)).toEqual([]);
   });
 
-  it("makes no bus events for a train, and one job.queued per station a job waits at", () => {
+  it("makes no bus events for a batch, and one job.queued per stage a job waits at", () => {
     const pipe = pipelineRun();
     const copy = structuredClone(pipe);
     engine.addJob(copy, newJob("j1"), at(1));
     const events = takeEvents(copy);
-    expect(publicJobEvents(copy, events).map((event) => [event.type, event.payload.station, event.payload.via])).toEqual([["job.queued", "dev", "handoff"]]);
-    expect(publicJobEvents({ ...copy, train: { pipelineId: "p", playbook: "x", station: "dev" } }, events)).toEqual([]);
+    expect(publicJobEvents(copy, events).map((event) => [event.type, event.payload.stage, event.payload.via])).toEqual([["job.queued", "dev", "handoff"]]);
+    expect(publicJobEvents({ ...copy, batch: { pipelineId: "p", playbook: "x", stage: "dev" } }, events)).toEqual([]);
   });
 });
 
@@ -154,7 +154,7 @@ describe("event log store", () => {
 
   it("appends consecutive seqs per stream, one JSON line each", async () => {
     const log = new EventLog(await tempDir());
-    expect((await log.append("a", [ev("job.queued", 1), ev("job.boarded", 2)])).map((event) => event.seq)).toEqual([1, 2]);
+    expect((await log.append("a", [ev("job.queued", 1), ev("job.joined", 2)])).map((event) => event.seq)).toEqual([1, 2]);
     expect((await log.append("a", [ev("job.settled", 3)])).map((event) => event.seq)).toEqual([3]);
     expect((await log.append("b", [ev("job.queued", 1)])).map((event) => event.seq)).toEqual([1]);
     const text = await readFile(log.file("a"), "utf8");
@@ -167,7 +167,7 @@ describe("event log store", () => {
   it("survives a torn last line: dropped on read, cut off before the next append", async () => {
     const dir = await tempDir();
     const log = new EventLog(dir);
-    await log.append("a", [ev("job.queued", 1), ev("job.boarded", 2)]);
+    await log.append("a", [ev("job.queued", 1), ev("job.joined", 2)]);
     await appendFile(log.file("a"), '{"v":1,"stream":"a","seq":3,"type":"job.sett', "utf8");
     const read = await new EventLog(dir).read("a");
     expect(read).toMatchObject({ torn: true, skipped: 0 });
@@ -176,7 +176,7 @@ describe("event log store", () => {
     expect((await fresh.append("a", [ev("job.settled", 3)]))[0]!.seq).toBe(3);
     const after = await fresh.read("a");
     expect(after).toMatchObject({ torn: false, skipped: 0 });
-    expect(after.events.map((event) => event.type)).toEqual(["job.queued", "job.boarded", "job.settled"]);
+    expect(after.events.map((event) => event.type)).toEqual(["job.queued", "job.joined", "job.settled"]);
   });
 
   it("skips a damaged or newer-version line in the middle and counts it", async () => {
@@ -184,15 +184,15 @@ describe("event log store", () => {
     const log = new EventLog(dir);
     await log.append("a", [ev("job.queued", 1)]);
     await appendFile(log.file("a"), `not json\n${JSON.stringify({ v: 2, stream: "a", seq: 2, type: "job.future", at: T0, data: {} })}\n`, "utf8");
-    await log.append("a", [ev("job.boarded", 2)]);
+    await log.append("a", [ev("job.joined", 2)]);
     const read = await new EventLog(dir).read("a");
     expect(read.skipped).toBe(2);
-    expect(read.events.map((event) => event.type)).toEqual(["job.queued", "job.boarded"]);
+    expect(read.events.map((event) => event.type)).toEqual(["job.queued", "job.joined"]);
   });
 
   it("compacts to genesis events, keeping the seq going", async () => {
     const log = new EventLog(await tempDir());
-    await log.append("a", [ev("job.queued", 1), ev("job.boarded", 2)]);
+    await log.append("a", [ev("job.queued", 1), ev("job.joined", 2)]);
     await log.compact("a", [{ area: "jobs", at: at(3), state: [{ id: "j1" }] }]);
     const { events } = await log.read("a");
     expect(events.map((event) => [event.type, event.seq])).toEqual([["jobs.genesis", 3]]);
@@ -248,11 +248,11 @@ describe("the run store and its log", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const again = new RunStore(path.join(dir, "runs"));
     await again.init();
-    await again.mutate("pipe", (run) => engine.boardTrain(run, "dev", "t1", ["j1"], at(2)));
+    await again.mutate("pipe", (run) => engine.joinBatch(run, "dev", "t1", ["j1"], at(2)));
     expect(warn).not.toHaveBeenCalled();
     const { events } = await again.log.read("pipe");
     expect(events.map((event) => event.seq)).toEqual([1, 2, 3]);
-    expect(again.get("pipe")!.jobs[0]!.riding).toHaveLength(1);
+    expect(again.get("pipe")!.jobs[0]!.batches).toHaveLength(1);
   });
 
   it("re-baselines after a crash between the log append and the snapshot write", async () => {

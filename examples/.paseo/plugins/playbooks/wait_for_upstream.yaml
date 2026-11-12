@@ -1,5 +1,5 @@
 title: Wait for upstream
-description: Wait until another pipeline has settled a job at a station, woken by its job events (with a slow poll as the safety net), then announce it.
+description: Wait until another pipeline has settled a job at a stage, woken by its job events (with a slow poll as the safety net), then announce it.
 
 inputs:
   job:
@@ -10,12 +10,12 @@ inputs:
 steps:
   - id: wait_settled
     # The script is rerun every 10 minutes while it says "not yet" (exit 75), and at once when the pipeline
-    # `upstream` advances or settles a job at its `production` station.
+    # `upstream` advances or settles a job at its `production` stage.
     script:
       run: check_upstream.sh
       poll: 10m
       wake_on:
-        - { types: [job.advanced, job.settled], filter: { playbook: upstream, station: production } }
+        - { types: [job.advanced, job.settled], filter: { playbook: upstream, stage: production } }
     timeout: 6h
     inputs: [job]
     outputs: { outcome_seen: {} }

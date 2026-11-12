@@ -8,15 +8,15 @@ const later = (seconds: number) => new Date(NOW + seconds * 1000).toISOString();
 const status = (over: Partial<AdmissionStatus> = {}): AdmissionStatus => ({ running: false, since: null, trigger: null, tail: "", nextCheckAt: null, checks: 2, lastCheckAt: ago(20), lastOutcome: "ok", error: null, warnings: [], ...over });
 
 describe("heldView", () => {
-  it("shows nothing for a job that may board", () => {
-    expect(heldView({ station: "stg", since: ago(60), held: null, forced: false }, NOW)).toBeNull();
-    expect(heldView({ station: "stg", since: ago(60), held: null, forced: true }, NOW)).toBeNull();
+  it("shows nothing for a job that may join", () => {
+    expect(heldView({ stage: "stg", since: ago(60), held: null, forced: false }, NOW)).toBeNull();
+    expect(heldView({ stage: "stg", since: ago(60), held: null, forced: true }, NOW)).toBeNull();
   });
   it("says Held with the reason, how long it waits and when it was checked", () => {
-    expect(heldView({ station: "stg", since: ago(600), held: { reason: "QA not passed", checkedAt: ago(90) }, forced: false }, NOW)).toEqual({ badge: "Held", reason: "QA not passed", detail: "waiting 10 min · checked 1 min 30 s ago" });
+    expect(heldView({ stage: "stg", since: ago(600), held: { reason: "QA not passed", checkedAt: ago(90) }, forced: false }, NOW)).toEqual({ badge: "Held", reason: "QA not passed", detail: "waiting 10 min · checked 1 min 30 s ago" });
   });
   it("says it was not checked yet before the first check", () => {
-    expect(heldView({ station: "stg", since: ago(30), held: { reason: "waiting for its first admission check", checkedAt: null }, forced: false }, NOW)).toMatchObject({ badge: "Not checked yet", detail: "waiting 30 s" });
+    expect(heldView({ stage: "stg", since: ago(30), held: { reason: "waiting for its first admission check", checkedAt: null }, forced: false }, NOW)).toMatchObject({ badge: "Not checked yet", detail: "waiting 30 s" });
   });
 });
 
