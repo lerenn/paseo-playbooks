@@ -106,6 +106,21 @@ export function checkTypes(defs: EventTypeDef[], types: string[], filter: Record
   }
 }
 
+const SCOPE_KEYS = ["runId", "projectId", "workspaceDir", "playbook"];
+const RARE_TYPES = ["gate.escalated", "run.failed", "run.manager_lost"];
+
+/**
+ * A new `subscribe_events` call must be scoped to a run, project, workspace or playbook, unless every type it asks
+ * for is rare (an escalated gate, a failed run, a lost manager). Throws a BusError that says how to scope it.
+ */
+export function checkSubscriptionScope(types: string[], filter: Record<string, string | number | boolean>): void {
+  if (SCOPE_KEYS.some((key) => filter[key] !== undefined && filter[key] !== "")) return;
+  if (types.every((type) => RARE_TYPES.includes(type))) return;
+  throw new BusError(
+    `subscribe_events needs a scope: pass filter { runId } for the run you watch (or { workspaceDir } for runs you drive; projectId or playbook also work). An unscoped subscription wakes you for every run on the daemon. Only gate.escalated, run.failed and run.manager_lost may be unscoped. Avoid step.completed unless you need it: it fires on every step.`,
+  );
+}
+
 /** Does an event match type patterns and an equality filter on its payload? (The rule of `wake_on`; a subscription adds threshold handling.) */
 export function matchesFilter(types: string[], filter: Record<string, string | number | boolean>, event: BusEvent): boolean {
   if (!matchesType(types, event.type)) return false;

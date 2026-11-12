@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { z } from "zod";
 import { afterEach, describe, expect, it } from "vitest";
-import { BusError, EventBus, globToRegExp, matchesType, type Notifier, type Subscription } from "./bus";
+import { BusError, EventBus, checkSubscriptionScope, globToRegExp, matchesType, type Notifier, type Subscription } from "./bus";
 
 const dirs: string[] = [];
 const buses: EventBus[] = [];
@@ -152,5 +152,23 @@ describe("extensibility", () => {
     await bus.flush();
     expect(delivered.find((entry) => entry.target === "a")!.seqs).toEqual([2]);
     expect(delivered.find((entry) => entry.target === "b")!.seqs).toEqual([1]);
+  });
+});
+
+describe("checkSubscriptionScope", () => {
+  const cases: [string, string[], Record<string, string | number | boolean>, boolean][] = [
+    ["empty filter + gate.*", ["gate.*"], {}, false],
+    ["empty filter + step.completed", ["step.completed"], {}, false],
+    ["empty filter + star", ["*"], {}, false],
+    ["empty filter + gate.escalated", ["gate.escalated"], {}, true],
+    ["empty filter + run.failed", ["run.failed"], {}, true],
+    ["empty filter + run.manager_lost", ["run.manager_lost"], {}, true],
+    ["empty filter + rare mixed with step.completed", ["run.failed", "step.completed"], {}, false],
+    ["runId", ["step.completed"], { runId: "r1" }, true],
+    ["workspaceDir", ["gate.*"], { workspaceDir: "/w" }, true],
+  ];
+  it.each(cases)("%s", (_name, types, filter, allowed) => {
+    if (allowed) expect(() => checkSubscriptionScope(types, filter)).not.toThrow();
+    else expect(() => checkSubscriptionScope(types, filter)).toThrow(/runId[\s\S]*workspaceDir[\s\S]*step\.completed/);
   });
 });
