@@ -3,6 +3,7 @@
  * applies the returned effects (cancel agents, wake the manager).
  */
 import { descendantsOf } from "../shared/graph";
+import { record } from "./event-core";
 import { blockEntrySteps, blockStepIds, holdsBlock, innermostBlock } from "../shared/slots";
 import { askChoices, askHumanText, askTransitionOf, choicesOfGate, outcomeTransition } from "../shared/gates";
 import { parse as parseYaml, stringify as toYaml } from "yaml";
@@ -198,6 +199,7 @@ function createRun(input: NewRunInput, inputs: Record<string, VarValue>, kind: "
     parent: input.parent ?? null,
     history: [],
     seq: 0,
+    eventSeq: 0,
   };
   if (kind === "pipeline") {
     log(run, input.now, "pipeline_started", null, `playbook ${input.playbook.id}`);
@@ -1662,6 +1664,7 @@ export function addJob(pipeline: Run, job: Job, now: string): void {
   if (!isPipeline(pipeline) || isTerminal(pipeline.status)) throw new EngineError(`run ${pipeline.id} is not an active pipeline`);
   pipeline.jobs.push(job);
   queueNext(pipeline, job, now);
+  record(pipeline, "job.queued", { job }, now);
   log(pipeline, now, "job_queued", null, `${job.id} from ${job.fromRunId}/${job.fromStepId} at ${job.waiting.map((entry) => entry.station).join(", ")}`);
 }
 
@@ -1678,11 +1681,14 @@ export function nextTrainJobs(pipeline: Run, stationId: string): Job[] {
 
 /** The jobs board a train: they leave the station's waiting list and ride the train run. */
 export function boardTrain(pipeline: Run, stationId: string, trainRunId: string, jobIds: string[], now: string): void {
+  const since: Record<string, string> = {};
   for (const job of pipeline.jobs.filter((candidate) => jobIds.includes(candidate.id))) {
     const entry = job.waiting.find((candidate) => candidate.station === stationId);
     job.waiting = job.waiting.filter((candidate) => candidate.station !== stationId);
     job.riding.push({ station: stationId, runId: trainRunId, since: entry?.since ?? now });
+    since[job.id] = entry?.since ?? now;
   }
+  record(pipeline, "job.boarded", { station: stationId, trainRunId, jobIds, since }, now);
   log(pipeline, now, "train_departed", stationId, `${trainRunId} with ${jobIds.join(", ")}`);
 }
 
@@ -1716,13 +1722,15 @@ export function newTrainRun(input: {
   return run;
 }
 
-function endJob(run: Run, job: Job, status: Job["status"], outcome: string | null, summary: string, outputs: Record<string, VarValue>, now: string): void {
+/** `ctx` says what else the event carries: a train whose ride ends with the job (`releases`), every ride (`clearRiding`), and context for the bus. */
+function endJob(run: Run, job: Job, status: Job["status"], outcome: string | null, summary: string, outputs: Record<string, VarValue>, now: string, ctx: Record<string, unknown> = {}): void {
   job.status = status;
   job.outcome = outcome;
   job.summary = summary || null;
   job.outputs = { ...job.outputs, ...outputs };
   job.endedAt = now;
   job.waiting = [];
+  record(run, `job.${status}`, { jobId: job.id, outcome, summary, outputs: job.outputs, failedRides: job.failedRides, ...ctx }, now);
   log(run, now, `job_${status}`, null, `${job.id}${outcome ? `: ${outcome}` : ""}${summary ? ` (${summary.slice(0, 200)})` : ""}`);
 }
 
@@ -1774,10 +1782,12 @@ export function settleJob(
   if (!checked.ok) throw new EngineError(`cannot settle job ${jobId}: ${checked.errors.join("; ")}`);
   if (input.outcome === undefined) {
     job.outputs = { ...job.outputs, ...checked.outputs };
+    record(pipeline, "job.outputs_set", { jobId, outputs: job.outputs, keys: Object.keys(checked.outputs) }, input.now);
     log(pipeline, input.now, "job_outputs", null, `${jobId}: ${Object.keys(checked.outputs).join(", ") || "none"}`);
     return { job, ended: false };
   }
-  endJob(pipeline, job, "settled", input.outcome, input.summary, checked.outputs, input.now);
+  const ride = job.riding.find((entry) => entry.runId === trainRunId);
+  endJob(pipeline, job, "settled", input.outcome, input.summary, checked.outputs, input.now, { station: ride?.station ?? null, trainRunId });
   return { job, ended: true };
 }
 
@@ -1856,16 +1866,22 @@ export function trainEnded(pipeline: Run, train: Run, now: string): Job[] {
     const ride = job.riding.find((entry) => entry.runId === train.id);
     if (!ride) continue;
     job.riding = job.riding.filter((entry) => entry.runId !== train.id);
-    if (job.status !== "open") continue;
+    if (job.status !== "open") {
+      record(pipeline, "job.released", { jobId: job.id, trainRunId: train.id }, now);
+      continue;
+    }
     const copy = train.jobs.find((candidate) => candidate.id === job.id);
     if (copy) job.outputs = { ...job.outputs, ...copy.outputs };
+    const ctx = { station: stationId, trainRunId: train.id, releases: train.id };
     if (train.status === "completed") {
       job.passed.push(stationId);
+      const waitingBefore = job.waiting.length;
       queueNext(pipeline, job, now);
+      record(pipeline, "job.advanced", { jobId: job.id, station: stationId, trainRunId: train.id, outputs: job.outputs, queued: job.waiting.slice(waitingBefore) }, now);
       if (job.waiting.length === 0 && job.riding.length === 0 && stationsOf(pipeline).every((candidate) => job.passed.includes(candidate.id))) {
         const checked = checkJobOutputs(pipeline.playbook, job.outputs, true);
-        if (checked.ok) endJob(pipeline, job, "settled", pipeline.playbook.outcomes[0]!, `passed every station`, checked.outputs, now);
-        else endJob(pipeline, job, "failed", null, `passed every station but left the pipeline without its outputs: ${checked.errors.join("; ")}. Its work shipped: do not hand it off again`, {}, now);
+        if (checked.ok) endJob(pipeline, job, "settled", pipeline.playbook.outcomes[0]!, `passed every station`, checked.outputs, now, ctx);
+        else endJob(pipeline, job, "failed", null, `passed every station but left the pipeline without its outputs: ${checked.errors.join("; ")}. Its work shipped: do not hand it off again`, {}, now, ctx);
         ended.push(job);
       }
       continue;
@@ -1875,12 +1891,14 @@ export function trainEnded(pipeline: Run, train: Run, now: string): Job[] {
     if (train.status === "failed" && station && rides <= station.retries) {
       // Back at the front: it keeps the place it had in the waiting list.
       job.waiting.push({ station: stationId, since: ride.since });
+      record(pipeline, "job.requeued", { jobId: job.id, station: stationId, trainRunId: train.id, trainStatus: train.status, since: ride.since, rides, retries: station.retries, outputs: job.outputs, failedRides: job.failedRides }, now);
       log(pipeline, now, "job_requeued", stationId, `${job.id} after train ${train.id} ${train.status} (${rides}/${station.retries})`);
       continue;
     }
-    endJob(pipeline, job, "failed", null, `train ${train.id} at "${stationId}" ${train.status}${train.failure ? `: ${train.failure}` : ""}`, {}, now);
+    endJob(pipeline, job, "failed", null, `train ${train.id} at "${stationId}" ${train.status}${train.failure ? `: ${train.failure}` : ""}`, {}, now, ctx);
     ended.push(job);
   }
+  record(pipeline, "train.ended", { trainRunId: train.id, station: stationId, status: train.status }, now);
   log(pipeline, now, "train_ended", stationId, `${train.id} ${train.status}`);
   return ended;
 }
@@ -1891,7 +1909,7 @@ export function withdrawJob(pipeline: Run, jobId: string, reason: string, now: s
   if (!job || job.status !== "open") return null;
   const trains = job.riding.map((entry) => entry.runId);
   job.riding = [];
-  endJob(pipeline, job, "withdrawn", null, reason, {}, now);
+  endJob(pipeline, job, "withdrawn", null, reason, {}, now, { clearRiding: true });
   return { job, trains };
 }
 
@@ -1905,7 +1923,7 @@ export function failJobs(run: Run, jobIds: string[], reason: string, now: string
   const open = run.jobs.filter((job) => job.status === "open" && jobIds.includes(job.id));
   for (const job of open) {
     job.riding = [];
-    endJob(run, job, "failed", null, reason, {}, now);
+    endJob(run, job, "failed", null, reason, {}, now, { clearRiding: true });
   }
   return open;
 }
@@ -1919,6 +1937,7 @@ export function mirrorJob(train: Run, job: Job): void {
   copy.summary = job.summary;
   copy.outputs = { ...job.outputs };
   copy.endedAt = job.endedAt;
+  record(train, "job.mirrored", { jobId: job.id, status: job.status, outcome: job.outcome, summary: job.summary, outputs: job.outputs, endedAt: job.endedAt }, job.endedAt ?? train.updatedAt);
 }
 
 /**

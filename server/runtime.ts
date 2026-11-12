@@ -48,6 +48,7 @@ function lookup(entries: Parameters<typeof findEntry>[0], ref: string) {
 import { DEFAULT_SIDEKICK_RESTART_TOKENS, DEFAULT_SIDEKICK_SUBAGENT, SIDEKICK_LABEL, SIDEKICK_PROJECT_LABEL, sidekickGateSweep, sidekickHandoffRequest, sidekickKickoff, SIDEKICK_PASEO_TOOLS, SIDEKICK_PLUGIN_TOOLS, SidekickRegistry, sidekickPrompt, sidekickTitle } from "./sidekick";
 import { BusError, EventBus, type BusEvent, type Notifier, type Subscription } from "./bus";
 import { OversightProducer, registerOversightTypes } from "./oversight-events";
+import { JOB_TYPES, publicJobEvents } from "./job-events";
 import { gateListing, listAttention, type GateFilter } from "./overseer";
 import { gateChatPrompt, managerLostNotice, gateDeciderPrompt, gateDeciderSystemPrompt, gateDecisionReminder, managerAfterRestart, managerKickoff, managerTakeover, reportReminder, resumeAfterRestart, silenceReminder, singletonKickoff, stepSystemPrompt, withPreamble } from "./prompts";
 import { askHumanText, choicesOfGate, waitsForHuman } from "../shared/gates";
@@ -364,6 +365,14 @@ export class Runtime {
     this.sidekickRegistry = new SidekickRegistry(path.join(dir, "sidekick.json"));
     this.bus = new EventBus({ events: path.join(dir, "events.json"), subscriptions: path.join(dir, "subscriptions.json"), pending: path.join(dir, "pending-events.json") }, options.debounceMs === undefined ? {} : { debounceMs: options.debounceMs });
     registerOversightTypes(this.bus);
+    for (const def of JOB_TYPES) this.bus.register(def);
+    // The jobs of a pipeline: committed mutations become the public job.* events (job-events.ts), in order.
+    let jobEvents: Promise<unknown> = Promise.resolve();
+    store.onEvents((run, events) => {
+      for (const event of publicJobEvents(run, events)) {
+        jobEvents = jobEvents.then(() => this.bus.emit(event.type, event.payload, { runId: run.id, source: "pipelines" })).catch((error: unknown) => console.error(`[playbooks] could not emit ${event.type}:`, errorText(error)));
+      }
+    });
     this.bus.registerNotifier("agent", this.agentNotifier());
     this.producer = new OversightProducer(this.bus);
   }

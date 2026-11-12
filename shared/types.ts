@@ -802,6 +802,8 @@ export const RunSchema = z.object({
   train: z.object({ pipelineId: z.string(), playbook: z.string(), station: z.string() }).nullable().default(null),
   history: z.array(HistoryEventSchema),
   seq: z.number().int(),
+  /** The last event-log entry (`<run>.events.jsonl`) this snapshot includes; 0 before the run has a log (ADR 2026-11-12-event-core). */
+  eventSeq: z.number().int().default(0),
 });
 export type Run = z.infer<typeof RunSchema>;
 
