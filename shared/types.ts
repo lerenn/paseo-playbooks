@@ -213,8 +213,8 @@ export const StepSchema = z.object({
       cancelChildren: z.boolean(),
     })
     .optional(),
-  /** On a batch of a singleton pipeline: the plugin settles its jobs from this output when the step completes. */
-  settle: z.object({ output: z.string() }).optional(),
+  /** On a batch of a singleton pipeline: the plugin settles its jobs from this output when the step completes. `effects`: per outcome, what happens to the job (an outcome not listed ends it). */
+  settle: z.object({ output: z.string(), effects: z.record(z.string(), z.enum(["continue", "requeue"])).default({}) }).optional(),
   /** Script steps: rerun the script this often while it exits with SCRIPT_NOT_YET. Unset = run it once. */
   pollMs: z.number().int().positive().optional(),
   /** Script steps: events that run a check at once instead of waiting for the next poll (`poll` stays the safety net). */
@@ -278,6 +278,10 @@ export const StageSchema = z.object({
   mode: z.enum(["fifo", "merge"]),
   /** Failed batches a job may be retried here before it fails. */
   retries: z.number().int().min(0),
+  /** `queue.max_requeues`: how often an outcome declared `requeue` may put one job back here before it fails. Unset = no cap. */
+  maxRequeues: z.number().int().min(0).optional(),
+  /** What the outcomes of the stage's `settle` steps do to a job: `continue` (it goes on in the batch) or `requeue` (back to this queue). An outcome not listed ends the job. */
+  effects: z.record(z.string(), z.enum(["continue", "requeue"])).default({}),
   /** Its steps in `Playbook.steps` (one, or the expanded steps of its sub-playbook). */
   steps: z.array(z.string()),
   /**
@@ -748,6 +752,13 @@ export const JobSchema = z.object({
   failedRides: z.record(z.string(), z.number().int()).default({}),
   /** Handed off with `wait: false`: the pipeline owns it; its run is never told of it and never withdraws it. */
   detached: z.boolean().default(false),
+  /**
+   * Put back at its stage's queue by an outcome the playbook declares `requeue` (ADR 2026-11-12-requeue-outcome-effects): the outcome, the
+   * reason and the blocker are the batch's own opaque strings. Cleared when a batch takes the job again.
+   */
+  requeued: z.object({ stage: z.string(), outcome: z.string(), reason: z.string(), blocker: z.string().nullable(), at: z.string() }).nullable().default(null),
+  /** Pipelines: how many times an outcome requeued it, by stage (capped by the stage's `queue.max_requeues`). */
+  requeues: z.record(z.string(), z.number().int()).default({}),
 });
 export type Job = z.infer<typeof JobSchema>;
 
@@ -923,7 +934,7 @@ export const RunSummarySchema = z.object({
   /** After-tasks' statuses. */
   after: z.record(z.string(), z.object({ status: AfterTaskStatusSchema })),
   /** Jobs without their inputs and outputs: what the stages and the job counts show. */
-  jobs: z.array(JobSchema.pick({ id: true, label: true, status: true, waiting: true })),
+  jobs: z.array(JobSchema.pick({ id: true, label: true, status: true, waiting: true, requeued: true })),
   batch: RunSchema.shape.batch,
   /** Set on a run a fan-out step started: its parent run, step and the item's key. */
   parent: RunSchema.shape.parent.default(null),
@@ -973,7 +984,7 @@ export function summarizeRun(run: Run): RunSummary {
     steps: Object.fromEntries(Object.entries(run.steps).map(([stepId, step]) => [stepId, { status: step.status, ...stepTiming(step) }])),
     gates: run.gates.filter((gate) => gate.status === "pending"),
     after: Object.fromEntries(Object.entries(run.after).map(([taskId, task]) => [taskId, { status: task.status }])),
-    jobs: run.jobs.map(({ id, label, status, waiting }) => ({ id, label, status, waiting })),
+    jobs: run.jobs.map(({ id, label, status, waiting, requeued }) => ({ id, label, status, waiting, requeued })),
     batch: run.batch,
     parent: run.parent,
     fanouts: Object.fromEntries(

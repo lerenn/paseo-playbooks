@@ -1642,7 +1642,7 @@ export function moveRun(run: Run, to: { id: string; dir: string; branch: string 
 /** A batch's open jobs, as its steps read them: `{{ run.jobs }}` (YAML), `PLAYBOOK_JOBS` (JSON). */
 export function openJobs(run: Run): Array<{ id: string; from: string; detached?: true; inputs: Record<string, VarValue>; outputs: Record<string, VarValue> }> {
   return run.jobs
-    .filter((job) => job.status === "open")
+    .filter((job) => job.status === "open" && !job.requeued)
     .map((job) => ({ id: job.id, from: job.label, ...(job.detached ? { detached: true as const } : {}), inputs: job.inputs, outputs: job.outputs }));
 }
 
@@ -1692,6 +1692,7 @@ export function joinBatch(pipeline: Run, stageId: string, batchRunId: string, jo
     const entry = job.waiting.find((candidate) => candidate.stage === stageId);
     job.waiting = job.waiting.filter((candidate) => candidate.stage !== stageId);
     job.batches.push({ stage: stageId, runId: batchRunId, since: entry?.since ?? now });
+    job.requeued = null;
     since[job.id] = entry?.since ?? now;
   }
   record(pipeline, "job.joined", { stage: stageId, batchRunId, jobIds, since }, now);
@@ -1736,6 +1737,7 @@ function endJob(run: Run, job: Job, status: Job["status"], outcome: string | nul
   job.outputs = { ...job.outputs, ...outputs };
   job.endedAt = now;
   job.waiting = [];
+  job.requeued = null;
   record(run, `job.${status}`, { jobId: job.id, outcome, summary, outputs: job.outputs, failedRides: job.failedRides, ...ctx }, now);
   log(run, now, `job_${status}`, null, `${job.id}${outcome ? `: ${outcome}` : ""}${summary ? ` (${summary.slice(0, 200)})` : ""}`);
   closeAdmissionGates(run, job.id, `the job ${status === "settled" ? "was settled" : status}`, now);
@@ -1770,7 +1772,7 @@ export function settleJob(
   pipeline: Run,
   batchRunId: string,
   jobId: string,
-  input: { outcome?: string | undefined; summary: string; outputs: Record<string, unknown>; now: string },
+  input: { outcome?: string | undefined; summary: string; outputs: Record<string, unknown>; blocker?: string | undefined; now: string },
 ): { job: Job; ended: boolean } {
   const job = pipeline.jobs.find((candidate) => candidate.id === jobId);
   if (!job || !job.batches.some((entry) => entry.runId === batchRunId)) {
@@ -1781,6 +1783,12 @@ export function settleJob(
   if (input.outcome !== undefined && !outcomes.includes(input.outcome)) {
     throw new EngineError(`outcome "${input.outcome}" is not an outcome of "${pipeline.playbook.id}"; use one of: ${outcomes.join(", ")}, or none to only set outputs`);
   }
+  const stageId = job.batches.find((entry) => entry.runId === batchRunId)!.stage;
+  const effect = outcomeEffect(pipeline, stageId, input.outcome);
+  if (input.blocker !== undefined && effect !== "requeue") throw new EngineError(`blocker only goes with an outcome that requeues (settle.effects: { <outcome>: requeue }); "${input.outcome ?? ""}" ${effect === "continue" ? "continues the job in its batch" : "ends the job"}`);
+  if (effect === "requeue") return requeueJob(pipeline, job, batchRunId, input as typeof input & { outcome: string });
+  // `continue`: the job goes on in its batch, as with no outcome (its outputs are set).
+  if (effect === "continue") input = { ...input, outcome: undefined };
   const services = job.inputs.services;
   if (input.outcome === "no_deploy" && services !== undefined && String(services).trim() !== "" && String(services).trim().toLowerCase() !== "none") {
     throw new EngineError(`job ${jobId} cannot be settled no_deploy: its services are "${services}", and no_deploy is only for a job whose services is none. Send the step back, or settle it without an outcome to keep it in its batch`);
@@ -1798,17 +1806,59 @@ export function settleJob(
   return { job, ended: true };
 }
 
+/** What an outcome does to a job at a stage (the playbook's `settle.effects`): no outcome or `continue` keeps it in the batch, `requeue` puts it back at the stage, anything else ends it. */
+export function outcomeEffect(pipeline: Run, stageId: string, outcome: string | undefined): "continue" | "requeue" | "terminal" {
+  if (outcome === undefined) return "continue";
+  return stagesOf(pipeline).find((candidate) => candidate.id === stageId)?.effects[outcome] ?? "terminal";
+}
+
+/**
+ * An outcome the playbook declares `requeue`: the job leaves the batch and waits at the stage again, at the place it had, with no
+ * failed ride (`failedRides` and `retries` are untouched); its outputs and passed stages are kept. `reason` and `blocker` are the
+ * caller's opaque strings, stored and shown, never interpreted. It may happen again, up to the stage's `queue.max_requeues`;
+ * past it the job ends `failed` with the reason and blocker in its summary. Where the stage has `queue.admit`, the job is held
+ * until the script has looked at it again (it is given `requeued`), so the profile decides when a requeued job may ride again.
+ */
+function requeueJob(pipeline: Run, job: Job, batchRunId: string, input: { outcome: string; summary: string; outputs: Record<string, unknown>; blocker?: string | undefined; now: string }): { job: Job; ended: boolean } {
+  const ride = job.batches.find((entry) => entry.runId === batchRunId)!;
+  const stage = stagesOf(pipeline).find((candidate) => candidate.id === ride.stage);
+  const reason = input.summary.trim();
+  if (!reason) throw new EngineError(`job ${job.id}: outcome "${input.outcome}" requeues the job and needs a reason (the step's \`reason\`, or settle_job's \`summary\`)`);
+  const blocker = input.blocker?.trim() || null;
+  const checked = checkJobOutputs(pipeline.playbook, input.outputs, false);
+  if (!checked.ok) throw new EngineError(`cannot requeue job ${job.id}: ${checked.errors.join("; ")}`);
+  const why = `${input.outcome}: ${reason}${blocker ? ` (blocker: ${blocker})` : ""}`;
+  const count = (job.requeues[ride.stage] ?? 0) + 1;
+  if (stage?.maxRequeues !== undefined && count > stage.maxRequeues) {
+    job.batches = job.batches.filter((entry) => entry.runId !== batchRunId);
+    endJob(pipeline, job, "failed", null, `requeued ${stage.maxRequeues} time(s) at "${ride.stage}" (queue.max_requeues) and set aside again: ${why}`, checked.outputs, input.now, { stage: ride.stage, batchRunId, releases: batchRunId });
+    return { job, ended: true };
+  }
+  job.outputs = { ...job.outputs, ...checked.outputs };
+  job.batches = job.batches.filter((entry) => entry.runId !== batchRunId);
+  job.requeues = { ...job.requeues, [ride.stage]: count };
+  const held = stage?.admit ? { reason: `requeued (${why})`, checkedAt: null } : null;
+  job.waiting = job.waiting.filter((entry) => entry.stage !== ride.stage);
+  job.waiting.push({ stage: ride.stage, since: ride.since, held, forced: false });
+  job.requeued = { stage: ride.stage, outcome: input.outcome, reason, blocker, at: input.now };
+  record(pipeline, "job.requeued", { jobId: job.id, stage: ride.stage, batchRunId, cause: "outcome", since: ride.since, outcome: input.outcome, reason, blocker, requeues: job.requeues, outputs: job.outputs, held, requeued: job.requeued, releases: batchRunId }, input.now);
+  log(pipeline, input.now, "job_requeued", ride.stage, `${job.id}: ${why.slice(0, 200)}`);
+  return { job, ended: false };
+}
+
 /** One entry of a step's `settle` output: a job's outputs and, for a job that ends now, its outcome. */
 export interface JobResult {
   jobId: string;
   outcome?: string | undefined;
   summary: string;
   outputs: Record<string, unknown>;
+  /** With an outcome that requeues: what the job waits for (opaque to the plugin). */
+  blocker?: string | undefined;
 }
 
 /**
  * Reads a step's `settle` output: YAML with, per job id, `outputs` and optionally `outcome`
- * and `reason`. Empty, `none` or `{}` settles nothing; YAML comments are ignored.
+ * (what it does depends on the stage's `settle.effects`) and `reason`, and for a requeue `blocker`. Empty, `none` or `{}` settles nothing; YAML comments are ignored.
  */
 export function parseJobResults(text: string): JobResult[] {
   const trimmed = text.trim();
@@ -1824,12 +1874,14 @@ export function parseJobResults(text: string): JobResult[] {
   return Object.entries(data as Record<string, unknown>).map(([jobId, entry]) => {
     if (entry === null || entry === undefined) return { jobId, summary: "", outputs: {} };
     if (typeof entry !== "object" || Array.isArray(entry)) throw new EngineError(`job ${jobId}: expected { outputs, outcome, reason }`);
-    const { outputs, outcome, reason, ...rest } = entry as Record<string, unknown>;
+    const { outputs, outcome, reason, blocker, ...rest } = entry as Record<string, unknown>;
     const unknown = Object.keys(rest);
-    if (unknown.length > 0) throw new EngineError(`job ${jobId}: unknown key(s) ${unknown.join(", ")} (use outputs, outcome, reason)`);
+    if (unknown.length > 0) throw new EngineError(`job ${jobId}: unknown key(s) ${unknown.join(", ")} (use outputs, outcome, reason, blocker)`);
+    if (blocker !== undefined && blocker !== null && typeof blocker !== "string") throw new EngineError(`job ${jobId}: blocker must be a URL string`);
+    if (blocker && !outcome) throw new EngineError(`job ${jobId}: blocker only goes with an outcome that requeues`);
     if (outputs !== undefined && outputs !== null && (typeof outputs !== "object" || Array.isArray(outputs))) throw new EngineError(`job ${jobId}: outputs must be a mapping`);
     if (outcome !== undefined && outcome !== null && typeof outcome !== "string") throw new EngineError(`job ${jobId}: outcome must be a string`);
-    return { jobId, outcome: (outcome as string | null | undefined) ?? undefined, summary: typeof reason === "string" ? reason : "", outputs: (outputs ?? {}) as Record<string, unknown> };
+    return { jobId, outcome: (outcome as string | null | undefined) ?? undefined, summary: typeof reason === "string" ? reason : "", outputs: (outputs ?? {}) as Record<string, unknown>, ...(blocker ? { blocker: String(blocker) } : {}) };
   });
 }
 
@@ -2100,6 +2152,7 @@ export function reopenJob(pipeline: Run, jobId: string, reason: string, now: str
   job.batches = [];
   job.waiting = probe.waiting;
   job.failedRides = {};
+  job.requeued = null;
   record(pipeline, "job.reopened", { jobId, reason, waiting: job.waiting, failedRides: job.failedRides, passed: job.passed }, now);
   log(pipeline, now, "job_reopened", null, `${jobId} at ${job.waiting.map((entry) => entry.stage).join(", ")}${reason ? ` (${reason.slice(0, 200)})` : ""}`);
   return { job, changed: true };
@@ -2129,7 +2182,8 @@ export function mirrorJob(batch: Run, job: Job): void {
   copy.summary = job.summary;
   copy.outputs = { ...job.outputs };
   copy.endedAt = job.endedAt;
-  record(batch, "job.mirrored", { jobId: job.id, status: job.status, outcome: job.outcome, summary: job.summary, outputs: job.outputs, endedAt: job.endedAt }, job.endedAt ?? batch.updatedAt);
+  copy.requeued = job.requeued;
+  record(batch, "job.mirrored", { jobId: job.id, status: job.status, outcome: job.outcome, summary: job.summary, outputs: job.outputs, endedAt: job.endedAt, requeued: job.requeued }, job.endedAt ?? batch.updatedAt);
 }
 
 /**

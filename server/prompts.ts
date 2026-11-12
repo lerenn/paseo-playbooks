@@ -306,8 +306,13 @@ outputs set at earlier stages); the steps read them all through {{ run.jobs }}. 
 - without an outcome, to set a job's outputs (for example a release tag that later stages read);
 - with an outcome (for example "ejected"), to end a job now: the run that handed it off is told at once
   (unless the job is detached), and this batch goes on with the others.
+  The singleton's playbook decides what an outcome does to the job (see \`settle.effects\` of the step in get_run): it
+  ends it (the default), \`continue\`s it (it stays in this batch), or \`requeue\`s it: the job leaves this batch and goes
+  back to its stage's queue, with no failed ride (it may be requeued up to the stage's \`queue.max_requeues\`, then it
+  fails). For a requeue give a reason (summary) and, if you know what it waits for, blocker (any text, a URL for example):
+  the plugin only stores and shows them. A requeued job is no longer in {{ run.jobs }}.
 A step with \`settle\` (see get_run) settles the jobs itself: when you complete it, the plugin applies its
-settle output (YAML per job id: outputs, and an outcome for a job that ends now), and complete_step refuses
+settle output (YAML per job id: outputs, an outcome for a job that ends now or is requeued, with reason and, for a requeue, optionally blocker), and complete_step refuses
 entries that do not apply. Do not call settle_job for those entries, and do not pass the settle output in
 complete_step: the plugin takes it from the step's report (a value of yours replaces it, and never with fewer
 entries). Never turn an outcome the agent did not give into one (no_deploy, ejected...): send the step back.

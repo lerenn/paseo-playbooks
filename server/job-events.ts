@@ -50,6 +50,7 @@ const ends = (status: Job["status"]): Reducer => (run, event) => {
   target.outputs = d.outputs as Outputs;
   target.endedAt = event.at;
   target.waiting = [];
+  target.requeued = null;
   note(run, event.at, `job_${status}`, null, endLine(d));
 };
 
@@ -65,6 +66,7 @@ const reducers: Record<string, Reducer> = {
     const d = event.data as { stage: string; batchRunId: string; jobIds: string[]; since: Record<string, string> };
     for (const target of run.jobs.filter((candidate) => d.jobIds.includes(candidate.id))) {
       target.waiting = target.waiting.filter((entry) => entry.stage !== d.stage);
+      target.requeued = null;
       target.batches.push({ stage: d.stage, runId: d.batchRunId, since: d.since[target.id] ?? event.at });
     }
     note(run, event.at, "batch_started", d.stage, `${d.batchRunId} with ${d.jobIds.join(", ")}`);
@@ -79,16 +81,32 @@ const reducers: Record<string, Reducer> = {
     target.passed.push(d.stage);
     target.waiting.push(...d.queued.map(upcastWait));
   },
-  /** A batch failed and the stage's retries allow another ride: the job waits again where it was. */
+  /**
+   * A job goes back to waiting at its stage: its batch failed and the stage's retries allow another ride
+   * (`{ jobId, stage, batchRunId, batchStatus, since, rides, retries, outputs, failedRides }`), or an outcome the playbook declares `requeue`
+   * put it back (`cause: "outcome"`: `{ jobId, stage, batchRunId, since, outcome, reason, blocker, requeues, outputs, held, requeued }`).
+   */
   "job.requeued": (run, event) => {
-    const d = event.data as { jobId: string; stage: string; batchRunId: string; batchStatus: string; since: string; rides: number; retries: number; outputs: Outputs; failedRides: Record<string, number> };
+    const d = event.data as {
+      jobId: string; stage: string; batchRunId: string; since: string; outputs: Outputs; cause?: string;
+      batchStatus?: string; rides?: number; retries?: number; failedRides?: Record<string, number>;
+      outcome?: string; reason?: string; blocker?: string | null; requeues?: Record<string, number>; held?: Wait["held"]; requeued?: Job["requeued"];
+    };
     const target = job(run, d.jobId);
     if (!target) return;
     dropRide(target, d.batchRunId);
     target.outputs = d.outputs;
-    target.failedRides = d.failedRides;
+    if (d.cause === "outcome") {
+      target.requeues = d.requeues ?? target.requeues;
+      target.waiting = target.waiting.filter((entry) => entry.stage !== d.stage);
+      target.waiting.push({ stage: d.stage, since: d.since, held: d.held ?? null, forced: false });
+      target.requeued = d.requeued ?? null;
+      note(run, event.at, "job_requeued", d.stage, `${d.jobId}: ${String(d.outcome)}: ${String(d.reason).slice(0, 200)}${d.blocker ? ` (blocker: ${d.blocker})` : ""}`);
+      return;
+    }
+    target.failedRides = d.failedRides!;
     target.waiting.push({ stage: d.stage, since: d.since, held: null, forced: false });
-    note(run, event.at, "job_requeued", d.stage, `${d.jobId} after batch ${d.batchRunId} ${d.batchStatus} (${d.rides}/${d.retries})`);
+    note(run, event.at, "job_requeued", d.stage, `${d.jobId} after batch ${d.batchRunId} ${String(d.batchStatus)} (${String(d.rides)}/${String(d.retries)})`);
   },
   /** `requeue_job`: a failed job is open again and waits at `waiting`: `{ jobId, reason, waiting, failedRides, passed }`. */
   "job.reopened": (run, event) => {
@@ -102,6 +120,7 @@ const reducers: Record<string, Reducer> = {
     target.batches = [];
     target.waiting = d.waiting.map(upcastWait);
     target.failedRides = d.failedRides;
+    target.requeued = null;
     note(run, event.at, "job_reopened", null, `${d.jobId} at ${d.waiting.map((entry) => entry.stage).join(", ")}${d.reason ? ` (${d.reason.slice(0, 200)})` : ""}`);
   },
   /** A stage's admission script holds a waiting job: `{ jobId, stage, reason, checkedAt }`. */
@@ -162,7 +181,7 @@ const reducers: Record<string, Reducer> = {
   },
   /** On a batch's copy of a job: what happened to the job in the pipeline. */
   "job.mirrored": (run, event) => {
-    const d = event.data as { jobId: string; status: Job["status"]; outcome: string | null; summary: string | null; outputs: Outputs; endedAt: string | null };
+    const d = event.data as { jobId: string; status: Job["status"]; outcome: string | null; summary: string | null; outputs: Outputs; endedAt: string | null; requeued?: Job["requeued"] };
     const copy = job(run, d.jobId);
     if (!copy) return;
     copy.status = d.status;
@@ -170,6 +189,7 @@ const reducers: Record<string, Reducer> = {
     copy.summary = d.summary;
     copy.outputs = d.outputs;
     copy.endedAt = d.endedAt;
+    copy.requeued = d.requeued ?? null;
   },
 };
 
@@ -264,9 +284,20 @@ export const JOB_TYPES: EventTypeDef[] = [
   },
   {
     type: "job.requeued",
-    description: "A batch failed with a job on it and the stage's retries allow another ride: the job waits again at the stage.",
-    payload: z.object({ ...jobFields, rides: z.number().int(), retries: z.number().int() }),
-    line: (event) => jobLine(event, `goes back to waiting${at(event.payload as { stage: unknown })} after a failed batch${batch(event.payload as { batchRunId: unknown })} (${String(event.payload.rides)}/${String(event.payload.retries)})`),
+    description: "A job goes back to waiting at its stage, with no failed ride counted by an outcome. cause batch_failed: its batch failed and the stage's retries allow another ride (rides, retries). cause outcome: a step's settle entry gave an outcome the playbook declares requeue: the job left the batch (outcome, reason and blocker are the batch's own opaque strings, blocker may be null; requeues counts them at this stage; the stage's queue.max_requeues caps them, past it the job fails).",
+    payload: z.object({
+      ...jobFields,
+      cause: z.enum(["batch_failed", "outcome"]),
+      rides: z.number().int().nullable(),
+      retries: z.number().int().nullable(),
+      reason: z.string().nullable(),
+      blocker: z.string().nullable(),
+      requeues: z.number().int().nullable(),
+    }),
+    line: (event) =>
+      event.payload.cause === "outcome"
+        ? jobLine(event, `was requeued${at(event.payload as { stage: unknown })}${batch(event.payload as { batchRunId: unknown })} (${String(event.payload.outcome)}): ${String(event.payload.reason).slice(0, 200)}${event.payload.blocker ? ` (blocker: ${String(event.payload.blocker)})` : ""}`)
+        : jobLine(event, `goes back to waiting${at(event.payload as { stage: unknown })} after a failed batch${batch(event.payload as { batchRunId: unknown })} (${String(event.payload.rides)}/${String(event.payload.retries)})`),
   },
   {
     type: "job.reopened",
@@ -360,9 +391,23 @@ export function publicJobEvents(run: Run, events: readonly DomainEvent[]): Publi
         for (const wait of queued) out.push({ type: "job.queued", payload: { ...base(String(d.jobId), wait.stage, null, null), via: "advanced" } });
         break;
       }
-      case "job.requeued":
-        out.push({ type: "job.requeued", payload: { ...base(String(d.jobId), d.stage as string, d.batchRunId as string, null), rides: d.rides, retries: d.retries } });
+      case "job.requeued": {
+        const byOutcome = d.cause === "outcome";
+        const stageKey = d.stage as string;
+        out.push({
+          type: "job.requeued",
+          payload: {
+            ...base(String(d.jobId), stageKey, d.batchRunId as string, byOutcome ? String(d.outcome) : null),
+            cause: byOutcome ? "outcome" : "batch_failed",
+            rides: byOutcome ? null : d.rides,
+            retries: byOutcome ? null : d.retries,
+            reason: byOutcome ? String(d.reason) : null,
+            blocker: byOutcome ? ((d.blocker as string | null) ?? null) : null,
+            requeues: byOutcome ? ((d.requeues as Record<string, number>)[stageKey] ?? null) : null,
+          },
+        });
         break;
+      }
       case "job.reopened": {
         const waiting = d.waiting as Wait[];
         out.push({ type: "job.reopened", payload: { ...base(String(d.jobId), null, null, null), reason: d.reason ? String(d.reason) : null } });

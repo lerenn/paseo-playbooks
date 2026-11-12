@@ -165,7 +165,7 @@ function pipeline(playbook: Playbook): Run {
 }
 
 function job(id: string, inputs: Job["inputs"] = {}): Job {
-  return { id, fromRunId: "r1", fromStepId: "apply", attempt: 1, label: `PR ${id}`, inputs, status: "open", outcome: null, summary: null, outputs: {}, createdAt: T0, endedAt: null, passed: [], waiting: [], batches: [], failedRides: {}, detached: false };
+  return { id, fromRunId: "r1", fromStepId: "apply", attempt: 1, label: `PR ${id}`, inputs, status: "open", outcome: null, summary: null, outputs: {}, createdAt: T0, endedAt: null, passed: [], waiting: [], batches: [], failedRides: {}, detached: false, requeued: null, requeues: {} };
 }
 
 /** Runs a mutator on a copy and checks the reducers rebuild what it did (parity), including the admission gates. */
@@ -187,6 +187,22 @@ describe("queue.admit: the engine", () => {
     const { entries } = await loaded({ "apply.yaml": APPLY("{ script: admit.sh, poll: 1h }", mode) });
     return entries.find((entry) => entry.id === "apply")!.playbook!;
   }
+
+  it("holds a requeued job at a stage with admit until the script has looked at it again, and gives the script the reason and blocker", async () => {
+    const playbook = structuredClone(await apply("merge"));
+    playbook.outcomes = [...playbook.outcomes, "blocked"];
+    playbook.singleton!.stages[0]!.effects = { blocked: "requeue" };
+    let run = pipeline(playbook);
+    run = step(run, (copy) => engine.addJob(copy, job("j1"), at(1))).run;
+    run = step(run, (copy) => engine.admitJob(copy, "j1", "dev", "script", at(2))).run;
+    run = step(run, (copy) => engine.joinBatch(copy, "dev", "t1", ["j1"], at(3))).run;
+    run = step(run, (copy) => void engine.settleJob(copy, "t1", "j1", { outcome: "blocked", summary: "pin not merged", outputs: {}, blocker: "pin-42", now: at(4) })).run;
+    expect(heldOf(run, "j1")).toMatchObject({ since: at(1), held: { reason: "requeued (blocked: pin not merged (blocker: pin-42))", checkedAt: null } });
+    expect(engine.nextBatchJobs(run, "dev")).toEqual([]);
+    expect(admissionInput(run, "dev").jobs[0]).toMatchObject({ id: "j1", requeued: { outcome: "blocked", reason: "pin not merged", blocker: "pin-42" } });
+    run = step(run, (copy) => void engine.applyAdmission(copy, "dev", ["j1"], verdict({ admit: ["j1"] }), at(5))).run;
+    expect(engine.nextBatchJobs(run, "dev").map((entry) => entry.id)).toEqual(["j1"]);
+  });
 
   it("holds a job at a stage with admit until its first check; a stage without one is untouched", async () => {
     let run = pipeline(await apply());

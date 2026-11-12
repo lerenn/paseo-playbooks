@@ -320,6 +320,8 @@ const RawStepSchema = z.object({
       .object({
         /** fifo: the oldest waiting job alone; merge: every waiting job. */
         mode: z.enum(["fifo", "merge"]).default("fifo"),
+        /** How often an outcome declared `requeue` (see `settle.effects`) may put one job back at this stage; past it the job fails. Unset = no cap. */
+        max_requeues: z.number().int().min(0).optional(),
         /** A script that decides which waiting jobs may join; the plugin runs it with no batch and no agent. */
         admit: z
           .object({
@@ -340,6 +342,8 @@ const RawStepSchema = z.object({
       .object({
         /** A string output holding YAML: per job id, `outputs` and, for a job that ends now, `outcome` (and `reason`). */
         output: z.string(),
+        /** Per outcome of the singleton: what happens to the job. `continue`: it goes on in the batch; `requeue`: back to this stage's queue (no failed ride). Unlisted: it ends (terminal). */
+        effects: z.record(z.string(), z.enum(["continue", "requeue"])).optional(),
       })
       .strict()
       .optional(),
@@ -1410,8 +1414,10 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
           if (outcome !== outcomes[0] && outcome !== "failure") err(`${where}: on.${outcome}: a hand-off with \`wait: false\` only ends with "${outcomes[0]}" (or "failure" if the job cannot be handed off)`);
         }
       } else if (target) {
+        // An outcome a stage declares `continue` or `requeue` never ends a job there, so it needs no mapping here.
+        const staged = new Set(target.singleton?.stages.flatMap((stage) => Object.keys(stage.effects)) ?? []);
         for (const outcome of target.outcomes.slice(1)) {
-          if (outcome !== "failure" && !on[outcome]) err(`${where}: outcome "${outcome}" of playbook "${targetId}" needs an \`on\` entry (complete, end, fail or goto)`);
+          if (outcome !== "failure" && !staged.has(outcome) && !on[outcome]) err(`${where}: outcome "${outcome}" of playbook "${targetId}" needs an \`on\` entry (complete, end, fail or goto)`);
         }
       }
       let timeoutMs = defaultTimeout;
@@ -1689,7 +1695,14 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     if (script !== undefined) step.script = script;
     if (pollMs !== undefined) step.pollMs = pollMs;
     if (wakeOn && wakeOn.length > 0) step.wakeOn = wakeOn;
-    if (rawStep.settle !== undefined && !isGate && !task) step.settle = { output: rawStep.settle.output };
+    if (rawStep.settle !== undefined && !isGate && !task) {
+      const effects = rawStep.settle.effects ?? {};
+      for (const [outcome, effect] of Object.entries(effects)) {
+        if (!playbookOutcomes.includes(outcome)) err(`${where}: settle.effects.${outcome}: not an outcome of this playbook (${playbookOutcomes.join(", ")}); declare it in the playbook's \`outcomes\``);
+        else if (outcome === playbookOutcomes[0]) err(`${where}: settle.effects.${outcome}: the first outcome is the normal finish (the job leaves the pipeline with all its outputs); it cannot be ${effect}`);
+      }
+      step.settle = { output: rawStep.settle.output, effects };
+    }
     if (timeoutMs !== undefined && !isGate) step.timeoutMs = timeoutMs;
     if (timeoutTemplate !== undefined && !isGate) step.timeout = timeoutTemplate;
     if (silenceMs !== undefined && !isGate && !isScript) step.silenceMs = silenceMs;
@@ -1824,8 +1837,19 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
         const wakeOn = rawAdmit.wake_on ? checkWakeOn(rawAdmit.wake_on, `${where}.wake_on`, err) : [];
         if (!("error" in checked) && pollMs !== null) admit = { script: `${folder.relDir}/scripts/${checked.name}`, pollMs, wakeOn };
       }
+      // The effects of the stage's `settle` steps: one meaning per outcome across the stage.
+      const effects: Stage["effects"] = {};
+      for (const step of finalSteps.filter((candidate) => own.includes(candidate.id) && candidate.settle)) {
+        for (const [outcome, effect] of Object.entries(step.settle!.effects)) {
+          if (effects[outcome] && effects[outcome] !== effect) err(`step "${step.id}": settle.effects.${outcome}: ${effect}, but another step of stage "${raw.id}" says ${effects[outcome]}; an outcome means one thing per stage`);
+          effects[outcome] = effect;
+        }
+      }
+      if (raw.queue?.max_requeues !== undefined && Object.values(effects).every((effect) => effect !== "requeue")) err(`step "${raw.id}": queue.max_requeues: no \`settle.effects\` of this stage declares a \`requeue\` outcome`);
       stages.push({
         id: raw.id,
+        effects,
+        ...(raw.queue?.max_requeues !== undefined ? { maxRequeues: raw.queue.max_requeues } : {}),
         title: raw.title ?? block?.title ?? stepLabel(raw.id),
         needs: raw.needs,
         mode: raw.queue?.mode ?? "fifo",
