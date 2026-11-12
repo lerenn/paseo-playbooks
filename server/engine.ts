@@ -6,9 +6,9 @@ import { descendantsOf } from "../shared/graph";
 import { blockEntrySteps, blockStepIds, holdsBlock, innermostBlock } from "../shared/slots";
 import { askChoices, askHumanText, askTransitionOf, choicesOfGate, outcomeTransition } from "../shared/gates";
 import { parse as parseYaml, stringify as toYaml } from "yaml";
-import type { AfterTask, AskChoice, Attempt, AttemptAgent, Gate, GateDecider, Job, Playbook, Run, RunDefinition, RunStep, RunWorktree, Step, Transition, VarValue, When } from "../shared/types";
-import { isActive, isAgentlessAttempt, isPaused, isPipeline, isStepDone, isStepLive, isTerminal, restartBlocker, runningAfterTasks } from "../shared/types";
-import { coerceValue, formatValue, parseDuration, renderTemplate, replaceRefs, resolveValue, templateRefs } from "../shared/vars";
+import type { AfterTask, AskChoice, Attempt, AttemptAgent, FanoutChild, FanoutState, Gate, GateDecider, Job, Playbook, Run, RunDefinition, RunStep, RunWorktree, Step, Transition, VarValue, When } from "../shared/types";
+import { isActive, isAgentlessAttempt, MAX_FANOUT_PAST, isPaused, isPipeline, isStepDone, isStepLive, isTerminal, restartBlocker, runningAfterTasks } from "../shared/types";
+import { coerceValue, formatValue, type ListItem, lookup, parseDuration, parseList, renderTemplate, replaceRefs, resolveValue, singleRef, templateRefs } from "../shared/vars";
 
 export class EngineError extends Error {}
 
@@ -78,6 +78,8 @@ export interface NewRunInput {
   /** The run's private git worktree (`isolation: worktree`), already created. */
   worktree?: RunWorktree;
   definition?: RunDefinition;
+  /** Set when a fan-out step started the run. */
+  parent?: Run["parent"];
   inputs: Record<string, unknown>;
   now: string;
 }
@@ -180,7 +182,7 @@ function createRun(input: NewRunInput, inputs: Record<string, VarValue>, kind: "
     steps: Object.fromEntries(
       input.playbook.steps.map((step) => [
         step.id,
-        { status: "pending", attempts: [], outputs: {}, summary: null, feedback: null, loop: 0, completedSeq: null, branch: null, queuedAt: null, nextModel: null },
+        { status: "pending", attempts: [], outputs: {}, summary: null, feedback: null, loop: 0, completedSeq: null, branch: null, fanout: null, fanoutPast: [], queuedAt: null, nextModel: null },
       ]),
     ),
     loops: {},
@@ -193,6 +195,7 @@ function createRun(input: NewRunInput, inputs: Record<string, VarValue>, kind: "
     inbox: [],
     jobs: [],
     train: null,
+    parent: input.parent ?? null,
     history: [],
     seq: 0,
   };
@@ -357,7 +360,7 @@ function queueNote(run: Run, queued: string[]): string {
  */
 export function readySteps(run: Run): string[] {
   return run.playbook.steps
-    .filter((step) => step.kind !== "script" && step.kind !== "handoff" && run.steps[step.id]!.status === "ready" && isStepLive(run, step.id))
+    .filter((step) => step.kind !== "script" && step.kind !== "handoff" && step.kind !== "fanout" && run.steps[step.id]!.status === "ready" && isStepLive(run, step.id))
     .map((step) => step.id);
 }
 
@@ -365,6 +368,13 @@ export function readySteps(run: Run): string[] {
 export function readyHandoffs(run: Run): string[] {
   return run.playbook.steps
     .filter((step) => step.kind === "handoff" && run.steps[step.id]!.status === "ready" && isStepLive(run, step.id))
+    .map((step) => step.id);
+}
+
+/** Ready fan-out steps, which the plugin starts on its own. */
+export function readyFanouts(run: Run): string[] {
+  return run.playbook.steps
+    .filter((step) => step.kind === "fanout" && run.steps[step.id]!.status === "ready" && isStepLive(run, step.id))
     .map((step) => step.id);
 }
 
@@ -1884,4 +1894,223 @@ export function receiveJobResult(run: Run, stepId: string, attemptId: string, re
   recordAutomaticReport(run, attemptId, result, now);
   endTurn(run, attemptId, { turnEnd: "completed", lastMessage: attempt.lastMessage, now });
   return true;
+}
+
+// ---------------------------------------------------------------- fan-out steps
+
+export type FanoutChildStatus = FanoutChild["status"];
+
+/** Fan-out children that no longer move: their run ended, or it never started. */
+export function isChildDone(child: FanoutChild): boolean {
+  return child.status === "completed" || child.status === "failed" || child.status === "canceled" || child.status === "not_started";
+}
+
+/** Children whose run is being created or running: the ones `max_active` counts. */
+export function activeChildren(state: FanoutState): FanoutChild[] {
+  return state.children.filter((child) => child.status === "starting" || child.status === "running");
+}
+
+/** The pending children to start now: as many as `max_active` leaves room for, in list order. */
+export function childrenToStart(state: FanoutState, maxActive: number): FanoutChild[] {
+  const room = Math.max(0, maxActive - activeChildren(state).length);
+  return state.children.filter((child) => child.status === "pending").slice(0, room);
+}
+
+const MAX_KEY = 100;
+
+type ItemContext = { inputs: Record<string, VarValue | undefined>; item: ListItem; index: number };
+
+/** Renders a per-item template: `{{ item }}`, `{{ item.<field> }}`, `{{ index }}` and `{{ inputs.<name> }}`. A reference that is not set is an error, never "(none)". */
+function renderForItem(template: string, context: ItemContext): { ok: true; value: VarValue } | { ok: false; error: string } {
+  const missing = templateRefs(template).find((ref) => {
+    const value = lookup(context as unknown as Record<string, unknown>, ref);
+    return value === undefined || value === null || value === "";
+  });
+  if (missing !== undefined) return { ok: false, error: `"{{ ${missing} }}" is not set for item ${context.index}` };
+  const single = singleRef(template);
+  if (single !== null) {
+    const value = lookup(context as unknown as Record<string, unknown>, single);
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return { ok: true, value };
+  }
+  return { ok: true, value: renderTemplate(template, context as unknown as Record<string, unknown>) };
+}
+
+/**
+ * Starts a ready fan-out step: records its attempt and evaluates the list, giving each item a stable key and its
+ * child's inputs. An item whose templates do not render becomes a `not_started` child with the reason; a list that
+ * is not a list, or whose keys clash, is the step's failure (`error`), and the attempt is left running for the
+ * caller to end.
+ */
+export function startFanout(run: Run, stepId: string, input: { agentId: string; now: string }): { error: string | null } {
+  const step = stepDef(run, stepId);
+  const config = step.fanout!;
+  const started = startAttempt(run, stepId, { agentId: input.agentId, brief: "", now: input.now, readonlySnapshot: null });
+  const attempt = started.attempt;
+  const state = run.steps[stepId]!;
+  const values = Object.fromEntries(Object.entries(stepInputs(run, step)).map(([name, entry]) => [name, entry.value]));
+  if (state.fanout) {
+    state.fanoutPast.push(state.fanout);
+    state.fanoutPast = state.fanoutPast.slice(-MAX_FANOUT_PAST);
+  }
+  const fail = (error: string): { error: string } => {
+    state.fanout = { attempt: attempt.n, loop: state.loop, startedAt: input.now, children: [] };
+    return { error };
+  };
+  const raw = resolveValue(config.items, { inputs: values });
+  if (raw === undefined || raw === "") return fail(`\`items\` gave nothing: ${config.items} is not set`);
+  const list = parseList(raw);
+  if (!list.ok) return fail(`\`items\` is not a usable list: ${list.error}`);
+  const children: FanoutChild[] = [];
+  const seen = new Map<string, number>();
+  for (const [index, item] of list.items.entries()) {
+    const context: ItemContext = { inputs: values, item, index };
+    const keyed = config.key !== undefined ? renderForItem(config.key, context) : typeof item === "object" ? { ok: false as const, error: `item ${index} is an object: set \`fanout.key\` (e.g. "{{ item.id }}") so each item has a stable key` } : { ok: true as const, value: item };
+    if (!keyed.ok) return fail(keyed.error);
+    const key = String(keyed.value).trim().slice(0, MAX_KEY);
+    if (key === "") return fail(`item ${index} has an empty key`);
+    const clash = seen.get(key);
+    if (clash !== undefined) return fail(`items ${clash} and ${index} have the same key "${key}": a key must identify one item`);
+    seen.set(key, index);
+    const child: FanoutChild = { key, index, item: JSON.stringify(item), inputs: {}, workspaceName: "", status: "pending", runId: null, workspaceId: null, error: null, startedAt: null, endedAt: null, outputs: {} };
+    const failChild = (error: string) => {
+      child.status = "not_started";
+      child.error = error;
+      child.endedAt = input.now;
+    };
+    for (const [name, template] of Object.entries(config.inputs)) {
+      const rendered = renderForItem(template, context);
+      if (!rendered.ok) {
+        failChild(`input "${name}": ${rendered.error}`);
+        break;
+      }
+      child.inputs[name] = rendered.value;
+    }
+    if (child.status === "pending" && config.workspaceName !== undefined) {
+      const rendered = renderForItem(config.workspaceName, context);
+      if (rendered.ok) child.workspaceName = String(rendered.value);
+      else failChild(`workspace_name: ${rendered.error}`);
+    }
+    children.push(child);
+  }
+  state.fanout = { attempt: attempt.n, loop: state.loop, startedAt: input.now, children };
+  log(run, input.now, "fanout_started", stepId, `${children.length} item(s), at most ${config.maxActive} active`);
+  return { error: null };
+}
+
+/**
+ * Brings the children of a running fan-out up to date with their runs: a child whose run ended takes its outcome and
+ * outputs; one whose run is gone, or that never got a run (its reservation was lost with a daemon restart, or the manager
+ * never created it within `startTimeoutMs`), is `not_started` or `failed` with the reason. Returns whether anything changed.
+ */
+export function syncFanout(
+  run: Run,
+  stepId: string,
+  input: { now: string; nowMs: number; runOf: (runId: string) => Run | undefined; reserved: (runId: string) => boolean; startTimeoutMs: number },
+): boolean {
+  const state = run.steps[stepId]?.fanout;
+  if (!state) return false;
+  let changed = false;
+  const end = (child: FanoutChild, status: FanoutChild["status"], error: string | null) => {
+    child.status = status;
+    child.error = error;
+    child.endedAt = input.now;
+    changed = true;
+  };
+  for (const child of state.children) {
+    if (child.status !== "starting" && child.status !== "running") continue;
+    const childRun = child.runId ? input.runOf(child.runId) : undefined;
+    if (childRun) {
+      if (childRun.status === "completed") {
+        end(child, "completed", null);
+        child.outputs = { ...(childRun.outputs ?? {}) };
+      } else if (childRun.status === "failed") end(child, "failed", childRun.failure);
+      else if (childRun.status === "canceled") end(child, "canceled", childRun.failure);
+      else if (child.status === "starting") {
+        child.status = "running";
+        changed = true;
+      }
+      continue;
+    }
+    if (child.status === "running") end(child, "failed", "its run no longer exists");
+    else if (!child.runId || !input.reserved(child.runId)) end(child, "not_started", "the run was not created (the daemon restarted while it was starting, or its workspace was lost)");
+    else if (child.startedAt && input.nowMs - Date.parse(child.startedAt) > input.startTimeoutMs) end(child, "not_started", `its Playbook Manager did not create the run within ${Math.round(input.startTimeoutMs / 60000)} min`);
+  }
+  if (changed) log(run, input.now, "fanout_progress", stepId, fanoutSummaryText(state));
+  return changed;
+}
+
+export interface FanoutCounts {
+  total: number;
+  started: number;
+  completed: number;
+  failed: number;
+  canceled: number;
+  notStarted: number;
+  active: number;
+  pending: number;
+}
+
+export function fanoutCounts(state: FanoutState): FanoutCounts {
+  const count = (status: FanoutChild["status"]) => state.children.filter((child) => child.status === status).length;
+  return {
+    total: state.children.length,
+    started: state.children.filter((child) => child.runId !== null).length,
+    completed: count("completed"),
+    failed: count("failed"),
+    canceled: count("canceled"),
+    notStarted: count("not_started"),
+    active: count("starting") + count("running"),
+    pending: count("pending"),
+  };
+}
+
+/** "3 of 5 done: 2 completed, 1 failed, 1 running, 1 waiting". */
+export function fanoutSummaryText(state: FanoutState): string {
+  const counts = fanoutCounts(state);
+  const done = counts.completed + counts.failed + counts.canceled + counts.notStarted;
+  const parts = [
+    [counts.completed, "completed"],
+    [counts.failed, "failed"],
+    [counts.canceled, "canceled"],
+    [counts.notStarted, "not started"],
+    [counts.active, "running"],
+    [counts.pending, "waiting"],
+  ].filter(([n]) => (n as number) > 0).map(([n, label]) => `${n} ${label}`);
+  return `${done} of ${counts.total} done${parts.length ? `: ${parts.join(", ")}` : ""}`;
+}
+
+/** Whether every child has ended (an empty list is joined at once). */
+export function fanoutJoined(state: FanoutState): boolean {
+  return state.children.every(isChildDone);
+}
+
+/** The join's result: the outcome (`all_completed`, or `some_failed` when any item did not complete), a summary and the outputs. */
+export function fanoutResult(state: FanoutState): { outcome: string; summary: string; outputs: Record<string, unknown> } {
+  const counts = fanoutCounts(state);
+  const anyFailed = counts.failed + counts.canceled + counts.notStarted > 0;
+  const entry = (child: FanoutChild, withOutputs: boolean) => ({
+    key: child.key,
+    runId: child.runId ?? "",
+    outcome: (isChildDone(child) ? child.status : "not_started") as string,
+    ...(child.error ? { error: child.error.slice(0, 200) } : {}),
+    ...(withOutputs ? Object.fromEntries(Object.entries(child.outputs).map(([name, value]) => [`output_${name}`, value])) : {}),
+  });
+  let results = parseList(state.children.map((child) => entry(child, true)));
+  let note = "";
+  if (!results.ok) results = parseList(state.children.map((child) => entry(child, false)));
+  if (!results.ok) note = " (the results list is too long to keep: read the child runs)";
+  return {
+    outcome: anyFailed ? "some_failed" : "all_completed",
+    summary: fanoutSummaryText(state) + note,
+    outputs: {
+      results: results.ok ? results.text : "[]",
+      total: counts.total,
+      started: counts.started,
+      completed: counts.completed,
+      failed: counts.failed,
+      canceled: counts.canceled,
+      not_started: counts.notStarted,
+      any_failed: anyFailed,
+    },
+  };
 }

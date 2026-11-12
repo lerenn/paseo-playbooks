@@ -15,8 +15,42 @@ export function singleRef(template: string): string | null {
 
 export type TemplateContext = Record<string, unknown>;
 
+/** A list value holds at most this many items, and at most this many characters of JSON. */
+export const LIST_MAX_ITEMS = 200;
+export const LIST_MAX_CHARS = 32_000;
+
+/** One list element: a scalar, or a flat object of scalars (no nesting). */
+export type ListItem = string | number | boolean | Record<string, string | number | boolean>;
+
+/**
+ * Reads a `list` value: a JSON array (or its JSON text) of scalars and flat objects of scalars, at most
+ * LIST_MAX_ITEMS elements and LIST_MAX_CHARS characters. Returns the elements and their canonical JSON text.
+ */
+export function parseList(value: unknown): { ok: true; items: ListItem[]; text: string } | { ok: false; error: string } {
+  let array: unknown = value;
+  if (typeof value === "string") {
+    if (value.length > LIST_MAX_CHARS) return { ok: false, error: `a list is at most ${LIST_MAX_CHARS} characters of JSON` };
+    try {
+      array = JSON.parse(value);
+    } catch {
+      return { ok: false, error: "expected a JSON array, e.g. [\"a\", \"b\"] or [{\"id\": 1}]" };
+    }
+  }
+  if (!Array.isArray(array)) return { ok: false, error: "expected a JSON array, e.g. [\"a\", \"b\"] or [{\"id\": 1}]" };
+  if (array.length > LIST_MAX_ITEMS) return { ok: false, error: `a list has at most ${LIST_MAX_ITEMS} items (got ${array.length})` };
+  const scalar = (item: unknown): item is string | number | boolean => typeof item === "string" || typeof item === "number" || typeof item === "boolean";
+  for (const [index, item] of array.entries()) {
+    if (scalar(item)) continue;
+    if (item !== null && typeof item === "object" && !Array.isArray(item) && Object.values(item).every(scalar)) continue;
+    return { ok: false, error: `item ${index} must be a string, number, boolean or an object of those (no nesting)` };
+  }
+  const text = JSON.stringify(array);
+  if (text.length > LIST_MAX_CHARS) return { ok: false, error: `a list is at most ${LIST_MAX_CHARS} characters of JSON` };
+  return { ok: true, items: array as ListItem[], text };
+}
+
 /** Follows a dotted path. Keys may contain dots themselves (steps of a sub-playbook are "pr.investigate"). */
-function lookup(context: TemplateContext, path: string): unknown {
+export function lookup(context: TemplateContext, path: string): unknown {
   const parts = path.split(".");
   let current: unknown = context;
   let i = 0;
@@ -75,6 +109,10 @@ export function coerceValue(def: Pick<VarDef, "type" | "values">, value: unknown
       if (typeof value === "boolean") return { ok: true, value };
       if (value === "true" || value === "false") return { ok: true, value: value === "true" };
       return { ok: false, error: "expected true or false" };
+    case "list": {
+      const list = parseList(value);
+      return list.ok ? { ok: true, value: list.text } : { ok: false, error: list.error };
+    }
     case "enum":
       if (typeof value === "string" && (def.values ?? []).includes(value)) return { ok: true, value };
       return { ok: false, error: `expected one of ${(def.values ?? []).join(", ")}` };

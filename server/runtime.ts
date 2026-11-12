@@ -6,7 +6,7 @@ import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 
 /** The daemon API handed to plugin handlers (typed via the SDK, so the build needs no @getpaseo/client). */
 type PaseoApi = PluginHandlerContext["paseo"];
-import type { AgentSettings, AgentTarget, Attempt, Gate, Job, Playbook, Run, RunWorktree, Step, VarValue } from "../shared/types";
+import type { AgentSettings, AgentTarget, Attempt, FanoutChild as FanoutChildState, Gate, Job, Playbook, Run, RunWorktree, Step, VarValue } from "../shared/types";
 import { addUsage } from "../shared/types";
 import { UsageLedger } from "./usage-ledger";
 import { analyze, type Analytics } from "../shared/analytics";
@@ -17,6 +17,8 @@ import {
   isActive,
   isAgentlessAttempt,
   isPipeline,
+  isFanoutAttempt,
+  fanoutAttemptId,
   isHandoffAttempt,
   isPaused,
   isScriptAttempt,
@@ -147,6 +149,12 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** A start refused only because the playbook's `concurrency` slots are taken: a fan-out waits and tries again. */
+class ConcurrencyError extends UserError {}
+
+/** A fan-out child whose run does not exist this long after its start is given up on. */
+const FANOUT_START_TIMEOUT_MS = 10 * 60 * 1000;
+
 interface Reservation {
   runId: string;
   /** null: the workspace's current branch, read when the run is created. */
@@ -155,6 +163,8 @@ interface Reservation {
   inputs: Record<string, VarValue>;
   /** The plugin created the workspace (newWorkspace), so its run may archive it. */
   created?: boolean;
+  /** Set when a fan-out step started the run. */
+  parent?: Run["parent"];
 }
 
 /** Kept of a script's output: the end of stdout and stderr, shown in the panel and to the manager. */
@@ -434,8 +444,8 @@ export class Runtime {
           this.runCheck(run.id, stepId, attempt.agentId);
           continue;
         }
-        if (isHandoffAttempt(attempt.agentId)) {
-          // Its job waits in run state: only its timeout needs arming again.
+        if (isHandoffAttempt(attempt.agentId) || isFanoutAttempt(attempt.agentId)) {
+          // Its job or its children wait in run state: only its timeout needs arming again (the scan follows the children).
           this.armTimeout(run, stepId);
           continue;
         }
@@ -540,6 +550,8 @@ export class Runtime {
     try {
       await this.producer.scan(this.store.list(), now);
       await this.bus.flush(now);
+      // Fan-out children end in other runs: the scan is what notices them (no tokens, no agent).
+      if (this.store.list().some((run) => isActive(run) && Object.values(run.steps).some((state) => state.fanout && state.status === "running"))) await this.tick();
     } finally {
       this.eventsScanning = false;
     }
@@ -679,6 +691,10 @@ export class Runtime {
       }
       if (isHandoffAttempt(agentId)) {
         await this.withdrawHandoff(runId, agentId, "its hand-off step was canceled or reset");
+        continue;
+      }
+      if (isFanoutAttempt(agentId)) {
+        await this.cancelFanoutChildren(runId, agentId, "its fan-out step was canceled or reset, or its run ended");
         continue;
       }
       await this.api()
@@ -889,6 +905,7 @@ export class Runtime {
         ...(worktree ? { worktree } : {}),
         ...(chosen ? { definition: chosen.definition } : {}),
         name: runName(options.name),
+        ...(reservation?.parent ? { parent: reservation.parent } : {}),
         inputs,
         now: nowIso(),
       });
@@ -1090,7 +1107,7 @@ export class Runtime {
     if (playbook.concurrency === undefined) return;
     const holders = slotHolders(this.store.list(), projectId, playbook.id);
     if (holders.length >= playbook.concurrency) {
-      throw new UserError(
+      throw new ConcurrencyError(
         `playbook "${playbook.id}" allows ${playbook.concurrency} active run(s) in this project; active: ${holders.join(", ")}`,
       );
     }
@@ -1127,6 +1144,7 @@ export class Runtime {
         this.tickAgain = false;
         await this.startScripts();
         await this.startHandoffs();
+        await this.driveFanouts();
         await this.runDeciders();
         await this.noticeTrainGates();
         await this.endTrains();
@@ -1192,6 +1210,142 @@ export class Runtime {
     if (foreign.length > 0) return { skip: `it holds agents the plugin did not create: ${foreign.map((agent) => agent.id).join(", ")}` };
     if (agents.some((agent) => agent.status === "running" || agent.status === "initializing")) return "wait";
     return "ok";
+  }
+
+  // ---------------------------------------------------------------- fan-out steps
+
+  /** Starts the ready fan-out steps and moves every running one forward: notices ended child runs, starts pending ones under `max_active`, joins. */
+  private async driveFanouts(): Promise<void> {
+    for (const listed of this.store.list()) {
+      if (!isActive(listed) || isPaused(listed) || isPipeline(listed)) continue;
+      for (const stepId of engine.readyFanouts(listed)) {
+        const begun = await this.store.mutate(listed.id, (current) => {
+          if (current.steps[stepId]!.status !== "ready" || isPaused(current)) return null;
+          const id = fanoutAttemptId(current.id, stepId, current.steps[stepId]!.attempts.length + 1);
+          return { id, ...engine.startFanout(current, stepId, { agentId: id, now: nowIso() }) };
+        });
+        if (!begun) continue;
+        this.armTimeout(this.store.get(listed.id)!, stepId);
+        if (begun.error) await this.finishFanout(listed.id, stepId, begun.id, { outcome: "failure", summary: begun.error, outputs: {} });
+      }
+      for (const step of listed.playbook.steps) {
+        if (!step.fanout) continue;
+        const attempt = this.store.get(listed.id)?.steps[step.id]?.attempts.at(-1);
+        if (attempt && isFanoutAttempt(attempt.agentId) && this.store.get(listed.id)!.steps[step.id]!.status === "running") {
+          await this.advanceFanout(listed.id, step.id, attempt.agentId).catch((error: unknown) => console.error(`[playbooks] fan-out "${step.id}" of ${listed.id} failed to advance:`, errorText(error)));
+        }
+      }
+    }
+  }
+
+  private isReservedRun(runId: string): boolean {
+    return [...this.reservations.values()].some((list) => list.some((reservation) => reservation.runId === runId));
+  }
+
+  private async advanceFanout(runId: string, stepId: string, attemptId: string): Promise<void> {
+    const live = (run: Run | undefined) => run?.steps[stepId]?.attempts.at(-1)?.agentId === attemptId && run.steps[stepId]!.status === "running";
+    await this.store.mutate(runId, (current) => {
+      if (!live(current)) return;
+      engine.syncFanout(current, stepId, { now: nowIso(), nowMs: Date.now(), runOf: (id) => this.store.get(id), reserved: (id) => this.isReservedRun(id), startTimeoutMs: FANOUT_START_TIMEOUT_MS });
+    });
+    const run = this.store.get(runId);
+    if (!live(run)) return;
+    const step = engine.stepDef(run!, stepId);
+    const state = run!.steps[stepId]!.fanout!;
+    for (const child of engine.childrenToStart(state, step.fanout!.maxActive)) {
+      // Marked starting before anything is created: a second pass, or a restart, never starts it again.
+      const marked = await this.store.mutate(runId, (current) => {
+        const target = live(current) ? current.steps[stepId]!.fanout!.children.find((candidate) => candidate.key === child.key) : undefined;
+        if (!target || target.status !== "pending") return null;
+        target.status = "starting";
+        target.runId = `run_${shortId()}`;
+        target.startedAt = nowIso();
+        engine.noteEvent(current, "fanout_child_starting", stepId, `${target.key}: ${target.runId}`, nowIso());
+        return target.runId;
+      });
+      if (!marked) continue;
+      const settle = (change: (target: FanoutChildState) => void) =>
+        this.store.mutate(runId, (current) => {
+          const target = current.steps[stepId]?.fanout?.children.find((candidate) => candidate.key === child.key);
+          if (target) change(target);
+        });
+      try {
+        const started = await this.startFromPanel({
+          workspaceId: run!.workspaceId,
+          playbook: step.fanout!.playbook,
+          inputs: child.inputs,
+          force: false,
+          workspaceName: child.workspaceName,
+          child: { runId: marked, parent: { runId, stepId, key: child.key } },
+        });
+        if (started.status === "duplicate") {
+          await settle((target) => Object.assign(target, { status: "not_started", runId: null, error: `${started.message} Not started again.`, endedAt: nowIso() }));
+        } else {
+          await settle((target) => {
+            target.workspaceId = started.workspaceId;
+          });
+        }
+      } catch (error) {
+        if (error instanceof ConcurrencyError) {
+          // Waits for a free slot of the child playbook's `concurrency`.
+          await settle((target) => Object.assign(target, { status: "pending", runId: null, startedAt: null }));
+          break;
+        }
+        await settle((target) => Object.assign(target, { status: "not_started", runId: null, error: errorText(error), endedAt: nowIso() }));
+      }
+    }
+    const after = this.store.get(runId)!;
+    if (live(after) && engine.fanoutJoined(after.steps[stepId]!.fanout!)) {
+      await this.finishFanout(runId, stepId, attemptId, engine.fanoutResult(after.steps[stepId]!.fanout!));
+    }
+  }
+
+  /** Records the join's result as the attempt's report and ends it; the step completes now, or on resume if the run is paused. */
+  private async finishFanout(runId: string, stepId: string, attemptId: string, result: { outcome: string; summary: string; outputs: Record<string, unknown> }): Promise<void> {
+    this.clearTimeout(attemptId);
+    await this.store.mutate(runId, (run) => {
+      const attempt = run.steps[stepId]?.attempts.at(-1);
+      if (attempt?.agentId !== attemptId || run.steps[stepId]!.status !== "running") return;
+      engine.recordAutomaticReport(run, attemptId, result, nowIso());
+      engine.endTurn(run, attemptId, { turnEnd: "completed", lastMessage: result.summary, now: nowIso() });
+    });
+    await this.settleScripts(runId);
+  }
+
+  /**
+   * Stops the children of a fan-out attempt that ended without joining (the run was canceled or failed, the step was reset or
+   * timed out): waiting ones are marked not started, active runs are canceled, and a run still being created is never created.
+   * Does nothing with `cancel_children: false`; the children then keep running unobserved.
+   */
+  private async cancelFanoutChildren(runId: string, attemptId: string, reason: string): Promise<void> {
+    const run = this.store.get(runId);
+    const step = run?.playbook.steps.find((candidate) => candidate.fanout && run.steps[candidate.id]?.attempts.at(-1)?.agentId === attemptId);
+    if (!run || !step?.fanout?.cancelChildren) return;
+    const children = run.steps[step.id]!.fanout?.children.filter((child) => !engine.isChildDone(child)) ?? [];
+    const outcomes = new Map<string, "canceled" | "not_started">();
+    for (const child of children) {
+      if (child.status === "pending" || !child.runId) {
+        outcomes.set(child.key, "not_started");
+        continue;
+      }
+      for (const [workspaceId, list] of this.reservations) {
+        const rest = list.filter((reservation) => reservation.runId !== child.runId);
+        if (rest.length !== list.length) rest.length > 0 ? this.reservations.set(workspaceId, rest) : this.reservations.delete(workspaceId);
+      }
+      const childRun = this.store.get(child.runId);
+      if (childRun && !isTerminal(childRun.status)) await this.cancelRun(child.runId, `its parent run's fan-out step "${step.id}" stopped: ${reason}`, "because its parent run's fan-out stopped").catch((error: unknown) => console.error(`[playbooks] could not cancel child run ${child.runId}:`, errorText(error)));
+      outcomes.set(child.key, childRun || child.status === "running" ? "canceled" : "not_started");
+    }
+    await this.store.mutate(runId, (current) => {
+      for (const target of current.steps[step.id]!.fanout?.children ?? []) {
+        const outcome = outcomes.get(target.key);
+        if (!outcome || engine.isChildDone(target)) continue;
+        target.status = outcome;
+        target.error = reason;
+        target.endedAt = nowIso();
+      }
+      engine.noteEvent(current, "fanout_canceled", step.id, `${outcomes.size} child run(s) stopped: ${reason}`, nowIso());
+    });
   }
 
   // ---------------------------------------------------------------- hand-offs and singleton pipelines
@@ -1688,10 +1842,10 @@ export class Runtime {
     if (!run || isPaused(run)) return;
     for (const step of run.playbook.steps) {
       const state = this.store.get(runId)!.steps[step.id]!;
-      if ((step.kind !== "script" && step.kind !== "handoff") || state.status !== "reported" || !isStepLive(this.store.get(runId)!, step.id)) continue;
+      if ((step.kind !== "script" && step.kind !== "handoff" && step.kind !== "fanout") || state.status !== "reported" || !isStepLive(this.store.get(runId)!, step.id)) continue;
       const attempt = state.attempts.at(-1)!;
-      const kind = step.kind === "script" ? "script step" : "hand-off step";
-      const report = attempt.report ?? { outcome: "failure", summary: `${step.script ?? step.handoff} ended without a result`, outputs: {} };
+      const kind = step.kind === "script" ? "script step" : step.kind === "fanout" ? "fan-out step" : "hand-off step";
+      const report = attempt.report ?? { outcome: "failure", summary: `${step.script ?? step.handoff ?? step.fanout?.playbook} ended without a result`, outputs: {} };
       let effects: engine.Effects;
       try {
         effects = await this.store.mutate(runId, (current) =>
@@ -1711,7 +1865,7 @@ export class Runtime {
       if ((again.status === "running" || again.status === "ready") && again.attempts.length > state.attempts.length) continue;
       const ready = engine.readySteps(after);
       await this.enqueue(runId, [
-        `${kind} "${step.id}" attempt ${attempt.n} ended ${report.outcome}${step.kind === "script" ? ` after ${attempt.checks} check(s)` : ` (job of "${step.handoff}")`}: ${report.summary}${Object.keys(report.outputs).length ? ` Outputs: ${JSON.stringify(report.outputs)}.` : ""}`,
+        `${kind} "${step.id}" attempt ${attempt.n} ended ${report.outcome}${step.kind === "script" ? ` after ${attempt.checks} check(s)` : step.kind === "fanout" ? ` (runs of "${step.fanout!.playbook}")` : ` (job of "${step.handoff}")`}: ${report.summary}${Object.keys(report.outputs).length ? ` Outputs: ${JSON.stringify(report.outputs)}.` : ""}`,
         "The plugin completed it; do not call complete_step for it.",
         ...effects.notes,
         isActive(after) && ready.length > 0 ? `Ready: ${ready.join(", ")}. Start them with start_step (or request_gate for a gate).` : "",
@@ -1756,6 +1910,7 @@ export class Runtime {
     let run = this.ownedRun(managerId, runId);
     const step = engine.stepDef(run, stepId);
     if (step.kind === "script") throw new UserError(`step "${stepId}" is a script step: the plugin runs it by itself and wakes you with its result`);
+    if (step.kind === "fanout") throw new UserError(`step "${stepId}" is a fan-out step: the plugin starts the runs of "${step.fanout!.playbook}" itself and wakes you when they have all ended`);
     if (step.kind === "handoff") throw new UserError(`step "${stepId}" is a hand-off step: the plugin hands its job to "${step.handoff}" and wakes you with the result`);
     if (step.kind !== "agent" || !step.role) throw new UserError(`step "${stepId}" is a gate; call request_gate`);
     if (run.steps[stepId]!.status !== "ready") {
@@ -2088,7 +2243,7 @@ export class Runtime {
     const state = run.steps[stepId];
     const attempt = state?.attempts.at(-1);
     if (!state || !attempt) throw new UserError(`step "${stepId}" has no attempt to nudge`);
-    if (isAgentlessAttempt(attempt.agentId)) throw new UserError(`step "${stepId}" is a ${isScriptAttempt(attempt.agentId) ? "script" : "hand-off"} step: there is no agent to nudge`);
+    if (isAgentlessAttempt(attempt.agentId)) throw new UserError(`step "${stepId}" is a ${isScriptAttempt(attempt.agentId) ? "script" : isFanoutAttempt(attempt.agentId) ? "fan-out" : "hand-off"} step: there is no agent to nudge`);
     if (!isStepLive(run, stepId)) throw new UserError(`step "${stepId}" can no longer change: run ${run.id} is ${run.status}`);
     if (model) return this.moveStep(runId, stepId, message, await this.checkModel(model));
     if (state.status === "reported") {
@@ -2878,6 +3033,11 @@ export class Runtime {
       await this.finishHandoff(runId, stepId, agentId, { outcome: "failure", summary: `timed out after ${Math.round(timeoutMs / 60000)} min waiting for its job`, outputs: {} });
       return;
     }
+    if (isFanoutAttempt(agentId)) {
+      await this.cancelFanoutChildren(runId, agentId, "its fan-out step timed out");
+      await this.finishFanout(runId, stepId, agentId, { outcome: "failure", summary: `timed out after ${Math.round(timeoutMs / 60000)} min waiting for its runs`, outputs: {} });
+      return;
+    }
     if (isScriptAttempt(agentId)) {
       const checks = attempt.checks;
       await this.finishScript(runId, stepId, agentId, { outcome: "failure", summary: `timed out after ${Math.round(timeoutMs / 60000)} min (${checks} check(s))`, outputs: {} }, "timeout");
@@ -2998,6 +3158,8 @@ export class Runtime {
     autoStart?: boolean | undefined;
     /** Title of the new workspace (only when one is created); empty: the default title. */
     workspaceName?: string | undefined;
+    /** A fan-out step starting a child run: its id (reserved before the workspace exists) and its parent link. */
+    child?: { runId: string; parent: NonNullable<Run["parent"]> } | undefined;
   }) {
     if (input.workspaceName?.trim() && (input.agentId || input.sameWorkspace)) throw new UserError("workspaceName names a new workspace: it does not apply when the run starts in this one");
     const workspace = await this.api().workspaces.ref(input.workspaceId).refresh();
@@ -3041,7 +3203,7 @@ export class Runtime {
       });
       return { status: "started" as const, workspaceId: workspace.id, managerAgentId: manager.id, runId, queued: false };
     }
-    return this.startInNewWorkspace(workspaceDir, playbook, resolved.inputs, input.workspaceName);
+    return this.startInNewWorkspace(workspaceDir, playbook, resolved.inputs, input.workspaceName, input.child);
   }
 
 
@@ -3269,16 +3431,16 @@ export class Runtime {
   }
 
   /** A new workspace branched off this one's current ref, with a new Playbook Manager that starts the run there. */
-  private async startInNewWorkspace(workspaceDir: string, playbook: Playbook, inputs: Record<string, VarValue>, workspaceName?: string) {
-    const id = shortId();
-    const runId = `run_${id}`;
+  private async startInNewWorkspace(workspaceDir: string, playbook: Playbook, inputs: Record<string, VarValue>, workspaceName?: string, child?: { runId: string; parent: NonNullable<Run["parent"]> }) {
+    const runId = child?.runId ?? `run_${shortId()}`;
+    const id = runId.replace(/^run_/, "");
     const branch = worktreeBranch(playbook.id, id);
     const base = (await currentRef(workspaceDir)) ?? undefined;
     const created = await this.api().workspaces.create({
       title: workspaceTitle(playbook.title, inputs, workspaceName),
       source: { kind: "worktree", cwd: workspaceDir, action: "branch-off", branchName: branch, ...(base ? { refName: base } : {}) },
     });
-    this.addReservation(created.id, { runId, branch, playbook, inputs, created: true });
+    this.addReservation(created.id, { runId, branch, playbook, inputs, created: true, ...(child ? { parent: child.parent } : {}) });
     const manager = await created.agents.create({
       config: this.managerConfig(playbook),
       title: `Playbook Manager · ${playbook.title}`,

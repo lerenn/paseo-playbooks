@@ -4,7 +4,11 @@ import { z } from "zod";
 export const VarValueSchema = z.union([z.string(), z.number(), z.boolean()]);
 export type VarValue = z.infer<typeof VarValueSchema>;
 
-export const VarTypeSchema = z.enum(["string", "number", "boolean", "enum"]);
+/**
+ * `list`: a JSON array of scalars or flat objects, kept as its JSON text (so values stay plain strings in run
+ * state). See `parseList` in vars.ts for the bounds.
+ */
+export const VarTypeSchema = z.enum(["string", "number", "boolean", "enum", "list"]);
 export type VarType = z.infer<typeof VarTypeSchema>;
 
 export const VarDefSchema = z.object({
@@ -160,7 +164,7 @@ export const StepSchema = z.object({
   title: z.string().optional(),
   /** Name in the Playbooks screen columns. Unset = the title. */
   shortTitle: z.string().optional(),
-  kind: z.enum(["agent", "gate", "script", "handoff", "branch"]),
+  kind: z.enum(["agent", "gate", "script", "handoff", "branch", "fanout"]),
   role: z.string().optional(),
   gate: z.string().optional(),
   /** Script steps: the executable, relative to the workspace (`<playbooks folder>/scripts/<name>`). */
@@ -176,6 +180,25 @@ export const StepSchema = z.object({
    * `else`, always last). The step completes at once with the winning case as its outcome.
    */
   branch: z.object({ cases: z.array(z.object({ name: z.string(), when: z.array(WhenSchema).optional(), end: z.object({ outcome: z.string().optional() }).optional() })) }).optional(),
+  /** Fan-out steps: the playbook started once per item, and how (templates over `inputs.<name>`, `item`, `index`). */
+  fanout: z
+    .object({
+      /** The playbook (qualified id) each item starts a run of, in its own new workspace. */
+      playbook: z.string(),
+      /** Renders to the list (JSON array); one run per element. */
+      items: z.string(),
+      /** The child's inputs, by name. */
+      inputs: z.record(z.string(), z.string()),
+      /** Per-item stable key: a child run is never started twice for one key. Unset = the item itself (scalars only). */
+      key: z.string().optional(),
+      /** Per-item title of the child's workspace. Unset = the child's default title. */
+      workspaceName: z.string().optional(),
+      /** At most this many child runs active at once. */
+      maxActive: z.number().int().positive(),
+      /** Cancel the still-active child runs when the parent run is canceled or fails, or the step is reset. */
+      cancelChildren: z.boolean(),
+    })
+    .optional(),
   /** On a train of a singleton pipeline: the plugin settles its jobs from this output when the step completes. */
   settle: z.object({ output: z.string() }).optional(),
   /** Script steps: rerun the script this often while it exits with SCRIPT_NOT_YET. Unset = run it once. */
@@ -531,6 +554,46 @@ export const AttemptSchema = z.object({
 export type Attempt = z.infer<typeof AttemptSchema>;
 export type AttemptAgent = z.infer<typeof AttemptAgentSchema>;
 
+/** How a fan-out child ended, as the join reports it. */
+export const FanoutOutcomeSchema = z.enum(["completed", "failed", "canceled", "not_started"]);
+export type FanoutOutcome = z.infer<typeof FanoutOutcomeSchema>;
+
+/** One item of a fan-out: its stable key, the child run started for it and where that stands. */
+export const FanoutChildSchema = z.object({
+  key: z.string(),
+  index: z.number().int().min(0),
+  /** The item as JSON text. */
+  item: z.string(),
+  /** Rendered inputs of the child run (set once the child is about to start). */
+  inputs: z.record(z.string(), VarValueSchema).default({}),
+  workspaceName: z.string().default(""),
+  /**
+   * pending: not started (waits for a free slot); starting: its workspace and manager are being created, the run does not exist yet;
+   * running: its run is active; completed, failed, canceled: its run ended so; not_started: it could not be started (see `error`).
+   */
+  status: z.enum(["pending", "starting", "running", "completed", "failed", "canceled", "not_started"]),
+  runId: z.string().nullable().default(null),
+  workspaceId: z.string().nullable().default(null),
+  error: z.string().nullable().default(null),
+  startedAt: z.string().nullable().default(null),
+  endedAt: z.string().nullable().default(null),
+  /** The child run's outputs, once it completed. */
+  outputs: z.record(z.string(), VarValueSchema).default({}),
+});
+export type FanoutChild = z.infer<typeof FanoutChildSchema>;
+
+export const FanoutStateSchema = z.object({
+  /** The attempt these children belong to. */
+  attempt: z.number().int().positive(),
+  /** The step's loop count (the pass of the parent's loop) when it started. */
+  loop: z.number().int().min(0).default(0),
+  startedAt: z.string().default(""),
+  children: z.array(FanoutChildSchema),
+});
+export type FanoutState = z.infer<typeof FanoutStateSchema>;
+
+export const MAX_FANOUT_PAST = 20;
+
 export const RunStepSchema = z.object({
   status: StepStatusSchema,
   attempts: z.array(AttemptSchema),
@@ -544,6 +607,10 @@ export const RunStepSchema = z.object({
   completedSeq: z.number().int().nullable(),
   /** Branch steps: the case that won (also the step's outcome); null before it ran. */
   branch: z.string().nullable().default(null),
+  /** Fan-out steps: the child runs of the current attempt (null before it started). */
+  fanout: FanoutStateSchema.nullable().default(null),
+  /** Fan-out steps: the children of earlier passes and attempts, oldest first (the last MAX_FANOUT_PAST kept). */
+  fanoutPast: z.array(FanoutStateSchema).default([]),
   /** When the step started waiting for a free `concurrency` slot of its block (orders the queue). */
   queuedAt: z.string().nullable().default(null),
   /** The `model` restart_run gave for this step: its next attempt runs on it unless start_step passes its own. Null when none. */
@@ -687,6 +754,8 @@ export const RunSchema = z.object({
   /** State of each after-task, by id. Runs created before after-tasks have none. */
   after: z.record(z.string(), RunAfterTaskSchema).default({}),
   inbox: z.array(z.string()),
+  /** Set on a run a fan-out step started: the parent run, its step and the item's key. */
+  parent: z.object({ runId: z.string(), stepId: z.string(), key: z.string() }).nullable().default(null),
   /** A pipeline: every job handed to it. A train: copies of the jobs it carries (its work). */
   jobs: z.array(JobSchema).default([]),
   /** Set on a train: the pipeline run and the station it runs for. */
@@ -718,6 +787,12 @@ export const PlaybookSummarySchema = PlaybookSchema.pick({ id: true, title: true
 });
 export type PlaybookSummary = z.infer<typeof PlaybookSummarySchema>;
 
+/** A fan-out child as the Playbooks screen draws a lane: its key, its run (null until created) and where it stands. */
+export const FanoutChildSummarySchema = z.object({ key: z.string(), runId: z.string().nullable(), status: FanoutChildSchema.shape.status, error: z.string().nullable().default(null) });
+export const FanoutPassSummarySchema = z.object({ loop: z.number().int(), children: z.array(FanoutChildSummarySchema) });
+/** Earlier passes the summary carries per fan-out step. */
+export const SUMMARY_FANOUT_PASSES = 5;
+
 /**
  * A run as the Playbooks screen and the sidebar badge see it: the fields they draw rows, badges
  * and gate buttons from. No history, reports, outputs, attempts, inbox, step prompts or job
@@ -745,6 +820,10 @@ export const RunSummarySchema = z.object({
   /** Jobs without their inputs and outputs: what the stations and the job counts show. */
   jobs: z.array(JobSchema.pick({ id: true, label: true, status: true, waiting: true })),
   train: RunSchema.shape.train,
+  /** Set on a run a fan-out step started: its parent run, step and the item's key. */
+  parent: RunSchema.shape.parent.default(null),
+  /** Fan-out steps that started: the current pass's children, and the last passes before it (oldest first), by step id. */
+  fanouts: z.record(z.string(), z.object({ loop: z.number().int(), children: z.array(FanoutChildSummarySchema), past: z.array(FanoutPassSummarySchema) })).default({}),
 });
 export type RunSummary = z.infer<typeof RunSummarySchema>;
 
@@ -790,7 +869,19 @@ export function summarizeRun(run: Run): RunSummary {
     after: Object.fromEntries(Object.entries(run.after).map(([taskId, task]) => [taskId, { status: task.status }])),
     jobs: run.jobs.map(({ id, label, status, waiting }) => ({ id, label, status, waiting })),
     train: run.train,
+    parent: run.parent,
+    fanouts: Object.fromEntries(
+      Object.entries(run.steps).flatMap(([stepId, step]) =>
+        step.fanout && step.status !== "pending" && step.status !== "ready"
+          ? [[stepId, { loop: step.fanout.loop, children: summarizeChildren(step.fanout), past: step.fanoutPast.slice(-SUMMARY_FANOUT_PASSES).map((pass) => ({ loop: pass.loop, children: summarizeChildren(pass) })) }]]
+          : [],
+      ),
+    ),
   };
+}
+
+function summarizeChildren(state: FanoutState): Array<z.infer<typeof FanoutChildSummarySchema>> {
+  return state.children.map((child) => ({ key: child.key, runId: child.runId, status: child.status, error: child.error }));
 }
 
 /** Exit code a script step uses to say "not done yet, run me again after `poll`" (EX_TEMPFAIL). */
@@ -814,9 +905,18 @@ export function isHandoffAttempt(agentId: string): boolean {
   return agentId.startsWith("handoff:");
 }
 
-/** An attempt run by the plugin itself (a script check or a hand-off), with no agent behind it. */
+/** Fan-out steps have no agent either: their attempts carry this id. */
+export function fanoutAttemptId(runId: string, stepId: string, attempt: number): string {
+  return `fanout:${runId}:${stepId}:${attempt}`;
+}
+
+export function isFanoutAttempt(agentId: string): boolean {
+  return agentId.startsWith("fanout:");
+}
+
+/** An attempt run by the plugin itself (a script check, a hand-off or a fan-out), with no agent behind it. */
 export function isAgentlessAttempt(agentId: string): boolean {
-  return isScriptAttempt(agentId) || isHandoffAttempt(agentId);
+  return isScriptAttempt(agentId) || isHandoffAttempt(agentId) || isFanoutAttempt(agentId);
 }
 
 /** A singleton's pipeline run: it keeps the waiting lists and jobs; its trains are other runs. */
