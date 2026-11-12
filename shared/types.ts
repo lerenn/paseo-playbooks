@@ -481,17 +481,15 @@ export const UsageSchema = z.object({
   inputTokens: z.number().min(0).default(0),
   cachedInputTokens: z.number().min(0).default(0),
   outputTokens: z.number().min(0).default(0),
-  costUsd: z.number().min(0).default(0),
   contextPeak: z.number().min(0).default(0),
 });
 export type Usage = z.infer<typeof UsageSchema>;
 
-/** What the daemon reports as an agent's `lastUsage`: cumulative for the session (cost surely, the token counts too on some providers). */
+/** What the daemon reports as an agent's `lastUsage`: cumulative for the session (the token counts, on some providers). */
 export interface UsageReading {
   inputTokens?: number;
   cachedInputTokens?: number;
   outputTokens?: number;
-  totalCostUsd?: number;
   contextWindowUsedTokens?: number;
 }
 
@@ -510,7 +508,6 @@ export function usageDelta(previous: UsageReading | null | undefined, reading: U
     inputTokens: step(reading.inputTokens, previous?.inputTokens),
     cachedInputTokens: step(reading.cachedInputTokens, previous?.cachedInputTokens),
     outputTokens: step(reading.outputTokens, previous?.outputTokens),
-    totalCostUsd: step(reading.totalCostUsd, previous?.totalCostUsd),
     contextWindowUsedTokens: reading.contextWindowUsedTokens ?? 0,
   };
 }
@@ -526,7 +523,6 @@ export function addUsage(
     inputTokens: base.inputTokens + (reading.inputTokens ?? 0),
     cachedInputTokens: base.cachedInputTokens + (reading.cachedInputTokens ?? 0),
     outputTokens: base.outputTokens + (reading.outputTokens ?? 0),
-    costUsd: base.costUsd + (reading.totalCostUsd ?? 0),
     contextPeak: Math.max(base.contextPeak, reading.contextWindowUsedTokens ?? 0),
   };
 }

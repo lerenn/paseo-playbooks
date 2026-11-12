@@ -19,8 +19,6 @@ export function compactNumber(value: number): string {
   return String(Math.round(value));
 }
 
-const dollars = (value: number): string => (value === 0 ? "–" : `$${value.toFixed(value < 1 ? 3 : 2)}`);
-
 /** The Analytics tab of the Playbooks screen: where the tokens went, by playbook, step, role and model. */
 export function AnalyticsView(props: { theme: Theme }) {
   const { theme } = props;
@@ -111,9 +109,8 @@ function Summary(props: { theme: Theme; data: Analytics }) {
   const cacheBase = total.inputTokens + total.cachedInputTokens;
   return (
     <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 10 }}>
-      <Stat theme={theme} label="Runs" value={String(data.runs)} hint={[data.runsWithoutUsage ? `${data.runsWithoutUsage} without usage` : "", data.runsWithInvalidManagerUsage ? `manager cost of ${data.runsWithInvalidManagerUsage} older runs hidden (inflated)` : ""].filter(Boolean).join(" · ") || undefined} />
+      <Stat theme={theme} label="Runs" value={String(data.runs)} hint={[data.runsWithoutUsage ? `${data.runsWithoutUsage} without usage` : "", data.runsWithInvalidManagerUsage ? `manager usage of ${data.runsWithInvalidManagerUsage} older runs hidden (inflated)` : ""].filter(Boolean).join(" · ") || undefined} />
       <Stat theme={theme} label="Tokens (excl. cache)" value={compactNumber(tokensOf(total))} hint={`${compactNumber(total.inputTokens)} in · ${compactNumber(total.outputTokens)} out · ${compactNumber(total.cachedInputTokens)} cached`} />
-      <Stat theme={theme} label="Cost" value={dollars(total.costUsd)} />
       <Stat theme={theme} label="Wasted on retries" value={compactNumber(wasted)} hint="tokens of redone attempts" />
       <Stat theme={theme} label="Cache hits" value={cacheBase > 0 ? `${Math.round((total.cachedInputTokens / cacheBase) * 100)}%` : "–"} />
       <Stat theme={theme} label="Managers + deciders" value={`${share}%`} hint="of the tokens, outside the steps" />
@@ -136,7 +133,6 @@ function Table(props: { theme: Theme; title: string; rows: UsageRow[]; showWaste
             <View style={{ flexDirection: "row", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
               <Text style={{ flex: 1, minWidth: 140, color: theme.colors.foreground, fontSize: 13 }}>{row.key}</Text>
               <Text style={{ color: theme.colors.foreground, fontSize: 13, fontWeight: "600" }}>{compactNumber(tokensOf(row.usage))}</Text>
-              <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>{dollars(row.usage.costUsd)}</Text>
               <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>
                 {props.showWaste ? `${row.attempts} attempts` : `${row.runs} runs`}
                 {props.showWaste && row.wastedAttempts > 0 ? ` · ${row.wastedAttempts} wasted (${compactNumber(row.wastedTokens)})` : ""}
@@ -168,7 +164,7 @@ function TopAgents(props: { theme: Theme; rows: AgentRow[] }) {
           <View key={row.agentId} style={{ gap: 2, padding: 10, borderTopWidth: index === 0 ? 0 : 1, borderTopColor: theme.colors.border }}>
             <View style={{ flexDirection: "row", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
               <Text style={{ flex: 1, minWidth: 140, color: theme.colors.foreground, fontSize: 13 }}>{row.title || row.agentId}</Text>
-              <Text style={{ color: theme.colors.foreground, fontSize: 13, fontWeight: "600" }}>{dollars(row.usage.costUsd)}</Text>
+              <Text style={{ color: theme.colors.foreground, fontSize: 13, fontWeight: "600" }}>{compactNumber(tokensOf(row.usage))}</Text>
               <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>
                 {row.usage.turns} turns · {compactNumber(row.usage.inputTokens)} in · {compactNumber(row.usage.cachedInputTokens)} cached · {compactNumber(row.usage.outputTokens)} out · ctx {compactNumber(row.usage.contextPeak)}
               </Text>
