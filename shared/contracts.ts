@@ -74,6 +74,8 @@ export const startRun = defineRpc({
     agentId: z.string().optional(),
     /** Without agentId: true = a new manager agent in this workspace; false = a new worktree with a new manager. */
     sameWorkspace: z.boolean().default(false),
+    /** Title of the new workspace (only when one is created, not with agentId or sameWorkspace); empty: the default title. */
+    workspaceName: z.string().max(200).optional(),
   }),
   output: z.discriminatedUnion("status", [
     z.object({

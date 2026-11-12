@@ -81,7 +81,7 @@ this way, and `start_step` on a step already running is refused. This also holds
 manager calls `start_playbook`.
 
 The Sidekick can start playbook runs with `start_playbook` (`workspaceId` of a visible workspace of its project, or
-that with `newWorkspace`; never its own hidden workspace), and `list_playbooks` shows what is on offer. When you ask
+that with `newWorkspace`, and `workspaceName` to title the new workspace; never its own hidden workspace), and `list_playbooks` shows what is on offer. When you ask
 it to merge a pull request, it starts the project's merging playbook (for example `pr-to-prod`), whose manager
 merges; the Sidekick itself never merges. For bulk work ("do all tickets of project XYZ") it creates a coordinator
 subagent that lists the tickets with its own MCP tools (the Sidekick has none) and starts one run per ticket.
@@ -141,6 +141,13 @@ recently used agent as manager (see Known limits), in that workspace (the run st
 once, but if that agent is busy, its kickoff waits until its current turn ends). The arrow
 next to Start offers "Start on a new agent", which creates a new manager agent in the same
 workspace, and "Start in a new workspace", which creates a new worktree and manager.
+
+The **Run Playbook** button at the top left of the panel opens a form to start any valid playbook of the workspace's
+project in a new workspace: a workspace name (optional; empty keeps the default title, the playbook title and the
+request), a playbook dropdown, then that playbook's inputs. **Start**, at the bottom, creates the workspace and the run;
+a failure shows in the form, a success as a toast. The name is a title only (one line, at most 80 characters): the
+branch is still `playbooks/<playbook>-<id>`. The same title is available to agents as `workspaceName` on
+`start_playbook` with `newWorkspace`.
 
 ## Release
 

@@ -353,22 +353,28 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
           .string()
           .optional()
           .describe("A workspace of this project (list_workspaces) to run in instead of yours: the run starts there with a new Playbook Manager (or, with newWorkspace, in a new workspace branched off it); you do not manage it. A Sidekick has no workspace to run in and must pass it"),
+        workspaceName: z
+          .string()
+          .max(200)
+          .optional()
+          .describe("With newWorkspace: the title of the new workspace (trimmed to one line, at most 80 characters; default: the playbook title and the request). It does not change the branch name"),
         autoStart: z
           .boolean()
           .default(true)
           .describe("Start the run's ready agent steps right away, as start_step would with no brief (default true). false: leave them ready; with workspaceId or a Sidekick, the new manager then waits to be told to start them"),
       }),
-      execute: ({ playbook, inputs, name, newWorkspace, workspaceId, autoStart }, { agent }) =>
+      execute: ({ playbook, inputs, name, newWorkspace, workspaceId, autoStart, workspaceName }, { agent }) =>
         guard(async () => {
+          if (workspaceName?.trim() && !newWorkspace) throw new UserError("workspaceName names the new workspace: pass it with newWorkspace");
           if (workspaceId || (await runtime.isSidekick(agent.id))) {
-            const started = await runtime.startPlaybookInWorkspace(agent, { playbook, inputs, workspaceId, newWorkspace, autoStart });
+            const started = await runtime.startPlaybookInWorkspace(agent, { playbook, inputs, workspaceId, newWorkspace, autoStart, workspaceName });
             return ok(
               `Run ${started.runId} of "${playbook}" is starting in ${newWorkspace ? "a new workspace" : "workspace"} ${started.workspaceId} with its own Playbook Manager (${started.managerAgentId}). You do not manage it: the plugin tells you how it goes through your event subscription (list_runs shows it).`,
               started,
             );
           }
           if (newWorkspace) {
-            const started = await runtime.startPlaybookElsewhere(agent, playbook, inputs);
+            const started = await runtime.startPlaybookElsewhere(agent, playbook, inputs, workspaceName);
             return ok(
               `Run ${started.runId} of "${playbook}" is starting in a new workspace (${started.workspaceId}) with its own Playbook Manager (${started.managerAgentId}). You do not manage it: carry on with your own run.`,
               started,
