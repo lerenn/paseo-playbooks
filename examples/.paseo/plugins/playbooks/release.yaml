@@ -13,7 +13,8 @@ outputs:
 
 steps:
   - id: release
-    role: { name: dev_env_releaser, prompt: "Deploy {{ inputs.pr_url }} to the development environment." }
+    # The plugin applies a reported success itself and starts qa: the manager is not woken for it.
+    role: { name: dev_env_releaser, prompt: "Deploy {{ inputs.pr_url }} to the development environment.", completion: { auto: [success] } }
     inputs: [pr_url]
     outputs:
       env_url: { type: string, description: URL of the deployed dev environment }
@@ -21,7 +22,8 @@ steps:
     timeout: 30m
 
   - id: qa
-    role: { name: dev_env_qa, prompt: "Check {{ inputs.pr_url }} on {{ inputs.env_url }}." }
+    # redeploy loops back to release, which the plugin applies; success ends the run, so the manager is woken for it.
+    role: { name: dev_env_qa, prompt: "Check {{ inputs.pr_url }} on {{ inputs.env_url }}.", completion: { auto: [redeploy] } }
     needs: [release]
     inputs: [env_url, pr_url]
     outputs:

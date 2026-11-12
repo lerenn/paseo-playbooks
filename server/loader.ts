@@ -143,6 +143,14 @@ const RawRoleStepSchema = z
     /** Archive the step's agents once it completes or its flow ends, and each attempt's once the next starts. Default true. */
     archive_agents: z.boolean().optional(),
     agent: RawAgentSchema.optional(),
+    /** How the step's reported outcome is applied. */
+    completion: z
+      .object({
+        /** Outcomes (ids of the step's `outcomes`) the plugin applies itself when the agent reports them, without waking the manager. */
+        auto: z.array(z.string()).min(1),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -1550,6 +1558,17 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
       if (silenceMs === undefined) err(`${where}: role.silence: expected a duration such as 30m, or off`);
     }
     const stepRole = roleStep ? roles[roleStep.name] : undefined;
+    const autoOutcomes = roleStep?.completion?.auto;
+    if (autoOutcomes) {
+      if (new Set(autoOutcomes).size !== autoOutcomes.length) err(`${where}: role.completion.auto: duplicate outcome`);
+      for (const outcome of autoOutcomes) {
+        const kind: string | null = outcomes.includes(outcome) ? (on[outcome] ?? (outcome === "failure" ? { kind: "retry" } : outcome === outcomes[0] || outcome === "success" ? { kind: "complete" } : { kind: "fail" })).kind : null;
+        if (kind === null) err(`${where}: role.completion.auto: "${outcome}" is not an outcome of this step (${outcomes.join(", ")})`);
+        else if (kind === "retry" || kind === "fail" || kind === "ask") {
+          err(`${where}: role.completion.auto: "${outcome}" ${kind === "ask" ? "opens an ask for a human" : "is a failure"}; the plugin only applies outcomes that complete the step, end the flow or loop (a failure or an ask always goes to the manager)`);
+        }
+      }
+    }
     if (rawStep.settle !== undefined && !isGate && !task) {
       const settled = outputs[rawStep.settle.output];
       if (!settled) err(`${where}: settle.output "${rawStep.settle.output}" is not an output of the step (declare it under \`outputs\`)`);
@@ -1573,6 +1592,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     if (rawStep.title !== undefined) step.title = rawStep.title;
     if (rawStep.short_title !== undefined) step.shortTitle = rawStep.short_title;
     if (roleStep) step.role = roleStep.name;
+    if (autoOutcomes) step.autoComplete = [...new Set(autoOutcomes)];
     if (gateStep) step.gate = gateStep.question;
     const gateDecider = gateStep ? parseDecider(`${where}: gate.decider`, gateStep.decider) : undefined;
     if (gateDecider) step.decider = gateDecider;

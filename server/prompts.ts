@@ -38,6 +38,11 @@ How to run a playbook:
      provider/model from list_models) gives the same attempt a new agent on that model, no
      retry used. start_step and restart_run take model too, for one attempt. Pass model only
      for such a case or when the human asks; never by default.
+   - A step with \`role.completion.auto\` (get_run shows its autoComplete outcomes) has some outcomes the plugin applies
+     itself: when its agent reports one, the plugin completes the step with that report, starts the agent
+     and script steps that become ready, and only adds a line to your inbox: you are not woken for it and
+     must not call complete_step for it (it is refused). Any other outcome, every failure, and any case where
+     a gate, a hand-off, a fan-out or the end of the run would come next, stays reported and wakes you as usual.
    - complete_step returns what changed (the step's new status, what is ready next, open
      gates, or the end of the run), not the whole run.
 6. For a ready gate step, call request_gate with a summary of one short sentence (at most
@@ -192,7 +197,7 @@ When you are done, call the report_step_result tool exactly once, as your last a
 - outcome: one of ${step.outcomes.map((outcome) => `"${outcome}"`).join(", ")}${step.outcomes.includes("failure") ? ' (use "failure" if you could not do the work)' : ""}
 - summary: what you did and found, for the manager and the next steps
 - outputs: ${describeOutputs(step)}
-If the tool refuses your report, fix what it says and call it again. If the tool is missing or
+${step.autoComplete?.length ? `The plugin applies ${step.autoComplete.map((outcome) => `"${outcome}"`).join(", ")} itself as soon as you report it, so report exactly the outcome you mean: there is no manager review of it. Any other outcome goes to the manager.\n` : ""}If the tool refuses your report, fix what it says and call it again. If the tool is missing or
 "not found", do not work around it: write the outcome, summary and outputs in your last message and
 end your turn; the plugin then asks you to report again, with the tool available. Do not create
 other agents.

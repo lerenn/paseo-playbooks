@@ -219,6 +219,8 @@ export const StepSchema = z.object({
   silenceMs: z.number().int().min(0).optional(),
   /** Agent steps: archive the step's agents once it completes, and each attempt's once the next starts. Unset = true. */
   archiveAgents: z.boolean().optional(),
+  /** Agent steps: outcomes the plugin applies itself when the agent reports them (`role.completion.auto`). Unset = the manager applies every outcome. */
+  autoComplete: z.array(z.string()).optional(),
   /** Resolved agent settings (step > role > playbook > defaults). Provider/model may stay unset. */
   agent: AgentSettingsSchema,
   on: z.record(z.string(), TransitionSchema),

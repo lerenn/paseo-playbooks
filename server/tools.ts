@@ -198,7 +198,8 @@ export function runFull(run: Run, only?: string[]) {
             attempts: state.attempts.length,
             agentId: attempt && !isAgentlessAttempt(attempt.agentId) ? attempt.agentId : null,
             ...(step.kind === "agent" ? { models: attemptModels(state.attempts), ...(state.nextModel ? { nextModel: state.nextModel } : {}) } : {}),
-            ...(step.kind === "handoff" ? { handoff: step.handoff, job: attempt?.job ?? null } : {}),
+            ...(step.autoComplete?.length ? { autoComplete: step.autoComplete } : {}),
+      ...(step.kind === "handoff" ? { handoff: step.handoff, job: attempt?.job ?? null } : {}),
             ...(step.kind === "script" ? { script: step.script, checks: attempt?.checks ?? 0, nextCheckAt: attempt?.nextCheckAt ?? null } : {}),
             ...(step.kind === "branch" ? { chosen: state.branch } : {}),
             ...(step.kind === "fanout" && state.fanout && state.status !== "pending" && state.status !== "ready"
@@ -420,7 +421,7 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
     }),
     defineAgentTool({
       name: "complete_step",
-      description: "Decide the outcome of a reported step. The plugin applies the playbook's transition and returns what is ready next, a gate, or the end of the run.",
+      description: "Decide the outcome of a reported step (not for an outcome the step lists under role.completion.auto: the plugin applies those itself, and refuses this call for them). The plugin applies the playbook's transition and returns what is ready next, a gate, or the end of the run.",
       input: z.object({
         runId: IdArg,
         stepId: z.string(),

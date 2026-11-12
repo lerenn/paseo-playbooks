@@ -1201,6 +1201,33 @@ export function completeStep(
   return fx;
 }
 
+/**
+ * Whether the plugin may apply a reported outcome itself (`role.completion.auto`) instead of waking the
+ * manager: null when it may, else why not. Applying must succeed (the same checks as completeStep) and
+ * everything it makes ready must be an agent or script step; it must not end the run, open a gate (a
+ * gate step, a loop limit, an ask) or make a gate, hand-off or fan-out step ready: those need the manager.
+ */
+export function autoCompleteBlocker(run: Run, stepId: string, input: { outcome: string; summary?: string; outputs?: Record<string, unknown>; now: string }): string | null {
+  const step = stepDef(run, stepId);
+  if (step.kind !== "agent" || !step.autoComplete?.includes(input.outcome)) return "the outcome is not one the step lists in role.completion.auto";
+  if (run.train || isPipeline(run)) return "a train's steps are applied by its manager";
+  const trial = structuredClone(run);
+  try {
+    completeStep(trial, stepId, input);
+  } catch (error) {
+    return `it cannot be applied (${error instanceof Error ? error.message : String(error)})`;
+  }
+  if (isTerminal(trial.status)) return `it would end the run (${trial.status})`;
+  if (trial.gates.filter((gate) => gate.status === "pending").length > run.gates.filter((gate) => gate.status === "pending").length || trial.status === "waiting_gate") {
+    return "it would open a gate";
+  }
+  for (const next of trial.playbook.steps) {
+    if (trial.steps[next.id]!.status !== "ready" || run.steps[next.id]!.status === "ready" || !isStepLive(trial, next.id)) continue;
+    if (next.kind !== "agent" && next.kind !== "script") return `step "${next.id}" would become ready and is a ${next.kind === "gate" ? "gate" : next.kind === "handoff" ? "hand-off" : next.kind === "fanout" ? "fan-out" : next.kind} step`;
+  }
+  return null;
+}
+
 /** Takes the transition of an agent or script step's outcome (from completeStep, or an ask choice with `outcome`). */
 function followOutcome(run: Run, step: Step, outcome: string, summary: string, now: string, fx: Effects): void {
   const state = run.steps[step.id]!;
