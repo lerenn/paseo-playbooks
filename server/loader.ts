@@ -227,12 +227,12 @@ const RawScriptStepSchema = z
 /** A sub-playbook from the same folder, run in place of this step. */
 const RawPlaybookStepSchema = z.object({ name: z.string().min(1) }).strict();
 
-/** A hand-off: a singleton playbook from the same folder, given a job; the step waits for its result. */
+/** A hand-off: gives a job to a singleton playbook from the same folder; the step is done once the pipeline takes it. */
 const RawHandoffStepSchema = z
   .object({
     name: z.string().min(1),
-    /** false: the step completes with the first outcome as soon as the pipeline takes the job, and the job no longer belongs to this run. Default true. */
-    wait: z.boolean().default(true),
+    /** Removed (a hand-off never waits): read only to refuse it with what to write instead. */
+    wait: z.unknown().optional(),
   })
   .strict();
 
@@ -1380,15 +1380,18 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
       continue;
     }
     if (isHandoff) {
-      // Hands a job to a singleton playbook of the folder and waits for its result.
-      for (const field of ["prompt", "outputs", "outcomes", "silence", "archive_agents", "agent", "choices", "poll"] as const) {
+      // Gives a job to a singleton playbook of the folder; done once its pipeline takes it.
+      for (const field of ["prompt", "outcomes", "silence", "archive_agents", "agent", "choices", "poll"] as const) {
         if (rawStep[field] !== undefined) err(`${where}: \`${field}\` does not apply to a hand-off step (the singleton playbook defines it)`);
       }
+      if (rawStep.outputs !== undefined) err(`${where}: a hand-off has no outputs: it gives the job to the other playbook and this run does not wait for its result. Remove \`outputs\`, and do not read \`steps.${rawStep.id}.outputs.*\``);
+      if (rawStep.on !== undefined) err(`${where}: a hand-off has no \`on\`: it gives the job away and this run does not learn how it ends, so there is nothing to map. Remove \`on\`; the step is done once the pipeline takes the job (the run goes on with its next step, or ends)`);
+      if (typeof rawStep.handoff !== "string" && rawStep.handoff!.wait !== undefined) err(`${where}: handoff.wait was removed: a hand-off never waits (it gives the job to the other playbook, and this run goes on). Write \`handoff: { name: ${rawStep.handoff!.name} }\``);
       if (task) err(`${where}: a hand-off cannot be an after-task`);
       const targetId = typeof rawStep.handoff === "string" ? rawStep.handoff : rawStep.handoff!.name;
       let target: Playbook | null = null;
       if (targetId === id || stack.includes(targetId)) {
-        err(`${where}: handoff: "${targetId}" leads back to this playbook (${[...stack, id, targetId].join(" → ")}); the runs would wait on each other`);
+        err(`${where}: handoff: "${targetId}" leads back to this playbook (${[...stack, id, targetId].join(" → ")}); the runs would hand each other jobs forever`);
       } else if (!folder.ids.has(targetId)) {
         err(`${where}: handoff: playbook "${targetId}" not found in ${folder.relDir}/`);
       } else {
@@ -1398,28 +1401,8 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
         else if (!target.singleton) err(`${where}: handoff: playbook "${targetId}" is not a singleton (add \`singleton: {}\` to it)`);
       }
       if (target?.singleton) handoffs.set(rawStep.id, target);
-      const wait = typeof rawStep.handoff === "string" || rawStep.handoff!.wait;
       const outcomes = target ? (target.outcomes.includes("failure") ? target.outcomes : [...target.outcomes, "failure"]) : ["success", "failure"];
       const on: Record<string, Transition> = {};
-      for (const [outcome, transition] of Object.entries(rawStep.on ?? {})) {
-        if (target && !outcomes.includes(outcome)) err(`${where}: on.${outcome}: not an outcome of playbook "${targetId}" (${target.outcomes.join(", ")})`);
-        if (typeof transition === "string") on[outcome] = { kind: transition };
-        else if ("ask" in transition) err(`${where}: on.${outcome}: \`ask\` does not apply to a hand-off step`);
-        else if ("end" in transition) on[outcome] = endTransition(`${where}: on.${outcome}`, transition.end);
-        else on[outcome] = transition.max_loops !== undefined ? { kind: "goto", target: transition.goto, maxLoops: transition.max_loops } : { kind: "goto", target: transition.goto };
-      }
-      if (!wait) {
-        // Done once the job is in the pipeline: only the first outcome, or failure to hand it off.
-        for (const outcome of Object.keys(on)) {
-          if (outcome !== outcomes[0] && outcome !== "failure") err(`${where}: on.${outcome}: a hand-off with \`wait: false\` only ends with "${outcomes[0]}" (or "failure" if the job cannot be handed off)`);
-        }
-      } else if (target) {
-        // An outcome a stage declares `continue` or `requeue` never ends a job there, so it needs no mapping here.
-        const staged = new Set(target.singleton?.stages.flatMap((stage) => Object.keys(stage.effects)) ?? []);
-        for (const outcome of target.outcomes.slice(1)) {
-          if (outcome !== "failure" && !staged.has(outcome) && !on[outcome]) err(`${where}: outcome "${outcome}" of playbook "${targetId}" needs an \`on\` entry (complete, end, fail or goto)`);
-        }
-      }
       let timeoutMs = defaultTimeout;
       if (rawStep.timeout !== undefined) {
         timeoutMs = parseDuration(rawStep.timeout) ?? undefined;
@@ -1429,12 +1412,10 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
         id: rawStep.id,
         kind: "handoff",
         handoff: qualifyId(folder.repo, targetId),
-        ...(wait ? {} : { handoffWait: false as const }),
         needs: rawStep.needs,
         prompt: "",
         inputs: {},
-        // Without waiting, the step never sees the job's outputs.
-        outputs: !wait ? {} : Object.fromEntries(Object.entries(target?.outputs ?? {}).map(([name, def]) => [name, { type: def.type, ...(def.values ? { values: def.values } : {}) }])),
+        outputs: {},
         outcomes,
         retries: rawStep.retries,
         agent: {},
@@ -2033,9 +2014,9 @@ type SourceRef =
   | { kind: "run"; field: "id" | "status" | "failure" }
   | { kind: "output"; name: string };
 
-/** Why a hand-off that does not wait has no outputs to read. */
+/** Why a hand-off has no outputs to read. */
 function noOutputsHint(step: Step): string {
-  return step.kind === "handoff" && step.handoffWait === false ? ` (a hand-off with \`wait: false\` does not wait for its job, so it gives no outputs)` : "";
+  return step.kind === "handoff" ? ` (a hand-off gives the job to another playbook and does not wait for it, so it has no outputs)` : "";
 }
 
 function parseSourceRef(ref: string): SourceRef | null {

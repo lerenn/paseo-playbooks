@@ -698,8 +698,8 @@ function Node(props: GraphProps & { step: Step; longNeeds: string[]; nodeWidth: 
         : isFanout
           ? `Fan-out → ${step.fanout?.playbook ?? ""}`
         : `${role?.title ?? step.role}${role?.readonly ? " · ro" : ""}`) + condition;
-  // Where a hand-off's job is: its boarding run, the run carrying it, or its result.
-  const jobLine = isFanout && state?.fanout ? engineText(state.fanout) : isHandoff && nodeState === "running" ? latest?.lastMessage ?? null : latest?.waiting && nodeState === "running" ? `Waiting for tokens until ${new Date(latest.waiting.until).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : null;
+  // A hand-off's job once handed off (its run does not follow it any further).
+  const jobLine = isFanout && state?.fanout ? engineText(state.fanout) : isHandoff ? (latest?.job ? `Handed off to ${step.handoff} (${latest.job.jobId})` : nodeState === "running" ? latest?.lastMessage ?? null : null) : latest?.waiting && nodeState === "running" ? `Waiting for tokens until ${new Date(latest.waiting.until).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : null;
   const stateLabel = nodeStateLabel(nodeState);
   const onPress = () => (latestAgent ? props.onOpenAgent(latestAgent) : props.onOpenSheet(step.id));
   const isHighlighted = highlighted === step.id;

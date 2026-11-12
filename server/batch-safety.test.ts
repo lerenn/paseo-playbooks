@@ -87,7 +87,6 @@ steps:
   - id: release
     handoff: { name: release }
     inputs: { pr_url: ~, services: ~ }
-    on: { no_deploy: complete }
     retries: 1
 `;
 
@@ -162,7 +161,7 @@ describe("batch safety", () => {
       await runtime.requestGate(batch.managerAgentId, batch.id, stage, "ok?", "");
       await runtime.decideGate(batch.id, stage, { decision: "approved", comment: null, by: null, via: "panel", now: now() });
     }
-    await until(() => store.get(pr.id)!.status === "failed");
+    await until(() => pipelineOf(store).jobs[0]!.status === "failed");
     const pipeline = pipelineOf(store);
     expect(pipeline.jobs).toHaveLength(1);
     expect(pipeline.jobs[0]).toMatchObject({ status: "failed", passed: ["dev", "prd"] });

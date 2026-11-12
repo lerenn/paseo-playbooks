@@ -392,13 +392,13 @@ export function StepSheet(props: {
         {step.kind === "handoff" ? (
           <Section theme={theme} title="Hand-off">
             <Line theme={theme} muted>
-              Hands a job to the singleton playbook "{step.handoff}" and waits for its result
+              Gives a job to the singleton playbook "{step.handoff}"; done once its pipeline takes it, this run does not wait for it
               {timeoutText}
               {step.retries ? ` · retries ${step.retries}` : ""}
             </Line>
             {latest?.job ? (
               <Line theme={theme} muted>
-                Job {latest.job.jobId} · run {latest.job.runId}
+                Handed off to "{step.handoff}" (job {latest.job.jobId}) · pipeline run {latest.job.runId}
               </Line>
             ) : null}
             {latest?.lastMessage && !latest.report ? <Line theme={theme}>{latest.lastMessage}</Line> : null}

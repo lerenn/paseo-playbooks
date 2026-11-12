@@ -290,7 +290,7 @@ function describeEntry(entry: PlaybookEntry) {
       role: step.role ? `${step.role} (${pb.roles[step.role]!.title}${pb.roles[step.role]!.readonly ? ", readonly" : ""})` : null,
       gate: step.gate ?? null,
       ...(step.kind === "script" ? { script: step.script, poll: step.pollMs ? `${step.pollMs / 1000}s` : null } : {}),
-      ...(step.kind === "handoff" ? { handoff: step.handoff, ...(step.handoffWait === false ? { wait: false } : {}) } : {}),
+      ...(step.kind === "handoff" ? { handoff: step.handoff } : {}),
       ...(step.fanout ? { fanout: { playbook: step.fanout.playbook, maxActive: step.fanout.maxActive, cancelChildren: step.fanout.cancelChildren } } : {}),
       ...(step.when ? { when: whenView(step.when) } : {}),
       ...(step.branch ? { branch: step.branch.cases.map((candidate) => (candidate.when ? { case: candidate.name, if: whenView(candidate.when) } : { case: candidate.name, else: true })) } : {}),
@@ -826,7 +826,7 @@ export function runTools(runtime: Runtime): AgentToolDefinition[] {
     defineAgentTool({
       name: "record_followup",
       description:
-        "Batches of a singleton pipeline: say what was done for a detached job (handed off with wait: false, so nobody was told) that a batch settled with an outcome other than the singleton's first (ejected, no_deploy...). The plugin keeps that batch's manager open and reminds it until every such job has a follow-up recorded: either the run you started for it (start_playbook with forJob records it for you), or, with no followUpRunId, an explicit \"none needed\" and a note saying why. More than one may be recorded. Refused for a job that is open, failed, settled with the first outcome, or handed off by a step that waits (that step is told by the plugin). get_run `jobs[].followUps` (pipeline and batch) shows what is recorded, and list_events has job.followup_pending and job.followup. Works from any agent.",
+        "Batches of a singleton pipeline: say what was done for a detached job (handed off: its run was never told how it ends) that a batch settled with an outcome other than the singleton's first (ejected, no_deploy...). The plugin keeps that batch's manager open and reminds it until every such job has a follow-up recorded: either the run you started for it (start_playbook with forJob records it for you), or, with no followUpRunId, an explicit \"none needed\" and a note saying why. More than one may be recorded. Refused for a job that is open, failed, settled with the first outcome, or handed off by a step of an older plugin version that was waiting for its result (that step is told by the plugin). get_run `jobs[].followUps` (pipeline and batch) shows what is recorded, and list_events has job.followup_pending and job.followup. Works from any agent.",
       input: z.object({
         runId: IdArg.describe("The pipeline run, or one of its batches"),
         jobId: z.string().describe("A settled, detached job of the pipeline"),

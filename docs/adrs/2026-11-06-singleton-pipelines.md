@@ -1,6 +1,6 @@
 # Singleton pipelines: a singleton is a long-lived pipeline whose steps are stations
 
-Status: Accepted
+Status: Accepted, except its hand-off step (waiting for the job's result), superseded by `2026-11-12-handoff-gives-the-task-away.md`
 
 Supersedes `2026-11-06-singleton-playbooks.md` and `2026-11-06-handoff-steps.md` (the
 hand-off step itself is kept, restated below; its settling rules change).

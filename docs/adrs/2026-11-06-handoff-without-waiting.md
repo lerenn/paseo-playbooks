@@ -1,6 +1,6 @@
 # Hand-offs without waiting: `handoff: { wait: false }`, and rework runs in a new workspace
 
-Status: Accepted
+Status: Superseded by `2026-11-12-handoff-gives-the-task-away.md`
 
 Amends the hand-off step of `2026-11-06-singleton-pipelines.md` (opt-in; its default is
 unchanged).

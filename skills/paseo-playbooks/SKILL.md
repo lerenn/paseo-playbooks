@@ -547,8 +547,8 @@ steps:
   its outputs (a tag later stages read), with an outcome (`ejected`) to end it now.
   Better, a step can return them: `settle: { output: job_results }` makes the plugin apply
   that output (YAML per job id) when the step completes, so no job is forgotten. A
-  singleton's `outputs` need no source; a hand-off gets them all only with the first outcome
-  (a job ended early brings what it has).
+  singleton's `outputs` need no source (a job ended early brings what it has). They stay on the pipeline: the
+  run that handed the job off gets nothing back.
 - **Requeue by outcome:** a batch with some jobs fine and some blocked does not have to fail. The playbook says what
   each outcome of a `settle` step does to a job: `settle: { output: job_results, effects: { blocked: requeue, wait: continue } }`
   (outcomes of the singleton, never the first; unlisted = `terminal`: the job ends, as `ejected`). `continue`: it stays in the
@@ -569,10 +569,10 @@ steps:
   stage's `retries` allow; past them the jobs are `failed`. `requeue_job { runId, jobId, reason? }` (any agent except
   step and gate agents; `runId` is the pipeline or one of its batches) puts a **failed** job back: same id, inputs and
   outputs, it waits at the stages it has not passed and its failed rides start again, so the next batch carries it. Only
-  a job handed off with `wait: false` (detached): a waiting hand-off was told "failure" and decides itself. Idempotent
+  a handed-off (detached) job: its run is not involved (a step of an older plugin version that was waiting was told "failure" and decides itself). Idempotent
   (an open job is left alone, `changed: false`); refused for a settled or withdrawn job, a job that passed every stage and
   an ended pipeline. Events: `job.reopened`, then `job.queued` (`via: reopened`).
-- **Hand-off pending (detached jobs that ended):** a job handed off with `wait: false` that a batch settles with an outcome
+- **Hand-off pending (detached jobs that ended):** a handed-off job that a batch settles with an outcome
   other than the first (`ejected`, `no_deploy`...) is told to nobody: only the batch's manager can start what follows (the
   playbook's instructions say what, e.g. a rework run). Each such job needs a **follow-up recorded**: `start_playbook` with
   `newWorkspace` (or `workspaceId`) and `forJob: "<jobId>"` records the run it starts; `record_followup { runId, jobId,
@@ -582,8 +582,8 @@ steps:
   ends normally. **To see it** (and to avoid starting a duplicate): `get_run` of the pipeline or the batch lists, per
   detached job, `followUps: [{ runId, note, at }]`, and on the pipeline `followUpPending: true` while none is recorded;
   events `job.followup_pending` (a batch ended with such a job) and `job.followup` (`followUpRunId`, `note`); the
-  Playbooks panel shows "Hand-off pending" on the stage. Not for a job a waiting hand-off told (it was told `failure`
-  or the outcome) nor one settled with the first outcome.
+  Playbooks panel shows "Hand-off pending" on the stage. Not for a job settled with the first outcome (nor, for runs of an older plugin version, a job a waiting
+  hand-off was told about).
 - **Empty batch:** when every job has left a batch (ejected, requeued or settled), its steps not started are skipped
   (history `step_skipped`: "no job left in this batch") and the batch completes; they never run on an empty batch.
 - Every role a singleton uses must be `readonly` (batches share one checkout). A singleton
@@ -648,8 +648,7 @@ them. No batch, no manager, no agent and no tokens are involved: the plugin runs
   with the stage as `stepId` and the job as `jobId`), question "Job <id> (<label>) cannot be admitted at <stage>:
   <reason>". It shows in the panel's "Needs you", in `list_gates` and in `get_run`, and `gate.opened` fires. A pipeline
   has no manager: a human answers in the panel, with an optional comment: **Check again** (`retry`: run the check now,
-  the job stays held), **Withdraw the job** (`withdraw`: the job leaves the pipeline like a canceled hand-off, and
-  its hand-off step ends `failure` with the reason; it is not retried) or **Admit anyway** (`admit`: the job may
+  the job stays held), **Withdraw the job** (`withdraw`: the job leaves the pipeline, with the reason recorded on the job; the run that handed it off is not told) or **Admit anyway** (`admit`: the job may
   join and the script no longer holds it). One ask is open per job: the script escalating again does not open another. The
   ask closes by itself when the script admits the job or the job leaves the pipeline (withdrawn by its run, failed).
 - **Events:** `job.held` (+ `reason`, only when the hold or its reason changes), `job.admitted` (+ `via: script | human`,
@@ -660,39 +659,30 @@ them. No batch, no manager, no agent and no tokens are involved: the plugin runs
   when it was checked, and "Admission: checking" or "Admission: waiting, next check in ~Ns", with the alert of a failed check.
   The panel's status is live in memory: after a daemon restart it is empty until the next check.
 
-A **hand-off step** gives a singleton a job and waits until the job leaves the pipeline:
+A **hand-off step** gives a job, and with it the task, to a singleton. It is not a sub-step: once the
+pipeline has taken the job the step is done and the run simply goes on (typically it ends right there).
 
 ```yaml
   - id: release
     needs: [approve]
     handoff: { name: release_trains }
     inputs: { pr_url: ~ }             # the singleton's inputs
-    timeout: 48h                      # the whole pipeline, human gates included (or none)
-    on:
-      ejected: { goto: fix, max_loops: 2 }
+    timeout: 5m                       # only to hand the job over (or none)
 ```
 
-- Its contract is the singleton's `inputs`, `outputs` and `outcomes` (plus `failure`); every
-  outcome but the first needs an `on` entry (not `ask`).
-- The plugin starts it and completes it; the manager never calls `start_step` or
-  `complete_step` for it. Canceling the run, or a `goto` that resets the step, withdraws the
-  job. While the run is paused, a result waits for the resume.
-- When a batch carrying the job waits for a human (a gate or an ask), the manager is told, and
-  told again once it is decided, so it can pass it on where it reports (a chat or a thread). The
-  decision is made in the Playbooks panel, on the singleton's card: the gate belongs to the
-  batch, not to the handing-off run.
+- A hand-off has **no output** and no `on`: the run does not wait for the other playbook and
+  receives nothing back. `outputs`, `on` and the old `handoff.wait` are refused with an error
+  saying so; reading `steps.<id>.outputs.*` from it is refused too.
+- The plugin starts it and completes it, with the singleton's first outcome; the manager never
+  calls `start_step` or `complete_step` for it. It completes with `failure` only if the job
+  cannot be handed over (retried within `retries`).
+- The job then belongs to the pipeline: it survives the run completing, failing, being canceled
+  or reset, is never withdrawn by it, and how it ends is recorded on the pipeline only (the run
+  is not told, nor of the batch's gates; those are decided in the Playbooks panel, on the
+  singleton's card). The origin run keeps the trace: its hand-off attempt records the target and
+  the job id (`get_run` `job`, the history, the step node and details), and the pipeline's card
+  shows which run handed it off. `{{ run.jobs }}` marks the job `detached: true`.
 - A hand-off that leads back to its own playbook is refused.
-
-**Without waiting**, `handoff: { name: release_trains, wait: false }` (default `true`): the step
-completes with the singleton's first outcome as soon as the pipeline takes the job, and the run
-moves on.
-
-- The job then belongs to the pipeline: it survives the run completing, failing or being
-  canceled, is never withdrawn by it, and how it ends is recorded on the pipeline only (the run
-  is not told, nor of the batch's gates). Its card still shows which run handed it off, and
-  `{{ run.jobs }}` marks it `detached: true`.
-- The step gives no outputs: reading `steps.<id>.outputs.*` from it is refused, and `on` may
-  only name the first outcome or `failure` (the job could not be handed off).
 - **Rework after an eject:** the batch's manager can start a new run of any playbook with
   `start_playbook(playbook, inputs, newWorkspace: true)`. It gets a new workspace (branched off
   the pipeline's) and its own Playbook Manager; the batch's manager does not manage it. Write

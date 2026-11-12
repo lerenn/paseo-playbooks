@@ -262,16 +262,14 @@ steps:
 <li><strong>Settling.</strong> The batch's manager calls <code>settle_job</code>: without an outcome to set a job's outputs, with one (<code>ejected</code>) to end it now, or an outcome the playbook declares in the step's <code>settle.effects</code>: <code>continue</code> (it stays in the batch) or <code>requeue</code> (it leaves the batch for its stage's queue with no failed ride; <code>reason</code> and an optional opaque <code>blocker</code>; <code>queue.max_requeues</code> caps it). A stage with <code>queue.admit</code> can hold it until the blocker is gone.</li>
 <li>Every role must be <code>readonly</code> (batches share one checkout). No <code>concurrency</code>, no <code>after</code>; a singleton is never a sub-playbook or an after-task. When no batch runs, its workspace is fast-forwarded to <code>branch</code> and its playbook read again.</li>
 </ul>
-<p>A <strong>hand-off step</strong> gives a singleton a job and waits until it leaves the pipeline:</p>
+<p>A <strong>hand-off step</strong> gives a job, and with it the task, to a singleton. It is not a sub-step: once the pipeline has taken the job the step is done and the run goes on (typically it ends there):</p>
 <pre><code>  - id: release
     needs: [approve]
     handoff: { name: release_trains }
     inputs: { pr_url: ~ }
-    timeout: 48h                      # the whole pipeline, human gates included
-    on:
-      ejected: { goto: fix, max_loops: 2 }</code></pre>
-<p>Its contract is the singleton's inputs, outputs and outcomes (plus <code>failure</code>); every outcome but the first needs an <code>on</code> entry. The plugin starts and completes it. Canceling the run, or a <code>goto</code> that resets the step, withdraws the job; while the run is paused, a result waits for the resume. A hand-off that leads back to its own playbook is refused.</p>
-<p><strong>Without waiting</strong>, <code>handoff: { name: release_trains, wait: false }</code> (default <code>true</code>) completes with the singleton's first outcome as soon as the pipeline takes the job. The job then belongs to the pipeline: it survives the run completing, failing or being canceled, is never withdrawn by it, and how it ends is recorded on the pipeline only. The step gives no outputs (reading them is refused), and <code>on</code> may only name the first outcome or <code>failure</code>. To rework an ejected job, the batch's manager calls <code>start_playbook</code> with <code>newWorkspace: true</code>: the new run gets its own workspace and Playbook Manager.</p>
+    timeout: 5m                       # only to hand the job over</code></pre>
+<p>A hand-off has no outputs and no <code>on</code>: the run does not wait for the other playbook and receives nothing back (<code>outputs</code>, <code>on</code> and the old <code>handoff.wait</code> are refused with an error saying so, and reading <code>steps.&lt;id&gt;.outputs.*</code> from it is refused). The plugin starts and completes it with the singleton's first outcome, or <code>failure</code> if the job cannot be handed over. The job then belongs to the pipeline: it survives the run completing, failing, being canceled or reset, and how it ends is recorded on the pipeline only. The run keeps the trace: the hand-off's attempt records the target and the job id, shown on the step in the panel. A hand-off that leads back to its own playbook is refused.</p>
+<p>To rework an ejected job, the batch's manager calls <code>start_playbook</code> with <code>newWorkspace: true</code>: the new run gets its own workspace and Playbook Manager.</p>
 <p>The panel and the Playbooks screen show a singleton's stages (waiting list and current batch) and its batches; a hand-off step shows where its job is.</p>
 
 <h3 id="admission">Admission on a stage's queue</h3>
