@@ -12,7 +12,7 @@ section, in memory, default "Last update").
 
 ## Decision
 
-- A compact outlined **sort button** in the screen header (next to Sidekick and Refresh) orders the playbook
+- A compact outlined **sort button** in the Runs tab, at the right of the filter row (v0.98.1 moved it there from the screen header; it is not shown in Analytics or Profiles) orders the playbook
   sections: **Name (A-Z)**, **Last activity** (the former behavior), **Status** (waiting, working, failed, done,
   paused, seen; the best run of the playbook counts) and **Start time** (newest run first). Ties fall back to the
   name, then the playbook id, so every order is total.
