@@ -29,6 +29,7 @@ import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "./defaults";
 import { isQuotaError, isQuotaMessage } from "./quota";
 import * as engine from "./engine";
 import { checkoutSnapshot, currentRef, defaultBranch, fastForward, freshRef, removedGitlinks, snapshotDiff } from "./git";
+import { workspaceTitle } from "../shared/workspace-name";
 import { createWorktree, dirtyPaths, linkedSubmodules, listWorktreeDirs, pruneWorktrees, removeWorktree, repoOfWorktree, worktreeBranch, worktreePath } from "./worktree";
 import { chooseDefinition } from "./fresh";
 import { runWorktreeTeardown } from "./teardown";
@@ -2972,15 +2973,16 @@ export class Runtime {
     return (await this.sidekickRegistry.findByAgent(agentId)) !== null;
   }
 
-  async startPlaybookInWorkspace(caller: { id: string; workspaceId: string | null }, input: { playbook: string; inputs: Record<string, VarValue>; workspaceId: string | undefined; newWorkspace: boolean; autoStart?: boolean }) {
+  async startPlaybookInWorkspace(caller: { id: string; workspaceId: string | null }, input: { playbook: string; inputs: Record<string, VarValue>; workspaceId: string | undefined; newWorkspace: boolean; autoStart?: boolean; workspaceName?: string | undefined }) {
     const isSidekick = await this.isSidekick(caller.id);
+    if (input.workspaceName && !input.newWorkspace) throw new UserError("workspaceName names the new workspace: pass it with newWorkspace");
     if (!input.workspaceId) throw new UserError(isSidekick ? "name the workspace: pass workspaceId (list_workspaces) of a visible workspace of this project; you have no workspace of your own to run in" : "workspaceId is missing");
     if (input.workspaceId === caller.workspaceId && isSidekick) throw new UserError("that is your own hidden workspace: pick a visible workspace of this project (list_workspaces), with newWorkspace to start the run in a new one");
     const workspace = await this.api().workspaces.ref(input.workspaceId).refresh();
     if (!workspace) throw new UserError(`workspace "${input.workspaceId}" not found (list_workspaces lists them)`);
     const callerProject = await this.projectIdOf(caller.workspaceId);
     if (callerProject && workspace.projectId !== callerProject) throw new UserError("that workspace belongs to another project");
-    const started = await this.startFromPanel({ workspaceId: workspace.id, playbook: input.playbook, inputs: input.inputs, force: false, sameWorkspace: !input.newWorkspace, autoStart: input.autoStart !== false });
+    const started = await this.startFromPanel({ workspaceId: workspace.id, playbook: input.playbook, inputs: input.inputs, force: false, sameWorkspace: !input.newWorkspace, autoStart: input.autoStart !== false, workspaceName: input.workspaceName });
     if (started.status === "duplicate") throw new UserError(`${started.message} Not started again.`);
     return started;
   }
@@ -2994,7 +2996,10 @@ export class Runtime {
     sameWorkspace?: boolean | undefined;
     /** false: the new manager creates the run and leaves its ready steps unstarted (default true). */
     autoStart?: boolean | undefined;
+    /** Title of the new workspace (only when one is created); empty: the default title. */
+    workspaceName?: string | undefined;
   }) {
+    if (input.workspaceName?.trim() && (input.agentId || input.sameWorkspace)) throw new UserError("workspaceName names a new workspace: it does not apply when the run starts in this one");
     const workspace = await this.api().workspaces.ref(input.workspaceId).refresh();
     if (!workspace) throw new UserError("workspace not found");
     const workspaceDir = workspace.workspaceDirectory ?? workspace.projectRootPath;
@@ -3036,7 +3041,7 @@ export class Runtime {
       });
       return { status: "started" as const, workspaceId: workspace.id, managerAgentId: manager.id, runId, queued: false };
     }
-    return this.startInNewWorkspace(workspaceDir, playbook, resolved.inputs);
+    return this.startInNewWorkspace(workspaceDir, playbook, resolved.inputs, input.workspaceName);
   }
 
 
@@ -3264,14 +3269,13 @@ export class Runtime {
   }
 
   /** A new workspace branched off this one's current ref, with a new Playbook Manager that starts the run there. */
-  private async startInNewWorkspace(workspaceDir: string, playbook: Playbook, inputs: Record<string, VarValue>) {
+  private async startInNewWorkspace(workspaceDir: string, playbook: Playbook, inputs: Record<string, VarValue>, workspaceName?: string) {
     const id = shortId();
     const runId = `run_${id}`;
     const branch = worktreeBranch(playbook.id, id);
     const base = (await currentRef(workspaceDir)) ?? undefined;
-    const headline = String(inputs.request ?? Object.values(inputs)[0] ?? "").slice(0, 60);
     const created = await this.api().workspaces.create({
-      title: `${playbook.title}${headline ? `: ${headline}` : ""}`,
+      title: workspaceTitle(playbook.title, inputs, workspaceName),
       source: { kind: "worktree", cwd: workspaceDir, action: "branch-off", branchName: branch, ...(base ? { refName: base } : {}) },
     });
     this.addReservation(created.id, { runId, branch, playbook, inputs, created: true });
@@ -3288,7 +3292,7 @@ export class Runtime {
    * start_playbook with `newWorkspace`: the run gets its own workspace and its own Playbook
    * Manager, so any manager can start one, a train's included (rework for an ejected job).
    */
-  async startPlaybookElsewhere(manager: { cwd: string; workspaceId: string | null }, playbookId: string, inputs: Record<string, unknown>) {
+  async startPlaybookElsewhere(manager: { cwd: string; workspaceId: string | null }, playbookId: string, inputs: Record<string, unknown>, workspaceName?: string) {
     let workspaceDir = manager.cwd;
     let projectId: string | null = null;
     if (manager.workspaceId) {
@@ -3309,7 +3313,7 @@ export class Runtime {
     const resolved = engine.resolveRunInputs(playbook, inputs);
     if (!resolved.ok) throw new UserError(resolved.errors.join("; "));
     if (projectId) this.checkConcurrency(playbook, projectId);
-    return this.startInNewWorkspace(workspaceDir, playbook, resolved.inputs);
+    return this.startInNewWorkspace(workspaceDir, playbook, resolved.inputs, workspaceName);
   }
 
   hasReservation(workspaceId: string | null): boolean {

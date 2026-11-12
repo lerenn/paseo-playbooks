@@ -1,10 +1,12 @@
 import { useRpc } from "@getpaseo/plugin/client";
 import { Icon, Modal, TextInput, useToast } from "@getpaseo/plugin/client/ui";
 import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { Pressable, Switch, Text, View } from "react-native";
 import { listWorkspaceAgents, startRun } from "../shared/contracts";
 import type { Playbook, VarValue } from "../shared/types";
+import { sanitizeWorkspaceName, WORKSPACE_NAME_MAX } from "../shared/workspace-name";
+import { inputErrors } from "./run-form";
 import { Button } from "./sheet";
 import type { Theme } from "./theme";
 
@@ -29,6 +31,9 @@ export function StartForm(props: {
   /** sameWorkspace: the manager is in this workspace (open the agent rather than a new workspace). */
   onStarted(result: { workspaceId: string; managerAgentId: string; sameWorkspace: boolean }): void;
   compact: boolean;
+  /** The Run Playbook form: its title and the playbook dropdown shown above the inputs. */
+  title?: string;
+  picker?: ReactNode;
 }) {
   const { theme, playbook } = props;
   const start = useRpc(startRun);
@@ -36,6 +41,10 @@ export function StartForm(props: {
   const [values, setValues] = useState(() => initialValues(playbook));
   const [busy, setBusy] = useState(false);
   const [duplicate, setDuplicate] = useState<string | null>(null);
+  const [workspaceName, setWorkspaceName] = useState("");
+  /** Shown inline in the form: a failed start, or the inputs that are missing. */
+  const [error, setError] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const listAgents = useRpc(listWorkspaceAgents);
   const agents = useQuery({ queryKey: ["playbooks", "agents", props.workspaceId], queryFn: () => listAgents({ workspaceId: props.workspaceId }) });
   const current = props.target === "current";
@@ -56,6 +65,13 @@ export function StartForm(props: {
   const set = (name: string, value: string | boolean) => setValues((current) => ({ ...current, [name]: value }));
 
   const submit = async (force: boolean) => {
+    const problems = inputErrors(playbook, values);
+    setFieldErrors(problems);
+    setError(null);
+    if (Object.keys(problems).length > 0) {
+      setError("Fill in the highlighted inputs.");
+      return;
+    }
     setBusy(true);
     try {
       const inputs: Record<string, VarValue> = {};
@@ -71,6 +87,7 @@ export function StartForm(props: {
         inputs,
         force,
         sameWorkspace: props.target === "agent",
+        ...(props.target === "workspace" && sanitizeWorkspaceName(workspaceName) ? { workspaceName: sanitizeWorkspaceName(workspaceName)! } : {}),
         ...(agentId ? { agentId } : {}),
       });
       if (result.status === "duplicate") {
@@ -80,7 +97,7 @@ export function StartForm(props: {
       toast.show(result.queued ? `Queued ${result.runId}: the agent starts it when its current turn ends` : `Started ${result.runId}`, { variant: "success" });
       props.onStarted({ workspaceId: result.workspaceId, managerAgentId: result.managerAgentId, sameWorkspace: props.target !== "workspace" });
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : String(error));
+      setError(error instanceof Error ? error.message : String(error));
     } finally {
       setBusy(false);
     }
@@ -96,8 +113,23 @@ export function StartForm(props: {
   } as const;
 
   return (
-    <Modal title={`Start · ${playbook.title}`} open onOpenChange={(open) => !open && props.onClose()}>
+    <Modal title={props.title ?? `Start · ${playbook.title}`} open onOpenChange={(open) => !open && props.onClose()}>
       <Modal.Content>
+        {props.picker}
+        {props.target === "workspace" ? (
+          <View style={{ gap: 4 }}>
+            <Text style={{ color: theme.colors.foreground, fontSize: 13, fontWeight: "600" }}>Workspace name</Text>
+            <TextInput
+              accessibilityLabel="Workspace name"
+              value={workspaceName}
+              onChangeText={setWorkspaceName}
+              maxLength={WORKSPACE_NAME_MAX}
+              placeholder={`Optional: default is “${playbook.title}: …”`}
+              placeholderTextColor={theme.colors.foregroundMuted}
+              style={fieldStyle}
+            />
+          </View>
+        ) : null}
         {playbook.description ? <Text style={{ color: theme.colors.foregroundMuted, fontSize: 13 }}>{playbook.description}</Text> : null}
         <Text style={{ color: current && !agents.isLoading && !manager ? theme.colors.statusWarning : theme.colors.foregroundMuted, fontSize: 12 }}>
           {props.target === "workspace"
@@ -196,13 +228,19 @@ export function StartForm(props: {
                     keyboardType={def.type === "number" ? "numeric" : "default"}
                     multiline={def.type === "string" && name === "request"}
                     placeholderTextColor={theme.colors.foregroundMuted}
-                    style={[fieldStyle, def.type === "string" && name === "request" ? { minHeight: 72 } : {}]}
+                    style={[fieldStyle, def.type === "string" && name === "request" ? { minHeight: 72 } : {}, fieldErrors[name] ? { borderColor: theme.colors.statusDanger } : {}]}
                   />
                 )}
+                {fieldErrors[name] ? <Text style={{ color: theme.colors.statusDanger, fontSize: 11 }}>{fieldErrors[name]}</Text> : null}
                 </View>
               </View>
             ))}
           </View>
+        ) : null}
+        {error ? (
+          <Text accessibilityRole="alert" selectable style={{ color: theme.colors.statusDanger, fontSize: 13 }}>
+            {error}
+          </Text>
         ) : null}
         {duplicate ? (
           <View style={{ gap: 6 }}>
@@ -214,5 +252,72 @@ export function StartForm(props: {
         )}
       </Modal.Content>
     </Modal>
+  );
+}
+
+/**
+ * The panel's "Run Playbook" form: pick a playbook of this workspace's project, name the new workspace, fill in the
+ * inputs and start the run in a new workspace. It is the start form with a playbook dropdown above the inputs.
+ */
+export function RunPlaybookForm(props: {
+  theme: Theme;
+  playbooks: Playbook[];
+  workspaceId: string;
+  onClose(): void;
+  onStarted(result: { workspaceId: string; managerAgentId: string; sameWorkspace: boolean }): void;
+  compact: boolean;
+}) {
+  const { theme, playbooks } = props;
+  const [selected, setSelected] = useState(playbooks[0]?.id ?? "");
+  const [open, setOpen] = useState(false);
+  const playbook = playbooks.find((candidate) => candidate.id === selected);
+  if (!playbook) return null;
+  const picker = (
+    <View style={{ gap: 4, zIndex: 20 }}>
+      <Text style={{ color: theme.colors.foreground, fontSize: 13, fontWeight: "600" }}>Playbook</Text>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`Playbook: ${playbook.title}`}
+        accessibilityState={{ expanded: open }}
+        onPress={() => setOpen((value) => !value)}
+        style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderRadius: 8, borderWidth: 1, borderColor: theme.colors.border, padding: 8, backgroundColor: theme.colors.surface2 }}
+      >
+        <Text style={{ color: theme.colors.foreground, fontSize: 13, flexShrink: 1 }}>{playbook.title}</Text>
+        <Icon name="ChevronDown" size={14} color={theme.colors.foregroundMuted} />
+      </Pressable>
+      {open ? (
+        <View accessibilityRole="menu" style={{ borderRadius: 8, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface2, padding: 4 }}>
+          {playbooks.map((candidate) => (
+            <Pressable
+              key={candidate.id}
+              accessibilityRole="menuitem"
+              accessibilityState={{ selected: candidate.id === selected }}
+              onPress={() => {
+                setSelected(candidate.id);
+                setOpen(false);
+              }}
+              style={{ paddingHorizontal: 10, paddingVertical: 8, borderRadius: 6, backgroundColor: candidate.id === selected ? theme.colors.surface1 : "transparent" }}
+            >
+              <Text style={{ color: theme.colors.foreground, fontSize: 13 }}>{candidate.title}</Text>
+              {candidate.id !== candidate.title ? <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>{candidate.id}</Text> : null}
+            </Pressable>
+          ))}
+        </View>
+      ) : null}
+    </View>
+  );
+  return (
+    <StartForm
+      key={playbook.id}
+      theme={theme}
+      playbook={playbook}
+      workspaceId={props.workspaceId}
+      target="workspace"
+      title="Run Playbook"
+      picker={picker}
+      compact={props.compact}
+      onClose={props.onClose}
+      onStarted={props.onStarted}
+    />
   );
 }

@@ -284,6 +284,23 @@ describe("singleton pipelines: hand-offs without waiting", () => {
     expect(runtime.hasReservation(started.workspaceId)).toBe(true);
     await expect(runtime.startPlaybookElsewhere({ workspaceId: dev.workspaceId, cwd: "/" }, "apply", {})).rejects.toThrow(/is a singleton/);
   });
+  it("titles the new workspace with workspaceName (sanitized), never changing the branch, in start_playbook and the panel RPC", async () => {
+    const { store, runtime, created } = await setup({ "apply.yaml": APPLY, "forget.yaml": FORGET });
+    await runtime.startPlaybook({ id: "m1", workspaceId: "ws1", cwd: "/" }, "forget", { pr_url: "1" });
+    await until(() => trainAt(store, "dev") !== undefined);
+    const dev = trainAt(store, "dev")!;
+    await runtime.startPlaybookElsewhere({ workspaceId: dev.workspaceId, cwd: "/" }, "forget", { pr_url: "1" }, "  My \n named   workspace ");
+    expect(created.at(-1)).toMatchObject({ title: "My named workspace", source: { branchName: expect.stringMatching(/^playbooks\/forget-/) } });
+    const viaPanel = await runtime.startFromPanel({ workspaceId: dev.workspaceId, playbook: "forget", inputs: { pr_url: "2" }, force: false, workspaceName: "Panel name" });
+    expect(viaPanel.status).toBe("started");
+    expect(created.at(-1)).toMatchObject({ title: "Panel name" });
+    // An empty name keeps today's default title.
+    await runtime.startFromPanel({ workspaceId: dev.workspaceId, playbook: "forget", inputs: { pr_url: "3" }, force: false, workspaceName: "   " });
+    expect(created.at(-1)).toMatchObject({ title: "Forget: 3" });
+    // It only names a new workspace.
+    await expect(runtime.startFromPanel({ workspaceId: dev.workspaceId, playbook: "forget", inputs: { pr_url: "4" }, force: false, sameWorkspace: true, workspaceName: "x" })).rejects.toThrow(/workspaceName/);
+    await expect(runtime.startPlaybookInWorkspace({ id: "m1", workspaceId: "ws1" }, { playbook: "forget", inputs: {}, workspaceId: dev.workspaceId, newWorkspace: false, workspaceName: "x" })).rejects.toThrow(/with newWorkspace/);
+  });
   it("give a train's manager the repository's, the pipeline's and its own station's instructions only", async () => {
     const { store, runtime, sent } = await setup({
       "deploy.yaml": `

@@ -11,7 +11,8 @@ import { Graph, useReduceMotion } from "./graph";
 import { PreReleaseFlag } from "./pre-release";
 import { ProfilePicker, useSetProjectProfile } from "./profiles";
 import { Button, StepSheet } from "./sheet";
-import { StartForm, type StartTarget } from "./start-form";
+import { RunPlaybookForm, StartForm, type StartTarget } from "./start-form";
+import { runnablePlaybooks } from "./run-form";
 import { dotGroups, isRead, runTone, splitTabs, type DotGroup, type RunTone } from "./run-tabs";
 import { openJobsLabel, Stations, trainName } from "./stations";
 import { splitError } from "../shared/errors";
@@ -85,11 +86,26 @@ export function PlaybooksPanel(props: PluginWorkspacePanelProps) {
   const total = cards.length + hiddenCards.length;
 
   const pad = layout.compact ? 12 : 16;
+  const runnable = useMemo(() => runnablePlaybooks(playbooks.data?.entries ?? []), [playbooks.data]);
+  const [runForm, setRunForm] = useState(false);
   return (
     <View style={{ flex: 1, backgroundColor: theme.colors.surface0 }}>
       {/* No heading: the tab already says "Playbooks". */}
       <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingHorizontal: pad, paddingVertical: 8, zIndex: 50 }}>
-        <PreReleaseFlag theme={theme} />
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+          <PreReleaseFlag theme={theme} />
+          {runnable.length > 0 ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Run Playbook: start a playbook in a new workspace"
+              onPress={() => setRunForm(true)}
+              style={{ flexDirection: "row", alignItems: "center", gap: 6, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6, backgroundColor: theme.colors.accent }}
+            >
+              <Icon name="Play" size={13} color={theme.colors.accentForeground} />
+              <Text style={{ color: theme.colors.accentForeground, fontSize: 13, fontWeight: "600" }}>Run Playbook</Text>
+            </Pressable>
+          ) : null}
+        </View>
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Refresh playbooks"
@@ -131,6 +147,20 @@ export function PlaybooksPanel(props: PluginWorkspacePanelProps) {
           {showHidden ? hiddenCards.map((card, index) => renderCard(card, hiddenCards.length - index)) : null}
         </ScrollView>
       )}
+      {runForm && runnable.length > 0 ? (
+        <RunPlaybookForm
+          theme={theme}
+          playbooks={runnable}
+          workspaceId={workspaceId}
+          compact={layout.compact}
+          onClose={() => setRunForm(false)}
+          onStarted={(result) => {
+            setRunForm(false);
+            void queryClient.invalidateQueries({ queryKey: ["playbooks"] });
+            navigation?.openWorkspace({ workspaceId: result.workspaceId });
+          }}
+        />
+      ) : null}
     </View>
   );
 }
