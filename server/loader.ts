@@ -5,6 +5,7 @@ import { z } from "zod";
 import { DEFAULT_GATE_CHOICES } from "../shared/gates";
 import { ancestorsOf, findCycle } from "../shared/graph";
 import { stepLabel } from "../shared/labels";
+import { DEFAULT_SLOW_WARNING } from "../shared/slow";
 import type {
   AskChoice,
   GateChoice,
@@ -414,6 +415,15 @@ function resolveIsolation(own: RawIsolation | undefined, fallback: RawIsolation 
   return { mode: merged.mode ?? "none", submodules: merged.submodules ?? "none", base: merged.base ?? null, allowGitlinkRemoval: merged.allow_gitlink_removal ?? false };
 }
 
+const RawSlowWarningSchema = z
+  .object({
+    /** How many of the latest completed runs of a step make its baseline (at least 3). Default 10. */
+    runs: z.number().int().min(3).optional(),
+    /** A step is slow once it takes more than this many times its baseline (above 1). Default 2. */
+    factor: z.number().gt(1).optional(),
+  })
+  .strict();
+
 const RawPlaybookSchema = z.object({
     title: z.string().optional(),
     description: z.string().optional(),
@@ -454,6 +464,8 @@ const RawPlaybookSchema = z.object({
       ])
       .optional(),
     /** How the playbook can end, for a parent that uses it as a sub-playbook. The first is a normal finish. */
+    /** Slow-step warning: a step slower than `factor` times the mean of its last `runs` completed runs gets a warning. Defaults 10 and 2. */
+    slow_warning: RawSlowWarningSchema.optional(),
     outcomes: z.array(z.string()).min(1).optional(),
     steps: z.array(RawStepSchema).min(1),
     /** Tasks run once the main graph ends (completed or failed); they never change the run's status. */
@@ -490,6 +502,8 @@ const RawDefaultsSchema = z.object({
       .optional(),
     /** Reload agent sessions that hold the tools of an older plugin generation once idle. Default true. */
     reload_stale_sessions: z.boolean().optional(),
+    /** Slow-step warning: a step slower than `factor` times the mean of its last `runs` completed runs gets a warning. Defaults 10 and 2. */
+    slow_warning: RawSlowWarningSchema.optional(),
     timeout: z.string().optional(),
     /** Defaults for agent steps, in the shape of a step's `role:` block. */
     role: z
@@ -1886,6 +1900,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     onExhausted: defaults.providers?.on_exhausted ?? "fail",
     maxWaitMs: (defaults.providers?.max_wait ? parseDuration(defaults.providers.max_wait) : null) ?? null,
     fallback: defaults.providers?.fallback ?? [],
+    slowWarning: { runs: pb.slow_warning?.runs ?? defaults.slow_warning?.runs ?? DEFAULT_SLOW_WARNING.runs, factor: pb.slow_warning?.factor ?? defaults.slow_warning?.factor ?? DEFAULT_SLOW_WARNING.factor },
     managerInstructions: managerInstructions(folder.managerText, qid, pb.manager?.prompt, [...blocks.values()]),
     outcomes: playbookOutcomes,
     workspace: {

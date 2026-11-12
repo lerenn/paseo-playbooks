@@ -9,6 +9,7 @@ import { askChoices } from "../shared/gates";
 import { END, layerOf, layoutGraph, START, withTerminals } from "../shared/graph";
 import { isTerminal, type AfterTask, type Playbook, type Run, type Step } from "../shared/types";
 import { conditionText } from "../shared/labels";
+import { slowDetail, type SlowInfo } from "../shared/slow";
 import { agentBackground, gateBackground, stepTitle, nodeColor, nodeIcon, nodeStateLabel, STEP_KINDS, type NodeState, type Theme } from "./theme";
 
 /** Nodes grow with the panel between these widths; below the minimum the graph scrolls sideways. */
@@ -82,6 +83,8 @@ export interface GraphProps {
   onHighlight(stepId: string | null): void;
   /** Host label recorded with gate decisions made in a node. */
   hostLabel: string;
+  /** Steps that run longer than usual, by step id (the slow-step warning). */
+  slow?: Record<string, SlowInfo>;
 }
 
 export function useReduceMotion(): boolean {
@@ -746,6 +749,14 @@ function Node(props: GraphProps & { step: Step; longNeeds: string[]; nodeWidth: 
             <Text numberOfLines={1} style={{ color, fontSize: 10 }}>
               {stateLabel}
             </Text>
+          ) : null}
+          {props.slow?.[step.id] ? (
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }} accessible accessibilityLabel={`Slow step: ${slowDetail(props.slow[step.id]!)}`}>
+              <Icon name="TriangleAlert" size={11} color={theme.colors.statusWarning} />
+              <Text numberOfLines={1} style={{ flex: 1, color: theme.colors.foregroundMuted, fontSize: 10 }}>
+                {slowDetail(props.slow[step.id]!)}
+              </Text>
+            </View>
           ) : null}
           {jobLine ? (
             <Text numberOfLines={2} style={{ color: theme.colors.foregroundMuted, fontSize: 10 }}>

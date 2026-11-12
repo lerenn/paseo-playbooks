@@ -297,6 +297,24 @@ steps:
     expect(errors).toMatch(/step "ok": `silence` only applies to an agent step \(under `role:`\)/);
   });
 
+  it("reads slow_warning in a playbook and in defaults, field by field", async () => {
+    const steps = "steps:\n  - id: a\n    role: { name: investigator, prompt: go }\n";
+    const dir = await workspace({ "defaults/main.yaml": "slow_warning: { runs: 20 }\n", "pr.yaml": `slow_warning: { factor: 3 }\n${steps}`, "plain.yaml": steps });
+    const entries = (await loadPlaybooks(dir)).entries;
+    expect(entries.find((entry) => entry.id === "pr")!.playbook!.slowWarning).toEqual({ runs: 20, factor: 3 });
+    expect(entries.find((entry) => entry.id === "plain")!.playbook!.slowWarning).toEqual({ runs: 20, factor: 2 });
+    const none = await workspace({ "plain.yaml": steps });
+    expect((await loadPlaybooks(none)).entries[0]!.playbook!.slowWarning).toEqual({ runs: 10, factor: 2 });
+  });
+
+  it("refuses a bad or unknown slow_warning", async () => {
+    const steps = "steps:\n  - id: a\n    role: { name: investigator, prompt: go }\n";
+    for (const block of ["{ runs: 2 }", "{ factor: 1 }", "{ every: 3 }", "3"]) {
+      const dir = await workspace({ "pr.yaml": `slow_warning: ${block}\n${steps}` });
+      expect((await loadPlaybooks(dir)).entries[0]!.errors.length, block).toBeGreaterThan(0);
+    }
+  });
+
   it("reads archive_agents on steps and in defaults; refuses it where there is no agent", async () => {
     const steps = "steps:\n  - id: a\n    role: { name: investigator, prompt: go }\n  - id: b\n    role: { name: investigator, prompt: go, archive_agents: true }\n";
     const dir = await workspace({ "defaults/main.yaml": "role: { archive_agents: false }\n", "pr.yaml": steps });
