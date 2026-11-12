@@ -461,21 +461,15 @@ workspace** with its own Playbook Manager, keeps at most `max_active` going, and
     items: "{{ inputs.items }}"                           # exactly one reference to a declared input
     key: "{{ item.id }}"                                  # stable per item; default: the item (scalars only)
     inputs: { item_id: "{{ item.id }}", title: "{{ item.title }}" }   # the child's inputs
-    workspace_name: "Batch: {{ item.id }}"                # optional, per item (own-workspace children only)
-    # workspace: { in: parent }                           # children run in THIS run's workspace, each in its own run
-    #                                                     # worktree; both playbooks need `isolation: worktree`
+    workspace_name: "Batch: {{ item.id }}"                # optional, per item
     max_active: 3                                         # default 1, at most 50
     cancel_children: true                                 # default true
   on: { some_failed: complete }                           # default: some_failed fails the run
   timeout: 8h
 ```
 
-- `workspace: { in: parent }` starts every child in the parent run's workspace instead of a new one (default
-  `in: new`). Each child gets its own run worktree, so the parent and the child playbook must both have
-  `isolation: worktree` (a run without isolation edits the checkout the others guard); `workspace_name` then does not apply.
-  A manager that wants more runs in its own workspace does the same: give its playbook `isolation: worktree`, and
-  `start_playbook` with its `workspaceId` and no `newWorkspace` (the refusal "this workspace has an active run without
-  isolation" is that rule).
+- A manager that wants more runs in its own workspace: give its playbook `isolation: worktree`, and `start_playbook` with its
+  `workspaceId` and no `newWorkspace` (the refusal "this workspace has an active run without isolation" is that rule).
 - Per-item templates may use `{{ item }}`, `{{ item.<field> }}`, `{{ index }}` and `{{ inputs.<name> }}`. A reference that
   is not set makes that item `not_started` with the reason (never "(none)"). Keys must be unique (else the step fails).
 - A child run is never started twice for one key: the plugin records each child (key, run id) in the step before creating

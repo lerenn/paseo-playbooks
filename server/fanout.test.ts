@@ -1,5 +1,3 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { chmod, cp, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -206,45 +204,6 @@ steps:
 `;
     const errors = await errorsOf({ "parent.yaml": parent(SPAWN.replace("playbook: child", "playbook: back")), "child.yaml": CHILD, "back.yaml": back });
     expect(errors).toMatch(/leads back to this playbook/);
-  });
-});
-
-const execGit = promisify(execFile);
-const ISOLATED = (text: string) => text.replace(/^title: (\w+)/m, "title: $1\nisolation: worktree");
-const IN_PARENT = SPAWN.replace('      workspace_name: "Work on {{ item }}"\n', "").replace("      max_active: 2", "      workspace: { in: parent }\n      max_active: 2");
-
-describe("fan-out workspace: { in: parent }", () => {
-  const files = { "parent.yaml": ISOLATED(parent(IN_PARENT)), "child.yaml": ISOLATED(CHILD) };
-
-  it("loads, and needs isolation: worktree on both playbooks and no workspace_name", async () => {
-    const ok = await setup(files);
-    const loaded = (await loadPlaybooks(ok.dir)).entries.find((entry) => entry.id === "parent")!;
-    expect(loaded.errors).toEqual([]);
-    expect(loaded.playbook!.steps.find((step) => step.id === "spawn")!.fanout!.workspace).toBe("parent");
-    expect((await loadPlaybooks(ok.dir)).entries.find((entry) => entry.id === "parent")!.playbook!.steps.length).toBeGreaterThan(0);
-    expect(await errorsOf({ "parent.yaml": ISOLATED(parent(IN_PARENT)), "child.yaml": CHILD })).toMatch(/playbook "child" must have `isolation: worktree`/);
-    expect(await errorsOf({ "parent.yaml": parent(IN_PARENT), "child.yaml": ISOLATED(CHILD) })).toMatch(/needs this playbook to have `isolation: worktree`/);
-    expect(await errorsOf({ ...files, "parent.yaml": ISOLATED(parent(IN_PARENT.replace("      workspace:", '      workspace_name: "x"\n      workspace:'))) })).toMatch(/workspace_name names a new workspace/);
-    expect(await errorsOf({ ...files, "parent.yaml": ISOLATED(parent(IN_PARENT.replace("in: parent", "in: elsewhere"))) })).toMatch(/workspace/);
-  });
-
-  it("starts every child in the parent's workspace, each in its own worktree, with the parent link", async () => {
-    const ctx = await setup(files);
-    for (const args of [["init", "-q", "-b", "main"], ["add", "-A"], ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"]]) await execGit("git", args, { cwd: ctx.dir });
-    const run = await startParent(ctx);
-    const children = () => ctx.store.get(run.id)!.steps.spawn!.fanout?.children ?? [];
-    await until(() => children().filter((child) => child.status === "starting").length === 2);
-    expect(ctx.created).toHaveLength(0);
-    // Each child's manager (created in the parent's workspace) creates its run with start_playbook, as it does in a new workspace.
-    const runs = [await ctx.runtime.startPlaybook({ id: "m1", workspaceId: "ws0", cwd: ctx.dir }, "child", { item: "a", base: "main" }), await ctx.runtime.startPlaybook({ id: "m2", workspaceId: "ws0", cwd: ctx.dir }, "child", { item: "b", base: "main" })];
-    expect(runs.map((child) => child.id)).toEqual(children().filter((child) => child.runId).map((child) => child.runId));
-    for (const child of runs) {
-      expect(child.workspaceId).toBe("ws0");
-      expect(child.workspaceCreated).toBe(false);
-      expect(child.worktree?.path).toBeTruthy();
-      expect(child.parent).toMatchObject({ runId: run.id, stepId: "spawn" });
-    }
-    expect(new Set(runs.map((child) => child.worktree!.path)).size).toBe(2);
   });
 });
 

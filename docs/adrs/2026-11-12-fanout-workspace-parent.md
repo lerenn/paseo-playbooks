@@ -1,6 +1,6 @@
 # Fan-out children can run in the parent's workspace
 
-Status: Accepted
+Status: Superseded by 2026-11-12-remove-fanout-workspace-parent.md
 
 Builds on `2026-11-12-fanout-join.md` and the isolation rule (several runs may share a workspace only with
 `isolation: worktree`).
