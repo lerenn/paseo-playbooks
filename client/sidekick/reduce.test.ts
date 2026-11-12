@@ -66,4 +66,12 @@ describe("sidekick chat reducer", () => {
     expect(state.running).toBe(true);
     expect(state.permissions[0]!.id).toBe("p9");
   });
+
+  it("keeps live tool calls that a later page does not list", () => {
+    let state = reduce(initialState(), timeline({ type: "assistant_message", text: "Checking" }));
+    state = reduce(state, timeline({ type: "tool_call", callId: "c1", name: "get_run", status: "completed" }));
+    state = reduce(state, timeline({ type: "assistant_message", text: "Done" }));
+    state = reduce(state, { type: "refetch", items: [{ key: "seq:1", item: { type: "assistant_message", text: "Checking" } }, { key: "seq:2", item: { type: "assistant_message", text: "Done" } }] });
+    expect(state.items.map((item) => item.kind)).toEqual(["assistant", "tool", "assistant"]);
+  });
 });

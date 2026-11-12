@@ -115,6 +115,25 @@ function applyItem(state: ChatState, raw: RawItem): ChatState {
   return { ...state, items: markInstructions([...close(state.items), item]), nextSeq: state.nextSeq + 1 };
 }
 
+/**
+ * A page replaces the items, but it can miss tool calls the live events already showed (the daemon projects
+ * a settled turn without them): those stay, each placed after the item that preceded it.
+ */
+function keepLiveTools(live: Item[], page: Item[]): Item[] {
+  const known = new Set(page.flatMap((item) => (item.kind === "tool" ? [item.callId] : [])));
+  const out = page.slice();
+  live.forEach((item, index) => {
+    if (item.kind !== "tool" || known.has(item.callId)) return;
+    let after = -1;
+    for (let back = index - 1; back >= 0 && after < 0; back--) {
+      const prev = live[back]!;
+      after = out.findIndex((entry) => (prev.kind === "tool" ? entry.kind === "tool" && entry.callId === prev.callId : entry.kind === prev.kind && entry.kind !== "notice" && entry.text === (prev as { text: string }).text));
+    }
+    out.splice(after + 1, 0, item);
+  });
+  return out;
+}
+
 export function reduce(state: ChatState, action: ChatAction): ChatState {
   switch (action.type) {
     case "reset":
@@ -138,7 +157,7 @@ export function reduce(state: ChatState, action: ChatAction): ChatState {
         }
         deduped.push(item);
       }
-      return { ...state, items: markInstructions(deduped) };
+      return { ...state, items: markInstructions(keepLiveTools(state.items, deduped)) };
     }
     case "event": {
       const event = action.event;
