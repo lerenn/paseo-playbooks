@@ -75,8 +75,6 @@ steps:
   - id: apply
     handoff: { name: apply }
     inputs: { pr_url: ~ }
-    on:
-      rejected: fail
 `;
 
 async function setup(files: Record<string, string> = { "apply.yaml": APPLY, "pr.yaml": PR }, pipelineDir?: string) {
@@ -233,26 +231,30 @@ inputs:
   pr_url: { type: string, required: true }
 steps:
   - id: apply
-    handoff: { name: apply, wait: false }
+    handoff: { name: apply }
     inputs: { pr_url: ~ }
   - id: after
     needs: [apply]
     gate: { question: Next? }
 `;
 
-describe("singleton pipelines: hand-offs without waiting", () => {
-  it("drop the target's outputs, refuse `on` for its other outcomes and reading its outputs", async () => {
+describe("singleton pipelines: a hand-off gives the task away", () => {
+  it("have no outputs, refuse `on`, `outputs`, `wait` and reading its outputs, each with the new model", async () => {
     const { dir } = await setup({ "apply.yaml": APPLY, "forget.yaml": FORGET });
     const forget = (await loadPlaybooks(dir)).entries.find((entry) => entry.id === "forget")!;
     expect(forget.errors).toEqual([]);
-    expect(forget.playbook!.steps[0]).toMatchObject({ kind: "handoff", handoffWait: false, outputs: {} });
+    expect(forget.playbook!.steps[0]).toMatchObject({ kind: "handoff", outputs: {} });
     const onOther = await errorsOf({ "apply.yaml": APPLY, "f.yaml": FORGET.replace("    inputs: { pr_url: ~ }\n", "    inputs: { pr_url: ~ }\n    on: { rejected: fail }\n") }, "f");
-    expect(onOther).toMatch(/on.rejected: a hand-off with `wait: false` only ends with "done"/);
+    expect(onOther).toMatch(/a hand-off has no `on`: it gives the job away/);
+    const outs = await errorsOf({ "apply.yaml": APPLY, "f.yaml": FORGET.replace("    inputs: { pr_url: ~ }\n", "    inputs: { pr_url: ~ }\n    outputs: { report: {} }\n") }, "f");
+    expect(outs).toMatch(/a hand-off has no outputs: it gives the job to the other playbook and this run does not wait/);
+    const wait = await errorsOf({ "apply.yaml": APPLY, "f.yaml": FORGET.replace("{ name: apply }", "{ name: apply, wait: true }") }, "f");
+    expect(wait).toMatch(/handoff.wait was removed: a hand-off never waits.*Write `handoff: \{ name: apply \}`/);
     const reading = await errorsOf(
       { "apply.yaml": APPLY, "f.yaml": FORGET.replace("    gate: { question: Next? }", "    role: { name: reviewer }\n    inputs: { report: \"{{ steps.apply.outputs.report }}\" }") },
       "f",
     );
-    expect(reading).toMatch(/step "apply" has no output "report" \(a hand-off with `wait: false` does not wait for its job, so it gives no outputs\)/);
+    expect(reading).toMatch(/step "apply" has no output "report" \(a hand-off gives the job to another playbook and does not wait for it, so it has no outputs\)/);
   });
 
   it("complete at once, leave the job to the pipeline when the run ends, and never tell the run how it ends", async () => {
@@ -331,7 +333,7 @@ steps:
 });
 
 describe("singleton pipelines: jobs through the stages", () => {
-  it("create the pipeline and its workspace once, run each stage's batch, and deliver the job's result", async () => {
+  it("create the pipeline and its workspace once, run each stage's batch, and settle the job on the pipeline", async () => {
     const { store, runtime, created, sent } = await setup();
     const pr = await runtime.startPlaybook({ id: "m1", workspaceId: "ws1", cwd: "/" }, "pr", { pr_url: "https://x/pull/1" });
     await until(() => batchAt(store, "dev") !== undefined);
@@ -346,10 +348,11 @@ describe("singleton pipelines: jobs through the stages", () => {
     await decide(runtime, store, "dev", "approved");
     await until(() => batchAt(store, "prd") !== undefined);
     expect(batchAt(store, "prd")!.jobs[0]!.outputs).toEqual({ report: "dev ok" });
-    expect(store.get(pr.id)!.steps.apply!.attempts.at(-1)!.lastMessage).toMatch(/On the "prd" batch/);
+    // The hand-off gave the job away: its run is done at once and gets nothing back.
+    expect(store.get(pr.id)!.status).toBe("completed");
     await decide(runtime, store, "prd", "approved");
-    await until(() => store.get(pr.id)!.status === "completed");
-    expect(store.get(pr.id)!.steps.apply!.outputs).toEqual({ report: "dev ok" });
+    await until(() => pipelineOf(store).jobs[0]!.status === "settled");
+    expect(store.get(pr.id)!.steps.apply!.outputs).toEqual({});
     expect(created).toHaveLength(1);
   });
 
@@ -433,8 +436,6 @@ steps:
   - id: apply
     handoff: { name: release }
     inputs: { pr_url: ~ }
-    on:
-      skipped_out: complete
 `;
     expect(await errorsOf({ "r.yaml": release.replace("outputs: { job_results: {} }", "outputs: { job_results: { type: number } }") }, "r")).toMatch(/settle.output "job_results" must be a string output/);
     expect(await errorsOf({ "r.yaml": release.replace("outputs: { job_results: {} }", "outputs: { other: {} }") }, "r")).toMatch(/settle.output "job_results" is not an output of the step/);
@@ -451,8 +452,8 @@ steps:
     expect(store.get(dev.id)!.steps.dev!.status).toBe("running");
     // The manager does not call settle_job: the plugin ends the job from the output, then the batch ends.
     await runtime.completeStep(dev.managerAgentId, dev.id, "dev", { outcome: "empty", outputs: { job_results: `# nothing to deploy\n${job}:\n  outcome: skipped_out\n  reason: docs only` } });
-    await until(() => store.get(one.id)!.status === "completed");
-    expect(store.get(one.id)!.steps.apply!.attempts.at(-1)!.outcome).toBe("skipped_out");
+    await until(() => pipelineOf(store).jobs[0]!.outcome === "skipped_out");
+    expect(store.get(one.id)!.steps.apply!.attempts.at(-1)!.outcome).toBe("done");
     expect(pipelineOf(store).jobs[0]).toMatchObject({ status: "settled", outcome: "skipped_out", summary: "docs only", passed: [] });
   });
 
@@ -478,7 +479,7 @@ inputs:
   pr_url: { type: string, required: true }
 steps:
   - id: apply
-    handoff: { name: release, wait: false }
+    handoff: { name: release }
     inputs: { pr_url: ~ }
 `;
     // The effect is declared in the playbook, checked at load.
@@ -530,24 +531,7 @@ steps:
     expect(pipelineOf(store).jobs[0]).toMatchObject({ status: "open", failedRides: {} });
   });
 
-  it("tell the handing-off run when its batch waits for a human, and when that is decided", async () => {
-    const { store, runtime, sent } = await setup();
-    const pr = await runtime.startPlaybook({ id: "m1", workspaceId: "ws1", cwd: "/" }, "pr", { pr_url: "1" });
-    await until(() => batchAt(store, "dev") !== undefined);
-    const dev = batchAt(store, "dev")!;
-    await runtime.requestGate(dev.managerAgentId, dev.id, "dev", "Applied?", "");
-    await until(() => sent.some((entry) => entry.agentId === "m1" && /waits for a human at gate dev/.test(entry.text)));
-    expect(sent.find((entry) => entry.agentId === "m1" && /waits for a human/.test(entry.text))!.text).toMatch(/Playbooks panel \(the "Apply" card\), not with resume/);
-    expect(store.get(pr.id)!.steps.apply!.attempts.at(-1)!.lastMessage).toMatch(/Waiting for a human at dev/);
-    await runtime.onManagerTurnEnded("m1");
-    await runtime.decideGate(dev.id, "dev", { decision: "approved", comment: "ship it", by: "louis", via: "panel", now: now() });
-    await until(() => sent.some((entry) => entry.agentId === "m1" && /dev of the "dev" batch .* was decided: approved by louis: "ship it"/.test(entry.text)));
-    // Announced once: later ticks do not repeat it.
-    await until(() => batchAt(store, "prd") !== undefined);
-    expect(sent.filter((entry) => entry.agentId === "m1" && /waits for a human at gate dev/.test(entry.text))).toHaveLength(1);
-  });
-
-  it("end a job early with an outcome: its run is told at once, the batch goes on", async () => {
+  it("end a job early with an outcome: it ends on the pipeline only, the batch goes on", async () => {
     const { store, runtime } = await setup();
     const pr = await runtime.startPlaybook({ id: "m1", workspaceId: "ws1", cwd: "/" }, "pr", { pr_url: "1" });
     await until(() => batchAt(store, "dev") !== undefined);
@@ -555,7 +539,8 @@ steps:
     await expect(runtime.settleJob(dev.managerAgentId, dev.id, dev.jobs[0]!.id, { outcome: "maybe", summary: "", outputs: {} })).rejects.toThrow(/not an outcome of "apply"/);
     await expect(runtime.settleJob(dev.managerAgentId, dev.id, dev.jobs[0]!.id, { outcome: "done", summary: "", outputs: {} })).rejects.toThrow(/missing output "report"/);
     await runtime.settleJob(dev.managerAgentId, dev.id, dev.jobs[0]!.id, { outcome: "rejected", summary: "broke dev", outputs: {} });
-    expect(store.get(pr.id)!.status).toBe("failed");
+    expect(pipelineOf(store).jobs[0]).toMatchObject({ status: "settled", outcome: "rejected" });
+    expect(store.get(pr.id)!.status).toBe("completed");
     expect(store.get(dev.id)!.status).toBe("running");
   });
 
@@ -567,33 +552,8 @@ steps:
     await until(() => batchAt(store, "dev") !== undefined && batchAt(store, "dev")!.id !== first.id);
     expect(pipelineOf(store).jobs[0]!.failedRides).toEqual({ dev: 1 });
     await decide(runtime, store, "dev", "rejected");
-    await until(() => store.get(pr.id)!.status === "failed");
-    expect(pipelineOf(store).jobs[0]).toMatchObject({ status: "failed" });
-  });
-
-  it("hold a result while the handing-off run is paused, and complete it on resume", async () => {
-    const { store, runtime } = await setup();
-    const pr = await runtime.startPlaybook({ id: "m1", workspaceId: "ws1", cwd: "/" }, "pr", { pr_url: "1" });
-    await until(() => batchAt(store, "dev") !== undefined);
-    await runtime.pauseRun(pr.id);
-    const dev = batchAt(store, "dev")!;
-    await runtime.settleJob(dev.managerAgentId, dev.id, dev.jobs[0]!.id, { outcome: "done", summary: "", outputs: { report: "ok" } });
-    expect(store.get(pr.id)!.steps.apply!.status).toBe("reported");
-    await runtime.resumeRun(pr.id);
+    await until(() => pipelineOf(store).jobs[0]!.status === "failed");
     expect(store.get(pr.id)!.status).toBe("completed");
-  });
-
-  it("withdraw a job when its run is canceled: it leaves the waiting list, and its batch is told", async () => {
-    const { store, runtime, sent } = await setup();
-    const one = await runtime.startPlaybook({ id: "m1", workspaceId: "ws1", cwd: "/" }, "pr", { pr_url: "1" });
-    await until(() => batchAt(store, "dev") !== undefined);
-    const two = await runtime.startPlaybook({ id: "m2", workspaceId: "ws2", cwd: "/" }, "pr", { pr_url: "2" });
-    await runtime.cancelRun(two.id, "not needed", null);
-    expect(pipelineOf(store).jobs.find((job) => job.inputs.pr_url === "2")).toMatchObject({ status: "withdrawn", waiting: [] });
-    await runtime.cancelRun(one.id, "not needed", null);
-    // Its manager is busy (it was just started): the note waits in the batch's inbox.
-    const dev = batchAt(store, "dev")!;
-    expect([...store.get(dev.id)!.inbox, ...sent.filter((entry) => entry.agentId === dev.managerAgentId).map((entry) => entry.text)].some((text) => /was withdrawn/.test(text))).toBe(true);
   });
 
   it("fail the open jobs and cancel the batches when the pipeline is canceled", async () => {
@@ -602,15 +562,9 @@ steps:
     await until(() => batchAt(store, "dev") !== undefined);
     const dev = batchAt(store, "dev")!;
     await runtime.cancelRun(pipelineOf(store).id, "stop", null);
-    await until(() => store.get(pr.id)!.status === "failed");
-    expect(store.get(dev.id)!.status).toBe("canceled");
-  });
-
-  it("time out a hand-off: its job is withdrawn and the step fails", async () => {
-    const { store, runtime } = await setup({ "apply.yaml": APPLY, "pr.yaml": PR.replace("    on:", "    timeout: 1s\n    on:") });
-    const pr = await runtime.startPlaybook({ id: "m1", workspaceId: "ws1", cwd: "/" }, "pr", { pr_url: "1" });
-    await until(() => store.get(pr.id)!.status === "failed", 4000);
-    expect(pipelineOf(store).jobs[0]!.status).toBe("withdrawn");
+    await until(() => store.get(dev.id)!.status === "canceled");
+    expect(pipelineOf(store).jobs[0]!.status).toBe("failed");
+    expect(store.get(pr.id)!.status).toBe("completed");
   });
 
   it("start a singleton by hand: its pipeline and workspace exist, with no batch", async () => {
@@ -671,23 +625,23 @@ describe("event core: job events of a pipeline", () => {
     expect(() => checkTypes(JOB_TYPES, ["job.boarded"], { station: "dev", trainRunId: "x" })).not.toThrow();
   });
 
-  it("announces a requeue, a failure and a withdrawal", async () => {
+  it("announces a requeue and a failure", async () => {
     const { store, runtime } = await setup();
     const one = await runtime.startPlaybook({ id: "m1", workspaceId: "ws1", cwd: "/" }, "pr", { pr_url: "1" });
     await until(() => batchAt(store, "dev") !== undefined);
     const first = await decide(runtime, store, "dev", "rejected");
     await until(() => batchAt(store, "dev") !== undefined && batchAt(store, "dev")!.id !== first.id);
     await decide(runtime, store, "dev", "rejected");
-    await until(() => store.get(one.id)!.status === "failed");
+    await until(() => pipelineOf(store).jobs[0]!.status === "failed");
     await new Promise((resolve) => setTimeout(resolve, 50));
     const events = await jobEvents(runtime);
     expect(summary(events)).toEqual(["job.queued@dev", "job.joined@dev", "job.requeued@dev", "job.joined@dev", "job.failed@dev"]);
     expect(events[2]!.payload).toMatchObject({ rides: 1, retries: 1 });
     expect(String(events.at(-1)!.payload.reason)).toMatch(/batch .* at "dev" failed|rejected/);
-    const two = await runtime.startPlaybook({ id: "m2", workspaceId: "ws2", cwd: "/" }, "pr", { pr_url: "2" });
-    await runtime.cancelRun(two.id, "not needed", null);
+    // The run that handed the job off is done already: nothing it does later touches the job.
+    await runtime.startPlaybook({ id: "m2", workspaceId: "ws2", cwd: "/" }, "pr", { pr_url: "2" });
     await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(summary((await jobEvents(runtime)).slice(5))).toEqual(["job.queued@dev", "job.joined@dev", "job.withdrawn"]);
+    expect(summary((await jobEvents(runtime)).slice(5))).toEqual(["job.queued@dev", "job.joined@dev"]);
     const pipeline = pipelineOf(store);
     expect(verifyLog(EVENT_AREAS, pipeline, (await store.log.read(pipeline.id)).events)).toEqual([]);
   });
@@ -741,7 +695,7 @@ describe("requeue_job: a failed job goes back on the pipeline", () => {
     expect(verifyLog(EVENT_AREAS, pipeline, (await store.log.read(pipeline.id)).events)).toEqual([]);
   });
 
-  it("refuses a job whose hand-off waits, a settled job, an unknown job and a run that is no pipeline", async () => {
+  it("refuses a settled job, an unknown job and a run that is no pipeline", async () => {
     const { store, runtime } = await setup(FILES);
     const pr = await runtime.startPlaybook({ id: "m1", workspaceId: "ws1", cwd: "/" }, "pr", { pr_url: "1" });
     await until(() => batchAt(store, "dev") !== undefined);
@@ -753,17 +707,6 @@ describe("requeue_job: a failed job goes back on the pipeline", () => {
     await expect(runtime.requeueJob(pipelineOf(store).id, "job_nope", "")).rejects.toThrow(/has no job "job_nope"/);
     await expect(runtime.requeueJob(pr.id, id, "")).rejects.toThrow(/not a singleton pipeline/);
     await expect(runtime.requeueJob("run_nope", id, "")).rejects.toThrow(/unknown run/);
-  });
-
-  it("refuses a failed job that its waiting hand-off was told about", async () => {
-    const { store, runtime } = await setup(FILES);
-    await runtime.startPlaybook({ id: "m1", workspaceId: "ws1", cwd: "/" }, "pr", { pr_url: "1" });
-    await until(() => batchAt(store, "dev") !== undefined);
-    const first = await decide(runtime, store, "dev", "rejected");
-    await until(() => batchAt(store, "dev") !== undefined && batchAt(store, "dev")!.id !== first.id);
-    await decide(runtime, store, "dev", "rejected");
-    await until(() => pipelineOf(store).jobs[0]!.status === "failed");
-    await expect(runtime.requeueJob(pipelineOf(store).id, pipelineOf(store).jobs[0]!.id, "")).rejects.toThrow(/waits for its result/);
   });
 });
 
@@ -794,7 +737,7 @@ inputs:
   pr_url: { type: string, required: true }
 steps:
   - id: go
-    handoff: { name: train, wait: false }
+    handoff: { name: train }
     inputs: { pr_url: ~ }
 `;
   const FILES = { "rel.yaml": SUB, "train.yaml": TRAIN, "hand.yaml": HAND };

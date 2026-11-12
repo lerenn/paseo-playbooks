@@ -185,8 +185,6 @@ export const StepSchema = z.object({
   script: z.string().optional(),
   /** Hand-off steps: the singleton playbook the step hands a job to. */
   handoff: z.string().optional(),
-  /** Hand-off steps: false = done with the first outcome once the job is in the pipeline, which keeps it (fire and forget). Unset = wait for its result. */
-  handoffWait: z.literal(false).optional(),
   /** Runs the step only when every condition holds; otherwise it is skipped. Unset = always. */
   when: z.array(WhenSchema).optional(),
   /**
@@ -750,7 +748,7 @@ export const JobSchema = z.object({
   batches: z.array(z.object({ stage: z.string(), runId: z.string(), since: z.string() })).default([]),
   /** Pipelines: failed batches it rode, by stage (capped by the stage's `retries`). */
   failedRides: z.record(z.string(), z.number().int()).default({}),
-  /** Handed off with `wait: false`: the pipeline owns it; its run is never told of it and never withdraws it. */
+  /** The pipeline owns it: its run is never told of it and never withdraws it. Always true for a hand-off; false only on jobs of run files from before ADR 2026-11-12-handoff-gives-the-task-away. */
   detached: z.boolean().default(false),
   /**
    * Put back at its stage's queue by an outcome the playbook declares `requeue` (ADR 2026-11-12-requeue-outcome-effects): the outcome, the

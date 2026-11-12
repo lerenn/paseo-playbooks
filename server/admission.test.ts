@@ -52,8 +52,6 @@ steps:
   - id: apply
     handoff: { name: apply }
     inputs: { pr_url: ~, ticket: ~ }
-    on:
-      rejected: fail
 `;
 
 /** Logs each check, records what it was given, and answers with verdict.json (`{}` by default); `exit` makes it exit with that code. */
@@ -592,7 +590,7 @@ describe("queue.admit: the runtime", () => {
     expect(pipe().jobs[0]!.waiting[0]!.held!.reason).toBe("real");
   });
 
-  it("escalates: one ask in list_gates, answered by retry (checks again), admit (joins) or withdraw (tells the hand-off)", async () => {
+  it("escalates: one ask in list_gates, answered by retry (checks again), admit (joins) or withdraw", async () => {
     const { handOff, pipe, write, checks, types, status, batch, runtime, store } = await setup();
     await runtime.watchEvents();
     const parent = await handOff(1);
@@ -618,12 +616,12 @@ describe("queue.admit: the runtime", () => {
     expect(pipe().gates).toHaveLength(2);
     expect(pipe().gates[0]).toMatchObject({ status: "retry" });
     expect(pipe().jobs[0]!.waiting[0]!.held!.reason).toBe("dependency failed");
-    // Withdraw: the job leaves, its hand-off step is told (the PR run's step fails).
+    // Withdraw: the job leaves the pipeline; its run handed it off and is not told.
     const open = pipe().gates.find((candidate) => candidate.status === "pending")!;
     await runtime.decideGate(pipe().id, open.id, { decision: "withdraw", comment: "not shipping", by: "Ada", via: "panel", now: new Date().toISOString() });
     expect(pipe().jobs[0]).toMatchObject({ status: "withdrawn" });
-    await until(() => store.get(parent.id)!.steps.apply!.status !== "running");
-    expect(store.get(parent.id)!.steps.apply!.attempts.at(-1)).toMatchObject({ report: { outcome: "failure", summary: expect.stringContaining("withdrawn from the \"Dev\" queue by Ada: not shipping") } });
+    expect(pipe().jobs[0]!.summary).toContain("withdrawn from the \"Dev\" queue by Ada: not shipping");
+    expect(store.get(parent.id)!.steps.apply!.attempts.at(-1)).toMatchObject({ report: { outcome: "done" } });
     expect(types("job.withdrawn")).toHaveLength(1);
     expect(batch()).toBeUndefined();
     void status;

@@ -1697,7 +1697,8 @@ export class Runtime {
       waiting: [],
       batches: [],
       failedRides: {},
-      detached: step.handoffWait === false,
+      // A hand-off gives the job away: the pipeline owns it (ADR 2026-11-12-handoff-gives-the-task-away). Only jobs of older runs are not detached.
+      detached: true,
       requeued: null,
       requeues: {},
       followUps: [],
@@ -1707,13 +1708,10 @@ export class Runtime {
       const attempt = current.steps[stepId]!.attempts.at(-1)!;
       if (attempt.agentId !== attemptId) return;
       attempt.job = { runId: pipeline.id, jobId: job.id };
-      attempt.lastMessage = `Waiting at ${job.waiting.map((place) => `"${place.stage}"`).join(", ") || "the first stage"} of "${pipeline.playbook.title}".`;
+      attempt.lastMessage = `Handed off to "${pipeline.playbook.title}" (${job.id}).`;
     });
-    // Fire and forget: the step is done now; the job is the pipeline's from here on.
-    if (job.detached) {
-      const at = job.waiting.map((place) => `"${place.stage}"`).join(", ") || "its first stage";
-      await this.finishHandoff(run.id, stepId, attemptId, { outcome: step.outcomes[0]!, summary: `Handed job ${job.id} to "${pipeline.playbook.title}" (${pipeline.id}), waiting at ${at}; not waiting for its result.`, outputs: {} });
-    }
+    // The step is done now; the job is the pipeline's from here on.
+    await this.finishHandoff(run.id, stepId, attemptId, { outcome: step.outcomes[0]!, summary: `Handed off to "${pipeline.playbook.title}" (${job.id}, pipeline ${pipeline.id}); this run does not wait for it.`, outputs: {} });
     this.tickAgain = true;
     return true;
   }
