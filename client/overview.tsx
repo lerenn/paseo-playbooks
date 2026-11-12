@@ -1,10 +1,12 @@
-import { openExternalUrl, usePaseo, useRpc, type PluginIconProps, type PluginScreenProps, type PluginSidebarItemProps } from "@getpaseo/plugin/client";
+import { openExternalUrl, usePaseo, useRpc, useSettings, type PluginIconProps, type PluginScreenProps, type PluginSidebarItemProps } from "@getpaseo/plugin/client";
 import { Icon, ScrollView, SidebarRow, useToast } from "@getpaseo/plugin/client/ui";
 import { useQueries, useQueryClient } from "@tanstack/react-query";
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { Animated, Easing, Pressable, Text, View } from "react-native";
 import { archiveRunRpc, listPlaybooks, markRunSeenRpc } from "../shared/contracts";
 import { gateText } from "../shared/gates";
+import { overviewSettings } from "../shared/overview-settings";
+import { DEFAULT_PLAYBOOK_SORT, PLAYBOOK_SORTS, sortPlaybooks, type PlaybookSort } from "../shared/sort";
 import { isActive, isPaused, isPipeline, isTerminal, type Gate, type RunSummary, type StepSummary } from "../shared/types";
 import { slowDetail, slowView } from "../shared/slow";
 import { useSlowSteps } from "./slow";
@@ -312,6 +314,10 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
   const [projectFilter, setProjectFilter] = useState<string | null>(null);
   const [workspaceFilter, setWorkspaceFilter] = useState<string | null>(null);
   const [showDone, setShowDone] = useState(false);
+  // The order of the playbooks: kept by the host (default Name, which never jumps); a pick shows at once, before the save lands.
+  const settings = useSettings(overviewSettings);
+  const [picked, setPicked] = useState<PlaybookSort | null>(null);
+  const playbookSort: PlaybookSort = picked ?? (settings.status === "ready" ? settings.values.sort : DEFAULT_PLAYBOOK_SORT);
   const [tab, setTab] = useState<"runs" | "analytics" | "profiles">("runs");
   // The sidebar badge and this screen share one store: one agent subscription, one request per change.
   const overview = useOverview(store);
@@ -352,15 +358,24 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
   // Done runs, opened or not, are listed with Show done; everything else (working, waiting, failed) always.
   const runs = inScope.filter((run) => showDone || !isDone(run)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 
-  const needs = runs.flatMap((run) => pendingGates(run).map((gate) => ({ run, gate })));
   const groups = useMemo(() => {
     const byPlaybook = new Map<string, RunSummary[]>();
     // A singleton's batches go under the singleton; its pipeline shows as its stages.
     const key = (run: RunSummary) => run.batch?.playbook ?? run.playbook.id;
     for (const run of runs) byPlaybook.set(key(run), [...(byPlaybook.get(key(run)) ?? []), run]);
     const pipelines = overview.runs?.filter(isPipeline) ?? [];
-    return [...byPlaybook.entries()].map(([id, list]) => ({ id, runs: list, playbook: list[0]!.playbook, pipeline: pipelines.find((run) => run.playbook.id === id && !isTerminal(run.status)) }));
-  }, [runs]);
+    const groups = [...byPlaybook.entries()].map(([id, list]) => ({ id, runs: list, playbook: list[0]!.playbook, pipeline: pipelines.find((run) => run.playbook.id === id && !isTerminal(run.status)) }));
+    return sortPlaybooks(groups, playbookSort, (group) => ({
+      id: group.id,
+      title: group.playbook.title,
+      updatedAt: group.runs.reduce((latest, run) => (run.updatedAt > latest ? run.updatedAt : latest), ""),
+      createdAt: group.runs.reduce((latest, run) => (run.createdAt > latest ? run.createdAt : latest), ""),
+      statusRank: Math.min(...group.runs.map((run) => TONE_RANK[progress(run).tone])),
+    }));
+  }, [runs, playbookSort]);
+  // Same order as the groups below, so "Needs you" does not jump either.
+  const needs = groups.flatMap((group) => group.runs.flatMap((run) => pendingGates(run).map((gate) => ({ run, gate }))));
+
   const counts = {
     needsYou: needs.length,
     // A live pipeline stays running while it exists, idle or not: only its batches count.
@@ -397,6 +412,18 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
               </>
             ) : null}
           </Text>
+          <SortMenu
+            theme={theme}
+            outline
+            align="right"
+            noun="playbooks"
+            options={PLAYBOOK_SORTS}
+            value={playbookSort}
+            onChange={(key) => {
+              setPicked(key);
+              if (settings.status === "ready") void settings.save({ ...settings.values, sort: key }, settings.revision);
+            }}
+          />
           {runState !== "hidden" ? <RunPlaybookButton theme={theme} loading={runState === "loading"} onPress={() => setRunForm(true)} /> : null}
           {!layout.compact ? (
             <Pressable
@@ -739,32 +766,56 @@ function sortRuns(runs: RunSummary[], key: SortKey): RunSummary[] {
 
 /** "Runs" with the sort of this playbook's rows: a button that opens the choices below it. */
 function SortHeading(props: { theme: Theme; label?: string; value: SortKey; onChange(key: SortKey): void }) {
-  const { theme, value } = props;
-  const [open, setOpen] = useState(false);
-  const [hover, setHover] = useState<SortKey | null>(null);
-  const current = SORTS.find((sort) => sort.key === value)!;
   return (
     <View style={{ flexDirection: "row", alignItems: "center", gap: 8, zIndex: 10 }}>
-      <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11, fontWeight: "600", textTransform: "uppercase", letterSpacing: 0.4 }}>{props.label ?? "Runs"}</Text>
+      <Text style={{ color: props.theme.colors.foregroundMuted, fontSize: 11, fontWeight: "600", textTransform: "uppercase", letterSpacing: 0.4 }}>{props.label ?? "Runs"}</Text>
+      <SortMenu theme={props.theme} noun="runs" options={SORTS} value={props.value} onChange={props.onChange} />
+    </View>
+  );
+}
+
+/** A button naming the current sort that opens the choices below it (`outline`: the bordered header style, menu to the right edge). */
+function SortMenu<K extends string>(props: {
+  theme: Theme;
+  noun: string;
+  options: ReadonlyArray<{ key: K; label: string; hint: string }>;
+  value: K;
+  outline?: boolean;
+  align?: "left" | "right";
+  onChange(key: K): void;
+}) {
+  const { theme, value } = props;
+  const [open, setOpen] = useState(false);
+  const [hover, setHover] = useState<K | null>(null);
+  const current = props.options.find((sort) => sort.key === value)!;
+  const outline = props.outline === true;
+  return (
+    <View>
       <View>
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel={`Sort runs: ${current.label}`}
+          accessibilityLabel={`Sort ${props.noun}: ${current.label}`}
           accessibilityState={{ expanded: open }}
+          hitSlop={outline ? 8 : undefined}
           onPress={() => setOpen(!open)}
-          style={{ flexDirection: "row", alignItems: "center", gap: 3, borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2, backgroundColor: open ? theme.colors.surface2 : "transparent" }}
+          style={
+            outline
+              ? { flexDirection: "row", alignItems: "center", gap: 6, borderRadius: 8, borderWidth: 1, borderColor: open ? theme.colors.foregroundMuted : theme.colors.border, paddingHorizontal: 10, paddingVertical: 6 }
+              : { flexDirection: "row", alignItems: "center", gap: 3, borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2, backgroundColor: open ? theme.colors.surface2 : "transparent" }
+          }
         >
-          <Icon name="ArrowDownUp" size={11} color={theme.colors.foregroundMuted} />
-          <Text style={{ color: theme.colors.foreground, fontSize: 11 }}>{current.label}</Text>
-          <Icon name={open ? "ChevronUp" : "ChevronDown"} size={11} color={theme.colors.foregroundMuted} />
+          <Icon name="ArrowDownUp" size={outline ? 16 : 11} color={theme.colors.foregroundMuted} />
+          <Text style={{ color: outline ? theme.colors.foregroundMuted : theme.colors.foreground, fontSize: outline ? 12 : 11, fontWeight: outline ? "600" : "400" }}>{current.label}</Text>
+          <Icon name={open ? "ChevronUp" : "ChevronDown"} size={outline ? 14 : 11} color={theme.colors.foregroundMuted} />
         </Pressable>
         {open ? (
           <View
             accessibilityRole="menu"
             style={{
               position: "absolute",
-              top: 24,
-              left: 0,
+              top: outline ? 36 : 24,
+              ...(props.align === "right" ? { right: 0 } : { left: 0 }),
+              zIndex: 20,
               minWidth: 220,
               padding: 4,
               borderRadius: 10,
@@ -774,7 +825,7 @@ function SortHeading(props: { theme: Theme; label?: string; value: SortKey; onCh
               elevation: 6,
             }}
           >
-            {SORTS.map((sort) => (
+            {props.options.map((sort) => (
               <Pressable
                 key={sort.key}
                 accessibilityRole="menuitem"

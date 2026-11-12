@@ -1,3 +1,4 @@
+import { overviewSettings } from "./shared/overview-settings";
 import path from "node:path";
 import { waitsForHuman } from "./shared/gates";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
@@ -58,6 +59,8 @@ function installSafetyNet(): void {
 export default function contribute(server: PluginServerContext) {
   installSafetyNet();
   migrateDataDir();
+  // The Playbooks screen's preferences (the order of the playbooks), kept by the host.
+  server.registerSettings(overviewSettings);
   // `event_core` of config.yaml is read once, at start: change it, then reload the plugin.
   const store = new RunStore(defaultRunsDir());
   const ready = readEventCoreConfig().then((eventCore) => {
