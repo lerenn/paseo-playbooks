@@ -230,6 +230,16 @@ export function refreshReady(run: Run, now: string, fx?: Effects): { ready: stri
   const limited = Object.entries(run.playbook.blocks).filter(([, block]) => block.concurrency !== undefined);
   // A skipped step (its `when` did not match) counts as done, so the steps after it may move too.
   // A branch step that is reached picks its case and completes at once; the steps of the other cases then skip.
+  // A batch whose jobs have all left it (ejected, requeued, settled) has nothing left to work on: the steps not started never run.
+  if (run.batch && run.jobs.length > 0 && !isTerminal(run.status) && openJobs(run).length === 0) {
+    const left = run.playbook.steps.filter((step) => !step.afterTask && ["pending", "ready", "queued"].includes(run.steps[step.id]!.status));
+    for (const step of left) {
+      run.steps[step.id]!.status = "skipped";
+      run.steps[step.id]!.completedSeq = null;
+      log(run, now, "step_skipped", step.id, "no job left in this batch (all ejected, requeued or settled)");
+    }
+    if (left.length > 0) fx?.notes.push(`No job is left in this batch (all ejected, requeued or settled): skipped ${left.map((step) => step.id).join(", ")}.`);
+  }
   let skipped = true;
   let ending: { stepId: string; outcome?: string } | null = null;
   while (skipped) {
@@ -1927,6 +1937,10 @@ export function batchEnded(pipeline: Run, batch: Run, now: string): Job[] {
     job.batches = job.batches.filter((entry) => entry.runId !== batch.id);
     if (job.status !== "open") {
       record(pipeline, "job.released", { jobId: job.id, batchRunId: batch.id }, now);
+      if (needsFollowUp(pipeline, job)) {
+        record(pipeline, "job.followup_pending", { jobId: job.id, batchRunId: batch.id, stage: stageId, outcome: job.outcome }, now);
+        log(pipeline, now, "job_followup_pending", stageId, `${job.id}: ${job.outcome}, no follow-up recorded`);
+      }
       continue;
     }
     const copy = batch.jobs.find((candidate) => candidate.id === job.id);
@@ -2158,6 +2172,38 @@ export function reopenJob(pipeline: Run, jobId: string, reason: string, now: str
   return { job, changed: true };
 }
 
+/**
+ * A job whose hand-off is pending: detached (nobody was told how it ended), settled with an outcome other than the singleton's
+ * first (the normal finish: ejected, no_deploy...) and no follow-up recorded. Only the batch's manager can start what follows.
+ */
+export function needsFollowUp(pipeline: Run, job: Job): boolean {
+  return job.detached && job.status === "settled" && job.outcome !== null && job.outcome !== pipeline.playbook.outcomes[0] && job.followUps.length === 0;
+}
+
+/**
+ * `record_followup`, or start_playbook `forJob`: the manager says what it did for a detached job that ended with an outcome: it
+ * started `runId`, or none is needed (`note` says why). More than one may be recorded. Refused for a job that is not settled and
+ * detached (a hand-off that waits is told by the plugin).
+ */
+export function recordFollowUp(pipeline: Run, jobId: string, input: { runId: string | null; note: string | null; by: string | null; now: string }): Job {
+  const job = pipeline.jobs.find((candidate) => candidate.id === jobId);
+  if (!job) throw new EngineError(`pipeline ${pipeline.id} has no job "${jobId}"`);
+  if (!job.detached) throw new EngineError(`job ${jobId} was handed off by a step that waits for its result: that step was told how it ended, it needs no follow-up recorded`);
+  if (job.status !== "settled" || job.outcome === null || job.outcome === pipeline.playbook.outcomes[0]) throw new EngineError(`job ${jobId} is ${job.status}${job.outcome ? ` (${job.outcome})` : ""}: a follow-up is recorded for a detached job settled with an outcome other than "${pipeline.playbook.outcomes[0]}"`);
+  if (input.runId === null && !input.note?.trim()) throw new EngineError(`job ${jobId}: with no follow-up run, give a note saying why none is needed`);
+  const followUp = { runId: input.runId, note: input.note?.trim() || null, by: input.by, at: input.now };
+  job.followUps.push(followUp);
+  record(pipeline, "job.followup", { jobId, followUp }, input.now);
+  log(pipeline, input.now, "job_followup", null, `${jobId}: ${followUp.runId ? `run ${followUp.runId}` : "none needed"}${followUp.note ? ` (${followUp.note.slice(0, 200)})` : ""}`);
+  return job;
+}
+
+/** The detached jobs a batch settled that still have no follow-up (ids on the pipeline), for its manager. */
+export function pendingFollowUps(pipeline: Run, batch: Run): Job[] {
+  const ids = new Set(batch.jobs.map((job) => job.id));
+  return pipeline.jobs.filter((job) => ids.has(job.id) && needsFollowUp(pipeline, job));
+}
+
 /** The pipeline was canceled or failed: every open job fails. Returns them. */
 export function failOpenJobs(run: Run, reason: string, now: string): Job[] {
   return failJobs(run, run.jobs.filter((job) => job.status === "open").map((job) => job.id), reason, now);
@@ -2183,7 +2229,8 @@ export function mirrorJob(batch: Run, job: Job): void {
   copy.outputs = { ...job.outputs };
   copy.endedAt = job.endedAt;
   copy.requeued = job.requeued;
-  record(batch, "job.mirrored", { jobId: job.id, status: job.status, outcome: job.outcome, summary: job.summary, outputs: job.outputs, endedAt: job.endedAt, requeued: job.requeued }, job.endedAt ?? batch.updatedAt);
+  copy.followUps = structuredClone(job.followUps);
+  record(batch, "job.mirrored", { jobId: job.id, status: job.status, outcome: job.outcome, summary: job.summary, outputs: job.outputs, endedAt: job.endedAt, requeued: job.requeued, followUps: job.followUps }, job.endedAt ?? batch.updatedAt);
 }
 
 /**

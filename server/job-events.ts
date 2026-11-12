@@ -20,7 +20,7 @@ type Outputs = Record<string, VarValue>;
 const upcastWait = (wait: Partial<Wait> & { stage: string; since: string }): Wait => ({ held: null, forced: false, ...structuredClone(wait) });
 const upcastJob = (value: Job): Job => {
   const named = upcastJobNames(structuredClone(value));
-  return { ...named, batches: named.batches ?? [], waiting: named.waiting.map(upcastWait) };
+  return { ...named, batches: named.batches ?? [], followUps: named.followUps ?? [], waiting: named.waiting.map(upcastWait) };
 };
 
 function job(run: Run, id: unknown): Job | undefined {
@@ -174,6 +174,18 @@ const reducers: Record<string, Reducer> = {
     const target = job(run, event.data.jobId);
     if (target) dropRide(target, event.data.batchRunId);
   },
+  /** The batch manager recorded a follow-up for a detached job that ended with an outcome: `{ jobId, followUp: { runId, note, by, at } }`. */
+  "job.followup": (run, event) => {
+    const d = event.data as { jobId: string; followUp: Job["followUps"][number] };
+    const target = job(run, d.jobId);
+    if (!target) return;
+    if (!target.followUps.some((entry) => entry.at === d.followUp.at && entry.runId === d.followUp.runId)) target.followUps.push(structuredClone(d.followUp));
+    note(run, event.at, "job_followup", null, `${d.jobId}: ${d.followUp.runId ? `run ${d.followUp.runId}` : "none needed"}${d.followUp.note ? ` (${d.followUp.note.slice(0, 200)})` : ""}`);
+  },
+  /** A batch ended with a detached job that ended with an outcome and has no follow-up yet: `{ jobId, batchRunId, stage, outcome }`. */
+  "job.followup_pending": (run, event) => {
+    note(run, event.at, "job_followup_pending", event.data.stage as string, `${String(event.data.jobId)}: ${String(event.data.outcome)}, no follow-up recorded`);
+  },
   /** A batch ended (its jobs' own events come first). */
   "batch.ended": (run, event) => {
     const d = event.data as { batchRunId: string; stage: string; status: string };
@@ -181,7 +193,7 @@ const reducers: Record<string, Reducer> = {
   },
   /** On a batch's copy of a job: what happened to the job in the pipeline. */
   "job.mirrored": (run, event) => {
-    const d = event.data as { jobId: string; status: Job["status"]; outcome: string | null; summary: string | null; outputs: Outputs; endedAt: string | null; requeued?: Job["requeued"] };
+    const d = event.data as { jobId: string; status: Job["status"]; outcome: string | null; summary: string | null; outputs: Outputs; endedAt: string | null; requeued?: Job["requeued"]; followUps?: Job["followUps"] };
     const copy = job(run, d.jobId);
     if (!copy) return;
     copy.status = d.status;
@@ -190,6 +202,7 @@ const reducers: Record<string, Reducer> = {
     copy.outputs = d.outputs;
     copy.endedAt = d.endedAt;
     copy.requeued = d.requeued ?? null;
+    if (d.followUps) copy.followUps = structuredClone(d.followUps);
   },
 };
 
@@ -224,7 +237,7 @@ export const jobsArea: Area = {
     run.jobs = (from.jobs ?? []).map(upcastJob);
     run.gates = [...run.gates.filter((gate) => gate.kind !== "admission"), ...structuredClone(from.gates ?? [])];
   },
-  historyTypes: new Set(["job_queued", "job_settled", "job_failed", "job_withdrawn", "job_requeued", "job_reopened", "job_outputs", "job_held", "job_admitted", "batch_started", "batch_ended", "train_departed", "train_ended", "gate_opened", "gate_decided"]),
+  historyTypes: new Set(["job_queued", "job_settled", "job_failed", "job_withdrawn", "job_requeued", "job_reopened", "job_followup", "job_followup_pending", "job_outputs", "job_held", "job_admitted", "batch_started", "batch_ended", "train_departed", "train_ended", "gate_opened", "gate_decided"]),
 };
 
 // ------------------------------------------------------------------ public events
@@ -304,6 +317,18 @@ export const JOB_TYPES: EventTypeDef[] = [
     description: "requeue_job: a failed job is open again, with its id, inputs and outputs, and waits at its stages (a job.queued, via reopened, follows for each). reason is the caller's.",
     payload: z.object({ ...jobFields, reason: z.string().nullable() }),
     line: (event) => jobLine(event, `was requeued${event.payload.reason ? `: ${String(event.payload.reason).slice(0, 200)}` : ""}`),
+  },
+  {
+    type: "job.followup_pending",
+    description: "A batch ended while a detached job it settled with an outcome (not the first one: ejected, no_deploy...) has no follow-up recorded: nobody was told, and only the batch's manager can start the work that follows. The plugin keeps that manager alive and reminds it. Cleared by job.followup.",
+    payload: z.object(jobFields),
+    line: (event) => jobLine(event, `ended "${String(event.payload.outcome)}" with no follow-up recorded${batch(event.payload as { batchRunId: unknown })}`),
+  },
+  {
+    type: "job.followup",
+    description: "A follow-up was recorded for a detached job that ended with an outcome: the run started for it (followUpRunId, via start_playbook forJob or record_followup), or none needed (followUpRunId null, note says why).",
+    payload: z.object({ ...jobFields, followUpRunId: z.string().nullable(), note: z.string().nullable() }),
+    line: (event) => jobLine(event, `has a follow-up: ${event.payload.followUpRunId ? `run ${String(event.payload.followUpRunId)}` : `none needed${event.payload.note ? ` (${String(event.payload.note).slice(0, 200)})` : ""}`}`),
   },
   {
     type: "job.held",
@@ -412,6 +437,14 @@ export function publicJobEvents(run: Run, events: readonly DomainEvent[]): Publi
         const waiting = d.waiting as Wait[];
         out.push({ type: "job.reopened", payload: { ...base(String(d.jobId), null, null, null), reason: d.reason ? String(d.reason) : null } });
         for (const wait of waiting) out.push({ type: "job.queued", payload: { ...base(String(d.jobId), wait.stage, null, null), via: "reopened" } });
+        break;
+      }
+      case "job.followup_pending":
+        out.push({ type: "job.followup_pending", payload: base(String(d.jobId), d.stage as string, d.batchRunId as string, (d.outcome as string | null) ?? null) });
+        break;
+      case "job.followup": {
+        const entry = d.followUp as Job["followUps"][number];
+        out.push({ type: "job.followup", payload: { ...base(String(d.jobId), null, null, job(run, String(d.jobId))?.outcome ?? null), followUpRunId: entry.runId, note: entry.note } });
         break;
       }
       case "job.held":

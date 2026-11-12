@@ -175,7 +175,7 @@ event_core:
 
 The pipeline's jobs are also announced on the event bus, for `subscribe_events` and `list_events`:
 `job.queued` (waits at a stage: handed off, or unlocked by a passed stage; one event per stage),
-`job.joined`, `job.advanced` (passed a stage), `job.requeued` (back at its stage: its batch failed with retries left, `cause: batch_failed`, or a step's outcome the playbook declares `settle.effects: { <outcome>: requeue }` set it aside, `cause: outcome`, with `reason` and `blocker`),  `job.reopened` (`requeue_job` put a failed job back; `job.queued` with `via: reopened` follows), `job.settled`
+`job.joined`, `job.advanced` (passed a stage), `job.requeued` (back at its stage: its batch failed with retries left, `cause: batch_failed`, or a step's outcome the playbook declares `settle.effects: { <outcome>: requeue }` set it aside, `cause: outcome`, with `reason` and `blocker`),  `job.reopened` (`requeue_job` put a failed job back; `job.queued` with `via: reopened` follows), `job.followup_pending` (a batch ended while a detached job it settled with an outcome has no follow-up recorded) and `job.followup` (`record_followup`, or `start_playbook` with `forJob`, recorded one: `followUpRunId`, `note`), `job.settled`
 (left with an outcome), `job.failed`, `job.withdrawn`, and, for a stage with `queue.admit`, `job.held`, `job.admitted`
 and `job.escalated`. Payload: `runId` (the pipeline), `playbook` (the singleton's id),
 `jobId`, `label`, `stage`, `batchRunId`, `outcome`, plus `via`, `nextStages`, `rides`/`retries`, `summary` or `reason`

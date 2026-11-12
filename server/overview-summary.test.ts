@@ -106,7 +106,7 @@ describe("summarizeRun", () => {
         waiting: [{ stage: "dev", since: run.createdAt, held: null, forced: false }],
         batches: [],
         failedRides: {},
-        requeued: null, requeues: {},
+        requeued: null, requeues: {}, followUps: [],
         detached: false,
       },
     ];
@@ -116,7 +116,7 @@ describe("summarizeRun", () => {
     expect(text).not.toContain("zzzz");
     expect(text).not.toContain("background");
     expect(text).not.toContain("iiii");
-    expect(summary.jobs).toEqual([{ id: "j1", label: "Job one", status: "open", waiting: [{ stage: "dev", since: run.createdAt, held: null, forced: false }], requeued: null }]);
+    expect(summary.jobs).toEqual([{ id: "j1", label: "Job one", status: "open", waiting: [{ stage: "dev", since: run.createdAt, held: null, forced: false }], requeued: null, detached: false, outcome: null, followUps: [] }]);
     for (const step of summary.playbook.steps) expect(step).not.toHaveProperty("prompt");
   });
 
