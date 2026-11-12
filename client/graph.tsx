@@ -654,7 +654,8 @@ function Node(props: GraphProps & { step: Step; longNeeds: string[]; nodeWidth: 
   const isScript = step.kind === "script";
   const isHandoff = step.kind === "handoff";
   // Script and hand-off steps have no agent: their attempts open the details sheet instead of a conversation.
-  const agentless = isScript || isHandoff;
+  const isFanout = step.kind === "fanout";
+  const agentless = isScript || isHandoff || isFanout;
   const latestAgent = latest && !agentless ? latest.agentId : null;
   const live = useAgent(latestAgent ?? "", (agent) => ({ status: agent.status, attention: agent.attentionReason }));
   const reduceMotion = useReduceMotion();
@@ -691,6 +692,8 @@ function Node(props: GraphProps & { step: Step; longNeeds: string[]; nodeWidth: 
       ? `Script${nodeState === "running" && latest?.checks ? ` · check ${latest.checks}` : ""}`
       : isHandoff
         ? `Hand-off → ${step.handoff}`
+        : isFanout
+          ? `Fan-out → ${step.fanout?.playbook ?? ""}${state?.fanout ? ` · ${engineText(state.fanout)}` : ""}`
         : `${role?.title ?? step.role}${role?.readonly ? " · ro" : ""}`) + condition;
   // Where a hand-off's job is: its boarding run, the run carrying it, or its result.
   const jobLine = isHandoff && nodeState === "running" ? latest?.lastMessage ?? null : latest?.waiting && nodeState === "running" ? `Waiting for tokens until ${new Date(latest.waiting.until).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : null;
@@ -775,4 +778,11 @@ function Node(props: GraphProps & { step: Step; longNeeds: string[]; nodeWidth: 
       ) : null}
     </View>
   );
+}
+
+/** "2 of 5 done: 1 running": a fan-out step's progress on its node. */
+function engineText(state: NonNullable<Run["steps"][string]["fanout"]>): string {
+  const done = state.children.filter((child) => ["completed", "failed", "canceled", "not_started"].includes(child.status)).length;
+  const running = state.children.filter((child) => child.status === "running" || child.status === "starting").length;
+  return `${done} of ${state.children.length} done${running ? `, ${running} running` : ""}`;
 }

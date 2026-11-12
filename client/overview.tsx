@@ -790,6 +790,7 @@ function PlaybookGroup(props: {
   const rows = useMemo(() => props.runs.filter((run) => !isPipeline(run)), [props.runs]);
   const columns = rows[0] ? [...mainSteps(rows[0]).map(stepShortTitle), "Done"] : ["Done"];
   const runs = useMemo(() => sortRuns(rows, sort), [rows, sort]);
+  const runsById = useMemo(() => new Map(props.allRuns.map((run) => [run.id, run])), [props.allRuns]);
   const working = runs.filter((run) => isActive(run) && !isPaused(run) && pendingGates(run).length === 0).length;
   return (
     <View style={{ gap: 8, zIndex: props.zIndex }}>
@@ -830,6 +831,7 @@ function PlaybookGroup(props: {
             first={index === 0}
             compact={compact}
             workspace={props.names.get(run.workspaceId) ?? run.workspaceId}
+            runs={runsById}
             onOpenWorkspace={props.onOpenWorkspace}
             onOpenAgent={props.onOpenAgent}
           />
@@ -885,6 +887,8 @@ function RunRow(props: {
   first: boolean;
   compact: boolean;
   workspace: string;
+  /** Every run, to draw the lanes of a fan-out from its children's own progress. */
+  runs: Map<string, RunSummary>;
   onOpenWorkspace?: (workspaceId: string) => void;
   onOpenAgent?: (agentId: string) => void;
 }) {
@@ -928,6 +932,7 @@ function RunRow(props: {
           {shortId(run)} · <Text style={{ color: state.tone === "seen" || state.tone === "paused" ? theme.colors.foregroundMuted : color }}>{state.status}</Text> ·{" "}
           {ago(run.updatedAt)}
           {props.workspace ? ` · ${props.workspace}` : ""}
+          {run.parent ? ` · item ${run.parent.key} of ${run.parent.runId.replace(/^run_/, "")}` : ""}
         </Text>
       </View>
     </Pressable>
@@ -972,7 +977,147 @@ function RunRow(props: {
           {actions}
         </View>
       )}
+      {Object.entries(run.fanouts).map(([stepId, fanout]) => (
+        <FanoutLanes key={stepId} theme={theme} run={run} stepId={stepId} fanout={fanout} compact={compact} runs={props.runs} onOpenWorkspace={props.onOpenWorkspace} />
+      ))}
     </View>
+  );
+}
+
+// ---------------------------------------------------------------- fan-out lanes
+
+type FanoutChildInfo = RunSummary["fanouts"][string]["children"][number];
+
+/** Lanes shown before "Show all": the ones that need a human come first, then running ones. */
+const LANES_SHOWN = 6;
+
+const LANE_RANK: Record<FanoutChildInfo["status"], number> = { running: 1, starting: 1, pending: 2, not_started: 3, failed: 3, canceled: 3, completed: 4 };
+
+/** A pass's counts: started, running, done (completed), failed (failed, canceled or never started). */
+function fanoutCounts(children: FanoutChildInfo[]) {
+  const count = (...statuses: FanoutChildInfo["status"][]) => children.filter((child) => statuses.includes(child.status)).length;
+  return { started: children.filter((child) => child.runId !== null).length, running: count("starting", "running"), waiting: count("pending"), done: count("completed"), failed: count("failed", "canceled", "not_started") };
+}
+
+function countsText(children: FanoutChildInfo[]): string {
+  const counts = fanoutCounts(children);
+  return [`${counts.started}/${children.length} started`, counts.running ? `${counts.running} running` : "", counts.waiting ? `${counts.waiting} waiting` : "", `${counts.done} done`, counts.failed ? `${counts.failed} failed` : ""].filter(Boolean).join(" · ");
+}
+
+/**
+ * A fan-out step of a run, drawn inside the run's row as one compact lane per child run: its key, the child's own
+ * progress line, its status, a "needs you" marker when the child has a gate open, and a press that opens the child's
+ * workspace. Many children collapse to the first few (those needing a human first) with a scrolling "Show all";
+ * earlier passes of the parent's loop stay viewable under "Earlier passes".
+ */
+function FanoutLanes(props: {
+  theme: Theme;
+  run: RunSummary;
+  stepId: string;
+  fanout: RunSummary["fanouts"][string];
+  compact: boolean;
+  runs: Map<string, RunSummary>;
+  onOpenWorkspace?: ((workspaceId: string) => void) | undefined;
+}) {
+  const { theme, fanout } = props;
+  const [open, setOpen] = useState(true);
+  const [past, setPast] = useState(false);
+  const title = stepTitleOf(props.run.playbook, props.stepId);
+  return (
+    <View style={{ gap: 6, paddingLeft: 12, borderLeftWidth: 2, borderLeftColor: theme.colors.border }}>
+      <Pressable accessibilityRole="button" accessibilityState={{ expanded: open }} accessibilityLabel={`${title}, pass ${fanout.loop + 1}: ${countsText(fanout.children)}`} onPress={() => setOpen(!open)} style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+        <Icon name={open ? "ChevronDown" : "ChevronRight"} size={13} color={theme.colors.foregroundMuted} />
+        <Text numberOfLines={2} style={{ flex: 1, color: theme.colors.foreground, fontSize: 12, fontWeight: "600" }}>
+          {title} <Text style={{ color: theme.colors.foregroundMuted, fontWeight: "400" }}>· pass {fanout.loop + 1} · {countsText(fanout.children)}</Text>
+        </Text>
+      </Pressable>
+      {open ? <Lanes theme={theme} children={fanout.children} compact={props.compact} runs={props.runs} onOpenWorkspace={props.onOpenWorkspace} /> : null}
+      {open && fanout.past.length > 0 ? (
+        <View style={{ gap: 6 }}>
+          <Pressable accessibilityRole="button" accessibilityState={{ expanded: past }} onPress={() => setPast(!past)} style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+            <Icon name={past ? "ChevronDown" : "ChevronRight"} size={13} color={theme.colors.foregroundMuted} />
+            <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>Earlier passes ({fanout.past.length})</Text>
+          </Pressable>
+          {past
+            ? [...fanout.past].reverse().map((pass, index) => <PastPass key={`${pass.loop}-${index}`} theme={theme} pass={pass} compact={props.compact} runs={props.runs} onOpenWorkspace={props.onOpenWorkspace} />)
+            : null}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+function PastPass(props: { theme: Theme; pass: RunSummary["fanouts"][string]["past"][number]; compact: boolean; runs: Map<string, RunSummary>; onOpenWorkspace?: ((workspaceId: string) => void) | undefined }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <View style={{ gap: 6, paddingLeft: 8 }}>
+      <Pressable accessibilityRole="button" accessibilityState={{ expanded: open }} onPress={() => setOpen(!open)} style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+        <Icon name={open ? "ChevronDown" : "ChevronRight"} size={12} color={props.theme.colors.foregroundMuted} />
+        <Text style={{ flex: 1, color: props.theme.colors.foregroundMuted, fontSize: 11 }}>Pass {props.pass.loop + 1} · {countsText(props.pass.children)}</Text>
+      </Pressable>
+      {open ? <Lanes theme={props.theme} children={props.pass.children} compact={props.compact} runs={props.runs} onOpenWorkspace={props.onOpenWorkspace} /> : null}
+    </View>
+  );
+}
+
+function Lanes(props: { theme: Theme; children: FanoutChildInfo[]; compact: boolean; runs: Map<string, RunSummary>; onOpenWorkspace?: ((workspaceId: string) => void) | undefined }) {
+  const [all, setAll] = useState(false);
+  const needsYou = (child: FanoutChildInfo) => (child.runId ? (props.runs.get(child.runId)?.gates.length ?? 0) > 0 : false);
+  const ordered = useMemo(
+    () => props.children.map((child, index) => ({ child, index })).sort((a, b) => Number(needsYou(b.child)) - Number(needsYou(a.child)) || LANE_RANK[a.child.status] - LANE_RANK[b.child.status] || a.index - b.index),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [props.children, props.runs],
+  );
+  const shown = all ? ordered : ordered.slice(0, LANES_SHOWN);
+  const lanes = shown.map(({ child }) => <Lane key={child.key} theme={props.theme} child={child} compact={props.compact} run={child.runId ? props.runs.get(child.runId) : undefined} onOpenWorkspace={props.onOpenWorkspace} />);
+  return (
+    <View style={{ gap: 6 }}>
+      {all && ordered.length > 12 ? <ScrollView style={{ maxHeight: 360 }} nestedScrollEnabled><View style={{ gap: 6 }}>{lanes}</View></ScrollView> : lanes}
+      {ordered.length > LANES_SHOWN ? (
+        <Pressable accessibilityRole="button" onPress={() => setAll(!all)}>
+          <Text style={{ color: props.theme.colors.accent, fontSize: 11 }}>{all ? "Show fewer" : `Show all ${ordered.length}`}</Text>
+        </Pressable>
+      ) : null}
+    </View>
+  );
+}
+
+const LANE_STATUS: Record<FanoutChildInfo["status"], string> = { pending: "Waiting for a free slot", starting: "Starting", running: "Running", completed: "Done", failed: "Failed", canceled: "Canceled", not_started: "Not started" };
+
+/** One child run: key, its own progress line, status, and a marker when a human is needed. */
+function Lane(props: { theme: Theme; child: FanoutChildInfo; compact: boolean; run: RunSummary | undefined; onOpenWorkspace?: ((workspaceId: string) => void) | undefined }) {
+  const { theme, child, run } = props;
+  const state = run ? progress(run) : null;
+  const color = state ? toneColor(theme, state.tone) : child.status === "not_started" || child.status === "failed" || child.status === "canceled" ? theme.colors.statusDanger : theme.colors.foregroundMuted;
+  const gates = run?.gates.length ?? 0;
+  const status = state ? state.status : child.error && child.status === "not_started" ? `Not started: ${child.error}` : LANE_STATUS[child.status];
+  const open = run && props.onOpenWorkspace ? () => props.onOpenWorkspace!(run.workspaceId) : undefined;
+  const columns = run ? mainSteps(run).length + 1 : 0;
+  const line = state && run ? <ProgressLine theme={theme} total={columns} position={state.position} marks={state.marks} color={color} moving={isMoving(state.tone)} /> : null;
+  const marker = gates > 0 ? (
+    <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+      <Icon name="CircleDot" size={12} color={theme.colors.statusWarning} />
+      <Text style={{ color: theme.colors.statusWarning, fontSize: 11, fontWeight: "600" }}>Needs you</Text>
+    </View>
+  ) : null;
+  return (
+    <Pressable
+      accessibilityRole={open ? "button" : undefined}
+      accessibilityLabel={`${child.key}: ${status}${gates > 0 ? ", needs you" : ""}`}
+      accessibilityHint={open ? "Opens the child run's workspace" : undefined}
+      disabled={!open}
+      onPress={open}
+      style={{ flexDirection: props.compact ? "column" : "row", alignItems: props.compact ? "stretch" : "center", gap: props.compact ? 2 : 8 }}
+    >
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 6, width: props.compact ? undefined : 150 }}>
+        {state ? <ToneIcon tone={state.tone} color={color} size={11} /> : <Icon name="Circle" size={11} color={color} />}
+        <Text numberOfLines={1} style={{ flex: 1, color: theme.colors.foreground, fontSize: 12, fontWeight: "500" }}>{child.key}</Text>
+        {props.compact ? marker : null}
+      </View>
+      {line ? <View style={{ flex: props.compact ? undefined : 1, minWidth: 80, flexDirection: "row" }}>{line}</View> : <View style={{ flex: props.compact ? undefined : 1 }} />}
+      <Text numberOfLines={1} style={{ color: theme.colors.foregroundMuted, fontSize: 11, width: props.compact ? undefined : 190 }}>{status}</Text>
+      {props.compact ? null : marker}
+    </Pressable>
   );
 }
 
