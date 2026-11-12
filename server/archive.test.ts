@@ -148,7 +148,7 @@ describe("archive_run (archiveRunByAgent)", () => {
     const base = store.get("run_x")!;
     const job = {
       id: "job_1", fromRunId: "run_x", fromStepId: "a", attempt: 1, label: "x", inputs: {}, status: "open" as const, outcome: null, summary: null, outputs: {},
-      createdAt: new Date().toISOString(), endedAt: null, passed: [], waiting: [{ station: "dev", since: new Date().toISOString() }], riding: [], failedRides: {}, detached: false,
+      createdAt: new Date().toISOString(), endedAt: null, passed: [], waiting: [{ station: "dev", since: new Date().toISOString(), held: null, forced: false }], riding: [], failedRides: {}, detached: false,
     };
     await store.create({ ...structuredClone(base), id: "run_pipe", archivedAt: null, jobs: [job] });
     await expect(runtime.archiveRunByAgent("run_x", false)).rejects.toThrow(/not settled yet.*job_1/);

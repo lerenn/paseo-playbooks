@@ -32,6 +32,7 @@ export function gateListing(run: Run, gate: Gate, now: number) {
     gateId: gate.id,
     stepId: gate.stepId,
     kind: gate.kind,
+    jobId: gate.jobId,
     question: text.summary,
     choices: choicesOfGate(gate, known ? stepDef(run, gate.stepId) : undefined).map((choice) => ({ id: choice.id, label: choice.label, comment: choice.comment })),
     decider: holder.by,

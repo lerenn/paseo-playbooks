@@ -5,7 +5,7 @@
 import { descendantsOf } from "../shared/graph";
 import { record } from "./event-core";
 import { blockEntrySteps, blockStepIds, holdsBlock, innermostBlock } from "../shared/slots";
-import { askChoices, askHumanText, askTransitionOf, choicesOfGate, outcomeTransition } from "../shared/gates";
+import { ADMISSION_CHOICES, askChoices, askHumanText, askTransitionOf, choicesOfGate, GATE_SUMMARY_MAX, outcomeTransition } from "../shared/gates";
 import { parse as parseYaml, stringify as toYaml } from "yaml";
 import type { AfterTask, AskChoice, Attempt, AttemptAgent, FanoutChild, FanoutState, Gate, GateDecider, Job, Playbook, Run, RunDefinition, RunStep, RunWorktree, Step, Transition, VarValue, When } from "../shared/types";
 import { isActive, isAgentlessAttempt, MAX_FANOUT_PAST, isPaused, isPipeline, isStepDone, isStepLive, isTerminal, restartBlocker, runningAfterTasks } from "../shared/types";
@@ -1110,6 +1110,7 @@ function gotoOrLimit(run: Run, step: Step, target: string, maxLoops: number | un
     kind: "loop_limit",
     stepId: step.id,
     gotoTarget: target,
+    jobId: null,
     outcome: null,
     status: "pending",
     message: `Loop limit reached: "${step.id}" → "${target}" ran ${run.loops[key] ?? 0} times (max ${maxLoops}). Approve one more loop, or reject to fail the ${step.afterTask ? "after-task" : "run"}.\n\nLatest feedback: ${feedback || "(none)"}`,
@@ -1142,6 +1143,7 @@ function openAskGate(run: Run, step: Step, outcome: string, transition: Extract<
     kind: "ask",
     stepId: step.id,
     gotoTarget: transition.target,
+    jobId: null,
     outcome,
     status: "pending",
     message: [question, summary].filter(Boolean).join("\n\n"),
@@ -1305,6 +1307,7 @@ export function requestGate(run: Run, stepId: string, summary: string, now: stri
     kind: "gate",
     stepId,
     gotoTarget: null,
+    jobId: null,
     outcome: null,
     status: "pending",
     message: [summary, question, details].filter(Boolean).join("\n\n"),
@@ -1395,6 +1398,7 @@ export function decideGate(run: Run, ref: string, decision: GateDecision): { gat
   if (!gate) throw new EngineError(`no gate "${ref}" in run ${run.id}`);
   const fx = effects();
   if (gate.status !== "pending") return { gate, alreadyDecided: true, effects: fx };
+  if (gate.kind === "admission") return { gate, alreadyDecided: false, effects: decideAdmission(run, gate, decision, fx) };
   assertLive(run, gate.stepId);
   const choices = choicesOfGate(gate, stepDef(run, gate.stepId));
   const choice = choices.find((candidate) => candidate.id === decision.decision);
@@ -1655,7 +1659,7 @@ export function stationsOf(pipeline: Run) {
 function queueNext(pipeline: Run, job: Job, now: string): void {
   for (const station of stationsOf(pipeline)) {
     if (job.passed.includes(station.id) || job.waiting.some((entry) => entry.station === station.id) || job.riding.some((entry) => entry.station === station.id)) continue;
-    if (station.needs.every((need) => job.passed.includes(need))) job.waiting.push({ station: station.id, since: now });
+    if (station.needs.every((need) => job.passed.includes(need))) job.waiting.push({ station: station.id, since: now, held: station.admit ? { reason: ADMISSION_PENDING, checkedAt: null } : null, forced: false });
   }
 }
 
@@ -1673,8 +1677,10 @@ export function nextTrainJobs(pipeline: Run, stationId: string): Job[] {
   const station = stationsOf(pipeline).find((candidate) => candidate.id === stationId);
   if (!station) return [];
   const since = (job: Job) => job.waiting.find((entry) => entry.station === stationId)!.since;
+  // A held job is skipped before the mode applies: a held head job does not block fifo, merge does not take it.
+  // Only a station with `admit` honours a hold (one whose block was removed from the playbook lets its held jobs board).
   const waiting = pipeline.jobs
-    .filter((job) => job.status === "open" && job.waiting.some((entry) => entry.station === stationId))
+    .filter((job) => job.status === "open" && job.waiting.some((entry) => entry.station === stationId && !(station.admit && entry.held)))
     .sort((a, b) => since(a).localeCompare(since(b)) || a.createdAt.localeCompare(b.createdAt));
   return station.mode === "merge" ? waiting : waiting.slice(0, 1);
 }
@@ -1732,6 +1738,7 @@ function endJob(run: Run, job: Job, status: Job["status"], outcome: string | nul
   job.waiting = [];
   record(run, `job.${status}`, { jobId: job.id, outcome, summary, outputs: job.outputs, failedRides: job.failedRides, ...ctx }, now);
   log(run, now, `job_${status}`, null, `${job.id}${outcome ? `: ${outcome}` : ""}${summary ? ` (${summary.slice(0, 200)})` : ""}`);
+  closeAdmissionGates(run, job.id, `the job ${status === "settled" ? "was settled" : status}`, now);
 }
 
 /** Checks outputs against the singleton's declared types; `all` requires every one of them. */
@@ -1890,7 +1897,7 @@ export function trainEnded(pipeline: Run, train: Run, now: string): Job[] {
     job.failedRides[stationId] = rides;
     if (train.status === "failed" && station && rides <= station.retries) {
       // Back at the front: it keeps the place it had in the waiting list.
-      job.waiting.push({ station: stationId, since: ride.since });
+      job.waiting.push({ station: stationId, since: ride.since, held: null, forced: false });
       record(pipeline, "job.requeued", { jobId: job.id, station: stationId, trainRunId: train.id, trainStatus: train.status, since: ride.since, rides, retries: station.retries, outputs: job.outputs, failedRides: job.failedRides }, now);
       log(pipeline, now, "job_requeued", stationId, `${job.id} after train ${train.id} ${train.status} (${rides}/${station.retries})`);
       continue;
@@ -1901,6 +1908,160 @@ export function trainEnded(pipeline: Run, train: Run, now: string): Job[] {
   record(pipeline, "train.ended", { trainRunId: train.id, station: stationId, status: train.status }, now);
   log(pipeline, now, "train_ended", stationId, `${train.id} ${train.status}`);
   return ended;
+}
+
+// ---------------------------------------------------------------- admission (queue.admit)
+
+/** The hold a job gets at a station with `admit` until its first check has run. */
+export const ADMISSION_PENDING = "waiting for its first admission check";
+/** The hold of a waiting job the admission script did not name. */
+export const NOT_ADMITTED = "not admitted by the script";
+
+/** What an admission script said, by job id (ADR 2026-11-12-queue-admission-impl). */
+export interface AdmissionResult {
+  admit: string[];
+  hold: Record<string, string>;
+  escalate: Record<string, string>;
+}
+
+/** The jobs an admission check looks at: waiting at the station, oldest first, but not those a human admitted anyway. */
+export function admissionJobs(pipeline: Run, stationId: string): Job[] {
+  return pipeline.jobs
+    .filter((job) => job.status === "open" && job.waiting.some((entry) => entry.station === stationId && !entry.forced))
+    .sort((a, b) => waitingSince(a, stationId).localeCompare(waitingSince(b, stationId)) || a.createdAt.localeCompare(b.createdAt));
+}
+
+function waitingSince(job: Job, stationId: string): string {
+  return job.waiting.find((entry) => entry.station === stationId)!.since;
+}
+
+/** Closes the open admission gates of a job (it ended, or was admitted another way). Recorded like a decision, by nobody. */
+function closeAdmissionGates(run: Run, jobId: string, why: string, now: string): void {
+  for (const gate of run.gates) {
+    if (gate.kind === "admission" && gate.jobId === jobId && gate.status === "pending") closeGate(run, gate, { status: "dismissed", comment: why, by: null, via: null, now });
+  }
+}
+
+function closeGate(run: Run, gate: Gate, input: { status: string; comment: string | null; by: string | null; via: Gate["decidedVia"]; now: string }): void {
+  gate.status = input.status;
+  gate.comment = input.comment;
+  gate.decidedBy = input.by;
+  gate.decidedVia = input.via;
+  gate.decidedAt = input.now;
+  record(run, "admission.gate_closed", { gateId: gate.id, status: input.status, comment: input.comment, by: input.by, via: input.via }, input.now);
+  log(run, input.now, "gate_decided", gate.stepId, `${gate.id}: ${input.status}${input.via ? ` via ${input.via}` : ""}`);
+}
+
+/** Holds a job at a station. Nothing happens (no event) when it is already held for that reason. */
+function holdJob(pipeline: Run, job: Job, stationId: string, reason: string, now: string): void {
+  const entry = job.waiting.find((candidate) => candidate.station === stationId)!;
+  if (entry.held && entry.held.checkedAt !== null && entry.held.reason === reason) return;
+  entry.held = { reason, checkedAt: now };
+  record(pipeline, "job.held", { jobId: job.id, station: stationId, reason, checkedAt: now }, now);
+  log(pipeline, now, "job_held", stationId, `${job.id}: ${reason.slice(0, 200)}`);
+}
+
+/**
+ * A waiting job may board. By the script it stays subject to the next checks; by a human (`forced`) it does not: the
+ * script no longer holds it. Nothing happens when the script admits a job that is not held.
+ */
+export function admitJob(pipeline: Run, jobId: string, stationId: string, via: "script" | "human", now: string, comment: string | null = null): boolean {
+  const job = pipeline.jobs.find((candidate) => candidate.id === jobId);
+  const entry = job?.status === "open" ? job.waiting.find((candidate) => candidate.station === stationId) : undefined;
+  if (!job || !entry) return false;
+  if (via === "script" ? entry.held === null : entry.held === null && entry.forced) return false;
+  entry.held = null;
+  if (via === "human") entry.forced = true;
+  record(pipeline, "job.admitted", { jobId, station: stationId, via, reason: comment, forced: via === "human" }, now);
+  log(pipeline, now, "job_admitted", stationId, `${jobId} via ${via}${comment ? `: ${comment.slice(0, 200)}` : ""}`);
+  closeAdmissionGates(pipeline, jobId, via === "script" ? "admitted by the script" : "admitted", now);
+  return true;
+}
+
+/** Holds a job and opens a human ask for it (one per job: nothing new opens while one is pending). Returns the gate it opened. */
+function escalateJob(pipeline: Run, job: Job, stationId: string, reason: string, now: string): Gate | null {
+  holdJob(pipeline, job, stationId, reason, now);
+  if (pipeline.gates.some((gate) => gate.kind === "admission" && gate.jobId === job.id && gate.status === "pending")) return null;
+  const count = pipeline.gates.filter((gate) => gate.kind === "admission" && gate.jobId === job.id).length;
+  const station = stationsOf(pipeline).find((candidate) => candidate.id === stationId);
+  const summary = `Job ${job.id} (${job.label}) cannot be admitted at ${station?.title ?? stationId}: ${reason}`;
+  const gate: Gate = {
+    id: `admit-${stationId}-${job.id}-${count + 1}`,
+    kind: "admission",
+    jobId: job.id,
+    stepId: stationId,
+    gotoTarget: null,
+    outcome: null,
+    status: "pending",
+    message: summary,
+    summary: summary.length > GATE_SUMMARY_MAX ? `${summary.slice(0, GATE_SUMMARY_MAX - 1)}…` : summary,
+    details: summary.length > GATE_SUMMARY_MAX ? summary : "",
+    requestedAt: now,
+    comment: null,
+    decidedBy: null,
+    decidedVia: null,
+    decidedAt: null,
+    decider: { by: "human" },
+    deciderAgentId: null,
+    escalated: null,
+    escalatedAt: null,
+  };
+  pipeline.gates.push(gate);
+  record(pipeline, "job.escalated", { jobId: job.id, station: stationId, reason, gate }, now);
+  log(pipeline, now, "gate_opened", stationId, gate.id);
+  return gate;
+}
+
+/**
+ * Applies what an admission check said about the jobs it was given (`sent`, ids): each is admitted, held (with the
+ * script's reason) or escalated; one the script did not name is held with NOT_ADMITTED. A job named twice gets the
+ * strictest verdict (escalate, then hold, then admit). Ids that were not sent are ignored with a warning. A job that
+ * left the list or was admitted by a human since the check began is left alone.
+ */
+export function applyAdmission(pipeline: Run, stationId: string, sent: string[], result: AdmissionResult, now: string): { warnings: string[]; escalated: Gate[] } {
+  const station = stationsOf(pipeline).find((candidate) => candidate.id === stationId);
+  if (!station?.admit) throw new EngineError(`station "${stationId}" has no admission script`);
+  const warnings: string[] = [];
+  const known = new Set(sent);
+  const named = new Set<string>();
+  for (const id of [...result.admit, ...Object.keys(result.hold), ...Object.keys(result.escalate)]) {
+    if (known.has(id)) named.add(id);
+    else if (!warnings.some((text) => text.includes(`"${id}"`))) warnings.push(`unknown job id "${id}" in the result: ignored (the check was given ${sent.length === 0 ? "no jobs" : sent.join(", ")})`);
+  }
+  const escalated: Gate[] = [];
+  for (const id of sent) {
+    const job = pipeline.jobs.find((candidate) => candidate.id === id);
+    const entry = job?.status === "open" ? job.waiting.find((candidate) => candidate.station === stationId) : undefined;
+    if (!job || !entry || entry.forced) continue;
+    const inEscalate = Object.hasOwn(result.escalate, id);
+    const inHold = Object.hasOwn(result.hold, id);
+    const inAdmit = result.admit.includes(id);
+    if (inAdmit && (inEscalate || inHold)) warnings.push(`job "${id}" is named in admit and in ${inEscalate ? "escalate" : "hold"}: not admitted`);
+    if (inEscalate) {
+      const gate = escalateJob(pipeline, job, stationId, result.escalate[id] || NOT_ADMITTED, now);
+      if (gate) escalated.push(gate);
+    } else if (inHold) holdJob(pipeline, job, stationId, result.hold[id] || NOT_ADMITTED, now);
+    else if (inAdmit) admitJob(pipeline, id, stationId, "script", now);
+    else holdJob(pipeline, job, stationId, NOT_ADMITTED, now);
+  }
+  return { warnings, escalated };
+}
+
+/** A human answers an admission gate: retry (the runtime checks again at once), withdraw the job, or admit it anyway. */
+function decideAdmission(run: Run, gate: Gate, decision: GateDecision, fx: Effects): Effects {
+  if (decision.via === "manager" || decision.via === "role") throw new EngineError(`gate "${gate.id}" asks whether to admit job ${gate.jobId}: a human decides it in the Playbooks panel`);
+  const choice = ADMISSION_CHOICES.find((candidate) => candidate.id === decision.decision);
+  if (!choice) throw new EngineError(`"${decision.decision}" is not a choice of gate "${gate.id}" (${ADMISSION_CHOICES.map((c) => c.id).join(", ")})`);
+  const comment = decision.comment?.trim() || null;
+  closeGate(run, gate, { status: choice.id, comment: decision.comment, by: decision.by, via: decision.via, now: decision.now });
+  const jobId = gate.jobId!;
+  if (choice.id === "admit") admitJob(run, jobId, gate.stepId, "human", decision.now, comment);
+  else if (choice.id === "withdraw") {
+    const station = stationsOf(run).find((candidate) => candidate.id === gate.stepId);
+    withdrawJob(run, jobId, `withdrawn from the "${station?.title ?? gate.stepId}" queue by ${decision.by ?? "a human"}${comment ? `: ${comment}` : ""}`, decision.now);
+  }
+  fx.notes.push(`Gate ${gate.id}: ${choice.id}${comment ? ` (${comment})` : ""}.`);
+  return fx;
 }
 
 /** A hand-off was canceled, reset or timed out: its job leaves the pipeline. Returns it and the trains carrying it. */

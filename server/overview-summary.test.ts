@@ -16,6 +16,7 @@ beforeAll(async () => {
 const gate = (id: string, status: string): Run["gates"][number] => ({
   id,
   kind: "gate",
+  jobId: null,
   stepId: playbook.steps.find((step) => step.kind === "gate")?.id ?? playbook.steps[0]!.id,
   gotoTarget: null,
   outcome: null,
@@ -102,7 +103,7 @@ describe("summarizeRun", () => {
         createdAt: run.createdAt,
         endedAt: null,
         passed: [],
-        waiting: [{ station: "dev", since: run.createdAt }],
+        waiting: [{ station: "dev", since: run.createdAt, held: null, forced: false }],
         riding: [],
         failedRides: {},
         detached: false,
@@ -114,7 +115,7 @@ describe("summarizeRun", () => {
     expect(text).not.toContain("zzzz");
     expect(text).not.toContain("background");
     expect(text).not.toContain("iiii");
-    expect(summary.jobs).toEqual([{ id: "j1", label: "Job one", status: "open", waiting: [{ station: "dev", since: run.createdAt }] }]);
+    expect(summary.jobs).toEqual([{ id: "j1", label: "Job one", status: "open", waiting: [{ station: "dev", since: run.createdAt, held: null, forced: false }] }]);
     for (const step of summary.playbook.steps) expect(step).not.toHaveProperty("prompt");
   });
 

@@ -23,6 +23,7 @@ import {
   listWorkspaceAgents,
   markRunSeenRpc,
   scriptOutputRpc,
+  admissionStatusRpc,
   nudgeStepRpc,
   createSidekickFilesRpc,
   listSidekicksRpc,
@@ -175,6 +176,7 @@ export default function contribute(server: PluginServerContext) {
   });
   handle(analyticsStateRpc, async ({ days, playbook, projectId }) => runtime.analytics({ days, playbook, projectId }));
   handle(overviewStateRpc, async () => ({ runs: store.list().filter((run) => !run.archivedAt).map(summarizeRun) }));
+  handle(admissionStatusRpc, async ({ runId }) => ({ stations: runtime.admissionStatus(runId) }));
   handle(scriptOutputRpc, async ({ runId, stepId }) => runtime.scriptOutput(runId, stepId));
   handle(markRunSeenRpc, async ({ runId }) => ({ seenAt: await runtime.markSeen(runId) }));
   handle(needsYouRpc, async () => ({

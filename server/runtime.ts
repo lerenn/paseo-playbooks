@@ -6,7 +6,7 @@ import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 
 /** The daemon API handed to plugin handlers (typed via the SDK, so the build needs no @getpaseo/client). */
 type PaseoApi = PluginHandlerContext["paseo"];
-import type { ScriptOutput } from "../shared/types";
+import type { AdmissionStatus, ScriptOutput } from "../shared/types";
 import type { AgentSettings, AgentTarget, Attempt, FanoutChild as FanoutChildState, Gate, Job, Playbook, Run, RunWorktree, Step, VarValue } from "../shared/types";
 import { addUsage } from "../shared/types";
 import { UsageLedger } from "./usage-ledger";
@@ -32,6 +32,7 @@ import {
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "./defaults";
 import { isQuotaError, isQuotaMessage } from "./quota";
 import * as engine from "./engine";
+import { ADMISSION_TIMEOUT_MS, admissionInput, readAdmission } from "./admission";
 import { checkoutSnapshot, currentRef, defaultBranch, fastForward, freshRef, removedGitlinks, snapshotDiff } from "./git";
 import { workspaceTitle } from "../shared/workspace-name";
 import { createWorktree, dirtyPaths, linkedSubmodules, listWorktreeDirs, pruneWorktrees, removeWorktree, repoOfWorktree, worktreeBranch, worktreePath } from "./worktree";
@@ -250,6 +251,24 @@ interface Waker {
   endedAt: number;
 }
 
+/** A station's admission check (`queue.admit`): its coalescing state like a Waker's, its timers, and what the panel shows. */
+interface Admission {
+  pipelineId: string;
+  stationId: string;
+  /** A check is in flight, or has ended and its follow-up is not scheduled yet: an event only sets `dirty`. */
+  busy: boolean;
+  /** An event matched while busy (first type that did; "retry" skips the gap): one more check runs once it is over. */
+  dirty: string | null;
+  /** A check an event asked for waits out the gap in `next`. */
+  gapWait: boolean;
+  /** ms since epoch the last check ended; 0 before the first. */
+  endedAt: number;
+  child: ChildProcess | null;
+  /** The poll timer, or the wake-up waiting out the gap. */
+  next: ReturnType<typeof setTimeout> | null;
+  status: AdmissionStatus;
+}
+
 interface ScriptLive {
   /** ISO time the running check started; null between checks. */
   runningSince: string | null;
@@ -259,6 +278,14 @@ interface ScriptLive {
   tail: string;
   /** Ended checks, oldest first. */
   checks: ScriptOutput["checks"];
+}
+
+function idleAdmission(): AdmissionStatus {
+  return { running: false, since: null, trigger: null, tail: "", nextCheckAt: null, checks: 0, lastCheckAt: null, lastOutcome: null, error: null, warnings: [] };
+}
+
+function formatMinutes(ms: number): string {
+  return ms >= 60_000 ? `${Math.round(ms / 60_000)} min` : `${Math.round(ms / 1000)} s`;
 }
 
 function tailOf(text: string): string {
@@ -344,6 +371,8 @@ export class Runtime {
   private readonly scripts = new Map<string, { child: ChildProcess | null; next: ReturnType<typeof setTimeout> | null }>();
   /** What a script attempt's checks printed, by attempt id: the running check's live tail and the last few checks. In memory only; dropped when the attempt stops. */
   private readonly scriptLive = new Map<string, ScriptLive>();
+  /** Admission checks (`queue.admit`) of the stations that have waiting jobs, by `<pipeline run>/<station>`. */
+  private readonly admissions = new Map<string, Admission>();
   /** Script attempts with `wake_on`, by attempt id. One bus listener serves all of them. */
   private readonly wakers = new Map<string, Waker>();
   /** Feedback a script attempt started with (after a goto), passed to each of its checks. */
@@ -378,7 +407,7 @@ export class Runtime {
 
   constructor(
     private readonly store: RunStore,
-    private readonly options: { dataDir?: string; debounceMs?: number; pollMs?: number; wakeGapMs?: number } = {},
+    private readonly options: { dataDir?: string; debounceMs?: number; pollMs?: number; wakeGapMs?: number; admissionTimeoutMs?: number } = {},
   ) {
     const dir = options.dataDir ?? path.dirname(store.dir);
     this.worktreesDir = path.join(dir, "worktrees");
@@ -396,7 +425,10 @@ export class Runtime {
       }
     });
     // Script steps with `wake_on` (script-wake.ts logic below): an internal listener, not an agent subscription.
-    this.bus.onEmit((event) => this.wakeScripts(event));
+    this.bus.onEmit((event) => {
+      this.wakeScripts(event);
+      this.wakeAdmissions(event);
+    });
     this.bus.registerNotifier("agent", this.agentNotifier());
     this.producer = new OversightProducer(this.bus);
   }
@@ -1214,6 +1246,7 @@ export class Runtime {
         await this.settleGateChats();
         await this.askGatesInChat();
         await this.startScripts();
+        await this.driveAdmissions();
         await this.startHandoffs();
         await this.driveFanouts();
         await this.runDeciders();
@@ -2238,6 +2271,232 @@ export class Runtime {
     slot.child?.kill("SIGTERM");
   }
 
+  // ---------------------------------------------------------------- admission (queue.admit)
+
+  /**
+   * Starts the admission check of every station that has waiting jobs and none tracked, and drops the ones with nothing
+   * to look at (an empty queue costs no check) or whose pipeline or `admit` block is gone. The script is not in a
+   * train: no run, no manager, no agent. After a daemon restart this is what runs the check again (it is idempotent).
+   */
+  private async driveAdmissions(): Promise<void> {
+    for (const [key, admission] of [...this.admissions]) {
+      const pipeline = this.store.get(admission.pipelineId);
+      const station = pipeline && !isTerminal(pipeline.status) ? engine.stationsOf(pipeline).find((candidate) => candidate.id === admission.stationId) : undefined;
+      if (!pipeline || !station?.admit || (!admission.busy && engine.admissionJobs(pipeline, admission.stationId).length === 0)) this.dropAdmission(key);
+    }
+    for (const pipeline of this.store.list()) {
+      if (!isPipeline(pipeline) || isTerminal(pipeline.status) || isPaused(pipeline)) continue;
+      for (const station of engine.stationsOf(pipeline)) {
+        const key = `${pipeline.id}/${station.id}`;
+        if (!station.admit || this.admissions.has(key) || engine.admissionJobs(pipeline, station.id).length === 0) continue;
+        this.admissions.set(key, { pipelineId: pipeline.id, stationId: station.id, busy: false, dirty: null, gapWait: false, endedAt: 0, child: null, next: null, status: idleAdmission() });
+        void this.runAdmission(key, "first").catch((error: unknown) => console.error(`[playbooks] admission check of "${station.id}" in ${pipeline.id} failed:`, errorText(error)));
+      }
+    }
+  }
+
+  private dropAdmission(key: string): void {
+    const admission = this.admissions.get(key);
+    this.admissions.delete(key);
+    if (!admission) return;
+    if (admission.next) clearTimeout(admission.next);
+    admission.child?.kill("SIGTERM");
+  }
+
+  /** Runs the station's admission script once with its waiting jobs; `onAdmissionChecked` applies what it said. */
+  private async runAdmission(key: string, trigger: string): Promise<void> {
+    const admission = this.admissions.get(key);
+    if (!admission) return;
+    let pipeline = this.store.get(admission.pipelineId);
+    const station = pipeline && !isTerminal(pipeline.status) ? engine.stationsOf(pipeline).find((candidate) => candidate.id === admission.stationId) : undefined;
+    if (!pipeline || !station?.admit) return this.dropAdmission(key);
+    if (isPaused(pipeline)) return this.armAdmissionPoll(admission, station.admit.pollMs);
+    const given = admissionInput(pipeline, station.id);
+    // An empty queue costs no check.
+    if (given.jobs.length === 0) return this.dropAdmission(key);
+    const sent = given.jobs.map((job) => job.id);
+    admission.busy = true;
+    admission.dirty = null;
+    admission.gapWait = false;
+    admission.next = null;
+    const status = admission.status;
+    status.running = true;
+    status.since = nowIso();
+    status.trigger = trigger;
+    status.tail = "";
+    status.nextCheckAt = null;
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const finish = (outcome: ReturnType<typeof readAdmission>) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      admission.child = null;
+      // Dropped (the queue emptied, the pipeline ended): whoever dropped it owns the slot now.
+      if (this.admissions.get(key) !== admission) return;
+      const output = tailOf([stdout.trimEnd(), stderr.trimEnd()].filter(Boolean).join("\n"));
+      this.onAdmissionChecked(key, admission, sent, outcome, output).catch((error: unknown) => console.error(`[playbooks] admission check of "${station.id}" in ${admission.pipelineId} failed:`, errorText(error)));
+    };
+    try {
+      // The pipeline's workspace is where its scripts live; one a newer commit added is read once the pipeline is between trains.
+      let file = path.join(pipeline.workspaceDir, station.admit.script);
+      if (!existsSync(file) && existsSync(pipeline.workspaceDir) && !this.trainsOf(pipeline.id).some((train) => !isTerminal(train.status))) {
+        const id = pipeline.id;
+        await this.refreshPipeline(id).catch((error: unknown) => console.error(`[playbooks] could not refresh ${id}:`, errorText(error)));
+        pipeline = this.store.get(id)!;
+        file = path.join(pipeline.workspaceDir, station.admit.script);
+      }
+      if (!existsSync(pipeline.workspaceDir)) return finish({ kind: "failed", message: `the pipeline's workspace ${pipeline.workspaceDir} does not exist` });
+      if (!existsSync(file)) return finish({ kind: "failed", message: `${station.admit.script} not found in the pipeline's workspace ${pipeline.workspaceDir}` });
+      const child = spawn(file, [], {
+        cwd: pipeline.workspaceDir,
+        env: {
+          ...process.env,
+          PLAYBOOK_RUN_ID: pipeline.id,
+          PLAYBOOK_STEP_ID: station.id,
+          PLAYBOOK_STATION: station.id,
+          PLAYBOOK_PIPELINE: pipeline.playbook.id,
+          PLAYBOOK_CHECK: String(status.checks + 1),
+          PLAYBOOK_WORKSPACE: pipeline.workspaceDir,
+          PLAYBOOK_JOBS: JSON.stringify(given.jobs),
+          PLAYBOOK_JOBS_OMITTED: String(given.omitted),
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      admission.child = child;
+      const limit = this.options.admissionTimeoutMs ?? ADMISSION_TIMEOUT_MS;
+      timer = setTimeout(() => {
+        child.kill("SIGTERM");
+        finish({ kind: "failed", message: `timed out after ${formatMinutes(limit)}` });
+      }, limit);
+      (timer as unknown as { unref?: () => void }).unref?.();
+      child.stdout!.on("data", (chunk: Buffer) => {
+        stdout = tailOf(stdout + chunk.toString());
+        status.tail = tailOf(status.tail + chunk.toString());
+      });
+      child.stderr!.on("data", (chunk: Buffer) => {
+        stderr = tailOf(stderr + chunk.toString());
+        status.tail = tailOf(status.tail + chunk.toString());
+      });
+      child.on("error", (error) => finish({ kind: "failed", message: errorText(error) }));
+      child.on("close", (code, signal) => finish(readAdmission({ code, signal }, stdout, stderr)));
+    } catch (error) {
+      finish({ kind: "failed", message: errorText(error) });
+    }
+  }
+
+  /** A check ended: a result is applied to the queue; "not yet" and a failure change nothing (a failure shows in the panel). */
+  private async onAdmissionChecked(key: string, admission: Admission, sent: string[], outcome: ReturnType<typeof readAdmission>, output: string): Promise<void> {
+    const status = admission.status;
+    status.running = false;
+    status.since = null;
+    status.trigger = null;
+    status.tail = "";
+    status.checks += 1;
+    status.lastCheckAt = nowIso();
+    admission.endedAt = Date.now();
+    if (outcome.kind === "failed") {
+      status.lastOutcome = "failed";
+      status.error = { at: nowIso(), message: outcome.message, tail: output };
+      console.warn(`[playbooks] admission check of "${admission.stationId}" in ${admission.pipelineId} failed: ${outcome.message}`);
+    } else {
+      status.lastOutcome = outcome.kind === "not_yet" ? "not_yet" : "ok";
+      status.error = null;
+      status.warnings = [];
+      if (outcome.kind === "result" && this.store.get(admission.pipelineId)) {
+        const applied = await this.store.mutate(admission.pipelineId, (current) => engine.applyAdmission(current, admission.stationId, sent, outcome.result, nowIso()));
+        status.warnings = applied.warnings;
+        for (const warning of applied.warnings) console.warn(`[playbooks] admission check of "${admission.stationId}" in ${admission.pipelineId}: ${warning}`);
+      }
+    }
+    admission.busy = false;
+    const pipeline = this.store.get(admission.pipelineId);
+    const station = pipeline ? engine.stationsOf(pipeline).find((candidate) => candidate.id === admission.stationId) : undefined;
+    if (this.admissions.get(key) === admission && station?.admit) {
+      // An event (or a retry) came in during the check: one more, after the gap; else the poll.
+      if (admission.dirty) this.scheduleAdmissionWake(admission, admission.dirty);
+      else this.armAdmissionPoll(admission, station.admit.pollMs);
+    }
+    // Admitted jobs may board; an emptied queue drops its check.
+    await this.tick();
+  }
+
+  private armAdmissionPoll(admission: Admission, pollMs: number): void {
+    if (admission.next) clearTimeout(admission.next);
+    const key = `${admission.pipelineId}/${admission.stationId}`;
+    admission.next = setTimeout(() => void this.runAdmission(key, "poll").catch((error: unknown) => console.error("[playbooks] admission check failed:", errorText(error))), pollMs);
+    (admission.next as unknown as { unref?: () => void }).unref?.();
+    admission.status.nextCheckAt = new Date(Date.now() + pollMs).toISOString();
+  }
+
+  /** The bus listener of a station's admission: its own queue's `job.queued`, and the stations' `wake_on` rules. */
+  private wakeAdmissions(event: BusEvent): void {
+    for (const [key, admission] of this.admissions) {
+      const pipeline = this.store.get(admission.pipelineId);
+      const station = pipeline ? engine.stationsOf(pipeline).find((candidate) => candidate.id === admission.stationId) : undefined;
+      if (!station?.admit) continue;
+      const own = event.runId === admission.pipelineId && event.payload.station === admission.stationId;
+      // What the check itself does (hold, admit, escalate) does not wake it.
+      if (own && ["job.held", "job.admitted", "job.escalated"].includes(event.type)) continue;
+      const hit =
+        (own && event.type === "job.queued") ||
+        station.admit.wakeOn.some((rule) => rule.types.some((type) => globToRegExp(type).test(event.type)) && Object.entries(rule.filter).every(([field, value]) => event.payload[field] === value));
+      if (!hit) continue;
+      if (admission.busy) admission.dirty ??= event.type;
+      else if (!admission.gapWait) this.scheduleAdmissionWake(admission, event.type, key);
+    }
+  }
+
+  /** Replaces the poll timer by a check now (a retry), or when the gap since the last one has passed. */
+  private scheduleAdmissionWake(admission: Admission, type: string, key = `${admission.pipelineId}/${admission.stationId}`): void {
+    if (admission.child || (admission.gapWait && type !== "retry")) return;
+    if (admission.next) clearTimeout(admission.next);
+    admission.gapWait = false;
+    admission.dirty = null;
+    const gap = this.options.wakeGapMs ?? DEFAULT_WAKE_GAP_MS;
+    const wait = type === "retry" ? 0 : Math.max(0, admission.endedAt + gap - Date.now());
+    const trigger = type === "retry" ? "retry" : `event:${type}`;
+    const start = () => void this.runAdmission(key, trigger).catch((error: unknown) => console.error("[playbooks] admission check failed:", errorText(error)));
+    if (wait === 0) {
+      admission.next = null;
+      return start();
+    }
+    admission.gapWait = true;
+    admission.next = setTimeout(start, wait);
+    (admission.next as unknown as { unref?: () => void }).unref?.();
+    admission.status.nextCheckAt = new Date(Date.now() + wait).toISOString();
+  }
+
+  /** A human decided an admission gate: retry checks the queue again at once; withdraw tells the job's hand-off; admit lets it board. */
+  private async afterAdmissionDecision(pipelineId: string, gate: Gate): Promise<void> {
+    const pipeline = this.store.get(pipelineId);
+    const job = pipeline?.jobs.find((candidate) => candidate.id === gate.jobId);
+    if (gate.status === "retry") {
+      const admission = this.admissions.get(`${pipelineId}/${gate.stepId}`);
+      if (admission) {
+        if (admission.busy) admission.dirty = "retry";
+        else this.scheduleAdmissionWake(admission, "retry");
+      }
+    } else if (gate.status === "withdraw" && job?.status === "withdrawn") {
+      await this.deliverJob(job, { outcome: "failure", summary: job.summary ?? "withdrawn from the queue", outputs: {} }, true);
+    }
+    await this.tick();
+  }
+
+  /** The admission checks of a pipeline's stations, for the panel: live status, in memory (idle after a daemon restart until the next check). */
+  admissionStatus(runId: string): Record<string, AdmissionStatus> {
+    const pipeline = this.store.get(runId);
+    if (!pipeline) return {};
+    return Object.fromEntries(
+      engine
+        .stationsOf(pipeline)
+        .filter((station) => station.admit)
+        .map((station) => [station.id, structuredClone(this.admissions.get(`${runId}/${station.id}`)?.status ?? idleAdmission())]),
+    );
+  }
+
   /**
    * start_playbook's autoStart: starts the new run's ready agent steps, one after the other, through startStep (same
    * model resolution, role and workspace as the manager's own call). Script, hand-off and gate steps are not started
@@ -2447,6 +2706,11 @@ export class Runtime {
   /** A gate decision from the panel (wakes the manager) or from chat via resume (does not). */
   async decideGate(runId: string, gateId: string, decision: engine.GateDecision): Promise<{ alreadyDecided: boolean; gate: Run["gates"][number] }> {
     const result = await this.store.mutate(runId, (current) => engine.decideGate(current, gateId, decision));
+    if (result.gate.kind === "admission") {
+      // A pipeline has no manager to tell: the decision acts on the job and the station's queue.
+      if (!result.alreadyDecided) await this.afterAdmissionDecision(runId, result.gate);
+      return { alreadyDecided: result.alreadyDecided, gate: result.gate };
+    }
     if (!result.alreadyDecided) {
       const manager = this.store.get(runId)?.managerAgentId;
       if (manager) this.gateManagers.add(manager);

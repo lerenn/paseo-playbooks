@@ -24,7 +24,7 @@ import type {
   VarValue,
   When,
 } from "../shared/types";
-import { AgentSettingsSchema, DEFAULT_EXHAUSTED_FOR_MS, DEFAULT_MANAGER_COMPACT, DEFAULT_MANAGER_MODE, ManagerCompactSchema, ManagerModeSchema, type ManagerMode, type Isolation, VarTypeSchema, VarValueSchema } from "../shared/types";
+import { AgentSettingsSchema, DEFAULT_EXHAUSTED_FOR_MS, DEFAULT_MANAGER_COMPACT, DEFAULT_MANAGER_MODE, ManagerCompactSchema, ManagerModeSchema, type ManagerMode, type Isolation, type WakeOn, VarTypeSchema, VarValueSchema } from "../shared/types";
 import { BusError, checkTypes, FilterValueSchema } from "./bus";
 import { JOB_TYPES } from "./job-events";
 import { OVERSIGHT_TYPES } from "./oversight-events";
@@ -182,6 +182,36 @@ const RawGateStepSchema = z
 /** The event types a script's `wake_on` can name: those the runtime registers on its bus. */
 const WAKE_TYPES = [...OVERSIGHT_TYPES, ...JOB_TYPES];
 
+/** Rules of a `wake_on`: a check runs at once when an event of one of the types, with these payload fields, is emitted. */
+const RawWakeOnSchema = z
+  .array(
+    z
+      .object({
+        /** Event types: exact (`job.settled`) or globs (`job.*`), as `subscribe_events` takes them. */
+        types: z.array(z.string()).min(1),
+        /** Payload fields that must equal these values (declared fields of the chosen types). */
+        filter: z.record(z.string(), FilterValueSchema).default({}),
+      })
+      .strict(),
+  )
+  .min(1);
+
+/** Validates the rules of a `wake_on` against the bus's event types; reports each refused rule with `err`. */
+function checkWakeOn(rules: z.infer<typeof RawWakeOnSchema>, where: string, err: (message: string) => void): WakeOn {
+  const checked: WakeOn = [];
+  rules.forEach((wake, index) => {
+    try {
+      if ("olderThanMinutes" in wake.filter) throw new BusError("filter \"olderThanMinutes\" is only for subscribe_events");
+      checkTypes(WAKE_TYPES, wake.types, wake.filter, false);
+      checked.push({ types: [...new Set(wake.types)], filter: wake.filter });
+    } catch (error) {
+      if (!(error instanceof BusError)) throw error;
+      err(`${where}[${index}]: ${error.message}`);
+    }
+  });
+  return checked;
+}
+
 /** A script step: an executable in the folder's scripts/, run by the plugin itself. */
 const RawScriptStepSchema = z
   .object({
@@ -189,19 +219,7 @@ const RawScriptStepSchema = z
     /** Rerun the script this often while it exits with SCRIPT_NOT_YET (`30s`, `1m`). */
     poll: z.string().optional(),
     /** Run a check at once when a matching bus event is emitted, instead of waiting for the next poll. Needs `poll` (the safety net). */
-    wake_on: z
-      .array(
-        z
-          .object({
-            /** Event types: exact (`job.settled`) or globs (`job.*`), as `subscribe_events` takes them. */
-            types: z.array(z.string()).min(1),
-            /** Payload fields that must equal these values (declared fields of the chosen types). */
-            filter: z.record(z.string(), FilterValueSchema).default({}),
-          })
-          .strict(),
-      )
-      .min(1)
-      .optional(),
+    wake_on: RawWakeOnSchema.optional(),
   })
   .strict();
 
@@ -301,6 +319,18 @@ const RawStepSchema = z.object({
       .object({
         /** fifo: the oldest waiting job alone; merge: every waiting job. */
         mode: z.enum(["fifo", "merge"]).default("fifo"),
+        /** A script that decides which waiting jobs may board; the plugin runs it with no train and no agent. */
+        admit: z
+          .object({
+            /** The executable in the folder's scripts/. */
+            script: z.string().min(1),
+            /** Interval between checks while jobs wait (`10m`): the safety net. Required. */
+            poll: z.string().optional(),
+            /** Events that run a check at once; a job queued at this station always does. */
+            wake_on: RawWakeOnSchema.optional(),
+          })
+          .strict()
+          .optional(),
       })
       .strict()
       .optional(),
@@ -1475,7 +1505,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     }
     let script: string | undefined;
     let pollMs: number | undefined;
-    let wakeOn: Array<{ types: string[]; filter: Record<string, string | number | boolean> }> | undefined;
+    let wakeOn: WakeOn | undefined;
     if (rawStep.wake_on !== undefined) err(`${where}: \`wake_on\` only applies to a script step (under \`script:\`)`);
     if (scriptStep) {
       const checked = await checkScript(root, scriptStep.run);
@@ -1487,17 +1517,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
       }
       if (scriptStep.wake_on) {
         if (scriptStep.poll === undefined) err(`${where}: script.wake_on needs \`poll\`: events are a hint, the poll is the safety net (write \`script: { run: ${scriptStep.run}, poll: 10m, wake_on: [...] }\`)`);
-        wakeOn = [];
-        scriptStep.wake_on.forEach((wake, index) => {
-          try {
-            if ("olderThanMinutes" in wake.filter) throw new BusError("filter \"olderThanMinutes\" is only for subscribe_events");
-            checkTypes(WAKE_TYPES, wake.types, wake.filter, false);
-            wakeOn!.push({ types: [...new Set(wake.types)], filter: wake.filter });
-          } catch (error) {
-            if (!(error instanceof BusError)) throw error;
-            err(`${where}: script.wake_on[${index}]: ${error.message}`);
-          }
-        });
+        wakeOn = checkWakeOn(scriptStep.wake_on, `${where}: script.wake_on`, err);
       }
     }
     const choices: GateChoice[] = Object.entries(gateStep?.choices ?? {}).map(([id, raw]) => {
@@ -1775,6 +1795,18 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     for (const raw of pb.steps) {
       const own = finalSteps.filter((step) => step.id === raw.id || step.id.startsWith(`${raw.id}.`)).map((step) => step.id);
       const block = blocks.get(raw.id);
+      let admit: Station["admit"];
+      const rawAdmit = raw.queue?.admit;
+      if (rawAdmit) {
+        const where = `step "${raw.id}": queue.admit`;
+        const checked = await checkScript(root, rawAdmit.script);
+        if ("error" in checked) err(`${where}.script: ${checked.error}`);
+        const pollMs = rawAdmit.poll !== undefined ? parseDuration(rawAdmit.poll) : null;
+        if (rawAdmit.poll === undefined) err(`${where} needs \`poll\`: events are a hint, the poll is the safety net (write \`queue: { admit: { script: ${rawAdmit.script}, poll: 10m } }\`)`);
+        else if (pollMs === null) err(`${where}.poll: expected a duration such as 30s or 10m`);
+        const wakeOn = rawAdmit.wake_on ? checkWakeOn(rawAdmit.wake_on, `${where}.wake_on`, err) : [];
+        if (!("error" in checked) && pollMs !== null) admit = { script: `${folder.relDir}/scripts/${checked.name}`, pollMs, wakeOn };
+      }
       stations.push({
         id: raw.id,
         title: raw.title ?? block?.title ?? stepLabel(raw.id),
@@ -1782,6 +1814,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
         mode: raw.queue?.mode ?? "fifo",
         retries: raw.retries,
         steps: own,
+        ...(admit ? { admit } : {}),
       });
       // Jobs only move forward: a station loops only inside itself.
       for (const step of finalSteps.filter((candidate) => own.includes(candidate.id))) {
