@@ -1,7 +1,7 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 import { AnalyticsSchema } from "./analytics";
-import { PlaybookEntrySchema, ProfileInfoSchema, RunSchema, RunSummarySchema, ScriptOutputSchema, VarValueSchema } from "./types";
+import { AdmissionStatusSchema, PlaybookEntrySchema, ProfileInfoSchema, RunSchema, RunSummarySchema, ScriptOutputSchema, VarValueSchema } from "./types";
 
 export const listPlaybooks = defineRpc({
   name: "playbooks.list",
@@ -67,6 +67,13 @@ export const scriptOutputRpc = defineRpc({
   name: "runs.script-output",
   input: z.object({ runId: z.string(), stepId: z.string() }),
   output: ScriptOutputSchema,
+});
+
+/** The admission checks of a pipeline's stations (`queue.admit`), by station id. The station view polls it. */
+export const admissionStatusRpc = defineRpc({
+  name: "runs.admission",
+  input: z.object({ runId: z.string() }),
+  output: z.object({ stations: z.record(z.string(), AdmissionStatusSchema) }),
 });
 
 export const startRun = defineRpc({

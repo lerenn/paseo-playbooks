@@ -50,7 +50,7 @@ function runningSteps(run: Run): string[] {
 
 /** A gate without its details, its comment clipped like a step summary. */
 function compactGate(gate: Run["gates"][number]) {
-  return { id: gate.id, kind: gate.kind, stepId: gate.stepId, status: gate.status, summary: gate.summary, comment: clip(gate.comment), decidedBy: gate.decidedBy };
+  return { id: gate.id, kind: gate.kind, ...(gate.jobId ? { jobId: gate.jobId } : {}), stepId: gate.stepId, status: gate.status, summary: gate.summary, comment: clip(gate.comment), decidedBy: gate.decidedBy };
 }
 
 /** A train's (or pipeline's) jobs: id, where from, status and outcome (inputs with view "full"). */
@@ -60,7 +60,15 @@ function jobStatus(run: Run, full = false) {
     from: job.label,
     status: job.status,
     outcome: job.outcome,
-    ...(isPipeline(run) ? { passed: job.passed, waiting: job.waiting.map((place) => place.station), riding: job.riding.map((ride) => `${ride.station} (${ride.runId})`) } : {}),
+    ...(isPipeline(run)
+      ? {
+          passed: job.passed,
+          waiting: job.waiting.map((place) => place.station),
+          riding: job.riding.map((ride) => `${ride.station} (${ride.runId})`),
+          // Held by a station's admission script: why, since when it waits, and when that was decided (null: not checked yet).
+          ...(job.waiting.some((place) => place.held) ? { held: Object.fromEntries(job.waiting.flatMap((place) => (place.held ? [[place.station, { reason: place.held.reason, since: place.since, checkedAt: place.held.checkedAt }]] : []))) } : {}),
+        }
+      : {}),
     ...(full ? { inputs: job.inputs, outputs: job.outputs, summary: job.summary } : { summary: clip(job.summary) }),
   }));
 }

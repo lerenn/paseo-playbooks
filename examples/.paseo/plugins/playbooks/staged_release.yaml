@@ -1,0 +1,33 @@
+title: Staged release
+description: A pipeline with two stations. The staging station admits a waiting job only when its script says so; the others wait, with a reason shown in the panel.
+
+singleton: { branch: main }
+
+inputs:
+  change:
+    type: string
+    required: true
+    description: The change to release (a pull request URL)
+  ticket:
+    type: string
+    description: The ticket the change belongs to
+outcomes: [shipped, ejected]
+
+steps:
+  - id: dev
+    gate: { question: Is the change released on dev? }
+    queue: { mode: merge }
+
+  - id: staging
+    needs: [dev]
+    gate: { question: Is the change released on staging? }
+    queue:
+      mode: fifo
+      # The plugin runs this script on the station's waiting jobs: no train, no agent, no tokens.
+      # It runs when a job joins this queue, when the other pipeline's `smoke` station advances or settles a job,
+      # and every 10 minutes (the safety net: events are only hints).
+      admit:
+        script: admit_staging.sh
+        poll: 10m
+        wake_on:
+          - { types: [job.advanced, job.settled], filter: { playbook: qa_pipeline, station: smoke } }

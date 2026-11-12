@@ -167,6 +167,10 @@ export const WhenSchema = z.object({
 });
 export type When = z.infer<typeof WhenSchema>;
 
+/** Events that wake a script step or a station's admission check at once (`wake_on`): a rule matches a type and equal payload fields. */
+export const WakeOnSchema = z.array(z.object({ types: z.array(z.string()).min(1), filter: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])) }));
+export type WakeOn = z.infer<typeof WakeOnSchema>;
+
 export const StepSchema = z.object({
   id: z.string(),
   /** Full name (details panel, graph). Unset = stepLabel(id). */
@@ -213,7 +217,7 @@ export const StepSchema = z.object({
   /** Script steps: rerun the script this often while it exits with SCRIPT_NOT_YET. Unset = run it once. */
   pollMs: z.number().int().positive().optional(),
   /** Script steps: events that run a check at once instead of waiting for the next poll (`poll` stays the safety net). */
-  wakeOn: z.array(z.object({ types: z.array(z.string()).min(1), filter: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])) })).optional(),
+  wakeOn: WakeOnSchema.optional(),
   needs: z.array(z.string()),
   prompt: z.string(),
   inputs: z.record(z.string(), InputWiringSchema),
@@ -275,6 +279,20 @@ export const StationSchema = z.object({
   retries: z.number().int().min(0),
   /** Its steps in `Playbook.steps` (one, or the expanded steps of its sub-playbook). */
   steps: z.array(z.string()),
+  /**
+   * `queue.admit`: a script the plugin runs on the waiting list (no train, no agent) that says which waiting jobs may board.
+   * Unset = every waiting job may board (ADR 2026-11-12-queue-admission-impl).
+   */
+  admit: z
+    .object({
+      /** The script, relative to the workspace root (`<folder>/scripts/<name>`). */
+      script: z.string(),
+      /** Safety-net interval between checks. */
+      pollMs: z.number().int().positive(),
+      /** Events that run a check at once; a job queued at this station always does (not listed here). */
+      wakeOn: WakeOnSchema.default([]),
+    })
+    .optional(),
 });
 export type Station = z.infer<typeof StationSchema>;
 
@@ -635,7 +653,9 @@ export type RunStep = z.infer<typeof RunStepSchema>;
 
 export const GateSchema = z.object({
   id: z.string(),
-  kind: z.enum(["gate", "loop_limit", "ask"]),
+  kind: z.enum(["gate", "loop_limit", "ask", "admission"]),
+  /** An `admission` gate: the station it is about (its `stepId`) and the held job it asks about. Null on the other kinds. */
+  jobId: z.string().nullable().default(null),
   stepId: z.string(),
   /** For loop_limit and ask gates: the step the goto leads to (an ask gate's first choice's). */
   gotoTarget: z.string().nullable(),
@@ -708,7 +728,21 @@ export const JobSchema = z.object({
   /** Pipelines: the stations it has passed. */
   passed: z.array(z.string()).default([]),
   /** Pipelines: the stations it waits at, and since when (orders the waiting list). */
-  waiting: z.array(z.object({ station: z.string(), since: z.string() })).default([]),
+  waiting: z
+    .array(
+      z.object({
+        station: z.string(),
+        since: z.string(),
+        /**
+         * Admission (`queue.admit`): why the job may not board now, and when that was decided; `checkedAt` null = the
+         * first check has not run yet. Null = it may board. Never set at a station without `admit`.
+         */
+        held: z.object({ reason: z.string(), checkedAt: z.string().nullable() }).nullable().default(null),
+        /** A human admitted it anyway: the script no longer holds it, and it leaves this list when it boards. */
+        forced: z.boolean().default(false),
+      }),
+    )
+    .default([]),
   /** Pipelines: the trains (runs) carrying it now, by station. */
   riding: z.array(z.object({ station: z.string(), runId: z.string(), since: z.string() })).default([]),
   /** Pipelines: failed trains it rode, by station (capped by the station's `retries`). */
@@ -752,6 +786,29 @@ export const ScriptOutputSchema = z.object({
   ),
 });
 export type ScriptOutput = z.infer<typeof ScriptOutputSchema>;
+
+/** A station's admission check (`queue.admit`), live in memory: running or waiting, the last outcome and the last failure. */
+export const AdmissionStatusSchema = z.object({
+  /** A check is running now. */
+  running: z.boolean(),
+  /** When the running check started. */
+  since: z.string().nullable(),
+  /** What started the running check: "first", "poll", "event:<type>", "retry". */
+  trigger: z.string().nullable(),
+  /** The running check's latest output, bounded. */
+  tail: z.string(),
+  /** When the next check is due (poll timer or a wake-up waiting out the gap); null while one runs or nothing waits. */
+  nextCheckAt: z.string().nullable(),
+  /** Checks that ended since the plugin started tracking this station. */
+  checks: z.number().int(),
+  lastCheckAt: z.string().nullable(),
+  lastOutcome: z.enum(["ok", "not_yet", "failed"]).nullable(),
+  /** The last check failed (exit, timeout, no result line): when, why and the end of its output. Cleared by the next check that ends well. */
+  error: z.object({ at: z.string(), message: z.string(), tail: z.string() }).nullable(),
+  /** The last good check's remarks (unknown job ids in its result). */
+  warnings: z.array(z.string()),
+});
+export type AdmissionStatus = z.infer<typeof AdmissionStatusSchema>;
 
 export const RunSchema = z.object({
   version: z.literal(1),

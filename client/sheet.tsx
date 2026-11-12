@@ -85,6 +85,7 @@ function choiceColors(theme: Theme, color: NonNullable<GateChoice["color"]>): { 
 function destinationLabel(run: Pick<RunSummary, "playbook">, gate: Gate, choiceId: string): string {
   const step = run.playbook.steps.find((candidate) => candidate.id === gate.stepId);
   let outcome = choiceId;
+  if (gate.kind === "admission") return choiceId === "admit" ? "→ Boards the next train" : choiceId === "withdraw" ? "→ Leaves the pipeline" : "→ Checks again";
   if (gate.kind === "ask") {
     const ask = askTransitionOf(gate, step);
     const choice = ask ? askChoices(ask).find((candidate) => candidate.id === choiceId) : undefined;

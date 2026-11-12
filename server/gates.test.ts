@@ -32,7 +32,7 @@ describe("gateText and linkify", () => {
   const long =
     'PR #3 (https://github.com/lerenn/paseo-playbooks/pull/3, head 61be527) adds a "Known limits" section to README.md and targets feat/playbooks-plugin. Only README.md changed. CI is green.';
   const gate = {
-    id: "g", kind: "gate" as const, stepId: "pr_approval", gotoTarget: null, outcome: null, status: "pending",
+    id: "g", kind: "gate" as const, jobId: null, stepId: "pr_approval", gotoTarget: null, outcome: null, status: "pending",
     message: "", summary: long, details: "The PR is ready.", requestedAt: "", comment: null, decidedBy: null, decidedVia: null, decidedAt: null,
     decider: { by: "human" as const }, deciderAgentId: null, escalated: null, escalatedAt: null,
   };

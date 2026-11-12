@@ -77,7 +77,7 @@ describe("job reducers: parity with the engine's mutators", () => {
     let pipe = pipelineRun();
     pipe = step(pipe, (copy) => engine.addJob(copy, newJob("j1"), at(1)));
     pipe = step(pipe, (copy) => engine.addJob(copy, newJob("j2"), at(2)));
-    expect(pipe.jobs[0]!.waiting).toEqual([{ station: "dev", since: at(1) }]);
+    expect(pipe.jobs[0]!.waiting).toEqual([{ station: "dev", since: at(1), held: null, forced: false }]);
     pipe = step(pipe, (copy) => engine.boardTrain(copy, "dev", "t1", ["j1", "j2"], at(3)));
     const train = engine.newTrainRun({ id: "t1", pipeline: pipe, station: "dev", jobs: pipe.jobs, managerAgentId: "m", now: at(3) });
     // A manager sets outputs, then the train fails once: back to waiting; rides again.
@@ -237,7 +237,7 @@ describe("the run store and its log", () => {
     expect(reopened.get("pipe")!.jobs).toHaveLength(1);
     await reopened.mutate("pipe", (run) => engine.addJob(run, newJob("j2"), at(2)));
     const { events } = await reopened.log.read("pipe");
-    expect(events[0]).toMatchObject({ type: "jobs.genesis", data: { state: [expect.objectContaining({ id: "j1" })] } });
+    expect(events[0]).toMatchObject({ type: "jobs.genesis", data: { state: { jobs: [expect.objectContaining({ id: "j1" })], gates: [] } } });
     expect(verifyLog(EVENT_AREAS, reopened.get("pipe")!, events)).toEqual([]);
   });
 

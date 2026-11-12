@@ -397,6 +397,64 @@ steps:
     role: { name: reviewer, prompt: "The job {{ inputs.job }} settled upstream ({{ inputs.outcome_seen }}). Say so in one line." }
     inputs: [job, outcome_seen]
 </code></pre>
+<h2 id="staged-release">Staged release (queue admission)</h2>
+<p>From <a href="https://github.com/lerenn/paseo-playbooks/tree/main/examples/.paseo/plugins/playbooks"><code>examples/.paseo/plugins/playbooks/</code></a>. A singleton pipeline whose <code>staging</code> station admits a waiting job only when its script says so. The script runs with no train or agent, reads the waiting jobs and their inputs, and answers with <code>admit</code>, <code>hold</code> (a reason shown in the panel) and <code>escalate</code> (asks a human). <a href="reference.html#admission">Reference</a>.</p>
+<p class="file">staged_release.yaml</p>
+<pre><code>title: Staged release
+description: A pipeline with two stations. The staging station admits a waiting job only when its script says so; the others wait, with a reason shown in the panel.
+
+singleton: { branch: main }
+
+inputs:
+  change:
+    type: string
+    required: true
+    description: The change to release (a pull request URL)
+  ticket:
+    type: string
+    description: The ticket the change belongs to
+outcomes: [shipped, ejected]
+
+steps:
+  - id: dev
+    gate: { question: Is the change released on dev? }
+    queue: { mode: merge }
+
+  - id: staging
+    needs: [dev]
+    gate: { question: Is the change released on staging? }
+    queue:
+      mode: fifo
+      # The plugin runs this script on the station&#x27;s waiting jobs: no train, no agent, no tokens.
+      # It runs when a job joins this queue, when the other pipeline&#x27;s `smoke` station advances or settles a job,
+      # and every 10 minutes (the safety net: events are only hints).
+      admit:
+        script: admit_staging.sh
+        poll: 10m
+        wake_on:
+          - { types: [job.advanced, job.settled], filter: { playbook: qa_pipeline, station: smoke } }
+</code></pre>
+<p class="file">scripts/admit_staging.sh</p>
+<pre><code>#!/bin/sh
+# Admission check of a station&#x27;s queue. It looks once and exits; the plugin reruns it, so it must be idempotent.
+#
+# In:  PLAYBOOK_JOBS     JSON list of the station&#x27;s waiting jobs: [{ &quot;id&quot;, &quot;label&quot;, &quot;since&quot;, &quot;inputs&quot;: { ... } }]
+#      PLAYBOOK_STATION  the station this queue belongs to (here: staging)
+#      PLAYBOOK_PIPELINE the pipeline&#x27;s playbook id (here: staged_release)
+# Out: the last line of stdout, a JSON object:
+#        admit:    [ids]                  these may board the next train
+#        hold:     { id: &quot;reason&quot; }       these wait; the reason is shown in the panel and in get_run
+#        escalate: { id: &quot;reason&quot; }       these cannot become admissible by themselves: a human is asked
+#      A job the script does not name is held (&quot;not admitted by the script&quot;).
+# Exit 75 means &quot;not yet&quot;: nothing changes and the next trigger retries. Any other failure changes nothing either
+# and is shown as an alert on the station.
+#
+# Replace the rule below with a real look at your tracker, code host or CI (needs jq to read the jobs).
+echo &quot;$PLAYBOOK_JOBS&quot; | jq -c &#x27;{
+  admit: [.[] | select((.inputs.ticket // &quot;&quot;) != &quot;&quot;) | .id],
+  hold: ([.[] | select((.inputs.ticket // &quot;&quot;) == &quot;&quot;) | { key: .id, value: &quot;no ticket: add one to the change&quot; }] | from_entries)
+}&#x27;
+</code></pre>
 <h2 id="docs">Docs check</h2>
 <p>From <a href="https://github.com/lerenn/paseo-playbooks/tree/main/.paseo/plugins/playbooks"><code>.paseo/plugins/playbooks/</code></a> at the root of this repository, the playbook that checks this repository's own docs. Every role only reads or edits files, so <code>default</code> and <code>acceptEdits</code> are enough. The verdict step loops back to the writer at most twice, and a rejected gate sends the work back with your comment.</p>
 <pre><code>investigate ─▶ write ─┬─▶ review ──────┬─▶ verdict ─▶ ◆ approve ─▶ end

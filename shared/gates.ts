@@ -17,6 +17,16 @@ export function gateChoices(step: Pick<Step, "choices">): GateChoice[] {
   return step.choices.length > 0 ? step.choices : DEFAULT_GATE_CHOICES;
 }
 
+/**
+ * The choices of an `admission` gate (a job a station's admission script escalated): check again and keep holding it,
+ * take it out of the pipeline, or let it board anyway.
+ */
+export const ADMISSION_CHOICES: GateChoice[] = [
+  { id: "retry", label: "Check again", comment: "optional" },
+  { id: "withdraw", label: "Withdraw the job", comment: "optional", color: "danger" },
+  { id: "admit", label: "Admit anyway", comment: "optional", color: "warning" },
+];
+
 /** The single choice of an `ask` gate without `choices`: the answer, required, becomes the feedback of the step it goes back to. */
 export const ASK_CHOICES: GateChoice[] = [{ id: "answered", label: "Send answer", comment: "required" }];
 
@@ -40,6 +50,7 @@ export function askTransitionOf(gate: Gate, step: Pick<Step, "on"> | undefined):
 /** The choices of an open gate: its step's, the fixed ones of loop-limit gates, or the ask's. */
 export function choicesOfGate(gate: Gate, step: Pick<Step, "on" | "choices"> | undefined): GateChoice[] {
   if (gate.kind === "loop_limit") return LOOP_LIMIT_CHOICES;
+  if (gate.kind === "admission") return ADMISSION_CHOICES;
   if (gate.kind === "ask") {
     const transition = askTransitionOf(gate, step);
     return transition ? askChoices(transition) : ASK_CHOICES;
