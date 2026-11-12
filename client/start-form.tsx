@@ -359,7 +359,7 @@ export function RunPlaybookButton(props: { theme: Theme; loading?: boolean; onPr
       accessibilityState={{ disabled: props.loading === true }}
       disabled={props.loading === true}
       onPress={props.onPress}
-      style={{ flexDirection: "row", alignItems: "center", gap: 6, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6, backgroundColor: theme.colors.accent, opacity: props.loading ? 0.5 : 1 }}
+      style={{ flexDirection: "row", alignItems: "center", gap: 6, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6, borderWidth: 1, borderColor: theme.colors.accent, backgroundColor: theme.colors.accent, opacity: props.loading ? 0.5 : 1 }}
     >
       <Icon name="Play" size={13} color={theme.colors.accentForeground} />
       <Text style={{ color: theme.colors.accentForeground, fontSize: 13, fontWeight: "600" }}>Run Playbook</Text>
