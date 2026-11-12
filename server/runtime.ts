@@ -1559,7 +1559,8 @@ export class Runtime {
           playbook: step.fanout!.playbook,
           inputs: child.inputs,
           force: false,
-          workspaceName: child.workspaceName,
+          workspaceName: step.fanout!.workspace === "parent" ? "" : child.workspaceName,
+          sameWorkspace: step.fanout!.workspace === "parent",
           child: { runId: marked, parent: { runId, stepId, key: child.key } },
         });
         if (started.status === "duplicate") {
@@ -3888,15 +3889,20 @@ export class Runtime {
     if (input.sameWorkspace && playbook.managerMode === "none") {
       const busy = this.workspaceConflict(workspace.id, playbook.isolation.mode === "worktree");
       if (busy) throw new UserError(`this workspace already has an active run (${busy.id}); use "Start in a new workspace"${playbook.isolation.mode === "worktree" ? "" : ", or give the playbook `isolation: worktree` so runs can share a workspace"}`);
-      const run = await this.startPlaybook({ id: "", workspaceId: workspace.id, cwd: workspaceDir }, playbook.id, resolved.inputs, { playbook });
+      const reservation = input.child ? { runId: input.child.runId, branch: null, playbook, inputs: resolved.inputs, parent: input.child.parent } : undefined;
+      if (reservation) this.addReservation(workspace.id, reservation);
+      const run = await this.startPlaybook({ id: "", workspaceId: workspace.id, cwd: workspaceDir }, playbook.id, resolved.inputs, { playbook }).catch((error: unknown) => {
+        if (reservation) this.dropReservation(workspace.id, reservation);
+        throw error;
+      });
       return { status: "started" as const, workspaceId: workspace.id, managerAgentId: "", runId: run.id, queued: false };
     }
     if (input.sameWorkspace) {
       const busy = this.workspaceConflict(workspace.id, playbook.isolation.mode === "worktree");
       if (busy) throw new UserError(`this workspace already has an active run (${busy.id}); use "Start in a new workspace"${playbook.isolation.mode === "worktree" ? "" : ", or give the playbook `isolation: worktree` so runs can share a workspace"}`);
       // The new agent creates the run itself with start_playbook, which takes this reserved id.
-      const runId = `run_${shortId()}`;
-      this.addReservation(workspace.id, { runId, branch: null, playbook, inputs: resolved.inputs });
+      const runId = input.child?.runId ?? `run_${shortId()}`;
+      this.addReservation(workspace.id, { runId, branch: null, playbook, inputs: resolved.inputs, ...(input.child ? { parent: input.child.parent } : {}) });
       const manager = await this.api().workspaces.ref(workspace.id).agents.create({
         config: this.managerConfig(playbook),
         title: `Playbook Manager · ${playbook.title}`,

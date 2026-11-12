@@ -206,6 +206,8 @@ export const StepSchema = z.object({
       key: z.string().optional(),
       /** Per-item title of the child's workspace. Unset = the child's default title. */
       workspaceName: z.string().optional(),
+      /** Where the child runs: its own new workspace (default), or the parent run's workspace, each in its own run worktree. */
+      workspace: z.enum(["new", "parent"]).default("new"),
       /** At most this many child runs active at once. */
       maxActive: z.number().int().positive(),
       /** Cancel the still-active child runs when the parent run is canceled or fails, or the step is reset. */

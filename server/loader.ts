@@ -248,6 +248,8 @@ const RawFanoutStepSchema = z
     key: z.string().min(1).optional(),
     /** Title of each child's workspace, templated like `inputs`. */
     workspace_name: z.string().min(1).optional(),
+    /** Where each child run lives. `in: new` (default): its own new workspace. `in: parent`: this run's workspace, in the child's own run worktree (both playbooks need `isolation: worktree`). */
+    workspace: z.object({ in: z.enum(["new", "parent"]).default("new") }).strict().optional(),
     /** At most this many child runs active at once. Default 1. */
     max_active: z.number().int().positive().max(50).default(1),
     /** Cancel the active child runs when the parent run is canceled or fails, or the step is reset. Default true. */
@@ -1449,6 +1451,10 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
         }
       }
       const mapped = fan.inputs ?? {};
+      if (fan.workspace?.in === "parent") {
+        if (fan.workspace_name !== undefined) err(`${where}: fanout.workspace_name names a new workspace: it does not apply with \`workspace: { in: parent }\``);
+        if (target && target.isolation.mode !== "worktree") err(`${where}: fanout.workspace: { in: parent }: playbook "${targetId}" must have \`isolation: worktree\`, so its runs can share the parent's workspace`);
+      }
       if (target) {
         for (const name of Object.keys(mapped)) {
           if (!target.inputs[name]) err(`${where}: fanout.inputs.${name}: playbook "${targetId}" has no input "${name}" (it has: ${Object.keys(target.inputs).join(", ") || "none"})`);
@@ -1489,6 +1495,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
           inputs: mapped,
           ...(fan.key !== undefined ? { key: fan.key } : {}),
           ...(fan.workspace_name !== undefined ? { workspaceName: fan.workspace_name } : {}),
+          workspace: fan.workspace?.in ?? "new",
           maxActive: fan.max_active,
           cancelChildren: fan.cancel_children,
         },
@@ -1856,6 +1863,11 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     // The repository default never reaches a singleton (its batches share one pipeline workspace); asking for it there is an error.
     if (resolveIsolation(pb.isolation, undefined).mode === "worktree") err("`isolation: worktree` does not apply to a singleton: its batches share one pipeline workspace");
     isolation = { ...isolation, mode: "none" };
+  }
+  for (const step of finalSteps) {
+    if (step.fanout?.workspace === "parent" && isolation.mode !== "worktree") {
+      err(`step "${step.id}": fanout.workspace: { in: parent } needs this playbook to have \`isolation: worktree\` too: a run without isolation edits the workspace checkout that its children's worktrees guard`);
+    }
   }
   if (errors.length > 0) return fail(errors);
   let managerMode: ManagerMode = defaults.managerMode ?? DEFAULT_MANAGER_MODE;
