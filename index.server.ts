@@ -45,7 +45,7 @@ import { SIDEKICK_LABEL } from "./server/sidekick";
 import { createSidekickStarter, createStarter } from "./server/starter";
 import { migrateDataDir } from "./server/data-dir";
 import { defaultRunsDir, RunStore } from "./server/store";
-import { answerGateTool, gateTool, managerTools, runTools, sidekickTool, stepTool, validateTool } from "./server/tools";
+import { answerGateTool, gateTool, managerTools, runTools, sidekickStartTools, sidekickTool, stepTool, validateTool } from "./server/tools";
 
 let safetyNet = false;
 /** One bad call (a refused result, a failed timer) must not take every run's tools down: log it and keep serving. */
@@ -90,7 +90,7 @@ export default function contribute(server: PluginServerContext) {
   // Tools: report_step_result for step agents; manager tools for agents whose workspace has
   // playbooks (or that already manage a run); validate_playbooks, list_runs, cancel_run, start_after_task and
   // restart_run for every other agent, so a human can stop, wrap up or restart a run from any chat.
-  const tools = { manager: managerTools(runtime), common: [validateTool(runtime), ...runTools(runtime)], step: stepTool(runtime), answerGate: answerGateTool(runtime), sidekick: sidekickTool(runtime), gate: gateTool(runtime) };
+  const tools = { manager: managerTools(runtime), common: [validateTool(runtime), ...runTools(runtime)], step: stepTool(runtime), answerGate: answerGateTool(runtime), sidekick: sidekickTool(runtime), sidekickStart: sidekickStartTools(runtime), gate: gateTool(runtime) };
   server.before("agent.session_open", async ({ request }, context) => {
     if (request.purpose === "history") return;
     // Only the store is needed here. Do not wait for reconcile: its own sends (resume a step, wake a
@@ -101,8 +101,8 @@ export default function contribute(server: PluginServerContext) {
     // A run with no manager (manager.mode: none) also gives its step agents answer_gate, to put a human gate's question in their conversation.
     if (request.labels[STEP_LABEL]) return { ...request, tools: [...request.tools, tools.step, ...(runtime.isManagerlessRun(request.labels["playbooks/run"]) ? [tools.answerGate] : [])] };
     if (request.labels[GATE_LABEL]) return { ...request, tools: [...request.tools, tools.gate] };
-    // The Sidekick sits on its project's root, which has playbooks: it still gets only the common tools, never a manager's.
-    if (request.labels[SIDEKICK_LABEL]) return { ...request, tools: [...request.tools, ...tools.common, tools.sidekick] };
+    // The Sidekick sits on its project's root, which has playbooks: it gets the common tools and list_playbooks / start_playbook, never the rest of a manager's.
+    if (request.labels[SIDEKICK_LABEL]) return { ...request, tools: [...request.tools, ...tools.common, ...tools.sidekickStart, tools.sidekick] };
     const manages = runtime.runsOfManager(request.agentId).length > 0 || request.labels["playbooks/manager"] === "true";
     const extra = manages || runtime.hasReservation(request.workspaceId) || (await hasPlaybooks(request.cwd)) ? tools.manager : [];
     return { ...request, tools: [...request.tools, ...tools.common, ...extra] };

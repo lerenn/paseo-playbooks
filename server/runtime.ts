@@ -3947,10 +3947,12 @@ export class Runtime {
   async startPlaybookInWorkspace(caller: { id: string; workspaceId: string | null }, input: { playbook: string; inputs: Record<string, VarValue>; workspaceId: string | undefined; newWorkspace: boolean; autoStart?: boolean; workspaceName?: string | undefined }) {
     const isSidekick = await this.isSidekick(caller.id);
     if (input.workspaceName && !input.newWorkspace) throw new UserError("workspaceName names the new workspace: pass it with newWorkspace");
-    if (!input.workspaceId) throw new UserError(isSidekick ? "name the workspace: pass workspaceId (list_workspaces) of a visible workspace of this project; you have no workspace of your own to run in" : "workspaceId is missing");
-    if (input.workspaceId === caller.workspaceId && isSidekick) throw new UserError("that is your own hidden workspace: pick a visible workspace of this project (list_workspaces), with newWorkspace to start the run in a new one");
-    const workspace = await this.api().workspaces.ref(input.workspaceId).refresh();
-    if (!workspace) throw new UserError(`workspace "${input.workspaceId}" not found (list_workspaces lists them)`);
+    // Without workspaceId a Sidekick branches the new workspace off its own (hidden) one, which is the project's root checkout.
+    const baseId = input.workspaceId ?? (isSidekick ? caller.workspaceId : null);
+    if (!baseId) throw new UserError("workspaceId is missing: name a workspace of this project (list_workspaces) to branch the new workspace off");
+    if (!input.newWorkspace && isSidekick) throw new UserError("a Sidekick never runs in a workspace that exists: the run starts in a new one");
+    const workspace = await this.api().workspaces.ref(baseId).refresh();
+    if (!workspace) throw new UserError(isSidekick && !input.workspaceId ? "the Sidekick's own workspace is gone, so there is no project root to branch the new workspace off: pass workspaceId (list_workspaces)" : `workspace "${baseId}" not found (list_workspaces lists them)`);
     const callerProject = await this.projectIdOf(caller.workspaceId);
     if (callerProject && workspace.projectId !== callerProject) throw new UserError("that workspace belongs to another project");
     const started = await this.startFromPanel({ workspaceId: workspace.id, playbook: input.playbook, inputs: input.inputs, force: false, sameWorkspace: !input.newWorkspace, autoStart: input.autoStart !== false, workspaceName: input.workspaceName });

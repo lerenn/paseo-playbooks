@@ -269,15 +269,16 @@ describe("a Sidekick's session", () => {
     expect(options.config.options.allowedTools).toEqual(expect.arrayContaining(["mcp__paseo__respond_to_permission", "mcp__paseo__get_analytics", "mcp__paseo__sidekick_handoff"]));
   });
 
-  it("starts runs only in a workspace it names, never its own hidden one", async () => {
+  it("never runs in an existing workspace, and needs no workspace of its own: it branches off its project root", async () => {
     const { runtime } = await setup({ shop: true });
     const sidekick = await runtime.openSidekick("ws-shop");
     const caller = { id: sidekick.agentId, workspaceId: sidekick.workspaceId };
     expect(await runtime.isSidekick(sidekick.agentId)).toBe(true);
     expect(await runtime.isSidekick("someone-else")).toBe(false);
-    const input = { playbook: "pr", inputs: {}, newWorkspace: false };
-    await expect(runtime.startPlaybookInWorkspace(caller, { ...input, workspaceId: undefined })).rejects.toThrow(/pass workspaceId/);
-    await expect(runtime.startPlaybookInWorkspace(caller, { ...input, workspaceId: sidekick.workspaceId })).rejects.toThrow(/own hidden workspace/);
+    await expect(runtime.startPlaybookInWorkspace(caller, { playbook: "pr", inputs: {}, newWorkspace: false, workspaceId: "ws-shop" })).rejects.toThrow(/new one/);
+    // No workspaceId: the base is its own workspace, so it is not refused for a missing one.
+    await expect(runtime.startPlaybookInWorkspace(caller, { playbook: "pr", inputs: {}, newWorkspace: true, workspaceId: undefined })).rejects.not.toThrow(/workspaceId is missing|own hidden/);
+    await expect(runtime.startPlaybookInWorkspace({ id: "x", workspaceId: null }, { playbook: "pr", inputs: {}, newWorkspace: true, workspaceId: undefined })).rejects.toThrow(/workspaceId is missing/);
   });
 
   it("reads sidekick.runs, puts it in the prompt, and refuses invalid values", async () => {

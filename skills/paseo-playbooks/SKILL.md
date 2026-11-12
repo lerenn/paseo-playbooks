@@ -575,7 +575,7 @@ steps:
 - **Hand-off pending (detached jobs that ended):** a handed-off job that a batch settles with an outcome
   other than the first (`ejected`, `no_deploy`...) is told to nobody: only the batch's manager can start what follows (the
   playbook's instructions say what, e.g. a rework run). Each such job needs a **follow-up recorded**: `start_playbook` with
-  `newWorkspace` (or `workspaceId`) and `forJob: "<jobId>"` records the run it starts; `record_followup { runId, jobId,
+  `forJob: "<jobId>"` (the run always starts in a new workspace) records the run it starts; `record_followup { runId, jobId,
   followUpRunId?, note? }` (any agent; `runId` is the pipeline or a batch) records a run started otherwise, or, without
   `followUpRunId`, "none needed" with a `note`. Until then the plugin keeps the batch's manager open (a next batch of the
   stage does not retire it) and wakes it with the list, up to 3 times, each time it ends its turn; the run itself still
@@ -684,7 +684,7 @@ pipeline has taken the job the step is done and the run simply goes on (typicall
   shows which run handed it off. `{{ run.jobs }}` marks the job `detached: true`.
 - A hand-off that leads back to its own playbook is refused.
 - **Rework after an eject:** the batch's manager can start a new run of any playbook with
-  `start_playbook(playbook, inputs, newWorkspace: true)`. It gets a new workspace (branched off
+  `start_playbook(playbook, inputs)`. It gets a new workspace (branched off
   the pipeline's) and its own Playbook Manager; the batch's manager does not manage it. Write
   in the singleton's playbook when to do it, e.g. in the prompt of the step that ejects:
   "after `settle_job(… outcome: ejected)`, call `start_playbook` with playbook `pr-to-prod`,

@@ -121,8 +121,8 @@ when it waits and the last check. `escalate` also asks a human in "Needs you": c
 anyway. `job.held`, `job.admitted` (`via: script | human`) and `job.escalated` are public events. See
 `examples/.paseo/plugins/playbooks/staged_release.yaml` and `docs/adrs/2026-11-12-event-core-queue-admission.md`.
 
-The Sidekick can start playbook runs with `start_playbook` (`workspaceId` of a visible workspace of its project, or
-that with `newWorkspace`, and `workspaceName` to title the new workspace; never its own hidden workspace), and `list_playbooks` shows what is on offer. When you ask
+The Sidekick can start playbook runs with `start_playbook` (always in a NEW workspace, for any agent: `workspaceId` only names the workspace
+it is branched off, `workspaceName` titles it; with no `workspaceId` a Sidekick branches off its project's root, so it needs no workspace of its own; `newWorkspace: false` is refused), and `list_playbooks` shows what is on offer. When you ask
 it to merge a pull request, it starts the project's merging playbook (for example `pr-to-prod`), whose manager
 merges; the Sidekick itself never merges. For bulk work ("do all tickets of project XYZ") it creates a coordinator
 subagent that lists the tickets with its own MCP tools (the Sidekick has none) and starts one run per ticket.
