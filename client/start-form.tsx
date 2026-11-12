@@ -6,7 +6,7 @@ import { Pressable, Switch, Text, View } from "react-native";
 import { listWorkspaceAgents, startRun } from "../shared/contracts";
 import type { Playbook, VarValue } from "../shared/types";
 import { sanitizeWorkspaceName, WORKSPACE_NAME_MAX } from "../shared/workspace-name";
-import { inputErrors } from "./run-form";
+import { inputErrors, type RunProject } from "./run-form";
 import { Button } from "./sheet";
 import type { Theme } from "./theme";
 
@@ -266,6 +266,8 @@ export function RunPlaybookForm(props: {
   onClose(): void;
   onStarted(result: { workspaceId: string; managerAgentId: string; sameWorkspace: boolean }): void;
   compact: boolean;
+  /** Shown above the playbook dropdown (the overview's project selector). */
+  lead?: ReactNode;
 }) {
   const { theme, playbooks } = props;
   const [selected, setSelected] = useState(playbooks[0]?.id ?? "");
@@ -273,6 +275,8 @@ export function RunPlaybookForm(props: {
   const playbook = playbooks.find((candidate) => candidate.id === selected);
   if (!playbook) return null;
   const picker = (
+    <>
+    {props.lead}
     <View style={{ gap: 4, zIndex: 20 }}>
       <Text style={{ color: theme.colors.foreground, fontSize: 13, fontWeight: "600" }}>Playbook</Text>
       <Pressable
@@ -305,6 +309,7 @@ export function RunPlaybookForm(props: {
         </View>
       ) : null}
     </View>
+    </>
   );
   return (
     <StartForm
@@ -319,5 +324,92 @@ export function RunPlaybookForm(props: {
       onClose={props.onClose}
       onStarted={props.onStarted}
     />
+  );
+}
+
+/** The Run Playbook button, in the panel and the overview. Disabled while the playbook lists load. */
+export function RunPlaybookButton(props: { theme: Theme; loading?: boolean; onPress(): void }) {
+  const { theme } = props;
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel="Run Playbook: start a playbook in a new workspace"
+      accessibilityState={{ disabled: props.loading === true }}
+      disabled={props.loading === true}
+      onPress={props.onPress}
+      style={{ flexDirection: "row", alignItems: "center", gap: 6, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6, backgroundColor: theme.colors.accent, opacity: props.loading ? 0.5 : 1 }}
+    >
+      <Icon name="Play" size={13} color={theme.colors.accentForeground} />
+      <Text style={{ color: theme.colors.accentForeground, fontSize: 13, fontWeight: "600" }}>Run Playbook</Text>
+    </Pressable>
+  );
+}
+
+/** The overview's project selector: a dropdown of the projects that have a runnable playbook. */
+export function ProjectPicker(props: { theme: Theme; projects: RunProject[]; selected: string | null; onSelect(projectId: string): void }) {
+  const { theme } = props;
+  const [open, setOpen] = useState(false);
+  const current = props.projects.find((project) => project.projectId === props.selected);
+  return (
+    <View style={{ gap: 4, zIndex: 30 }}>
+      <Text style={{ color: theme.colors.foreground, fontSize: 13, fontWeight: "600" }}>Project</Text>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`Project: ${current?.label ?? "choose one"}`}
+        accessibilityState={{ expanded: open }}
+        onPress={() => setOpen((value) => !value)}
+        style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderRadius: 8, borderWidth: 1, borderColor: theme.colors.border, padding: 8, backgroundColor: theme.colors.surface2 }}
+      >
+        <Text style={{ color: current ? theme.colors.foreground : theme.colors.foregroundMuted, fontSize: 13, flexShrink: 1 }}>{current?.label ?? "Choose a project"}</Text>
+        <Icon name="ChevronDown" size={14} color={theme.colors.foregroundMuted} />
+      </Pressable>
+      {open ? (
+        <View accessibilityRole="menu" style={{ borderRadius: 8, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface2, padding: 4 }}>
+          {props.projects.map((project) => (
+            <Pressable
+              key={project.projectId}
+              accessibilityRole="menuitem"
+              accessibilityState={{ selected: project.projectId === props.selected }}
+              onPress={() => {
+                props.onSelect(project.projectId);
+                setOpen(false);
+              }}
+              style={{ paddingHorizontal: 10, paddingVertical: 8, borderRadius: 6, backgroundColor: project.projectId === props.selected ? theme.colors.surface1 : "transparent" }}
+            >
+              <Text style={{ color: theme.colors.foreground, fontSize: 13 }}>{project.label}</Text>
+            </Pressable>
+          ))}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+/** The overview's Run Playbook form: choose a project, then the usual form for that project's playbooks. */
+export function OverviewRunForm(props: {
+  theme: Theme;
+  projects: RunProject[];
+  /** Playbooks to offer per project (already filtered to the runnable ones). */
+  playbooksOf: Map<string, Playbook[]>;
+  initial: string | null;
+  compact: boolean;
+  onClose(): void;
+  onStarted(result: { workspaceId: string; managerAgentId: string; sameWorkspace: boolean }): void;
+}) {
+  const [selected, setSelected] = useState<string | null>(props.initial);
+  const project = props.projects.find((candidate) => candidate.projectId === selected);
+  const playbooks = (project && props.playbooksOf.get(project.projectId)) || [];
+  const picker = <ProjectPicker theme={props.theme} projects={props.projects} selected={selected} onSelect={setSelected} />;
+  if (project && playbooks.length > 0) {
+    return <RunPlaybookForm key={project.projectId} theme={props.theme} playbooks={playbooks} workspaceId={project.workspaceId} compact={props.compact} lead={picker} onClose={props.onClose} onStarted={props.onStarted} />;
+  }
+  // No project chosen yet: only the selector, no Start.
+  return (
+    <Modal title="Run Playbook" open onOpenChange={(open) => !open && props.onClose()}>
+      <Modal.Content>
+        {picker}
+        <Text style={{ color: props.theme.colors.foregroundMuted, fontSize: 12 }}>Choose the project to start a playbook in.</Text>
+      </Modal.Content>
+    </Modal>
   );
 }
