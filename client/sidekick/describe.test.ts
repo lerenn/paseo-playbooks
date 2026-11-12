@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { describePermission, shortToolName } from "./describe";
+import { describePermission, humanizeTool, shortToolName, toolIcon, toolSummary } from "./describe";
 
 describe("describePermission", () => {
   it("says what the Sidekick wants to do, with the key arguments on one line", () => {
@@ -30,5 +30,18 @@ describe("describePermission", () => {
     expect(describePermission(undefined, undefined).sentence).toBe("The Sidekick wants to use unknown tool");
     expect(shortToolName("mcp__paseo_playbooks__get_run")).toBe("get_run");
     expect(shortToolName("Bash")).toBe("Bash");
+  });
+});
+
+describe("tool rows", () => {
+  it("humanizes names, picks icons and summarizes the detail", () => {
+    expect(humanizeTool("mcp__paseo__create_agent")).toBe("Create agent");
+    expect(humanizeTool("ToolSearch")).toBe("Toolsearch");
+    expect(toolIcon("Bash")).toBe("Terminal");
+    expect(toolIcon("mcp__paseo__create_agent")).toBe("Bot");
+    expect(toolIcon("ToolSearch")).toBe("Wrench");
+    expect(toolSummary({ command: "ls   -la" })).toBe("ls -la");
+    expect(toolSummary({ input: { title: "Fix it" } })).toBe("Fix it");
+    expect(toolSummary(null)).toBeNull();
   });
 });

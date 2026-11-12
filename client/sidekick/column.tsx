@@ -6,9 +6,8 @@ import type { Theme } from "../theme";
 import { useAttachments } from "./attach";
 import { sidekickUi, useSidekickUi } from "./ui-state";
 import { isQueueKey, mergeQueued, queueAction, shouldFlush } from "./queue";
-import { describePermission } from "./describe";
+import { describePermission, humanizeTool, toolIcon, toolSummary } from "./describe";
 import { pluginMessage } from "./instructions";
-import { groupTools, type GroupState } from "./group";
 import type { Item, PermissionRequest } from "./reduce";
 import { useSidekickChat, type PermissionResponse } from "./use-chat";
 
@@ -115,9 +114,9 @@ export function SidekickChat(props: Props) {
         {status.loading ? <Text style={{ color: muted }}>Starting the Sidekick…</Text> : null}
         {status.error ? <Text style={{ color: theme.colors.statusDanger }}>{status.error}</Text> : null}
         {state.connection === "error" && state.error ? <Text style={{ color: theme.colors.statusWarning }}>Reconnecting… {state.error}</Text> : null}
-        {groupTools(state.items).map((entry) =>
-          entry.kind === "tools" ? <ToolGroup key={entry.key} theme={theme} entry={entry} /> : <ItemView key={entry.item.key} theme={theme} item={entry.item} />,
-        )}
+        {state.items.map((item) => (
+          <ItemView key={item.key} theme={theme} item={item} />
+        ))}
         {state.running ? <Text style={{ color: muted, fontSize: 12 }}>Working…</Text> : null}
         {state.permissions.map((request) => (
           <PermissionView key={request.id} theme={theme} request={request} onRespond={(response) => respond(request.id, response)} />
@@ -210,7 +209,7 @@ function ItemView({ theme, item }: { theme: Theme; item: Item }) {
     case "reasoning":
       return <ReasoningLine theme={theme} text={item.text} streaming={item.streaming} />;
     case "notice":
-      return <Text style={{ color: item.level === "error" ? theme.colors.statusDanger : item.level === "warning" ? theme.colors.statusWarning : muted, fontSize: 12 }}>{item.text}</Text>;
+      return <Row theme={theme} icon={item.level === "info" ? "Info" : "TriangleAlert"} label={item.text} color={item.level === "error" ? theme.colors.statusDanger : item.level === "warning" ? theme.colors.statusWarning : muted} />;
     case "tool":
       return <ToolCard theme={theme} item={item} />;
   }
@@ -220,14 +219,31 @@ function ItemView({ theme, item }: { theme: Theme; item: Item }) {
 function ReasoningLine({ theme, text, streaming }: { theme: Theme; text: string; streaming: boolean }) {
   const [open, setOpen] = useState(false);
   return (
-    <View style={{ gap: 6 }}>
-      <Pressable accessibilityRole="button" accessibilityState={{ expanded: open }} onPress={() => setOpen(!open)}>
-        <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>
-          {streaming ? "Thinking…" : "Thought"} ({open ? "hide" : "show"})
-        </Text>
-      </Pressable>
+    <View style={{ gap: 4 }}>
+      <Row theme={theme} icon="Brain" label={streaming ? "Thinking…" : "Thinking"} onPress={() => setOpen(!open)} open={open} />
       {open ? <Text selectable style={{ color: theme.colors.foregroundMuted, fontSize: 12, fontStyle: "italic", borderLeftWidth: 2, borderColor: theme.colors.border, paddingLeft: 8 }}>{text}</Text> : null}
     </View>
+  );
+}
+
+/** One flat row, like the official conversation: a small leading icon and one muted line, cut with an ellipsis. */
+function Row({ theme, icon, label, summary, color, onPress, open }: { theme: Theme; icon: string; label: string; summary?: string | null; color?: string; onPress?: () => void; open?: boolean }) {
+  const muted = color ?? theme.colors.foregroundMuted;
+  const content = (
+    <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+      <Icon name={icon as never} size={13} color={muted} />
+      <Text style={{ color: muted, fontSize: 12, flex: 1 }} numberOfLines={1}>
+        {label}
+        {summary ? <Text style={{ opacity: 0.7 }}>{`  ${summary}`}</Text> : null}
+      </Text>
+    </View>
+  );
+  return onPress ? (
+    <Pressable accessibilityRole="button" accessibilityLabel={summary ? `${label} ${summary}` : label} accessibilityState={{ expanded: open ?? false }} onPress={onPress}>
+      {content}
+    </Pressable>
+  ) : (
+    content
   );
 }
 
@@ -263,38 +279,22 @@ function InstructionsLine({ theme, text }: { theme: Theme; text: string }) {
   );
 }
 
-const stateColor = (theme: Theme, state: GroupState) => (state === "failed" ? theme.colors.statusDanger : state === "running" ? theme.colors.accent : theme.colors.statusSuccess);
-
-/** Consecutive tool calls as one line with a status dot; the per-call cards when opened. */
-function ToolGroup({ theme, entry }: { theme: Theme; entry: Extract<ReturnType<typeof groupTools>[number], { kind: "tools" }> }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <View style={{ gap: 6 }}>
-      <Pressable accessibilityRole="button" accessibilityLabel={`${entry.label}, ${entry.state}`} accessibilityState={{ expanded: open }} onPress={() => setOpen(!open)} style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-        <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: stateColor(theme, entry.state) }} />
-        <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12, flex: 1 }} numberOfLines={1}>
-          {entry.label}
-          {entry.state === "failed" ? " · failed" : entry.state === "running" ? " · running" : ""}
-        </Text>
-      </Pressable>
-      {open ? entry.tools.map((tool) => <ToolCard key={tool.key} theme={theme} item={tool} />) : null}
-    </View>
-  );
-}
-
-/** A tool call: its name and status on one line, its input and error when opened. */
+/** A tool call: one flat row (icon, humanized name, short summary); its input and error when opened. */
 function ToolCard({ theme, item }: { theme: Theme; item: Extract<Item, { kind: "tool" }> }) {
   const [open, setOpen] = useState(false);
-  const color = item.status === "failed" ? theme.colors.statusDanger : item.status === "completed" ? theme.colors.statusSuccess : item.status === "canceled" ? theme.colors.foregroundMuted : theme.colors.accent;
   return (
-    <View style={{ borderRadius: 8, borderWidth: 1, borderColor: theme.colors.border, padding: 8, gap: 6 }}>
-      <Pressable accessibilityRole="button" accessibilityLabel={`${item.name}, ${item.status}`} onPress={() => setOpen(!open)} style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-        <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: color }} />
-        <Text style={{ color: theme.colors.foreground, fontSize: 12, fontWeight: "600", flex: 1 }} numberOfLines={1}>{item.name.replace(/^mcp__paseo__/, "")}</Text>
-        <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>{item.status}</Text>
-      </Pressable>
+    <View style={{ gap: 4 }}>
+      <Row
+        theme={theme}
+        icon={item.status === "failed" ? "TriangleAlert" : toolIcon(item.name)}
+        label={humanizeTool(item.name)}
+        summary={toolSummary(item.detail)}
+        {...(item.status === "failed" ? { color: theme.colors.statusDanger } : {})}
+        onPress={() => setOpen(!open)}
+        open={open}
+      />
       {open ? (
-        <Text selectable style={{ color: theme.colors.foregroundMuted, fontSize: 11, fontFamily: "monospace" }}>
+        <Text selectable style={{ color: theme.colors.foregroundMuted, fontSize: 11, fontFamily: "monospace", paddingLeft: 21 }}>
           {item.error ? `${item.error}\n\n` : ""}
           {item.detail ? JSON.stringify(item.detail, null, 2).slice(0, 4000) : "no detail"}
         </Text>
