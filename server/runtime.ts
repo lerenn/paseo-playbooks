@@ -251,10 +251,10 @@ interface Waker {
   endedAt: number;
 }
 
-/** A station's admission check (`queue.admit`): its coalescing state like a Waker's, its timers, and what the panel shows. */
+/** A stage's admission check (`queue.admit`): its coalescing state like a Waker's, its timers, and what the panel shows. */
 interface Admission {
   pipelineId: string;
-  stationId: string;
+  stageId: string;
   /** A check is in flight, or has ended and its follow-up is not scheduled yet: an event only sets `dirty`. */
   busy: boolean;
   /** An event matched while busy (first type that did; "retry" skips the gap): one more check runs once it is over. */
@@ -348,13 +348,13 @@ export class Runtime {
   /** Managers of a run where a gate was decided since they were last checked for compaction. */
   private readonly gateManagers = new Set<string>();
   /**
-   * Managers of a station's previous train: archived once their turn ends, and never woken
+   * Managers of a stage's previous batch: archived once their turn ends, and never woken
    * again (sending to an archived agent brings it back).
    */
   private readonly retiredManagers = new Set<string>();
-  /** Train gates announced to the runs of their jobs, as "<trainId>/<gateId>". */
-  private readonly trainGates = new Set<string>();
-  /** Train step attempts whose `settle` output was applied, as "<trainId>/<stepId>/<attempt>". */
+  /** Batch gates announced to the runs of their jobs, as "<batchId>/<gateId>". */
+  private readonly batchGates = new Set<string>();
+  /** Batch step attempts whose `settle` output was applied, as "<batchId>/<stepId>/<attempt>". */
   private readonly settledSteps = new Set<string>();
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
   /** Silence checks of running agent steps, by agent id. */
@@ -371,7 +371,7 @@ export class Runtime {
   private readonly scripts = new Map<string, { child: ChildProcess | null; next: ReturnType<typeof setTimeout> | null }>();
   /** What a script attempt's checks printed, by attempt id: the running check's live tail and the last few checks. In memory only; dropped when the attempt stops. */
   private readonly scriptLive = new Map<string, ScriptLive>();
-  /** Admission checks (`queue.admit`) of the stations that have waiting jobs, by `<pipeline run>/<station>`. */
+  /** Admission checks (`queue.admit`) of the stages that have waiting jobs, by `<pipeline run>/<stage>`. */
   private readonly admissions = new Map<string, Admission>();
   /** Script attempts with `wake_on`, by attempt id. One bus listener serves all of them. */
   private readonly wakers = new Map<string, Waker>();
@@ -506,7 +506,7 @@ export class Runtime {
    */
   private async reconcile(): Promise<void> {
     for (const run of this.store.list()) {
-      if (run.status === "boarding" || (isPipeline(run) && !isTerminal(run.status) && (run.playbook.singleton?.stations.length ?? 0) === 0)) {
+      if (run.status === "boarding" || (isPipeline(run) && !isTerminal(run.status) && (run.playbook.singleton?.stages.length ?? 0) === 0)) {
         // Boarding runs and singleton runs of v0.30.0 were replaced by pipelines.
         await this.failRun(run.id, "singleton runs of v0.30.0 were replaced by pipelines; hand the job off again");
         continue;
@@ -557,10 +557,10 @@ export class Runtime {
       await this.wakeStalledManager(run.id);
       await this.deliver(run.id);
     }
-    // Train gates open before the restart were announced then: only their decisions are left to tell.
+    // Batch gates open before the restart were announced then: only their decisions are left to tell.
     for (const run of this.store.list()) {
-      if (!run.train || isTerminal(run.status)) continue;
-      for (const gate of run.gates) if (gate.status === "pending") this.trainGates.add(`${run.id}/${gate.id}`);
+      if (!run.batch || isTerminal(run.status)) continue;
+      for (const gate of run.gates) if (gate.status === "pending") this.batchGates.add(`${run.id}/${gate.id}`);
     }
     await this.sweepWorktrees().catch((error) => console.error("[playbooks] worktree sweep failed:", errorText(error)));
     await this.admitQueued();
@@ -910,8 +910,8 @@ export class Runtime {
       askHumanText(gate, choicesOfGate(gate, engine.stepDef(run, gate.stepId))),
     ]);
     await this.deliver(runId);
-    // A train's gate is now announced to the runs whose jobs it carries.
-    if (run.train) await this.tick();
+    // A batch's gate is now announced to the runs whose jobs it carries.
+    if (run.batch) await this.tick();
   }
 
   private async onDeciderTurnEnded(runId: string, gateId: string, agentId: string, outcome: "completed" | "failed" | "canceled"): Promise<void> {
@@ -1232,7 +1232,7 @@ export class Runtime {
     await this.tick();
   }
 
-  /** Starts ready script and hand-off steps, ends the jobs of ended singleton runs, and departs boarding runs. */
+  /** Starts ready script and hand-off steps, ends the jobs of ended singleton runs, and starts boarding runs. */
   private async tick(): Promise<void> {
     if (this.ticking) {
       this.tickAgain = true;
@@ -1250,9 +1250,9 @@ export class Runtime {
         await this.startHandoffs();
         await this.driveFanouts();
         await this.runDeciders();
-        await this.noticeTrainGates();
-        await this.endTrains();
-        await this.departTrains();
+        await this.noticeBatchGates();
+        await this.endBatches();
+        await this.startBatches();
         await this.cleanupEndedWorktrees();
         await this.archiveEndedWorkspaces();
       } while (this.tickAgain);
@@ -1450,7 +1450,7 @@ export class Runtime {
    */
   private async archiveEndedWorkspaces(): Promise<void> {
     for (const candidate of this.store.list()) {
-      if (candidate.workspaceArchive !== null || !candidate.workspaceCreated || !isTerminal(candidate.status) || candidate.train || isPipeline(candidate)) continue;
+      if (candidate.workspaceArchive !== null || !candidate.workspaceCreated || !isTerminal(candidate.status) || candidate.batch || isPipeline(candidate)) continue;
       if (candidate.playbook.workspace.archive !== "on_end") continue;
       const verdict = await this.workspaceArchiveVerdict(candidate.id).catch((error: unknown) => ({ skip: `could not check: ${errorText(error)}` }));
       if (verdict === "wait") continue;
@@ -1683,7 +1683,7 @@ export class Runtime {
       endedAt: null,
       passed: [],
       waiting: [],
-      riding: [],
+      batches: [],
       failedRides: {},
       detached: step.handoffWait === false,
     };
@@ -1692,11 +1692,11 @@ export class Runtime {
       const attempt = current.steps[stepId]!.attempts.at(-1)!;
       if (attempt.agentId !== attemptId) return;
       attempt.job = { runId: pipeline.id, jobId: job.id };
-      attempt.lastMessage = `Waiting at ${job.waiting.map((place) => `"${place.station}"`).join(", ") || "the first station"} of "${pipeline.playbook.title}".`;
+      attempt.lastMessage = `Waiting at ${job.waiting.map((place) => `"${place.stage}"`).join(", ") || "the first stage"} of "${pipeline.playbook.title}".`;
     });
     // Fire and forget: the step is done now; the job is the pipeline's from here on.
     if (job.detached) {
-      const at = job.waiting.map((place) => `"${place.station}"`).join(", ") || "its first station";
+      const at = job.waiting.map((place) => `"${place.stage}"`).join(", ") || "its first stage";
       await this.finishHandoff(run.id, stepId, attemptId, { outcome: step.outcomes[0]!, summary: `Handed job ${job.id} to "${pipeline.playbook.title}" (${pipeline.id}), waiting at ${at}; not waiting for its result.`, outputs: {} });
     }
     this.tickAgain = true;
@@ -1749,27 +1749,27 @@ export class Runtime {
     return this.store.get(run.id)!;
   }
 
-  /** The trains (runs) of a pipeline, newest first. */
-  private trainsOf(pipelineId: string): Run[] {
-    return this.store.list().filter((run) => run.train?.pipelineId === pipelineId);
+  /** The batches (runs) of a pipeline, newest first. */
+  private batchesOf(pipelineId: string): Run[] {
+    return this.store.list().filter((run) => run.batch?.pipelineId === pipelineId);
   }
 
-  /** Each free station of each active pipeline takes its next train from its waiting list. */
-  private async departTrains(): Promise<void> {
+  /** Each free stage of each active pipeline takes its next batch from its waiting list. */
+  private async startBatches(): Promise<void> {
     for (const pipeline of this.store.list()) {
       if (!isPipeline(pipeline) || isTerminal(pipeline.status) || isPaused(pipeline)) continue;
-      const busy = new Set(this.trainsOf(pipeline.id).filter((train) => !isTerminal(train.status)).map((train) => train.train!.station));
-      const due = (pipeline.playbook.singleton?.stations ?? []).filter((station) => !busy.has(station.id) && engine.nextTrainJobs(pipeline, station.id).length > 0);
+      const busy = new Set(this.batchesOf(pipeline.id).filter((batch) => !isTerminal(batch.status)).map((batch) => batch.batch!.stage));
+      const due = (pipeline.playbook.singleton?.stages ?? []).filter((stage) => !busy.has(stage.id) && engine.nextBatchJobs(pipeline, stage.id).length > 0);
       if (due.length === 0) continue;
-      // Between trains, the workspace follows its branch: a merged change applies from the next train.
+      // Between batches, the workspace follows its branch: a merged change applies from the next batch.
       if (busy.size === 0) await this.refreshPipeline(pipeline.id);
-      for (const station of due) {
-        await this.departTrain(pipeline.id, station.id).catch((error: unknown) => console.error(`[playbooks] train of "${station.id}" in ${pipeline.id} could not start:`, errorText(error)));
+      for (const stage of due) {
+        await this.startBatch(pipeline.id, stage.id).catch((error: unknown) => console.error(`[playbooks] batch of "${stage.id}" in ${pipeline.id} could not start:`, errorText(error)));
       }
     }
   }
 
-  /** Fast-forwards an idle pipeline's workspace and reads its playbook again; jobs at a station that is gone fail. */
+  /** Fast-forwards an idle pipeline's workspace and reads its playbook again; jobs at a stage that is gone fail. */
   private async refreshPipeline(pipelineId: string): Promise<void> {
     const pipeline = this.store.get(pipelineId)!;
     const ref = pipeline.playbook.singleton?.branch ?? (await defaultBranch(pipeline.workspaceDir));
@@ -1779,40 +1779,40 @@ export class Runtime {
     const playbook = entry.playbook;
     const ended = await this.store.mutate(pipelineId, (current) => {
       current.playbook = playbook;
-      const stations = new Set(playbook.singleton!.stations.map((station) => station.id));
-      const lost = current.jobs.filter((job) => job.status === "open" && job.waiting.some((place) => !stations.has(place.station))).map((job) => job.id);
-      return engine.failJobs(current, lost, "its station was removed from the playbook", nowIso());
+      const stages = new Set(playbook.singleton!.stages.map((stage) => stage.id));
+      const lost = current.jobs.filter((job) => job.status === "open" && job.waiting.some((place) => !stages.has(place.stage))).map((job) => job.id);
+      return engine.failJobs(current, lost, "its stage was removed from the playbook", nowIso());
     });
-    for (const job of ended) await this.deliverJob(job, { outcome: "failure", summary: job.summary ?? "station removed", outputs: {} });
+    for (const job of ended) await this.deliverJob(job, { outcome: "failure", summary: job.summary ?? "stage removed", outputs: {} });
   }
 
-  /** Starts a station's next train: a fresh manager in the pipeline's workspace, and a run of the station carrying its jobs. */
-  private async departTrain(pipelineId: string, stationId: string): Promise<void> {
+  /** Starts a stage's next batch: a fresh manager in the pipeline's workspace, and a run of the stage carrying its jobs. */
+  private async startBatch(pipelineId: string, stageId: string): Promise<void> {
     const pipeline = this.store.get(pipelineId)!;
-    const jobs = engine.nextTrainJobs(pipeline, stationId);
+    const jobs = engine.nextBatchJobs(pipeline, stageId);
     if (jobs.length === 0) return;
-    const playbook = engine.stationPlaybook(pipeline.playbook, stationId);
+    const playbook = engine.stagePlaybook(pipeline.playbook, stageId);
     const manager = await this.api().workspaces.ref(pipeline.workspaceId).agents.create({
       config: this.managerConfig(playbook, engine.activeExhausted(pipeline)),
       title: `Playbook Manager · ${playbook.title}`,
       labels: { [MANAGER_LABEL]: "true" },
     });
-    const previous = this.trainsOf(pipelineId).find((train) => train.train!.station === stationId);
-    const train = engine.newTrainRun({ id: `run_${shortId()}`, pipeline, station: stationId, jobs, managerAgentId: manager.id, now: nowIso() });
-    await this.store.create(train);
-    await this.store.mutate(pipelineId, (current) => engine.boardTrain(current, stationId, train.id, jobs.map((job) => job.id), nowIso()));
-    // The station's previous train manager is done: one manager per station in the workspace.
+    const previous = this.batchesOf(pipelineId).find((batch) => batch.batch!.stage === stageId);
+    const batch = engine.newBatchRun({ id: `run_${shortId()}`, pipeline, stage: stageId, jobs, managerAgentId: manager.id, now: nowIso() });
+    await this.store.create(batch);
+    await this.store.mutate(pipelineId, (current) => engine.joinBatch(current, stageId, batch.id, jobs.map((job) => job.id), nowIso()));
+    // The stage's previous batch manager is done: one manager per stage in the workspace.
     if (previous && previous.managerAgentId !== manager.id) await this.retireManager(previous.managerAgentId);
-    for (const job of jobs) await this.noteHandoff(job, `On the "${stationId}" train (${train.id}) of "${pipeline.playbook.title}", with ${jobs.length} job(s).`);
-    const started = this.store.get(train.id)!;
+    for (const job of jobs) await this.noteHandoff(job, `On the "${stageId}" batch (${batch.id}) of "${pipeline.playbook.title}", with ${jobs.length} job(s).`);
+    const started = this.store.get(batch.id)!;
     await manager.send(singletonKickoff(started, engine.readySteps(started)));
     this.busyManagers.add(manager.id);
     this.tickAgain = true;
   }
 
   /**
-   * Archives a previous train's manager, after its current turn: it is often still in the
-   * complete_step call that ended its train, and archiving it there fails that call.
+   * Archives a previous batch's manager, after its current turn: it is often still in the
+   * complete_step call that ended its batch, and archiving it there fails that call.
    */
   private async retireManager(agentId: string): Promise<void> {
     this.retiredManagers.add(agentId);
@@ -1820,31 +1820,31 @@ export class Runtime {
   }
 
   /**
-   * Tells the runs whose jobs ride a train when it waits for a human (a gate or an ask), and
-   * again when that is decided (or the train ends first): their managers pass it on where they
-   * report. The decision stays with the train, in the Playbooks panel.
+   * Tells the runs whose jobs ride a batch when it waits for a human (a gate or an ask), and
+   * again when that is decided (or the batch ends first): their managers pass it on where they
+   * report. The decision stays with the batch, in the Playbooks panel.
    */
-  private async noticeTrainGates(): Promise<void> {
-    for (const train of this.store.list()) {
-      if (!train.train) continue;
-      const pipeline = this.store.get(train.train.pipelineId);
+  private async noticeBatchGates(): Promise<void> {
+    for (const batch of this.store.list()) {
+      if (!batch.batch) continue;
+      const pipeline = this.store.get(batch.batch.pipelineId);
       if (!pipeline) continue;
-      const jobs = pipeline.jobs.filter((job) => job.riding.some((ride) => ride.runId === train.id));
-      const where = `the "${train.train.station}" train (${train.id}) of "${pipeline.playbook.title}"`;
-      for (const gate of train.gates) {
-        const key = `${train.id}/${gate.id}`;
+      const jobs = pipeline.jobs.filter((job) => job.batches.some((ride) => ride.runId === batch.id));
+      const where = `the "${batch.batch.stage}" batch (${batch.id}) of "${pipeline.playbook.title}"`;
+      for (const gate of batch.gates) {
+        const key = `${batch.id}/${gate.id}`;
         // A gate its role decides is announced only if the role leaves it to a human.
-        const pending = waitsForHuman(gate) && !isTerminal(train.status);
-        if (pending === this.trainGates.has(key)) continue;
+        const pending = waitsForHuman(gate) && !isTerminal(batch.status);
+        if (pending === this.batchGates.has(key)) continue;
         let text: string;
         if (pending) {
-          this.trainGates.add(key);
+          this.batchGates.add(key);
           const others = jobs.length > 1 ? ` (and ${jobs.length - 1} other job(s))` : "";
           text = `${where}, which carries your job${others}, waits for a human at ${gate.kind === "ask" ? "the ask of" : "gate"} ${gate.stepId}: ${gate.message} It is decided in the Playbooks panel (the "${pipeline.playbook.title}" card), not with resume: pass it on where you report. You are told when it is decided.`;
         } else {
-          this.trainGates.delete(key);
+          this.batchGates.delete(key);
           const comment = gate.comment ? `: "${gate.comment}"` : "";
-          text = gate.status === "pending" ? `${gate.stepId} of ${where} no longer waits: the train ${train.status}.` : `${gate.stepId} of ${where} was decided: ${gate.status} by ${gate.decidedBy ?? "a human"}${comment}.`;
+          text = gate.status === "pending" ? `${gate.stepId} of ${where} no longer waits: the batch ${batch.status}.` : `${gate.stepId} of ${where} was decided: ${gate.status} by ${gate.decidedBy ?? "a human"}${comment}.`;
         }
         for (const runId of new Set(jobs.filter((job) => !job.detached).map((job) => job.fromRunId))) {
           const from = this.store.get(runId);
@@ -1868,31 +1868,31 @@ export class Runtime {
   }
 
   /**
-   * Trains that ended move their jobs on (next stations, out of the pipeline, back to the waiting
-   * list, or failed); a pipeline that ended fails its open jobs and cancels its trains. The
+   * Batches that ended move their jobs on (next stages, out of the pipeline, back to the waiting
+   * list, or failed); a pipeline that ended fails its open jobs and cancels its batches. The
    * hand-offs of jobs that ended are told.
    */
-  private async endTrains(): Promise<void> {
-    for (const train of this.store.list()) {
-      if (!train.train || !isTerminal(train.status)) continue;
-      const pipeline = this.store.get(train.train.pipelineId);
-      if (!pipeline || !pipeline.jobs.some((job) => job.riding.some((ride) => ride.runId === train.id))) continue;
-      const ended = await this.store.mutate(pipeline.id, (current) => engine.trainEnded(current, train, nowIso()));
+  private async endBatches(): Promise<void> {
+    for (const batch of this.store.list()) {
+      if (!batch.batch || !isTerminal(batch.status)) continue;
+      const pipeline = this.store.get(batch.batch.pipelineId);
+      if (!pipeline || !pipeline.jobs.some((job) => job.batches.some((ride) => ride.runId === batch.id))) continue;
+      const ended = await this.store.mutate(pipeline.id, (current) => engine.batchEnded(current, batch, nowIso()));
       for (const job of ended) {
-        // A job that passed every station yet failed (missing outputs) shipped: its hand-off is never retried.
-        const shipped = job.status === "failed" && engine.stationsOf(pipeline).every((station) => job.passed.includes(station.id));
+        // A job that passed every stage yet failed (missing outputs) shipped: its hand-off is never retried.
+        const shipped = job.status === "failed" && engine.stagesOf(pipeline).every((stage) => job.passed.includes(stage.id));
         await this.deliverJob(job, job.status === "settled" ? { outcome: job.outcome!, summary: job.summary ?? "", outputs: job.outputs } : { outcome: "failure", summary: job.summary ?? "", outputs: {} }, shipped);
       }
       for (const job of this.store.get(pipeline.id)!.jobs.filter((candidate) => candidate.status === "open")) {
-        const next = job.waiting.map((place) => `"${place.station}"`).join(", ");
+        const next = job.waiting.map((place) => `"${place.stage}"`).join(", ");
         if (next) await this.noteHandoff(job, `Waiting at ${next} of "${pipeline.playbook.title}".`);
       }
       this.tickAgain = true;
     }
     for (const pipeline of this.store.list()) {
       if (!isPipeline(pipeline) || !isTerminal(pipeline.status)) continue;
-      for (const train of this.trainsOf(pipeline.id).filter((candidate) => !isTerminal(candidate.status))) {
-        await this.cancelRun(train.id, `its pipeline ${pipeline.id} is ${pipeline.status}`, null).catch(() => undefined);
+      for (const batch of this.batchesOf(pipeline.id).filter((candidate) => !isTerminal(candidate.status))) {
+        await this.cancelRun(batch.id, `its pipeline ${pipeline.id} is ${pipeline.status}`, null).catch(() => undefined);
       }
       if (!pipeline.jobs.some((job) => job.status === "open")) continue;
       const ended = await this.store.mutate(pipeline.id, (current) => engine.failOpenJobs(current, `pipeline ${current.id} ${current.status}${current.failure ? `: ${current.failure}` : ""}`, nowIso()));
@@ -1913,7 +1913,7 @@ export class Runtime {
     if (received) await this.settleScripts(runId);
   }
 
-  /** A hand-off step was canceled, reset or timed out: its job leaves the pipeline, and the trains carrying it are told. */
+  /** A hand-off step was canceled, reset or timed out: its job leaves the pipeline, and the batches carrying it are told. */
   private async withdrawHandoff(fromRunId: string, attemptId: string, reason: string): Promise<void> {
     this.clearTimeout(attemptId);
     const from = this.store.get(fromRunId);
@@ -1923,44 +1923,44 @@ export class Runtime {
     if (this.store.get(attempt.job.runId)!.jobs.find((job) => job.id === attempt.job!.jobId)?.detached) return;
     const withdrawn = await this.store.mutate(attempt.job.runId, (current) => engine.withdrawJob(current, attempt.job!.jobId, reason, nowIso()));
     if (!withdrawn) return;
-    for (const trainId of withdrawn.trains) {
-      const train = this.store.get(trainId);
-      if (!train) continue;
-      await this.store.mutate(trainId, (current) => engine.mirrorJob(current, withdrawn.job));
-      if (isTerminal(train.status)) continue;
-      await this.enqueue(trainId, [`Job ${withdrawn.job.id} (from ${withdrawn.job.label}) was withdrawn: ${reason}. Leave it out of the rest of the train; it no longer needs settle_job.`]);
-      await this.deliver(trainId);
+    for (const batchId of withdrawn.batches) {
+      const batch = this.store.get(batchId);
+      if (!batch) continue;
+      await this.store.mutate(batchId, (current) => engine.mirrorJob(current, withdrawn.job));
+      if (isTerminal(batch.status)) continue;
+      await this.enqueue(batchId, [`Job ${withdrawn.job.id} (from ${withdrawn.job.label}) was withdrawn: ${reason}. Leave it out of the rest of the batch; it no longer needs settle_job.`]);
+      await this.deliver(batchId);
     }
   }
 
-  /** A train's manager settles one of its jobs: sets its outputs, or ends it (its hand-off is told at once). */
+  /** A batch's manager settles one of its jobs: sets its outputs, or ends it (its hand-off is told at once). */
   async settleJob(managerId: string, runId: string, jobId: string, input: { outcome?: string | undefined; summary: string; outputs: Record<string, unknown> }): Promise<Run> {
-    const train = this.ownedRun(managerId, runId);
-    if (!train.train) throw new UserError(`run ${train.id} is not a train of a singleton pipeline: it carries no job`);
-    if (isTerminal(train.status)) throw new UserError(`train ${train.id} is ${train.status}`);
-    const pipelineId = train.train.pipelineId;
-    if (!this.store.get(pipelineId)) throw new UserError(`the pipeline of train ${train.id} no longer exists`);
-    const settled = await this.store.mutate(pipelineId, (current) => engine.settleJob(current, train.id, jobId, { ...input, now: nowIso() }));
-    await this.store.mutate(train.id, (current) => engine.mirrorJob(current, settled.job));
+    const batch = this.ownedRun(managerId, runId);
+    if (!batch.batch) throw new UserError(`run ${batch.id} is not a batch of a singleton pipeline: it carries no job`);
+    if (isTerminal(batch.status)) throw new UserError(`batch ${batch.id} is ${batch.status}`);
+    const pipelineId = batch.batch.pipelineId;
+    if (!this.store.get(pipelineId)) throw new UserError(`the pipeline of batch ${batch.id} no longer exists`);
+    const settled = await this.store.mutate(pipelineId, (current) => engine.settleJob(current, batch.id, jobId, { ...input, now: nowIso() }));
+    await this.store.mutate(batch.id, (current) => engine.mirrorJob(current, settled.job));
     if (settled.ended) await this.deliverJob(settled.job, { outcome: settled.job.outcome!, summary: settled.job.summary ?? "", outputs: settled.job.outputs });
-    return this.store.get(train.id)!;
+    return this.store.get(batch.id)!;
   }
 
   /**
-   * Checks a train step's `settle` output before the step completes: every entry must apply to
+   * Checks a batch step's `settle` output before the step completes: every entry must apply to
    * the pipeline as it is (tried on a copy). Returns the entries; throws with what is wrong.
    */
-  private checkSettle(train: Run, step: Step, value: unknown): { results: engine.JobResult[]; pipeline: Run | null } {
-    if (!train.train || !step.settle) return { results: [], pipeline: null };
-    const pipeline = this.store.get(train.train.pipelineId);
-    if (!pipeline) throw new UserError(`the pipeline of train ${train.id} no longer exists`);
+  private checkSettle(batch: Run, step: Step, value: unknown): { results: engine.JobResult[]; pipeline: Run | null } {
+    if (!batch.batch || !step.settle) return { results: [], pipeline: null };
+    const pipeline = this.store.get(batch.batch.pipelineId);
+    if (!pipeline) throw new UserError(`the pipeline of batch ${batch.id} no longer exists`);
     const where = `settle.output "${step.settle.output}" of "${step.id}"`;
     try {
       const results = engine.parseJobResults(typeof value === "string" ? value : value === undefined || value === null ? "" : String(value));
       const copy = structuredClone(pipeline);
       for (const result of results) {
         if (result.outcome === undefined && Object.keys(result.outputs).length === 0) continue;
-        engine.settleJob(copy, train.id, result.jobId, { ...result, now: nowIso() });
+        engine.settleJob(copy, batch.id, result.jobId, { ...result, now: nowIso() });
       }
       return { results, pipeline: copy };
     } catch (error) {
@@ -1969,18 +1969,18 @@ export class Runtime {
   }
 
   /**
-   * A train step with `settle` completed: the plugin settles its jobs from that output, as
+   * A batch step with `settle` completed: the plugin settles its jobs from that output, as
    * settle_job would (outputs set, or the job ended and its hand-off told). Returns problems.
    */
-  private async applySettle(trainId: string, stepId: string, value?: unknown): Promise<string[]> {
-    const train = this.store.get(trainId);
-    if (!train?.train) return [];
-    const step = engine.stepDef(train, stepId);
+  private async applySettle(batchId: string, stepId: string, value?: unknown): Promise<string[]> {
+    const batch = this.store.get(batchId);
+    if (!batch?.batch) return [];
+    const step = engine.stepDef(batch, stepId);
     if (!step.settle) return [];
-    const state = train.steps[stepId]!;
+    const state = batch.steps[stepId]!;
     const attempt = state.attempts.at(-1);
     if (!attempt?.outcome || !engine.completesStep(step, attempt.outcome)) return [];
-    const key = `${trainId}/${stepId}/${attempt.n}`;
+    const key = `${batchId}/${stepId}/${attempt.n}`;
     if (this.settledSteps.has(key)) return [];
     this.settledSteps.add(key);
     const raw = value ?? state.outputs?.[step.settle.output] ?? attempt.report?.outputs?.[step.settle.output];
@@ -1995,8 +1995,8 @@ export class Runtime {
     for (const result of results) {
       if (result.outcome === undefined && Object.keys(result.outputs).length === 0) continue;
       try {
-        const settled = await this.store.mutate(train.train.pipelineId, (current) => engine.settleJob(current, trainId, result.jobId, { ...result, now: nowIso() }));
-        await this.store.mutate(trainId, (current) => engine.mirrorJob(current, settled.job));
+        const settled = await this.store.mutate(batch.batch.pipelineId, (current) => engine.settleJob(current, batchId, result.jobId, { ...result, now: nowIso() }));
+        await this.store.mutate(batchId, (current) => engine.mirrorJob(current, settled.job));
         if (settled.ended) await this.deliverJob(settled.job, { outcome: settled.job.outcome!, summary: settled.job.summary ?? "", outputs: settled.job.outputs });
         settledIds.push(`${result.jobId}${result.outcome ? ` (${result.outcome})` : ""}`);
       } catch (error) {
@@ -2274,23 +2274,23 @@ export class Runtime {
   // ---------------------------------------------------------------- admission (queue.admit)
 
   /**
-   * Starts the admission check of every station that has waiting jobs and none tracked, and drops the ones with nothing
+   * Starts the admission check of every stage that has waiting jobs and none tracked, and drops the ones with nothing
    * to look at (an empty queue costs no check) or whose pipeline or `admit` block is gone. The script is not in a
-   * train: no run, no manager, no agent. After a daemon restart this is what runs the check again (it is idempotent).
+   * batch: no run, no manager, no agent. After a daemon restart this is what runs the check again (it is idempotent).
    */
   private async driveAdmissions(): Promise<void> {
     for (const [key, admission] of [...this.admissions]) {
       const pipeline = this.store.get(admission.pipelineId);
-      const station = pipeline && !isTerminal(pipeline.status) ? engine.stationsOf(pipeline).find((candidate) => candidate.id === admission.stationId) : undefined;
-      if (!pipeline || !station?.admit || (!admission.busy && engine.admissionJobs(pipeline, admission.stationId).length === 0)) this.dropAdmission(key);
+      const stage = pipeline && !isTerminal(pipeline.status) ? engine.stagesOf(pipeline).find((candidate) => candidate.id === admission.stageId) : undefined;
+      if (!pipeline || !stage?.admit || (!admission.busy && engine.admissionJobs(pipeline, admission.stageId).length === 0)) this.dropAdmission(key);
     }
     for (const pipeline of this.store.list()) {
       if (!isPipeline(pipeline) || isTerminal(pipeline.status) || isPaused(pipeline)) continue;
-      for (const station of engine.stationsOf(pipeline)) {
-        const key = `${pipeline.id}/${station.id}`;
-        if (!station.admit || this.admissions.has(key) || engine.admissionJobs(pipeline, station.id).length === 0) continue;
-        this.admissions.set(key, { pipelineId: pipeline.id, stationId: station.id, busy: false, dirty: null, gapWait: false, endedAt: 0, child: null, next: null, status: idleAdmission() });
-        void this.runAdmission(key, "first").catch((error: unknown) => console.error(`[playbooks] admission check of "${station.id}" in ${pipeline.id} failed:`, errorText(error)));
+      for (const stage of engine.stagesOf(pipeline)) {
+        const key = `${pipeline.id}/${stage.id}`;
+        if (!stage.admit || this.admissions.has(key) || engine.admissionJobs(pipeline, stage.id).length === 0) continue;
+        this.admissions.set(key, { pipelineId: pipeline.id, stageId: stage.id, busy: false, dirty: null, gapWait: false, endedAt: 0, child: null, next: null, status: idleAdmission() });
+        void this.runAdmission(key, "first").catch((error: unknown) => console.error(`[playbooks] admission check of "${stage.id}" in ${pipeline.id} failed:`, errorText(error)));
       }
     }
   }
@@ -2303,15 +2303,15 @@ export class Runtime {
     admission.child?.kill("SIGTERM");
   }
 
-  /** Runs the station's admission script once with its waiting jobs; `onAdmissionChecked` applies what it said. */
+  /** Runs the stage's admission script once with its waiting jobs; `onAdmissionChecked` applies what it said. */
   private async runAdmission(key: string, trigger: string): Promise<void> {
     const admission = this.admissions.get(key);
     if (!admission) return;
     let pipeline = this.store.get(admission.pipelineId);
-    const station = pipeline && !isTerminal(pipeline.status) ? engine.stationsOf(pipeline).find((candidate) => candidate.id === admission.stationId) : undefined;
-    if (!pipeline || !station?.admit) return this.dropAdmission(key);
-    if (isPaused(pipeline)) return this.armAdmissionPoll(admission, station.admit.pollMs);
-    const given = admissionInput(pipeline, station.id);
+    const stage = pipeline && !isTerminal(pipeline.status) ? engine.stagesOf(pipeline).find((candidate) => candidate.id === admission.stageId) : undefined;
+    if (!pipeline || !stage?.admit) return this.dropAdmission(key);
+    if (isPaused(pipeline)) return this.armAdmissionPoll(admission, stage.admit.pollMs);
+    const given = admissionInput(pipeline, stage.id);
     // An empty queue costs no check.
     if (given.jobs.length === 0) return this.dropAdmission(key);
     const sent = given.jobs.map((job) => job.id);
@@ -2337,26 +2337,28 @@ export class Runtime {
       // Dropped (the queue emptied, the pipeline ended): whoever dropped it owns the slot now.
       if (this.admissions.get(key) !== admission) return;
       const output = tailOf([stdout.trimEnd(), stderr.trimEnd()].filter(Boolean).join("\n"));
-      this.onAdmissionChecked(key, admission, sent, outcome, output).catch((error: unknown) => console.error(`[playbooks] admission check of "${station.id}" in ${admission.pipelineId} failed:`, errorText(error)));
+      this.onAdmissionChecked(key, admission, sent, outcome, output).catch((error: unknown) => console.error(`[playbooks] admission check of "${stage.id}" in ${admission.pipelineId} failed:`, errorText(error)));
     };
     try {
-      // The pipeline's workspace is where its scripts live; one a newer commit added is read once the pipeline is between trains.
-      let file = path.join(pipeline.workspaceDir, station.admit.script);
-      if (!existsSync(file) && existsSync(pipeline.workspaceDir) && !this.trainsOf(pipeline.id).some((train) => !isTerminal(train.status))) {
+      // The pipeline's workspace is where its scripts live; one a newer commit added is read once the pipeline is between batches.
+      let file = path.join(pipeline.workspaceDir, stage.admit.script);
+      if (!existsSync(file) && existsSync(pipeline.workspaceDir) && !this.batchesOf(pipeline.id).some((batch) => !isTerminal(batch.status))) {
         const id = pipeline.id;
         await this.refreshPipeline(id).catch((error: unknown) => console.error(`[playbooks] could not refresh ${id}:`, errorText(error)));
         pipeline = this.store.get(id)!;
-        file = path.join(pipeline.workspaceDir, station.admit.script);
+        file = path.join(pipeline.workspaceDir, stage.admit.script);
       }
       if (!existsSync(pipeline.workspaceDir)) return finish({ kind: "failed", message: `the pipeline's workspace ${pipeline.workspaceDir} does not exist` });
-      if (!existsSync(file)) return finish({ kind: "failed", message: `${station.admit.script} not found in the pipeline's workspace ${pipeline.workspaceDir}` });
+      if (!existsSync(file)) return finish({ kind: "failed", message: `${stage.admit.script} not found in the pipeline's workspace ${pipeline.workspaceDir}` });
       const child = spawn(file, [], {
         cwd: pipeline.workspaceDir,
         env: {
           ...process.env,
           PLAYBOOK_RUN_ID: pipeline.id,
-          PLAYBOOK_STEP_ID: station.id,
-          PLAYBOOK_STATION: station.id,
+          PLAYBOOK_STEP_ID: stage.id,
+          PLAYBOOK_STAGE: stage.id,
+          /** Deprecated name of PLAYBOOK_STAGE (ADR 2026-11-12-stage-batch-rename). */
+          PLAYBOOK_STATION: stage.id,
           PLAYBOOK_PIPELINE: pipeline.playbook.id,
           PLAYBOOK_CHECK: String(status.checks + 1),
           PLAYBOOK_WORKSPACE: pipeline.workspaceDir,
@@ -2400,49 +2402,49 @@ export class Runtime {
     if (outcome.kind === "failed") {
       status.lastOutcome = "failed";
       status.error = { at: nowIso(), message: outcome.message, tail: output };
-      console.warn(`[playbooks] admission check of "${admission.stationId}" in ${admission.pipelineId} failed: ${outcome.message}`);
+      console.warn(`[playbooks] admission check of "${admission.stageId}" in ${admission.pipelineId} failed: ${outcome.message}`);
     } else {
       status.lastOutcome = outcome.kind === "not_yet" ? "not_yet" : "ok";
       status.error = null;
       status.warnings = [];
       if (outcome.kind === "result" && this.store.get(admission.pipelineId)) {
-        const applied = await this.store.mutate(admission.pipelineId, (current) => engine.applyAdmission(current, admission.stationId, sent, outcome.result, nowIso()));
+        const applied = await this.store.mutate(admission.pipelineId, (current) => engine.applyAdmission(current, admission.stageId, sent, outcome.result, nowIso()));
         status.warnings = applied.warnings;
-        for (const warning of applied.warnings) console.warn(`[playbooks] admission check of "${admission.stationId}" in ${admission.pipelineId}: ${warning}`);
+        for (const warning of applied.warnings) console.warn(`[playbooks] admission check of "${admission.stageId}" in ${admission.pipelineId}: ${warning}`);
       }
     }
     admission.busy = false;
     const pipeline = this.store.get(admission.pipelineId);
-    const station = pipeline ? engine.stationsOf(pipeline).find((candidate) => candidate.id === admission.stationId) : undefined;
-    if (this.admissions.get(key) === admission && station?.admit) {
+    const stage = pipeline ? engine.stagesOf(pipeline).find((candidate) => candidate.id === admission.stageId) : undefined;
+    if (this.admissions.get(key) === admission && stage?.admit) {
       // An event (or a retry) came in during the check: one more, after the gap; else the poll.
       if (admission.dirty) this.scheduleAdmissionWake(admission, admission.dirty);
-      else this.armAdmissionPoll(admission, station.admit.pollMs);
+      else this.armAdmissionPoll(admission, stage.admit.pollMs);
     }
-    // Admitted jobs may board; an emptied queue drops its check.
+    // Admitted jobs may join; an emptied queue drops its check.
     await this.tick();
   }
 
   private armAdmissionPoll(admission: Admission, pollMs: number): void {
     if (admission.next) clearTimeout(admission.next);
-    const key = `${admission.pipelineId}/${admission.stationId}`;
+    const key = `${admission.pipelineId}/${admission.stageId}`;
     admission.next = setTimeout(() => void this.runAdmission(key, "poll").catch((error: unknown) => console.error("[playbooks] admission check failed:", errorText(error))), pollMs);
     (admission.next as unknown as { unref?: () => void }).unref?.();
     admission.status.nextCheckAt = new Date(Date.now() + pollMs).toISOString();
   }
 
-  /** The bus listener of a station's admission: its own queue's `job.queued`, and the stations' `wake_on` rules. */
+  /** The bus listener of a stage's admission: its own queue's `job.queued`, and the stages' `wake_on` rules. */
   private wakeAdmissions(event: BusEvent): void {
     for (const [key, admission] of this.admissions) {
       const pipeline = this.store.get(admission.pipelineId);
-      const station = pipeline ? engine.stationsOf(pipeline).find((candidate) => candidate.id === admission.stationId) : undefined;
-      if (!station?.admit) continue;
-      const own = event.runId === admission.pipelineId && event.payload.station === admission.stationId;
+      const stage = pipeline ? engine.stagesOf(pipeline).find((candidate) => candidate.id === admission.stageId) : undefined;
+      if (!stage?.admit) continue;
+      const own = event.runId === admission.pipelineId && event.payload.stage === admission.stageId;
       // What the check itself does (hold, admit, escalate) does not wake it.
       if (own && ["job.held", "job.admitted", "job.escalated"].includes(event.type)) continue;
       const hit =
         (own && event.type === "job.queued") ||
-        station.admit.wakeOn.some((rule) => rule.types.some((type) => globToRegExp(type).test(event.type)) && Object.entries(rule.filter).every(([field, value]) => event.payload[field] === value));
+        stage.admit.wakeOn.some((rule) => rule.types.some((type) => globToRegExp(type).test(event.type)) && Object.entries(rule.filter).every(([field, value]) => event.payload[field] === value));
       if (!hit) continue;
       if (admission.busy) admission.dirty ??= event.type;
       else if (!admission.gapWait) this.scheduleAdmissionWake(admission, event.type, key);
@@ -2450,7 +2452,7 @@ export class Runtime {
   }
 
   /** Replaces the poll timer by a check now (a retry), or when the gap since the last one has passed. */
-  private scheduleAdmissionWake(admission: Admission, type: string, key = `${admission.pipelineId}/${admission.stationId}`): void {
+  private scheduleAdmissionWake(admission: Admission, type: string, key = `${admission.pipelineId}/${admission.stageId}`): void {
     if (admission.child || (admission.gapWait && type !== "retry")) return;
     if (admission.next) clearTimeout(admission.next);
     admission.gapWait = false;
@@ -2469,7 +2471,7 @@ export class Runtime {
     admission.status.nextCheckAt = new Date(Date.now() + wait).toISOString();
   }
 
-  /** A human decided an admission gate: retry checks the queue again at once; withdraw tells the job's hand-off; admit lets it board. */
+  /** A human decided an admission gate: retry checks the queue again at once; withdraw tells the job's hand-off; admit lets it join. */
   private async afterAdmissionDecision(pipelineId: string, gate: Gate): Promise<void> {
     const pipeline = this.store.get(pipelineId);
     const job = pipeline?.jobs.find((candidate) => candidate.id === gate.jobId);
@@ -2485,15 +2487,15 @@ export class Runtime {
     await this.tick();
   }
 
-  /** The admission checks of a pipeline's stations, for the panel: live status, in memory (idle after a daemon restart until the next check). */
+  /** The admission checks of a pipeline's stages, for the panel: live status, in memory (idle after a daemon restart until the next check). */
   admissionStatus(runId: string): Record<string, AdmissionStatus> {
     const pipeline = this.store.get(runId);
     if (!pipeline) return {};
     return Object.fromEntries(
       engine
-        .stationsOf(pipeline)
-        .filter((station) => station.admit)
-        .map((station) => [station.id, structuredClone(this.admissions.get(`${runId}/${station.id}`)?.status ?? idleAdmission())]),
+        .stagesOf(pipeline)
+        .filter((stage) => stage.admit)
+        .map((stage) => [stage.id, structuredClone(this.admissions.get(`${runId}/${stage.id}`)?.status ?? idleAdmission())]),
     );
   }
 
@@ -2643,8 +2645,8 @@ export class Runtime {
     if (stepState && autoApplied && stepState.status !== "running" && stepState.status !== "reported" && stepState.attempts.at(-1)?.outcome && autoApplied.includes(stepState.attempts.at(-1)!.outcome!)) {
       throw new UserError(`step "${stepId}" is ${stepState.status}: its outcome "${stepState.attempts.at(-1)!.outcome}" is one the plugin applies itself (role.completion.auto) and it has already been applied; do not call complete_step for it`);
     }
-    // A train step with `settle`: its entries must apply before the step may complete.
-    const step = run.train ? engine.stepDef(run, stepId) : null;
+    // A batch step with `settle`: its entries must apply before the step may complete.
+    const step = run.batch ? engine.stepDef(run, stepId) : null;
     const settles = step?.settle && engine.completesStep(step, input.outcome) ? step.settle.output : null;
     const settleValue = settles ? (input.outputs?.[settles] ?? run.steps[stepId]?.attempts.at(-1)?.report?.outputs?.[settles]) : undefined;
     let pipeline: Run | null = null;
@@ -2662,24 +2664,24 @@ export class Runtime {
         }
       }
     }
-    if (run.train) {
-      // Before the train's last step completes it: no job may leave the pipeline missing an output.
-      const train = structuredClone(run);
-      const trial = structuredClone(this.store.get(run.train.pipelineId) ?? null);
+    if (run.batch) {
+      // Before the batch's last step completes it: no job may leave the pipeline missing an output.
+      const batch = structuredClone(run);
+      const trial = structuredClone(this.store.get(run.batch.pipelineId) ?? null);
       if (trial) {
         if (pipeline) Object.assign(trial, pipeline);
         const probe: Parameters<typeof engine.completeStep>[2] = { outcome: input.outcome, now: nowIso() };
         if (input.outputs !== undefined) probe.outputs = input.outputs;
         let completes = false;
         try {
-          engine.completeStep(train, stepId, probe);
-          completes = train.status === "completed";
+          engine.completeStep(batch, stepId, probe);
+          completes = batch.status === "completed";
         } catch {
           // The real call below reports why.
         }
         const missing = completes ? engine.jobsMissingOutputs(trial, run) : [];
         if (missing.length > 0) {
-          throw new UserError(`"${stepId}" would end the train with jobs missing outputs they need to leave the pipeline: ${missing.join("; ")}. Set them first (settle_job without an outcome, or the step's settle output) and complete the step again.`);
+          throw new UserError(`"${stepId}" would end the batch with jobs missing outputs they need to leave the pipeline: ${missing.join("; ")}. Set them first (settle_job without an outcome, or the step's settle output) and complete the step again.`);
         }
       }
     }
@@ -2698,7 +2700,7 @@ export class Runtime {
   async requestGate(managerId: string, runId: string, stepId: string, summary: string, details: string) {
     const run = this.ownedRun(managerId, runId);
     const result = await this.store.mutate(run.id, (current) => engine.requestGate(current, stepId, summary, nowIso(), details));
-    // A train's gate is announced to the runs whose jobs it carries; a role decider starts.
+    // A batch's gate is announced to the runs whose jobs it carries; a role decider starts.
     await this.tick();
     return this.store.get(run.id)!.gates.find((gate) => gate.id === result.id) ?? result;
   }
@@ -2707,7 +2709,7 @@ export class Runtime {
   async decideGate(runId: string, gateId: string, decision: engine.GateDecision): Promise<{ alreadyDecided: boolean; gate: Run["gates"][number] }> {
     const result = await this.store.mutate(runId, (current) => engine.decideGate(current, gateId, decision));
     if (result.gate.kind === "admission") {
-      // A pipeline has no manager to tell: the decision acts on the job and the station's queue.
+      // A pipeline has no manager to tell: the decision acts on the job and the stage's queue.
       if (!result.alreadyDecided) await this.afterAdmissionDecision(runId, result.gate);
       return { alreadyDecided: result.alreadyDecided, gate: result.gate };
     }
@@ -2715,7 +2717,7 @@ export class Runtime {
       const manager = this.store.get(runId)?.managerAgentId;
       if (manager) this.gateManagers.add(manager);
     }
-    // An ask choice with an outcome may complete a train step with `settle`.
+    // An ask choice with an outcome may complete a batch step with `settle`.
     if (!result.alreadyDecided) {
       const problems = await this.applySettle(runId, result.gate.stepId);
       if (problems.length > 0) await this.enqueue(runId, problems);
@@ -2763,7 +2765,7 @@ export class Runtime {
 
   /**
    * archive_run: the panel's archive, for an agent. Idempotent. A run whose hand-off job is still
-   * open in a pipeline (waiting or riding a train) is refused unless `force`: archiving hides it
+   * open in a pipeline (waiting or in a batch) is refused unless `force`: archiving hides it
    * while its result is still coming.
    */
   async archiveRunByAgent(runId: string, force: boolean): Promise<{ run: Run; already: boolean }> {
@@ -2772,10 +2774,10 @@ export class Runtime {
     if (existing.archivedAt) return { run: existing, already: true };
     if (!force) {
       const open = this.store.list().flatMap((candidate) => candidate.jobs.filter((job) => candidate.id !== runId && job.fromRunId === runId && job.status === "open").map((job) => ({ job, at: candidate })));
-      const pipelineJobs = open.filter(({ at }) => !at.train);
+      const pipelineJobs = open.filter(({ at }) => !at.batch);
       if (pipelineJobs.length > 0) {
-        const where = pipelineJobs.map(({ job, at }) => `${job.id} at ${job.riding.map((r) => `train ${r.runId}`).concat(job.waiting.map((w) => `station "${w.station}"`)).join(", ") || `pipeline ${at.id}`}`).join("; ");
-        throw new UserError(`run ${runId} has a job that is not settled yet (${where}): wait for it to settle (settle_job, or the train ends), or pass force: true to archive anyway`);
+        const where = pipelineJobs.map(({ job, at }) => `${job.id} at ${job.batches.map((r) => `batch ${r.runId}`).concat(job.waiting.map((w) => `stage "${w.stage}"`)).join(", ") || `pipeline ${at.id}`}`).join("; ");
+        throw new UserError(`run ${runId} has a job that is not settled yet (${where}): wait for it to settle (settle_job, or the batch ends), or pass force: true to archive anyway`);
       }
     }
     await this.archiveRun(runId);
@@ -2969,7 +2971,7 @@ export class Runtime {
     const blocker = restartBlocker(run, stepId);
     if (blocker) throw new UserError(blocker);
     if (isPipeline(run)) throw new UserError(`run ${run.id} is a singleton pipeline: it is not restarted; the next hand-off starts a new one`);
-    if (run.train) throw new UserError(`run ${run.id} is a train of pipeline ${run.train.pipelineId}: a failed train's jobs ride the station's next train (or fail, past its retries)`);
+    if (run.batch) throw new UserError(`run ${run.id} is a batch of pipeline ${run.batch.pipelineId}: a failed batch's jobs ride the stage's next batch (or fail, past its retries)`);
     const origin = await this.workspaceOf(run.workspaceId);
     const active = (inWorkspace: string) => this.workspaceConflict(inWorkspace, run.playbook.isolation.mode === "worktree", run.id);
     const busy = active(run.workspaceId);
@@ -3151,12 +3153,12 @@ export class Runtime {
     return [...effects.notes, `Its ask is open: a human answers it (the panel, or resume). Do not call complete_step or nudge_step for "${stepId}".`];
   }
 
-  /** A train step's `settle` output may only name outcomes the singleton has: refused at report time, so the agent corrects it. */
+  /** A batch step's `settle` output may only name outcomes the singleton has: refused at report time, so the agent corrects it. */
   private checkReportedOutcomes(run: Run, stepId: string, outputs: Record<string, unknown>): void {
-    const step = run.train ? engine.stepDef(run, stepId) : null;
-    if (!run.train || !step?.settle) return;
+    const step = run.batch ? engine.stepDef(run, stepId) : null;
+    if (!run.batch || !step?.settle) return;
     const raw = outputs[step.settle.output];
-    const pipeline = this.store.get(run.train.pipelineId);
+    const pipeline = this.store.get(run.batch.pipelineId);
     if (!pipeline || raw === undefined || raw === null) return;
     let results: engine.JobResult[];
     try {
@@ -3167,7 +3169,7 @@ export class Runtime {
     const allowed = pipeline.playbook.outcomes;
     for (const result of results) {
       if (result.outcome !== undefined && !allowed.includes(result.outcome)) {
-        throw new UserError(`${step.settle.output}: job ${result.jobId} has outcome "${result.outcome}", which is not an outcome of "${pipeline.playbook.id}" (use ${allowed.join(", ")}, or no outcome key for a job that keeps riding). Fix it and call report_step_result again.`);
+        throw new UserError(`${step.settle.output}: job ${result.jobId} has outcome "${result.outcome}", which is not an outcome of "${pipeline.playbook.id}" (use ${allowed.join(", ")}, or no outcome key for a job that stays in its batch). Fix it and call report_step_result again.`);
       }
     }
   }
@@ -4162,7 +4164,7 @@ export class Runtime {
 
   /**
    * start_playbook with `newWorkspace`: the run gets its own workspace and its own Playbook
-   * Manager, so any manager can start one, a train's included (rework for an ejected job).
+   * Manager, so any manager can start one, a batch's included (rework for an ejected job).
    */
   async startPlaybookElsewhere(manager: { cwd: string; workspaceId: string | null }, playbookId: string, inputs: Record<string, unknown>, workspaceName?: string) {
     let workspaceDir = manager.cwd;

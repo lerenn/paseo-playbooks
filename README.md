@@ -88,16 +88,16 @@ anyone who can see the panel sees what the script prints. Each check says what s
 or an event ("woken by job.settled").
 
 A script step can also wake on events: `script: { run: check.sh, poll: 10m, wake_on: [{ types: [job.advanced, job.settled],
-filter: { playbook: other_pipeline, station: production } }] }` runs a check at once when a matching event is emitted
+filter: { playbook: other_pipeline, stage: production } }] }` runs a check at once when a matching event is emitted
 (`types` take globs; `filter` matches payload fields by equality), and `poll` stays as the safety net (required). Events
 during a running check cause one more check after it, never two at once; checks are at least 5 s apart; a step is not woken
 by events about itself. See `examples/.paseo/plugins/playbooks/wait_for_upstream.yaml` and
 `docs/adrs/2026-11-12-script-wake-on.md`.
 
-### Admission on a station's queue
+### Admission on a stage's queue
 
-A station of a singleton pipeline can decide, per waiting job, who may board its next train, with a script the plugin
-runs itself (no train, no manager, no agent):
+A stage of a singleton pipeline can decide, per waiting job, who may join its next batch, with a script the plugin
+runs itself (no batch, no manager, no agent):
 
 ```yaml
   - id: staging
@@ -109,14 +109,14 @@ runs itself (no train, no manager, no agent):
         script: admit_staging.sh
         poll: 10m                       # required: the safety net
         wake_on:                        # optional; a new job of this queue always wakes it
-          - { types: [job.advanced, job.settled], filter: { playbook: qa_pipeline, station: smoke } }
+          - { types: [job.advanced, job.settled], filter: { playbook: qa_pipeline, stage: smoke } }
 ```
 
-The script runs in the pipeline's workspace and reads `PLAYBOOK_JOBS` (the station's waiting jobs: `id`, `label`,
-`since` and all their `inputs`), `PLAYBOOK_STATION` and `PLAYBOOK_PIPELINE`. Its last stdout line is JSON:
+The script runs in the pipeline's workspace and reads `PLAYBOOK_JOBS` (the stage's waiting jobs: `id`, `label`,
+`since` and all their `inputs`), `PLAYBOOK_STAGE` and `PLAYBOOK_PIPELINE`. Its last stdout line is JSON:
 `{"admit": ["job_a"], "hold": {"job_b": "QA not passed"}, "escalate": {"job_c": "dependency failed"}}`. A job it does
 not name is held ("not admitted by the script"); exit 75 or a failure changes nothing (a failure shows as an alert on
-the station). A held job never blocks the others, and the panel shows each one's "Held" badge with the reason, since
+the stage). A held job never blocks the others, and the panel shows each one's "Held" badge with the reason, since
 when it waits and the last check. `escalate` also asks a human in "Needs you": check again, withdraw the job, or admit it
 anyway. `job.held`, `job.admitted` (`via: script | human`) and `job.escalated` are public events. See
 `examples/.paseo/plugins/playbooks/staged_release.yaml` and `docs/adrs/2026-11-12-event-core-queue-admission.md`.
@@ -160,9 +160,9 @@ paseo plugin logs paseo-playbooks
 
 ### Event log and job events
 
-Run state is still one JSON file per run. Next to it, a pipeline (a singleton's run) and its trains keep an
+Run state is still one JSON file per run. Next to it, a pipeline (a singleton's run) and its batches keep an
 append-only **event log**, `<run id>.events.jsonl`, in the plugin's `runs/` folder: one line per fact about its jobs
-(`job.queued`, `job.boarded`, `job.advanced`, ...), the first step of the event core (ADR
+(`job.queued`, `job.joined`, `job.advanced`, ...), the first step of the event core (ADR
 `docs/adrs/2026-11-12-event-core.md`). In this version the log changes nothing: the run file stays the source of truth,
 and the log is checked against it. Two settings in the user config
 (`$PASEO_HOME/plugin-data/lerenn/paseo-playbooks/config.yaml`, read when the plugin starts, so reload after editing):
@@ -174,12 +174,12 @@ event_core:
 ```
 
 The pipeline's jobs are also announced on the event bus, for `subscribe_events` and `list_events`:
-`job.queued` (waits at a station: handed off, or unlocked by a passed station; one event per station),
-`job.boarded`, `job.advanced` (passed a station), `job.requeued` (its train failed, retries left), `job.settled`
-(left with an outcome), `job.failed`, `job.withdrawn`, and, for a station with `queue.admit`, `job.held`, `job.admitted`
+`job.queued` (waits at a stage: handed off, or unlocked by a passed stage; one event per stage),
+`job.joined`, `job.advanced` (passed a stage), `job.requeued` (its batch failed, retries left), `job.settled`
+(left with an outcome), `job.failed`, `job.withdrawn`, and, for a stage with `queue.admit`, `job.held`, `job.admitted`
 and `job.escalated`. Payload: `runId` (the pipeline), `playbook` (the singleton's id),
-`jobId`, `label`, `station`, `trainRunId`, `outcome`, plus `via`, `nextStations`, `rides`/`retries`, `summary` or `reason`
-per type. `filter` matches them by equality, e.g. `{ playbook: "release_trains", station: "stg" }`.
+`jobId`, `label`, `stage`, `batchRunId`, `outcome`, plus `via`, `nextStages`, `rides`/`retries`, `summary` or `reason`
+per type. `filter` matches them by equality, e.g. `{ playbook: "release_trains", stage: "stg" }`. Deprecated until 2027-02-12 (ADR 2026-11-12-stage-batch-rename): `station`/`trainRunId`/`nextStations` are sent next to `stage`/`batchRunId`/`nextStages`, `job.boarded` next to `job.joined`, `PLAYBOOK_STATION` next to `PLAYBOOK_STAGE`, and `riding`/`stations` next to `batches`/`stages` in the tools' output.
 
 ### Profiles
 

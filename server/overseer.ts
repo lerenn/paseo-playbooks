@@ -79,7 +79,7 @@ export function listAttention(runs: Run[], now: number, filter: GateFilter = {})
     .flatMap((run) => run.gates.filter((gate) => gate.status === "pending").map((gate) => gateListing(run, gate, now)))
     .filter((gate) => filter.olderThanMinutes === undefined || (gate.ageMinutes ?? 0) >= filter.olderThanMinutes)
     .sort((a, b) => a.openedAt.localeCompare(b.openedAt) || a.runId.localeCompare(b.runId) || a.gateId.localeCompare(b.gateId));
-  const failed = filter.includeFailed ? visible.filter((run) => run.status === "failed" && !run.train).map(failedListing).sort((a, b) => a.runId.localeCompare(b.runId)) : [];
+  const failed = filter.includeFailed ? visible.filter((run) => run.status === "failed" && !run.batch).map(failedListing).sort((a, b) => a.runId.localeCompare(b.runId)) : [];
   return { gates, failed };
 }
 

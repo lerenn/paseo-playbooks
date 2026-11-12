@@ -176,7 +176,10 @@ export default function contribute(server: PluginServerContext) {
   });
   handle(analyticsStateRpc, async ({ days, playbook, projectId }) => runtime.analytics({ days, playbook, projectId }));
   handle(overviewStateRpc, async () => ({ runs: store.list().filter((run) => !run.archivedAt).map(summarizeRun) }));
-  handle(admissionStatusRpc, async ({ runId }) => ({ stations: runtime.admissionStatus(runId) }));
+  handle(admissionStatusRpc, async ({ runId }) => {
+    const stages = runtime.admissionStatus(runId);
+    return { stages, stations: stages };
+  });
   handle(scriptOutputRpc, async ({ runId, stepId }) => runtime.scriptOutput(runId, stepId));
   handle(markRunSeenRpc, async ({ runId }) => ({ seenAt: await runtime.markSeen(runId) }));
   handle(needsYouRpc, async () => ({

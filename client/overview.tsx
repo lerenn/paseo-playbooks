@@ -18,7 +18,7 @@ import { sidekickUi, useSidekickUi } from "./sidekick/ui-state";
 import { defaultProject, projectsOf, runButtonState, runnablePlaybooks } from "./run-form";
 import { Button, GateActions } from "./sheet";
 import { OverviewRunForm, RunPlaybookButton } from "./start-form";
-import { openJobsLabel, Stations, trainName } from "./stations";
+import { openJobsLabel, Stages, batchName } from "./stages";
 import { stepShortTitle, stepTitle, stepTitleOf, withAlpha, type Theme } from "./theme";
 
 /** Id of the Playbooks screen, opened from the sidebar row. */
@@ -150,7 +150,7 @@ function useWorkspaces(): WorkspaceInfo[] {
 }
 
 /** Main-graph steps in declared order: the columns of a playbook's progression line. */
-/** The steps on a run's line: not after-tasks, nor steps its `when` skipped (a dev train has no prd go). */
+/** The steps on a run's line: not after-tasks, nor steps its `when` skipped (a dev batch has no prd go). */
 function mainSteps(run: RunSummary): StepSummary[] {
   return run.playbook.steps.filter((step) => !step.afterTask && !(step.when && run.steps[step.id]?.status === "skipped"));
 }
@@ -159,9 +159,9 @@ function pendingGates(run: RunSummary): Gate[] {
   return run.gates.filter((gate) => gate.status === "pending");
 }
 
-/** A run's name in lists: its first text input (the request), else its id; a train's station and jobs. */
+/** A run's name in lists: its first text input (the request), else its id; a batch's stage and jobs. */
 function runTitle(run: RunSummary): string {
-  if (run.train) return `${trainName(run)} · ${run.jobs.length} ${run.jobs.length === 1 ? "job" : "jobs"}`;
+  if (run.batch) return `${batchName(run)} · ${run.jobs.length} ${run.jobs.length === 1 ? "job" : "jobs"}`;
   return run.title ?? run.id;
 }
 
@@ -353,15 +353,15 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
   const needs = runs.flatMap((run) => pendingGates(run).map((gate) => ({ run, gate })));
   const groups = useMemo(() => {
     const byPlaybook = new Map<string, RunSummary[]>();
-    // A singleton's trains go under the singleton; its pipeline shows as its stations.
-    const key = (run: RunSummary) => run.train?.playbook ?? run.playbook.id;
+    // A singleton's batches go under the singleton; its pipeline shows as its stages.
+    const key = (run: RunSummary) => run.batch?.playbook ?? run.playbook.id;
     for (const run of runs) byPlaybook.set(key(run), [...(byPlaybook.get(key(run)) ?? []), run]);
     const pipelines = overview.runs?.filter(isPipeline) ?? [];
     return [...byPlaybook.entries()].map(([id, list]) => ({ id, runs: list, playbook: list[0]!.playbook, pipeline: pipelines.find((run) => run.playbook.id === id && !isTerminal(run.status)) }));
   }, [runs]);
   const counts = {
     needsYou: needs.length,
-    // A live pipeline stays running while it exists, idle or not: only its trains count.
+    // A live pipeline stays running while it exists, idle or not: only its batches count.
     working: runs.filter((run) => !isPipeline(run) && isActive(run) && !isPaused(run) && pendingGates(run).length === 0).length,
     paused: runs.filter((run) => isPaused(run)).length,
     // Counted even when hidden, so new done runs are not missed.
@@ -804,7 +804,7 @@ function PlaybookGroup(props: {
   theme: Theme;
   compact: boolean;
   runs: RunSummary[];
-  /** A singleton's active pipeline: shown as its stations, its trains as the rows. */
+  /** A singleton's active pipeline: shown as its stages, its batches as the rows. */
   pipeline?: RunSummary | undefined;
   allRuns: RunSummary[];
   names: Map<string, string>;
@@ -812,7 +812,7 @@ function PlaybookGroup(props: {
   onOpenAgent?: (agentId: string) => void;
 }) {
   const [sort, setSort] = useState<SortKey>("updated");
-  // Trains of different stations have different steps: each row shows its own columns.
+  // Batches of different stages have different steps: each row shows its own columns.
   const compact = props.compact || Boolean(props.pipeline);
   const theme = props.theme;
   // The most recently updated run's definition gives the columns (runs come in that order);
@@ -832,20 +832,20 @@ function PlaybookGroup(props: {
         description={compact ? undefined : playbook.description}
         extra={
           props.pipeline
-            ? `${openJobsLabel(props.pipeline)} · ${working} ${working === 1 ? "train" : "trains"} running`
+            ? `${openJobsLabel(props.pipeline)} · ${working} ${working === 1 ? "batch" : "batches"} running`
             : working > 0
               ? `${working} working`
               : undefined
         }
         extraColor={theme.colors.accent}
       />
-      {props.pipeline ? <Stations theme={theme} pipeline={props.pipeline} runs={props.allRuns} /> : null}
+      {props.pipeline ? <Stages theme={theme} pipeline={props.pipeline} runs={props.allRuns} /> : null}
       {/* No overflow clipping: the sort menu opens over the rows below. */}
       {runs.length > 0 ? (
       <View style={{ borderRadius: 10, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface1 }}>
         <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 12, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: theme.colors.border, zIndex: 10 }}>
           <View style={{ width: compact ? undefined : TITLE_WIDTH, flex: compact ? 1 : undefined }}>
-            <SortHeading theme={theme} label={props.pipeline ? "Trains" : undefined} value={sort} onChange={setSort} />
+            <SortHeading theme={theme} label={props.pipeline ? "Batches" : undefined} value={sort} onChange={setSort} />
           </View>
           {compact ? null : (
             <>

@@ -20,7 +20,7 @@ import type {
   Transition,
   VarDef,
   VarType,
-  Station,
+  Stage,
   VarValue,
   When,
 } from "../shared/types";
@@ -314,19 +314,19 @@ const RawStepSchema = z.object({
     handoff: kindBlock(RawHandoffStepSchema).optional(),
     branch: RawBranchStepSchema.optional(),
     fanout: RawFanoutStepSchema.optional(),
-    /** A singleton's station: which waiting jobs a train takes. */
+    /** A singleton's stage: which waiting jobs a batch takes. */
     queue: z
       .object({
         /** fifo: the oldest waiting job alone; merge: every waiting job. */
         mode: z.enum(["fifo", "merge"]).default("fifo"),
-        /** A script that decides which waiting jobs may board; the plugin runs it with no train and no agent. */
+        /** A script that decides which waiting jobs may join; the plugin runs it with no batch and no agent. */
         admit: z
           .object({
             /** The executable in the folder's scripts/. */
             script: z.string().min(1),
             /** Interval between checks while jobs wait (`10m`): the safety net. Required. */
             poll: z.string().optional(),
-            /** Events that run a check at once; a job queued at this station always does. */
+            /** Events that run a check at once; a job queued at this stage always does. */
             wake_on: RawWakeOnSchema.optional(),
           })
           .strict()
@@ -334,7 +334,7 @@ const RawStepSchema = z.object({
       })
       .strict()
       .optional(),
-    /** On a train of a singleton pipeline: the plugin settles the train's jobs from one of the step's outputs. */
+    /** On a batch of a singleton pipeline: the plugin settles the batch's jobs from one of the step's outputs. */
     settle: z
       .object({
         /** A string output holding YAML: per job id, `outputs` and, for a job that ends now, `outcome` (and `reason`). */
@@ -447,7 +447,7 @@ const RawPlaybookSchema = z.object({
           .object({
             /** Branch its workspace branches off; default: the project's default branch. */
             branch: z.string().min(1).optional(),
-            /** Removed in favour of stations; read only to refuse it. */
+            /** Removed in favour of stages; read only to refuse it. */
             concurrency: z.unknown().optional(),
           })
           .strict(),
@@ -1115,12 +1115,12 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
   if (typeof pb.singleton === "boolean") err(`singleton: a feature is a block: write \`singleton: {}\` for the defaults, or leave it out`);
   if (pb.singleton !== undefined && typeof pb.singleton !== "boolean") {
     const raw = pb.singleton;
-    singleton = { stations: [] };
+    singleton = { stages: [] };
     if (raw.branch !== undefined) singleton.branch = raw.branch;
     if (raw.concurrency !== undefined) {
-      err("singleton.concurrency was removed: each top-level step is a station with its own waiting list; set `queue: { mode: fifo | merge }` on a step instead");
+      err("singleton.concurrency was removed: each top-level step is a stage with its own waiting list; set `queue: { mode: fifo | merge }` on a step instead");
     }
-    if (pb.concurrency !== undefined) err("`concurrency` does not apply to a singleton playbook: each top-level step is a station, which runs one train at a time");
+    if (pb.concurrency !== undefined) err("`concurrency` does not apply to a singleton playbook: each top-level step is a stage, which runs one batch at a time");
     if (pb.after !== undefined) err("`after` does not apply to a singleton playbook (its pipeline never ends)");
   }
   // A singleton has no run inputs: every input is each job's.
@@ -1153,7 +1153,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
         continue;
       }
       if (singleton && (ref || !keyInputs.has(name))) {
-        err(`${where}: ${label}.${name}: a singleton's inputs are each job's${ref ? ", and its trains do not read other steps in a condition" : ""}, so \`${label}\` cannot use ${ref ? "this" : "them"}; put the condition in the station's sub-playbook, on an input the station sets`);
+        err(`${where}: ${label}.${name}: a singleton's inputs are each job's${ref ? ", and its batches do not read other steps in a condition" : ""}, so \`${label}\` cannot use ${ref ? "this" : "them"}; put the condition in the stage's sub-playbook, on an input the stage sets`);
         continue;
       }
       if (typeof given === "object" && !Array.isArray(given)) {
@@ -1247,15 +1247,15 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     refuseFlatForms(where, rawStep, err);
     if (typeof rawStep.handoff === "string") err(`${where}: handoff: write \`handoff: { name: ${rawStep.handoff} }\``);
     if (task && rawStep.when !== undefined) err(`${where}: \`when\` does not apply to an after-task`);
-    if (rawStep.branch !== undefined && (task || singleton)) err(`${where}: \`branch\` does not apply to ${task ? "an after-task" : "a singleton's station"}`);
+    if (rawStep.branch !== undefined && (task || singleton)) err(`${where}: \`branch\` does not apply to ${task ? "an after-task" : "a singleton's stage"}`);
     if (rawStep.when && "loop" in rawStep.when && !inputs.loop && kindBlocks(rawStep).playbook !== undefined) {
       err(`${where}: when.loop does not apply to a playbook step (it has no loop count); put it on a step of the sub-playbook`);
     }
     const when = task ? undefined : parseWhen(where, rawStep.when);
     const conditional = when ? { when } : {};
-    if (rawStep.fanout !== undefined && (task || singleton)) err(`${where}: \`fanout\` does not apply to ${task ? "an after-task" : "a singleton's station"}`);
+    if (rawStep.fanout !== undefined && (task || singleton)) err(`${where}: \`fanout\` does not apply to ${task ? "an after-task" : "a singleton's stage"}`);
     if (rawStep.settle !== undefined && (isGate || isBlock || isHandoff || task || rawStep.fanout !== undefined)) {
-      err(`${where}: \`settle\` only applies to a role or script step (its outputs settle the train's jobs)`);
+      err(`${where}: \`settle\` only applies to a role or script step (its outputs settle the batch's jobs)`);
     }
     if (rawStep.branch !== undefined) {
       for (const field of ["inputs", "outputs", "outcomes", "timeout", "on", "settle"] as const) {
@@ -1509,7 +1509,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     let pollMs: number | undefined;
     let wakeOn: WakeOn | undefined;
     if (rawStep.wake_on !== undefined) err(`${where}: \`wake_on\` only applies to a script step (under \`script:\`)`);
-    if (rawStep.admit !== undefined) err(`${where}: \`admit\` goes under \`queue:\` on a station of a singleton: write \`queue: { admit: { script: x.sh, poll: 10m } }\``);
+    if (rawStep.admit !== undefined) err(`${where}: \`admit\` goes under \`queue:\` on a stage of a singleton: write \`queue: { admit: { script: x.sh, poll: 10m } }\``);
     if (scriptStep) {
       const checked = await checkScript(root, scriptStep.run);
       if ("error" in checked) err(`${where}: script.run: ${checked.error}`);
@@ -1786,19 +1786,19 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     }
   }
 
-  // A singleton's top-level steps are stations; `queue` only applies to them.
-  const stations: Station[] = [];
+  // A singleton's top-level steps are stages; `queue` only applies to them.
+  const stages: Stage[] = [];
   for (const { raw: rawStep, task } of rawAll) {
     if (rawStep.queue === undefined) continue;
-    if (!singleton) err(`step "${rawStep.id}": \`queue\` only applies to a step of a singleton playbook (a station)`);
+    if (!singleton) err(`step "${rawStep.id}": \`queue\` only applies to a step of a singleton playbook (a stage)`);
     else if (task) err(`after "${rawStep.id}": \`queue\` does not apply to an after-task`);
   }
   if (errors.length === 0 && singleton) {
-    const stationIds = new Set(pb.steps.map((raw) => raw.id));
+    const stageIds = new Set(pb.steps.map((raw) => raw.id));
     for (const raw of pb.steps) {
       const own = finalSteps.filter((step) => step.id === raw.id || step.id.startsWith(`${raw.id}.`)).map((step) => step.id);
       const block = blocks.get(raw.id);
-      let admit: Station["admit"];
+      let admit: Stage["admit"];
       const rawAdmit = raw.queue?.admit;
       if (rawAdmit) {
         const where = `step "${raw.id}": queue.admit`;
@@ -1810,7 +1810,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
         const wakeOn = rawAdmit.wake_on ? checkWakeOn(rawAdmit.wake_on, `${where}.wake_on`, err) : [];
         if (!("error" in checked) && pollMs !== null) admit = { script: `${folder.relDir}/scripts/${checked.name}`, pollMs, wakeOn };
       }
-      stations.push({
+      stages.push({
         id: raw.id,
         title: raw.title ?? block?.title ?? stepLabel(raw.id),
         needs: raw.needs,
@@ -1819,42 +1819,42 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
         steps: own,
         ...(admit ? { admit } : {}),
       });
-      // Jobs only move forward: a station loops only inside itself.
+      // Jobs only move forward: a stage loops only inside itself.
       for (const step of finalSteps.filter((candidate) => own.includes(candidate.id))) {
         for (const [outcome, transition] of Object.entries(step.on)) {
           const targets = transition.kind === "goto" ? [transition.target] : transition.kind === "ask" ? (transition.choices?.map((choice) => choice.target) ?? [transition.target]) : [];
           for (const target of targets) {
-            if (!own.includes(target) && stationIds.size > 0) err(`step "${step.id}": on.${outcome}: goto "${target}" leaves station "${raw.id}"; jobs only move forward between stations`);
+            if (!own.includes(target) && stageIds.size > 0) err(`step "${step.id}": on.${outcome}: goto "${target}" leaves stage "${raw.id}"; jobs only move forward between stages`);
           }
         }
       }
     }
-    // A train is its station alone: its steps cannot read another station's outputs.
-    for (const station of stations) {
-      const own = new Set(station.steps);
+    // A batch is its stage alone: its steps cannot read another stage's outputs.
+    for (const stage of stages) {
+      const own = new Set(stage.steps);
       for (const step of finalSteps.filter((candidate) => own.has(candidate.id))) {
         for (const [name, wired] of Object.entries(step.inputs)) {
           for (const ref of templateRefs(wired.source)) {
             const from = /^steps\.([a-z][a-z0-9_.-]*)\.outputs\./.exec(ref)?.[1];
             if (from !== undefined && !own.has(from)) {
-              err(`step "${step.id}": inputs.${name}: reads step "${from}" of another station; a train only sees its own station's steps (pass values between stations as job outputs, with settle_job)`);
+              err(`step "${step.id}": inputs.${name}: reads step "${from}" of another stage; a batch only sees its own stage's steps (pass values between stages as job outputs, with settle_job)`);
             }
           }
         }
       }
     }
-    // Trains of different stations share one checkout: no role may edit files.
+    // Batches of different stages share one checkout: no role may edit files.
     for (const step of finalSteps) {
       if (step.kind === "agent" && step.role && roles[step.role] && !roles[step.role]!.readonly) {
-        err(`step "${step.id}": role "${step.role}" is not readonly; a singleton's trains share one workspace, so every role it uses must be \`readonly: true\``);
+        err(`step "${step.id}": role "${step.role}" is not readonly; a singleton's batches share one workspace, so every role it uses must be \`readonly: true\``);
       }
     }
   }
 
   let isolation = resolveIsolation(pb.isolation, defaults.isolation);
   if (isolation.mode === "worktree" && singleton) {
-    // The repository default never reaches a singleton (its trains share one pipeline workspace); asking for it there is an error.
-    if (resolveIsolation(pb.isolation, undefined).mode === "worktree") err("`isolation: worktree` does not apply to a singleton: its trains share one pipeline workspace");
+    // The repository default never reaches a singleton (its batches share one pipeline workspace); asking for it there is an error.
+    if (resolveIsolation(pb.isolation, undefined).mode === "worktree") err("`isolation: worktree` does not apply to a singleton: its batches share one pipeline workspace");
     isolation = { ...isolation, mode: "none" };
   }
   if (errors.length > 0) return fail(errors);
@@ -1865,7 +1865,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     else err(`manager.mode: ${parsedMode}`);
   }
   if (managerMode === "none" && singleton) {
-    if (pb.manager?.mode !== undefined) err("`manager: { mode: none }` does not apply to a singleton: a pipeline's trains each have a manager");
+    if (pb.manager?.mode !== undefined) err("`manager: { mode: none }` does not apply to a singleton: a pipeline's batches each have a manager");
     managerMode = "always_on";
   }
   if (errors.length > 0) return fail(errors);
@@ -1902,7 +1902,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     })),
   };
   if (pb.concurrency !== undefined && !singleton) entry.playbook.concurrency = pb.concurrency;
-  if (singleton) entry.playbook.singleton = { ...singleton, stations };
+  if (singleton) entry.playbook.singleton = { ...singleton, stages };
   return { entry };
 }
 

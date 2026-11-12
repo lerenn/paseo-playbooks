@@ -40,7 +40,7 @@ describe.skipIf(!enabled)("event core benchmark", () => {
         await rename(`${file}.tmp`, file);
       });
       const log = new EventLog(dir);
-      const event = { type: "job.boarded", at: "2026-11-12T10:00:00.000Z", data: { station: "stg", trainRunId: "run_abc123", jobIds: ["job_a", "job_b"], since: { job_a: "2026-11-12T09:00:00.000Z", job_b: "2026-11-12T09:01:00.000Z" } } };
+      const event = { type: "job.joined", at: "2026-11-12T10:00:00.000Z", data: { stage: "stg", batchRunId: "run_abc123", jobIds: ["job_a", "job_b"], since: { job_a: "2026-11-12T09:00:00.000Z", job_b: "2026-11-12T09:01:00.000Z" } } };
       const append = await time(500, async () => void (await log.append("bench", [event])));
       const size = (await readFile(file, "utf8")).length;
       console.log(`run file ${(size / 1e6).toFixed(2)} MB: rewrite median ${snapshot.median.toFixed(2)} ms (p95 ${snapshot.p95.toFixed(2)}); append median ${append.median.toFixed(3)} ms (p95 ${append.p95.toFixed(3)}); one event ≈ ${JSON.stringify(event).length} bytes`);

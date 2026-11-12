@@ -13,7 +13,7 @@ import { ProfilePicker, useSetProjectProfile } from "./profiles";
 import { Button, StepSheet } from "./sheet";
 import { StartForm, type StartTarget } from "./start-form";
 import { dotGroups, isRead, runTone, splitTabs, type DotGroup, type RunTone } from "./run-tabs";
-import { openJobsLabel, Stations, trainName } from "./stations";
+import { openJobsLabel, Stages, batchName } from "./stages";
 import { splitError } from "../shared/errors";
 import { runStatusColor, runStatusLabel, withAlpha, type Theme } from "./theme";
 
@@ -55,15 +55,15 @@ export function PlaybooksPanel(props: PluginWorkspacePanelProps) {
     const toCard = (id: string): Card => ({
       id,
       entry: entries.find((entry) => entry.id === id) ?? null,
-      // A singleton's trains are runs of its stations: they go under the singleton.
-      runs: allRuns.filter((run) => (run.train?.playbook ?? run.playbook.id) === id),
+      // A singleton's batches are runs of its stages: they go under the singleton.
+      runs: allRuns.filter((run) => (run.batch?.playbook ?? run.playbook.id) === id),
     });
     // Hidden playbooks (sub-playbooks or after-tasks only) go in the collapsed section at the
     // bottom, unless they have runs (a run may wait on a gate) or errors (so they are seen).
     const tucked = (entry: PlaybookEntry) =>
-      entry.hidden && entry.errors.length === 0 && !allRuns.some((run) => (run.train?.playbook ?? run.playbook.id) === entry.id);
+      entry.hidden && entry.errors.length === 0 && !allRuns.some((run) => (run.batch?.playbook ?? run.playbook.id) === entry.id);
     const listed = entries.filter((entry) => !tucked(entry));
-    const ids = [...new Set([...listed.map((entry) => entry.id), ...allRuns.map((run) => run.train?.playbook ?? run.playbook.id)])];
+    const ids = [...new Set([...listed.map((entry) => entry.id), ...allRuns.map((run) => run.batch?.playbook ?? run.playbook.id)])];
     return { cards: ids.map(toCard), hiddenCards: entries.filter(tucked).map((entry) => toCard(entry.id)) };
   }, [playbooks.data, runs.data]);
   const [showHidden, setShowHidden] = useTabState(props.tab, z.boolean(), false);
@@ -246,10 +246,10 @@ function PlaybookCard(props: {
   const [sheet, setSheet] = useState<string | null>(null);
   const [highlighted, setHighlighted] = useState<string | null>(null);
   const [starting, setStarting] = useState<StartTarget | null>(null);
-  // A singleton's pipeline is not a tab: its stations stay on top, and its trains are the tabs.
+  // A singleton's pipeline is not a tab: its stages stay on top, and its batches are the tabs.
   const pipeline = card.runs.find((candidate) => isPipeline(candidate) && !isTerminal(candidate.status)) ?? card.runs.find(isPipeline);
   const tabs = card.runs.filter((candidate) => !isPipeline(candidate));
-  // A live pipeline stays running while it exists, idle or not: its trains say what it does.
+  // A live pipeline stays running while it exists, idle or not: its batches say what it does.
   const dotted = card.runs.filter((candidate) => !isPipeline(candidate) || isTerminal(candidate.status));
   // A selected run that disappeared (archived) falls back to the default tab.
   const current = selected === "definition" || tabs.some((candidate) => candidate.id === selected) ? selected : null;
@@ -304,7 +304,7 @@ function PlaybookCard(props: {
       {expanded && pipeline ? (
         <View style={{ gap: 6, zIndex: 16 }}>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 6, zIndex: 16 }}>
-            <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11, fontWeight: "600", textTransform: "uppercase", letterSpacing: 0.4 }}>Stations</Text>
+            <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11, fontWeight: "600", textTransform: "uppercase", letterSpacing: 0.4 }}>Stages</Text>
             <RunChip
               theme={theme}
               run={pipeline}
@@ -316,7 +316,7 @@ function PlaybookCard(props: {
               onOpenManager={() => undefined}
             />
           </View>
-          <Stations theme={theme} pipeline={pipeline} runs={card.runs} onOpenTrain={(train) => setSelected(train.id)} />
+          <Stages theme={theme} pipeline={pipeline} runs={card.runs} onOpenBatch={(batch) => setSelected(batch.id)} />
         </View>
       ) : null}
       {expanded && (tabs.length > 0 || pipeline) ? (
@@ -749,11 +749,11 @@ const INPUT_LABEL_MAX = 24;
 
 /**
  * A run's tab label: the name its manager gave it, else its first text input's first line,
- * else its short id. A train: its station's name and short id.
+ * else its short id. A batch: its stage's name and short id.
  */
 function runLabel(run: Run): string {
   const id = run.id.replace(/^run_/, "");
-  if (run.train) return `${trainName(run)} · ${id}`;
+  if (run.batch) return `${batchName(run)} · ${id}`;
   if (run.name) return run.name;
   const text = Object.values(run.inputs).find((value): value is string => typeof value === "string" && value.trim() !== "");
   if (!text) return id;

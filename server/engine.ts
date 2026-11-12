@@ -120,34 +120,34 @@ export function newRun(input: NewRunInput): Run {
 }
 
 /**
- * A singleton's pipeline: one long-lived run that keeps the stations' waiting lists and the
- * jobs. It has no manager and starts no step: each train is a run of its own (newTrainRun).
+ * A singleton's pipeline: one long-lived run that keeps the stages' waiting lists and the
+ * jobs. It has no manager and starts no step: each batch is a run of its own (newBatchRun).
  */
 export function newPipelineRun(input: Omit<NewRunInput, "managerAgentId" | "inputs">): Run {
   return createRun({ ...input, managerAgentId: "", inputs: {} }, {}, "pipeline");
 }
 
 /**
- * The playbook a station's trains run: the station's steps alone (a sub-playbook's expanded
- * steps, or one step), with their needs kept inside the station.
+ * The playbook a stage's batches run: the stage's steps alone (a sub-playbook's expanded
+ * steps, or one step), with their needs kept inside the stage.
  */
-export function stationPlaybook(pipeline: Playbook, stationId: string): Playbook {
-  const station = pipeline.singleton?.stations.find((candidate) => candidate.id === stationId);
-  if (!station) throw new EngineError(`no station "${stationId}" in "${pipeline.id}"`);
-  const own = new Set(station.steps);
-  const blocks = Object.fromEntries(Object.entries(pipeline.blocks).filter(([prefix]) => prefix === station.id || prefix.startsWith(`${station.id}.`)));
-  // A train's manager gets the repository's, the pipeline's and its station's sub-playbooks' instructions.
+export function stagePlaybook(pipeline: Playbook, stageId: string): Playbook {
+  const stage = pipeline.singleton?.stages.find((candidate) => candidate.id === stageId);
+  if (!stage) throw new EngineError(`no stage "${stageId}" in "${pipeline.id}"`);
+  const own = new Set(stage.steps);
+  const blocks = Object.fromEntries(Object.entries(pipeline.blocks).filter(([prefix]) => prefix === stage.id || prefix.startsWith(`${stage.id}.`)));
+  // A batch's manager gets the repository's, the pipeline's and its stage's sub-playbooks' instructions.
   const used = new Set([pipeline.id, ...Object.values(blocks).map((block) => block.playbook)]);
   return {
     ...pipeline,
-    id: `${pipeline.id}.${station.id}`,
-    title: `${pipeline.title} · ${station.title}`,
+    id: `${pipeline.id}.${stage.id}`,
+    title: `${pipeline.title} · ${stage.title}`,
     inputs: {},
     outputs: {},
     outcomes: ["success"],
     steps: pipeline.steps.filter((step) => own.has(step.id)).map((step) => ({ ...step, needs: step.needs.filter((need) => own.has(need)) })),
-    // The station's own block is the whole train: an `end` in it ends the train.
-    blocks: Object.fromEntries(Object.entries(blocks).filter(([prefix]) => prefix.startsWith(`${station.id}.`))),
+    // The stage's own block is the whole batch: an `end` in it ends the batch.
+    blocks: Object.fromEntries(Object.entries(blocks).filter(([prefix]) => prefix.startsWith(`${stage.id}.`))),
     managerInstructions: (pipeline.managerInstructions ?? []).filter((entry) => entry.playbook === null || used.has(entry.playbook)),
     after: [],
     singleton: undefined,
@@ -195,7 +195,7 @@ function createRun(input: NewRunInput, inputs: Record<string, VarValue>, kind: "
     ),
     inbox: [],
     jobs: [],
-    train: null,
+    batch: null,
     parent: input.parent ?? null,
     history: [],
     seq: 0,
@@ -1214,7 +1214,7 @@ export function completeStep(
 export function autoCompleteBlocker(run: Run, stepId: string, input: { outcome: string; summary?: string; outputs?: Record<string, unknown>; now: string }): string | null {
   const step = stepDef(run, stepId);
   if (step.kind !== "agent" || !step.autoComplete?.includes(input.outcome)) return "the outcome is not one the step lists in role.completion.auto";
-  if (run.train || isPipeline(run)) return "a train's steps are applied by its manager";
+  if (run.batch || isPipeline(run)) return "a batch's steps are applied by its manager";
   const trial = structuredClone(run);
   try {
     completeStep(trial, stepId, input);
@@ -1639,7 +1639,7 @@ export function moveRun(run: Run, to: { id: string; dir: string; branch: string 
 
 // ---------------------------------------------------------------- singleton pipelines and jobs
 
-/** A train's open jobs, as its steps read them: `{{ run.jobs }}` (YAML), `PLAYBOOK_JOBS` (JSON). */
+/** A batch's open jobs, as its steps read them: `{{ run.jobs }}` (YAML), `PLAYBOOK_JOBS` (JSON). */
 export function openJobs(run: Run): Array<{ id: string; from: string; detached?: true; inputs: Record<string, VarValue>; outputs: Record<string, VarValue> }> {
   return run.jobs
     .filter((job) => job.status === "open")
@@ -1651,63 +1651,63 @@ export function jobsText(run: Run): string {
   return jobs.length === 0 ? "" : toYaml(jobs).trimEnd();
 }
 
-export function stationsOf(pipeline: Run) {
-  return pipeline.playbook.singleton?.stations ?? [];
+export function stagesOf(pipeline: Run) {
+  return pipeline.playbook.singleton?.stages ?? [];
 }
 
-/** Puts a job on the waiting lists of the stations it may enter now (all needs passed, not there yet). */
+/** Puts a job on the waiting lists of the stages it may enter now (all needs passed, not there yet). */
 function queueNext(pipeline: Run, job: Job, now: string): void {
-  for (const station of stationsOf(pipeline)) {
-    if (job.passed.includes(station.id) || job.waiting.some((entry) => entry.station === station.id) || job.riding.some((entry) => entry.station === station.id)) continue;
-    if (station.needs.every((need) => job.passed.includes(need))) job.waiting.push({ station: station.id, since: now, held: station.admit ? { reason: ADMISSION_PENDING, checkedAt: null } : null, forced: false });
+  for (const stage of stagesOf(pipeline)) {
+    if (job.passed.includes(stage.id) || job.waiting.some((entry) => entry.stage === stage.id) || job.batches.some((entry) => entry.stage === stage.id)) continue;
+    if (stage.needs.every((need) => job.passed.includes(need))) job.waiting.push({ stage: stage.id, since: now, held: stage.admit ? { reason: ADMISSION_PENDING, checkedAt: null } : null, forced: false });
   }
 }
 
-/** A hand-off's job joins the pipeline: it waits at the stations with no needs. */
+/** A hand-off's job joins the pipeline: it waits at the stages with no needs. */
 export function addJob(pipeline: Run, job: Job, now: string): void {
   if (!isPipeline(pipeline) || isTerminal(pipeline.status)) throw new EngineError(`run ${pipeline.id} is not an active pipeline`);
   pipeline.jobs.push(job);
   queueNext(pipeline, job, now);
   record(pipeline, "job.queued", { job }, now);
-  log(pipeline, now, "job_queued", null, `${job.id} from ${job.fromRunId}/${job.fromStepId} at ${job.waiting.map((entry) => entry.station).join(", ")}`);
+  log(pipeline, now, "job_queued", null, `${job.id} from ${job.fromRunId}/${job.fromStepId} at ${job.waiting.map((entry) => entry.stage).join(", ")}`);
 }
 
-/** The jobs a station's next train takes: the oldest alone (fifo), or every waiting one (merge). */
-export function nextTrainJobs(pipeline: Run, stationId: string): Job[] {
-  const station = stationsOf(pipeline).find((candidate) => candidate.id === stationId);
-  if (!station) return [];
-  const since = (job: Job) => job.waiting.find((entry) => entry.station === stationId)!.since;
+/** The jobs a stage's next batch takes: the oldest alone (fifo), or every waiting one (merge). */
+export function nextBatchJobs(pipeline: Run, stageId: string): Job[] {
+  const stage = stagesOf(pipeline).find((candidate) => candidate.id === stageId);
+  if (!stage) return [];
+  const since = (job: Job) => job.waiting.find((entry) => entry.stage === stageId)!.since;
   // A held job is skipped before the mode applies: a held head job does not block fifo, merge does not take it.
-  // Only a station with `admit` honours a hold (one whose block was removed from the playbook lets its held jobs board).
+  // Only a stage with `admit` honours a hold (one whose block was removed from the playbook lets its held jobs join).
   const waiting = pipeline.jobs
-    .filter((job) => job.status === "open" && job.waiting.some((entry) => entry.station === stationId && !(station.admit && entry.held)))
+    .filter((job) => job.status === "open" && job.waiting.some((entry) => entry.stage === stageId && !(stage.admit && entry.held)))
     .sort((a, b) => since(a).localeCompare(since(b)) || a.createdAt.localeCompare(b.createdAt));
-  return station.mode === "merge" ? waiting : waiting.slice(0, 1);
+  return stage.mode === "merge" ? waiting : waiting.slice(0, 1);
 }
 
-/** The jobs board a train: they leave the station's waiting list and ride the train run. */
-export function boardTrain(pipeline: Run, stationId: string, trainRunId: string, jobIds: string[], now: string): void {
+/** The jobs join a batch: they leave the stage's waiting list and ride the batch run. */
+export function joinBatch(pipeline: Run, stageId: string, batchRunId: string, jobIds: string[], now: string): void {
   const since: Record<string, string> = {};
   for (const job of pipeline.jobs.filter((candidate) => jobIds.includes(candidate.id))) {
-    const entry = job.waiting.find((candidate) => candidate.station === stationId);
-    job.waiting = job.waiting.filter((candidate) => candidate.station !== stationId);
-    job.riding.push({ station: stationId, runId: trainRunId, since: entry?.since ?? now });
+    const entry = job.waiting.find((candidate) => candidate.stage === stageId);
+    job.waiting = job.waiting.filter((candidate) => candidate.stage !== stageId);
+    job.batches.push({ stage: stageId, runId: batchRunId, since: entry?.since ?? now });
     since[job.id] = entry?.since ?? now;
   }
-  record(pipeline, "job.boarded", { station: stationId, trainRunId, jobIds, since }, now);
-  log(pipeline, now, "train_departed", stationId, `${trainRunId} with ${jobIds.join(", ")}`);
+  record(pipeline, "job.joined", { stage: stageId, batchRunId, jobIds, since }, now);
+  log(pipeline, now, "batch_started", stageId, `${batchRunId} with ${jobIds.join(", ")}`);
 }
 
-/** A station's train: an ordinary run of the station's steps, carrying copies of its jobs. */
-export function newTrainRun(input: {
+/** A stage's batch: an ordinary run of the stage's steps, carrying copies of its jobs. */
+export function newBatchRun(input: {
   id: string;
   pipeline: Run;
-  station: string;
+  stage: string;
   jobs: Job[];
   managerAgentId: string;
   now: string;
 }): Run {
-  const playbook = stationPlaybook(input.pipeline.playbook, input.station);
+  const playbook = stagePlaybook(input.pipeline.playbook, input.stage);
   const run = createRun(
     {
       id: input.id,
@@ -1723,12 +1723,12 @@ export function newTrainRun(input: {
     {},
     "run",
   );
-  run.train = { pipelineId: input.pipeline.id, playbook: input.pipeline.playbook.id, station: input.station };
-  run.jobs = input.jobs.map((job) => ({ ...structuredClone(job), waiting: [], riding: [] }));
+  run.batch = { pipelineId: input.pipeline.id, playbook: input.pipeline.playbook.id, stage: input.stage };
+  run.jobs = input.jobs.map((job) => ({ ...structuredClone(job), waiting: [], batches: [] }));
   return run;
 }
 
-/** `ctx` says what else the event carries: a train whose ride ends with the job (`releases`), every ride (`clearRiding`), and context for the bus. */
+/** `ctx` says what else the event carries: a batch whose ride ends with the job (`releases`), every ride (`clearBatches`), and context for the bus. */
 function endJob(run: Run, job: Job, status: Job["status"], outcome: string | null, summary: string, outputs: Record<string, VarValue>, now: string, ctx: Record<string, unknown> = {}): void {
   job.status = status;
   job.outcome = outcome;
@@ -1762,19 +1762,19 @@ function checkJobOutputs(playbook: Playbook, outputs: Record<string, unknown>, a
 }
 
 /**
- * A train's manager settles one of its jobs. Without an outcome, the job's outputs are set and
+ * A batch's manager settles one of its jobs. Without an outcome, the job's outputs are set and
  * it goes on. With an outcome of the singleton, the job ends now (all outputs required for the
- * first outcome). Applied to the pipeline; the runtime mirrors it on the train's copy.
+ * first outcome). Applied to the pipeline; the runtime mirrors it on the batch's copy.
  */
 export function settleJob(
   pipeline: Run,
-  trainRunId: string,
+  batchRunId: string,
   jobId: string,
   input: { outcome?: string | undefined; summary: string; outputs: Record<string, unknown>; now: string },
 ): { job: Job; ended: boolean } {
   const job = pipeline.jobs.find((candidate) => candidate.id === jobId);
-  if (!job || !job.riding.some((entry) => entry.runId === trainRunId)) {
-    throw new EngineError(`job "${jobId}" is not on this train (its jobs: ${pipeline.jobs.filter((candidate) => candidate.riding.some((entry) => entry.runId === trainRunId)).map((candidate) => candidate.id).join(", ") || "none"})`);
+  if (!job || !job.batches.some((entry) => entry.runId === batchRunId)) {
+    throw new EngineError(`job "${jobId}" is not on this batch (its jobs: ${pipeline.jobs.filter((candidate) => candidate.batches.some((entry) => entry.runId === batchRunId)).map((candidate) => candidate.id).join(", ") || "none"})`);
   }
   if (job.status !== "open") throw new EngineError(`job ${jobId} is already ${job.status}${job.outcome ? ` (${job.outcome})` : ""}`);
   const outcomes = pipeline.playbook.outcomes;
@@ -1783,7 +1783,7 @@ export function settleJob(
   }
   const services = job.inputs.services;
   if (input.outcome === "no_deploy" && services !== undefined && String(services).trim() !== "" && String(services).trim().toLowerCase() !== "none") {
-    throw new EngineError(`job ${jobId} cannot be settled no_deploy: its services are "${services}", and no_deploy is only for a job whose services is none. Send the step back, or settle it without an outcome to keep it riding`);
+    throw new EngineError(`job ${jobId} cannot be settled no_deploy: its services are "${services}", and no_deploy is only for a job whose services is none. Send the step back, or settle it without an outcome to keep it in its batch`);
   }
   const checked = checkJobOutputs(pipeline.playbook, { ...(input.outcome === outcomes[0] ? job.outputs : {}), ...input.outputs }, input.outcome === outcomes[0]);
   if (!checked.ok) throw new EngineError(`cannot settle job ${jobId}: ${checked.errors.join("; ")}`);
@@ -1793,8 +1793,8 @@ export function settleJob(
     log(pipeline, input.now, "job_outputs", null, `${jobId}: ${Object.keys(checked.outputs).join(", ") || "none"}`);
     return { job, ended: false };
   }
-  const ride = job.riding.find((entry) => entry.runId === trainRunId);
-  endJob(pipeline, job, "settled", input.outcome, input.summary, checked.outputs, input.now, { station: ride?.station ?? null, trainRunId });
+  const ride = job.batches.find((entry) => entry.runId === batchRunId);
+  endJob(pipeline, job, "settled", input.outcome, input.summary, checked.outputs, input.now, { stage: ride?.stage ?? null, batchRunId });
   return { job, ended: true };
 }
 
@@ -1834,19 +1834,19 @@ export function parseJobResults(text: string): JobResult[] {
 }
 
 /**
- * The jobs that would leave the pipeline without a required output if this train completed now:
- * open jobs that, with this train, have passed every station. `pipeline` is a copy with the
+ * The jobs that would leave the pipeline without a required output if this batch completed now:
+ * open jobs that, with this batch, have passed every stage. `pipeline` is a copy with the
  * step's settle entries applied. Returns problems, one per job and output.
  */
-export function jobsMissingOutputs(pipeline: Run, train: Run): string[] {
-  const stationId = train.train!.station;
+export function jobsMissingOutputs(pipeline: Run, batch: Run): string[] {
+  const stageId = batch.batch!.stage;
   const problems: string[] = [];
   for (const job of pipeline.jobs) {
-    if (job.status !== "open" || !job.riding.some((entry) => entry.runId === train.id)) continue;
-    const others = job.riding.some((entry) => entry.runId !== train.id);
-    const passed = new Set([...job.passed, stationId]);
-    if (others || job.waiting.length > 0 || !stationsOf(pipeline).every((candidate) => passed.has(candidate.id))) continue;
-    const copy = train.jobs.find((candidate) => candidate.id === job.id);
+    if (job.status !== "open" || !job.batches.some((entry) => entry.runId === batch.id)) continue;
+    const others = job.batches.some((entry) => entry.runId !== batch.id);
+    const passed = new Set([...job.passed, stageId]);
+    if (others || job.waiting.length > 0 || !stagesOf(pipeline).every((candidate) => passed.has(candidate.id))) continue;
+    const copy = batch.jobs.find((candidate) => candidate.id === job.id);
     const checked = checkJobOutputs(pipeline.playbook, { ...(copy?.outputs ?? {}), ...job.outputs }, true);
     if (!checked.ok) for (const error of checked.errors) problems.push(`job ${job.id}: ${error}`);
   }
@@ -1860,59 +1860,59 @@ export function completesStep(step: Step, outcome: string): boolean {
 }
 
 /**
- * A train has ended. Its jobs still open: on completion they pass the station and wait at the
+ * A batch has ended. Its jobs still open: on completion they pass the stage and wait at the
  * next ones, or leave the pipeline (settled with the first outcome, once every output is set);
- * on failure they wait at the station again, at the front, while its `retries` allow, else
+ * on failure they wait at the stage again, at the front, while its `retries` allow, else
  * fail; on cancel they fail. Returns the jobs that ended, for their hand-offs.
  */
-export function trainEnded(pipeline: Run, train: Run, now: string): Job[] {
-  const stationId = train.train!.station;
-  const station = stationsOf(pipeline).find((candidate) => candidate.id === stationId);
+export function batchEnded(pipeline: Run, batch: Run, now: string): Job[] {
+  const stageId = batch.batch!.stage;
+  const stage = stagesOf(pipeline).find((candidate) => candidate.id === stageId);
   const ended: Job[] = [];
   for (const job of pipeline.jobs) {
-    const ride = job.riding.find((entry) => entry.runId === train.id);
+    const ride = job.batches.find((entry) => entry.runId === batch.id);
     if (!ride) continue;
-    job.riding = job.riding.filter((entry) => entry.runId !== train.id);
+    job.batches = job.batches.filter((entry) => entry.runId !== batch.id);
     if (job.status !== "open") {
-      record(pipeline, "job.released", { jobId: job.id, trainRunId: train.id }, now);
+      record(pipeline, "job.released", { jobId: job.id, batchRunId: batch.id }, now);
       continue;
     }
-    const copy = train.jobs.find((candidate) => candidate.id === job.id);
+    const copy = batch.jobs.find((candidate) => candidate.id === job.id);
     if (copy) job.outputs = { ...job.outputs, ...copy.outputs };
-    const ctx = { station: stationId, trainRunId: train.id, releases: train.id };
-    if (train.status === "completed") {
-      job.passed.push(stationId);
+    const ctx = { stage: stageId, batchRunId: batch.id, releases: batch.id };
+    if (batch.status === "completed") {
+      job.passed.push(stageId);
       const waitingBefore = job.waiting.length;
       queueNext(pipeline, job, now);
-      record(pipeline, "job.advanced", { jobId: job.id, station: stationId, trainRunId: train.id, outputs: job.outputs, queued: job.waiting.slice(waitingBefore) }, now);
-      if (job.waiting.length === 0 && job.riding.length === 0 && stationsOf(pipeline).every((candidate) => job.passed.includes(candidate.id))) {
+      record(pipeline, "job.advanced", { jobId: job.id, stage: stageId, batchRunId: batch.id, outputs: job.outputs, queued: job.waiting.slice(waitingBefore) }, now);
+      if (job.waiting.length === 0 && job.batches.length === 0 && stagesOf(pipeline).every((candidate) => job.passed.includes(candidate.id))) {
         const checked = checkJobOutputs(pipeline.playbook, job.outputs, true);
-        if (checked.ok) endJob(pipeline, job, "settled", pipeline.playbook.outcomes[0]!, `passed every station`, checked.outputs, now, ctx);
-        else endJob(pipeline, job, "failed", null, `passed every station but left the pipeline without its outputs: ${checked.errors.join("; ")}. Its work shipped: do not hand it off again`, {}, now, ctx);
+        if (checked.ok) endJob(pipeline, job, "settled", pipeline.playbook.outcomes[0]!, `passed every stage`, checked.outputs, now, ctx);
+        else endJob(pipeline, job, "failed", null, `passed every stage but left the pipeline without its outputs: ${checked.errors.join("; ")}. Its work shipped: do not hand it off again`, {}, now, ctx);
         ended.push(job);
       }
       continue;
     }
-    const rides = (job.failedRides[stationId] ?? 0) + 1;
-    job.failedRides[stationId] = rides;
-    if (train.status === "failed" && station && rides <= station.retries) {
+    const rides = (job.failedRides[stageId] ?? 0) + 1;
+    job.failedRides[stageId] = rides;
+    if (batch.status === "failed" && stage && rides <= stage.retries) {
       // Back at the front: it keeps the place it had in the waiting list.
-      job.waiting.push({ station: stationId, since: ride.since, held: null, forced: false });
-      record(pipeline, "job.requeued", { jobId: job.id, station: stationId, trainRunId: train.id, trainStatus: train.status, since: ride.since, rides, retries: station.retries, outputs: job.outputs, failedRides: job.failedRides }, now);
-      log(pipeline, now, "job_requeued", stationId, `${job.id} after train ${train.id} ${train.status} (${rides}/${station.retries})`);
+      job.waiting.push({ stage: stageId, since: ride.since, held: null, forced: false });
+      record(pipeline, "job.requeued", { jobId: job.id, stage: stageId, batchRunId: batch.id, batchStatus: batch.status, since: ride.since, rides, retries: stage.retries, outputs: job.outputs, failedRides: job.failedRides }, now);
+      log(pipeline, now, "job_requeued", stageId, `${job.id} after batch ${batch.id} ${batch.status} (${rides}/${stage.retries})`);
       continue;
     }
-    endJob(pipeline, job, "failed", null, `train ${train.id} at "${stationId}" ${train.status}${train.failure ? `: ${train.failure}` : ""}`, {}, now, ctx);
+    endJob(pipeline, job, "failed", null, `batch ${batch.id} at "${stageId}" ${batch.status}${batch.failure ? `: ${batch.failure}` : ""}`, {}, now, ctx);
     ended.push(job);
   }
-  record(pipeline, "train.ended", { trainRunId: train.id, station: stationId, status: train.status }, now);
-  log(pipeline, now, "train_ended", stationId, `${train.id} ${train.status}`);
+  record(pipeline, "batch.ended", { batchRunId: batch.id, stage: stageId, status: batch.status }, now);
+  log(pipeline, now, "batch_ended", stageId, `${batch.id} ${batch.status}`);
   return ended;
 }
 
 // ---------------------------------------------------------------- admission (queue.admit)
 
-/** The hold a job gets at a station with `admit` until its first check has run. */
+/** The hold a job gets at a stage with `admit` until its first check has run. */
 export const ADMISSION_PENDING = "waiting for its first admission check";
 /** The hold of a waiting job the admission script did not name. */
 export const NOT_ADMITTED = "not admitted by the script";
@@ -1924,15 +1924,15 @@ export interface AdmissionResult {
   escalate: Record<string, string>;
 }
 
-/** The jobs an admission check looks at: waiting at the station, oldest first, but not those a human admitted anyway. */
-export function admissionJobs(pipeline: Run, stationId: string): Job[] {
+/** The jobs an admission check looks at: waiting at the stage, oldest first, but not those a human admitted anyway. */
+export function admissionJobs(pipeline: Run, stageId: string): Job[] {
   return pipeline.jobs
-    .filter((job) => job.status === "open" && job.waiting.some((entry) => entry.station === stationId && !entry.forced))
-    .sort((a, b) => waitingSince(a, stationId).localeCompare(waitingSince(b, stationId)) || a.createdAt.localeCompare(b.createdAt));
+    .filter((job) => job.status === "open" && job.waiting.some((entry) => entry.stage === stageId && !entry.forced))
+    .sort((a, b) => waitingSince(a, stageId).localeCompare(waitingSince(b, stageId)) || a.createdAt.localeCompare(b.createdAt));
 }
 
-function waitingSince(job: Job, stationId: string): string {
-  return job.waiting.find((entry) => entry.station === stationId)!.since;
+function waitingSince(job: Job, stageId: string): string {
+  return job.waiting.find((entry) => entry.stage === stageId)!.since;
 }
 
 /** Closes the open admission gates of a job (it ended, or was admitted another way). Recorded like a decision, by nobody. */
@@ -1952,44 +1952,44 @@ function closeGate(run: Run, gate: Gate, input: { status: string; comment: strin
   log(run, input.now, "gate_decided", gate.stepId, `${gate.id}: ${input.status}${input.via ? ` via ${input.via}` : ""}`);
 }
 
-/** Holds a job at a station. Nothing happens (no event) when it is already held for that reason. */
-function holdJob(pipeline: Run, job: Job, stationId: string, reason: string, now: string): void {
-  const entry = job.waiting.find((candidate) => candidate.station === stationId)!;
+/** Holds a job at a stage. Nothing happens (no event) when it is already held for that reason. */
+function holdJob(pipeline: Run, job: Job, stageId: string, reason: string, now: string): void {
+  const entry = job.waiting.find((candidate) => candidate.stage === stageId)!;
   if (entry.held && entry.held.checkedAt !== null && entry.held.reason === reason) return;
   entry.held = { reason, checkedAt: now };
-  record(pipeline, "job.held", { jobId: job.id, station: stationId, reason, checkedAt: now }, now);
-  log(pipeline, now, "job_held", stationId, `${job.id}: ${reason.slice(0, 200)}`);
+  record(pipeline, "job.held", { jobId: job.id, stage: stageId, reason, checkedAt: now }, now);
+  log(pipeline, now, "job_held", stageId, `${job.id}: ${reason.slice(0, 200)}`);
 }
 
 /**
- * A waiting job may board. By the script it stays subject to the next checks; by a human (`forced`) it does not: the
+ * A waiting job may join. By the script it stays subject to the next checks; by a human (`forced`) it does not: the
  * script no longer holds it. Nothing happens when the script admits a job that is not held.
  */
-export function admitJob(pipeline: Run, jobId: string, stationId: string, via: "script" | "human", now: string, comment: string | null = null): boolean {
+export function admitJob(pipeline: Run, jobId: string, stageId: string, via: "script" | "human", now: string, comment: string | null = null): boolean {
   const job = pipeline.jobs.find((candidate) => candidate.id === jobId);
-  const entry = job?.status === "open" ? job.waiting.find((candidate) => candidate.station === stationId) : undefined;
+  const entry = job?.status === "open" ? job.waiting.find((candidate) => candidate.stage === stageId) : undefined;
   if (!job || !entry) return false;
   if (via === "script" ? entry.held === null : entry.held === null && entry.forced) return false;
   entry.held = null;
   if (via === "human") entry.forced = true;
-  record(pipeline, "job.admitted", { jobId, station: stationId, via, reason: comment, forced: via === "human" }, now);
-  log(pipeline, now, "job_admitted", stationId, `${jobId} via ${via}${comment ? `: ${comment.slice(0, 200)}` : ""}`);
+  record(pipeline, "job.admitted", { jobId, stage: stageId, via, reason: comment, forced: via === "human" }, now);
+  log(pipeline, now, "job_admitted", stageId, `${jobId} via ${via}${comment ? `: ${comment.slice(0, 200)}` : ""}`);
   closeAdmissionGates(pipeline, jobId, via === "script" ? "admitted by the script" : "admitted", now);
   return true;
 }
 
 /** Holds a job and opens a human ask for it (one per job: nothing new opens while one is pending). Returns the gate it opened. */
-function escalateJob(pipeline: Run, job: Job, stationId: string, reason: string, now: string): Gate | null {
-  holdJob(pipeline, job, stationId, reason, now);
+function escalateJob(pipeline: Run, job: Job, stageId: string, reason: string, now: string): Gate | null {
+  holdJob(pipeline, job, stageId, reason, now);
   if (pipeline.gates.some((gate) => gate.kind === "admission" && gate.jobId === job.id && gate.status === "pending")) return null;
   const count = pipeline.gates.filter((gate) => gate.kind === "admission" && gate.jobId === job.id).length;
-  const station = stationsOf(pipeline).find((candidate) => candidate.id === stationId);
-  const summary = `Job ${job.id} (${job.label}) cannot be admitted at ${station?.title ?? stationId}: ${reason}`;
+  const stage = stagesOf(pipeline).find((candidate) => candidate.id === stageId);
+  const summary = `Job ${job.id} (${job.label}) cannot be admitted at ${stage?.title ?? stageId}: ${reason}`;
   const gate: Gate = {
-    id: `admit-${stationId}-${job.id}-${count + 1}`,
+    id: `admit-${stageId}-${job.id}-${count + 1}`,
     kind: "admission",
     jobId: job.id,
-    stepId: stationId,
+    stepId: stageId,
     gotoTarget: null,
     outcome: null,
     status: "pending",
@@ -2007,8 +2007,8 @@ function escalateJob(pipeline: Run, job: Job, stationId: string, reason: string,
     escalatedAt: null,
   };
   pipeline.gates.push(gate);
-  record(pipeline, "job.escalated", { jobId: job.id, station: stationId, reason, gate }, now);
-  log(pipeline, now, "gate_opened", stationId, gate.id);
+  record(pipeline, "job.escalated", { jobId: job.id, stage: stageId, reason, gate }, now);
+  log(pipeline, now, "gate_opened", stageId, gate.id);
   return gate;
 }
 
@@ -2018,9 +2018,9 @@ function escalateJob(pipeline: Run, job: Job, stationId: string, reason: string,
  * strictest verdict (escalate, then hold, then admit). Ids that were not sent are ignored with a warning. A job that
  * left the list or was admitted by a human since the check began is left alone.
  */
-export function applyAdmission(pipeline: Run, stationId: string, sent: string[], result: AdmissionResult, now: string): { warnings: string[]; escalated: Gate[] } {
-  const station = stationsOf(pipeline).find((candidate) => candidate.id === stationId);
-  if (!station?.admit) throw new EngineError(`station "${stationId}" has no admission script`);
+export function applyAdmission(pipeline: Run, stageId: string, sent: string[], result: AdmissionResult, now: string): { warnings: string[]; escalated: Gate[] } {
+  const stage = stagesOf(pipeline).find((candidate) => candidate.id === stageId);
+  if (!stage?.admit) throw new EngineError(`stage "${stageId}" has no admission script`);
   const warnings: string[] = [];
   const known = new Set(sent);
   const named = new Set<string>();
@@ -2031,18 +2031,18 @@ export function applyAdmission(pipeline: Run, stationId: string, sent: string[],
   const escalated: Gate[] = [];
   for (const id of sent) {
     const job = pipeline.jobs.find((candidate) => candidate.id === id);
-    const entry = job?.status === "open" ? job.waiting.find((candidate) => candidate.station === stationId) : undefined;
+    const entry = job?.status === "open" ? job.waiting.find((candidate) => candidate.stage === stageId) : undefined;
     if (!job || !entry || entry.forced) continue;
     const inEscalate = Object.hasOwn(result.escalate, id);
     const inHold = Object.hasOwn(result.hold, id);
     const inAdmit = result.admit.includes(id);
     if (inAdmit && (inEscalate || inHold)) warnings.push(`job "${id}" is named in admit and in ${inEscalate ? "escalate" : "hold"}: not admitted`);
     if (inEscalate) {
-      const gate = escalateJob(pipeline, job, stationId, result.escalate[id] || NOT_ADMITTED, now);
+      const gate = escalateJob(pipeline, job, stageId, result.escalate[id] || NOT_ADMITTED, now);
       if (gate) escalated.push(gate);
-    } else if (inHold) holdJob(pipeline, job, stationId, result.hold[id] || NOT_ADMITTED, now);
-    else if (inAdmit) admitJob(pipeline, id, stationId, "script", now);
-    else holdJob(pipeline, job, stationId, NOT_ADMITTED, now);
+    } else if (inHold) holdJob(pipeline, job, stageId, result.hold[id] || NOT_ADMITTED, now);
+    else if (inAdmit) admitJob(pipeline, id, stageId, "script", now);
+    else holdJob(pipeline, job, stageId, NOT_ADMITTED, now);
   }
   return { warnings, escalated };
 }
@@ -2057,21 +2057,21 @@ function decideAdmission(run: Run, gate: Gate, decision: GateDecision, fx: Effec
   const jobId = gate.jobId!;
   if (choice.id === "admit") admitJob(run, jobId, gate.stepId, "human", decision.now, comment);
   else if (choice.id === "withdraw") {
-    const station = stationsOf(run).find((candidate) => candidate.id === gate.stepId);
-    withdrawJob(run, jobId, `withdrawn from the "${station?.title ?? gate.stepId}" queue by ${decision.by ?? "a human"}${comment ? `: ${comment}` : ""}`, decision.now);
+    const stage = stagesOf(run).find((candidate) => candidate.id === gate.stepId);
+    withdrawJob(run, jobId, `withdrawn from the "${stage?.title ?? gate.stepId}" queue by ${decision.by ?? "a human"}${comment ? `: ${comment}` : ""}`, decision.now);
   }
   fx.notes.push(`Gate ${gate.id}: ${choice.id}${comment ? ` (${comment})` : ""}.`);
   return fx;
 }
 
-/** A hand-off was canceled, reset or timed out: its job leaves the pipeline. Returns it and the trains carrying it. */
-export function withdrawJob(pipeline: Run, jobId: string, reason: string, now: string): { job: Job; trains: string[] } | null {
+/** A hand-off was canceled, reset or timed out: its job leaves the pipeline. Returns it and the batches carrying it. */
+export function withdrawJob(pipeline: Run, jobId: string, reason: string, now: string): { job: Job; batches: string[] } | null {
   const job = pipeline.jobs.find((candidate) => candidate.id === jobId);
   if (!job || job.status !== "open") return null;
-  const trains = job.riding.map((entry) => entry.runId);
-  job.riding = [];
-  endJob(pipeline, job, "withdrawn", null, reason, {}, now, { clearRiding: true });
-  return { job, trains };
+  const batches = job.batches.map((entry) => entry.runId);
+  job.batches = [];
+  endJob(pipeline, job, "withdrawn", null, reason, {}, now, { clearBatches: true });
+  return { job, batches };
 }
 
 /** The pipeline was canceled or failed: every open job fails. Returns them. */
@@ -2079,26 +2079,26 @@ export function failOpenJobs(run: Run, reason: string, now: string): Job[] {
   return failJobs(run, run.jobs.filter((job) => job.status === "open").map((job) => job.id), reason, now);
 }
 
-/** These open jobs fail (e.g. their station was removed from the playbook). Returns them. */
+/** These open jobs fail (e.g. their stage was removed from the playbook). Returns them. */
 export function failJobs(run: Run, jobIds: string[], reason: string, now: string): Job[] {
   const open = run.jobs.filter((job) => job.status === "open" && jobIds.includes(job.id));
   for (const job of open) {
-    job.riding = [];
-    endJob(run, job, "failed", null, reason, {}, now, { clearRiding: true });
+    job.batches = [];
+    endJob(run, job, "failed", null, reason, {}, now, { clearBatches: true });
   }
   return open;
 }
 
-/** Mirrors on a train's copy what happened to a job in the pipeline. */
-export function mirrorJob(train: Run, job: Job): void {
-  const copy = train.jobs.find((candidate) => candidate.id === job.id);
+/** Mirrors on a batch's copy what happened to a job in the pipeline. */
+export function mirrorJob(batch: Run, job: Job): void {
+  const copy = batch.jobs.find((candidate) => candidate.id === job.id);
   if (!copy) return;
   copy.status = job.status;
   copy.outcome = job.outcome;
   copy.summary = job.summary;
   copy.outputs = { ...job.outputs };
   copy.endedAt = job.endedAt;
-  record(train, "job.mirrored", { jobId: job.id, status: job.status, outcome: job.outcome, summary: job.summary, outputs: job.outputs, endedAt: job.endedAt }, job.endedAt ?? train.updatedAt);
+  record(batch, "job.mirrored", { jobId: job.id, status: job.status, outcome: job.outcome, summary: job.summary, outputs: job.outputs, endedAt: job.endedAt }, job.endedAt ?? batch.updatedAt);
 }
 
 /**

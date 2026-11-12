@@ -152,7 +152,7 @@ Instructions for this run (they add to the rules above, never replace them):
 ```
 
 They arrive in `start_playbook`'s result, or in the kickoff when the panel hands a run to a
-manager. A train's manager gets the repository's, the singleton's and its own station's
+manager. A batch's manager gets the repository's, the singleton's and its own stage's
 sub-playbooks'. Use them for how to run the playbook (what to check before accepting a step,
 what to tell the human), not for the steps' work: that goes in roles and step prompts.
 
@@ -241,8 +241,8 @@ steps:
 | `needs` | Steps that must complete first. No `needs` = starts with the run. Steps ready together run in parallel. File order does not matter. |
 | `role` / `gate` / `playbook` / `script` / `handoff` / `branch` / `fanout` | Exactly one, as a block: an agent step, a human gate, a sub-playbook, a script the plugin runs itself, a hand-off to a singleton playbook, a branch, or a fan-out of one run per list item (see "Step kinds", "List values and fan-out steps" and "Singleton playbooks and hand-off steps" below). |
 | `when` | Run the step only for some values of the run's inputs: `{ env: prd }` or `{ env: [stg, prd] }`, or on the step's own loop count, `{ loop: ">=2" }`; otherwise it is skipped (see Conditional steps). |
-| `queue` | A singleton's stations only: `{ mode: fifo }` (default, one job per train) or `{ mode: merge }` (every waiting job per train). |
-| `settle` | Role or script steps: `{ output: <name> }`, a string output holding YAML per job id (`{ outputs: {...}, outcome?, reason? }`). When the step completes on a train of a singleton pipeline, the plugin settles those jobs itself, as `settle_job` would; `complete_step` refuses entries that do not apply. Has no effect outside a train. |
+| `queue` | A singleton's stages only: `{ mode: fifo }` (default, one job per batch) or `{ mode: merge }` (every waiting job per batch). |
+| `settle` | Role or script steps: `{ output: <name> }`, a string output holding YAML per job id (`{ outputs: {...}, outcome?, reason? }`). When the step completes on a batch of a singleton pipeline, the plugin settles those jobs itself, as `settle_job` would; `complete_step` refuses entries that do not apply. Has no effect outside a batch. |
 | `inputs` | List of names (auto-matched) or map of name → source (`"{{ playbook.inputs.x }}"`, `"{{ steps.<id>.outputs.y }}"`) or `~`. |
 | `outputs` | Typed values the step must return with any outcome except `failure` (a failure report skips output validation). All are required then. |
 | `outcomes` | Default `[success, failure]`. See "Outcomes" below. |
@@ -282,10 +282,10 @@ several lines:
 | Block field | Meaning |
 | --- | --- |
 | `role.name` | Required: the role (a directory of `roles/`). |
-| `role.prompt` | Template; may use only `{{ inputs.<name> }}`, `{{ run.id }}`, `{{ worktree }}` (the run's worktree, else the workspace), `{{ run.jobs }}` (a singleton train's open jobs, as YAML), `{{ attempt }}` (retries), `{{ loop }}` (times a `goto` sent the run back through this step: 0 on the first pass). |
+| `role.prompt` | Template; may use only `{{ inputs.<name> }}`, `{{ run.id }}`, `{{ worktree }}` (the run's worktree, else the workspace), `{{ run.jobs }}` (a singleton batch's open jobs, as YAML), `{{ attempt }}` (retries), `{{ loop }}` (times a `goto` sent the run back through this step: 0 on the first pass). |
 | `role.silence` | After this long without agent activity (default `30m`, or `off`), the plugin asks the agent once to report or say what it is waiting for, and tells the manager. |
 | `role.archive_agents` | When the step completes, or its run or after-task ends, its agents are archived, and an attempt's agent is archived when the next attempt starts (default `true`). `false` keeps them, e.g. to debug. |
-| `role.completion.auto` | List of the step's outcomes the plugin applies itself when the agent reports them (`completion: { auto: [success, merged] }`), as `complete_step` would, then starts the agent and script steps that become ready. The manager is not woken (its inbox gets a line) and must not call `complete_step` for them. Any other outcome, every failure and every `ask` outcome (refused in the list) stays reported and wakes the manager. So does an outcome whose application would end the run, open a gate (a gate step, a loop limit) or make a gate, hand-off or fan-out step ready, and any step of a train. |
+| `role.completion.auto` | List of the step's outcomes the plugin applies itself when the agent reports them (`completion: { auto: [success, merged] }`), as `complete_step` would, then starts the agent and script steps that become ready. The manager is not woken (its inbox gets a line) and must not call `complete_step` for them. Any other outcome, every failure and every `ask` outcome (refused in the list) stays reported and wakes the manager. So does an outcome whose application would end the run, open a gate (a gate step, a loop limit) or make a gate, hand-off or fan-out step ready, and any step of a batch. |
 | `role.agent` | Step-level agent settings, or `{ tier: <name> }` (a tier of `defaults/main.yaml`) with fields that override it. |
 | `gate.question` | Required: the message shown on the gate. |
 | `gate.decider` | Who decides the gate besides a human in the panel: `{ by: human \| manager \| role, role: <id> }` (default `{ by: human }`). See "Who decides a gate". |
@@ -293,7 +293,7 @@ several lines:
 | `script.run` | Required: an executable of `scripts/` (see "Script steps"). |
 | `script.poll` | Rerun the script this often (`30s`, `1m`) while it exits with 75. |
 | `script.wake_on` | Needs `poll`. A list of `{ types: [<event type or glob>…], filter: { <payload field>: <value> } }`: a matching bus event (the types of `subscribe_events`; `filter` matches payload fields by equality) runs a check at once instead of waiting for the poll, which stays as the safety net. See "Script steps". |
-| `queue.admit` | On a singleton's station, inside `queue:`: `{ script: admit_x.sh, poll: 10m, wake_on: [...] }` (`poll` required, `wake_on` as for scripts). The plugin runs the script on the station's waiting jobs and it says which may board. See "Admission on a station's queue". |
+| `queue.admit` | On a singleton's stage, inside `queue:`: `{ script: admit_x.sh, poll: 10m, wake_on: [...] }` (`poll` required, `wake_on` as for scripts). The plugin runs the script on the stage's waiting jobs and it says which may join. See "Admission on a stage's queue". |
 | `playbook.name` | Required: a playbook of the same folder (see "Sub-playbooks"). |
 
 `outputs`, `outcomes` and `timeout` stay on the step (agent and script steps share them).
@@ -368,7 +368,7 @@ The script contract:
   `timeout` and `needs` work as for agent steps. A failure with retries left runs again by
   itself; the manager is woken only with the final result. Without `timeout` (here or in
   `defaults/main.yaml`) a polling script waits forever.
-- **Waking on events:** `script: { run: check.sh, poll: 10m, wake_on: [{ types: [job.advanced, job.settled], filter: { playbook: other_pipeline, station: production } }] }`
+- **Waking on events:** `script: { run: check.sh, poll: 10m, wake_on: [{ types: [job.advanced, job.settled], filter: { playbook: other_pipeline, stage: production } }] }`
   runs a check as soon as a matching event is emitted (another pipeline's job events, a step or run of
   another run…), then goes back to polling. `poll` is required: an event is a hint that something may have
   changed, never the truth, so the script still looks. A check already running is not interrupted: a burst of
@@ -440,7 +440,7 @@ A case may end the run: `{ name: nothing, if: {...}, end: nothing_to_do }` (`end
 
 `validate_playbooks` refuses a missing or misplaced `else`, an unreachable case (an earlier case holds whenever it
 does), duplicate names, and unknown steps, outputs, outcomes or values. A branch does not apply to after-tasks or
-singleton stations. `get_run` shows the case taken (`chosen`) and why a step was skipped.
+singleton stages. `get_run` shows the case taken (`chosen`) and why a step was skipped.
 
 ### List values and fan-out steps
 
@@ -491,7 +491,7 @@ workspace** with its own Playbook Manager, keeps at most `max_active` going, and
 ### Singleton playbooks and hand-off steps
 
 A **singleton playbook** is a pipeline that takes work (**jobs**) from other runs: one
-long-lived run per project, in one shared workspace. Its top-level steps are **stations**,
+long-lived run per project, in one shared workspace. Its top-level steps are **stages**,
 ordered by `needs`; jobs move through them.
 
 ```yaml
@@ -507,8 +507,8 @@ steps:
   - id: dev
     playbook: { name: train }                # a hidden playbook: release, wait, QA
     inputs: { env: dev }                     # constants only
-    queue: { mode: merge }                   # every waiting job rides the same train
-    retries: 2                               # failed trains a job may ride again here
+    queue: { mode: merge }                   # every waiting job is in the same batch
+    retries: 2                               # failed batches a job may be retried here
   - id: stg
     needs: [dev]
     playbook: { name: train }
@@ -518,39 +518,39 @@ steps:
     needs: [stg]
     playbook: { name: train_prd }            # its own file, with a go gate first
     queue: { mode: merge }
-    retries: 3                               # "Not now" waits for the next train
+    retries: 3                               # "Not now" waits for the next batch
 ```
 
-- **Stations:** each has a waiting list and runs **one train at a time**. A train is an
-  ordinary run of the station's steps, with its own Playbook Manager in the shared workspace;
-  the station's previous manager is archived when the next train leaves. Stations run in
+- **Stages:** each has a waiting list and runs **one batch at a time**. A batch is an
+  ordinary run of the stage's steps, with its own Playbook Manager in the shared workspace;
+  the stage's previous manager is archived when the next batch leaves. Stages run in
   parallel.
 - **`queue: { mode }`:** `fifo` (default) takes the oldest waiting job alone; `merge` takes
   every waiting job (a merge queue). Only on a singleton's top-level steps.
-- **Moving on:** when a train completes, its jobs still open pass the station and wait at the
-  next ones. A job that passed every station leaves the pipeline with the first outcome; all
-  `outputs` must be set by then. When a train fails, its jobs wait at the station again, at
-  the front, up to its `retries`, then fail. `goto` between stations is refused.
-- **Jobs in steps:** every input of a singleton is each job's. Steps read the train's jobs
-  (inputs, and outputs set at earlier stations) through `{{ run.jobs }}`
-  (`PLAYBOOK_JOBS` for scripts); wiring a job's input into a step is refused. A station's
+- **Moving on:** when a batch completes, its jobs still open pass the stage and wait at the
+  next ones. A job that passed every stage leaves the pipeline with the first outcome; all
+  `outputs` must be set by then. When a batch fails, its jobs wait at the stage again, at
+  the front, up to its `retries`, then fail. `goto` between stages is refused.
+- **Jobs in steps:** every input of a singleton is each job's. Steps read the batch's jobs
+  (inputs, and outputs set at earlier stages) through `{{ run.jobs }}`
+  (`PLAYBOOK_JOBS` for scripts); wiring a job's input into a step is refused. A stage's
   `inputs` take constants, which a sub-playbook reads as its inputs (`when: { env: prd }`
   inside it works).
-- **Settling:** the train's manager calls `settle_job` for a job: without an outcome to set
-  its outputs (a tag later stations read), with an outcome (`ejected`) to end it now.
+- **Settling:** the batch's manager calls `settle_job` for a job: without an outcome to set
+  its outputs (a tag later stages read), with an outcome (`ejected`) to end it now.
   Better, a step can return them: `settle: { output: job_results }` makes the plugin apply
   that output (YAML per job id) when the step completes, so no job is forgotten. A
   singleton's `outputs` need no source; a hand-off gets them all only with the first outcome
   (a job ended early brings what it has).
-- Every role a singleton uses must be `readonly` (trains share one checkout). A singleton
+- Every role a singleton uses must be `readonly` (batches share one checkout). A singleton
   cannot set `concurrency` or `after`, and cannot be a sub-playbook or an after-task. When no
-  train is running, its workspace is fast-forwarded to `branch` and its playbook read again.
+  batch is running, its workspace is fast-forwarded to `branch` and its playbook read again.
 
-#### Admission on a station's queue (`queue.admit`)
+#### Admission on a stage's queue (`queue.admit`)
 
-A job's precondition (QA passed, a dependency deployed, a ticket state) may fail while the others are fine. A station's
-queue can run a script that decides, **per waiting job**, who may board the next train; the others wait without blocking
-them. No train, no manager, no agent and no tokens are involved: the plugin runs the script itself, as it runs a script step.
+A job's precondition (QA passed, a dependency deployed, a ticket state) may fail while the others are fine. A stage's
+queue can run a script that decides, **per waiting job**, who may join the next batch; the others wait without blocking
+them. No batch, no manager, no agent and no tokens are involved: the plugin runs the script itself, as it runs a script step.
 
 ```yaml
   - id: staging
@@ -562,57 +562,57 @@ them. No train, no manager, no agent and no tokens are involved: the plugin runs
         script: admit_staging.sh                   # an executable of scripts/
         poll: 10m                                  # required: the safety net
         wake_on:                                   # optional, as for script steps
-          - { types: [job.advanced, job.settled], filter: { playbook: qa_pipeline, station: smoke } }
+          - { types: [job.advanced, job.settled], filter: { playbook: qa_pipeline, stage: smoke } }
 ```
 
-- **When it runs:** when jobs wait at the station and one of these happens: the first look (a job joined an empty
+- **When it runs:** when jobs wait at the stage and one of these happens: the first look (a job joined an empty
   queue, or the daemon restarted: the check reruns, so it must be idempotent), a new job of **this** queue
-  (`job.queued` of the pipeline for this station: always on, never written in `wake_on`), a `wake_on` event,
-  the `poll` timer, or a human choosing "Check again" on an escalation. One check per station at a time; events during
+  (`job.queued` of the pipeline for this stage: always on, never written in `wake_on`), a `wake_on` event,
+  the `poll` timer, or a human choosing "Check again" on an escalation. One check per stage at a time; events during
   one cause one more after it, and checks are at least 5 s apart. A queue with no waiting job costs no check. The
-  events its own check makes (`job.held`, `job.admitted`, `job.escalated` of this station) never wake it. A check
-  that runs longer than 5 minutes is killed and counts as failed. It is allowed on the first station like any other.
-- **Where:** it is not inside a train, so it runs in the **pipeline's workspace** (the shared checkout the trains use,
+  events its own check makes (`job.held`, `job.admitted`, `job.escalated` of this stage) never wake it. A check
+  that runs longer than 5 minutes is killed and counts as failed. It is allowed on the first stage like any other.
+- **Where:** it is not inside a batch, so it runs in the **pipeline's workspace** (the shared checkout the batches use,
   the script's `cwd`), from the folder's `scripts/`. If the file is missing there (it was added to the branch after
-  the pipeline last refreshed, which happens when no train runs) the plugin refreshes the workspace once; a workspace
+  the pipeline last refreshed, which happens when no batch runs) the plugin refreshes the workspace once; a workspace
   or script that still does not exist fails the check visibly. It must not edit the checkout.
-- **Input** (environment): `PLAYBOOK_JOBS`, a JSON list of the station's **waiting** jobs, oldest first, each
+- **Input** (environment): `PLAYBOOK_JOBS`, a JSON list of the stage's **waiting** jobs, oldest first, each
   `{ id, label, since, inputs }` (`since`: when it started waiting here; `inputs`: all of the job's own inputs, strings cut
-  at 10,000 characters); `PLAYBOOK_STATION` (the station id), `PLAYBOOK_PIPELINE` (the playbook id),
-  `PLAYBOOK_RUN_ID` (the pipeline run), `PLAYBOOK_STEP_ID` (the station), `PLAYBOOK_CHECK`, `PLAYBOOK_WORKSPACE`, and
+  at 10,000 characters); `PLAYBOOK_STAGE` (the stage id; `PLAYBOOK_STATION` is its deprecated name, until 2027-02-12), `PLAYBOOK_PIPELINE` (the playbook id),
+  `PLAYBOOK_RUN_ID` (the pipeline run), `PLAYBOOK_STEP_ID` (the stage), `PLAYBOOK_CHECK`, `PLAYBOOK_WORKSPACE`, and
   `PLAYBOOK_JOBS_OMITTED`. The list holds at most 100 jobs and 100,000 characters (at least one job always goes);
-  the rest, `PLAYBOOK_JOBS_OMITTED` of them, are looked at by a later check once the first ones board or leave. Jobs a
+  the rest, `PLAYBOOK_JOBS_OMITTED` of them, are looked at by a later check once the first ones join or leave. Jobs a
   human admitted anyway are not in it.
 - **Result:** the last line of stdout, a JSON object (the same keys under `outputs` work too):
   `{"admit": ["job_a"], "hold": {"job_b": "QA not passed"}, "escalate": {"job_c": "its dependency failed"}}`, each key
   optional. A job the script does **not name is held** with the reason "not admitted by the script" (the safe default).
   A job named in several keys gets the strictest (`escalate`, then `hold`, then `admit`). An id the script was not given
-  is ignored, with a warning on the station. Exit **75** ("not yet") or any failure, timeout or unreadable result line
-  changes nothing: the next trigger retries, and a failure shows as an alert on the station (checks so far, the message
+  is ignored, with a warning on the stage. Exit **75** ("not yet") or any failure, timeout or unreadable result line
+  changes nothing: the next trigger retries, and a failure shows as an alert on the stage (checks so far, the message
   and the end of the output).
-- **State:** each waiting entry has `held: { reason, checkedAt } | null` (null: it may board; `checkedAt` null: the
-  first check has not run yet; a new job at a station with `admit` starts held, so nothing boards before the script
+- **State:** each waiting entry has `held: { reason, checkedAt } | null` (null: it may join; `checkedAt` null: the
+  first check has not run yet; a new job at a stage with `admit` starts held, so nothing joins before the script
   has spoken). `held` changes only when the verdict does: a script that holds a job for the same reason on every
   poll changes nothing and sends no event. `checkedAt` is when that reason was decided. Admission acts only on
-  waiting jobs, before a train leaves: a job already riding is never held, and a job a train retries (its train failed)
-  waits again admitted. A later check may hold an admitted job that has not boarded yet.
-- **Trains:** the next train of a station takes the oldest waiting job that is not held (`fifo`), or every one
+  waiting jobs, before a batch starts: a job already in a batch is never held, and a job a batch retries (its batch failed)
+  waits again admitted. A later check may hold an admitted job that has not joined yet.
+- **Batches:** the next batch of a stage takes the oldest waiting job that is not held (`fifo`), or every one
   that is not held (`merge`). A held job never blocks the others: a held oldest job does not stop `fifo` from
-  taking the next. Without `admit` on a station, nothing is held. If the block is removed from the playbook while jobs
-  are held, they board as usual; if the station is removed, its jobs fail as they do for any removed station.
+  taking the next. Without `admit` on a stage, nothing is held. If the block is removed from the playbook while jobs
+  are held, they join as usual; if the stage is removed, its jobs fail as they do for any removed stage.
 - **Escalation:** `escalate` holds the job and opens a **human ask** on the pipeline run for that job (kind `admission`,
-  with the station as `stepId` and the job as `jobId`), question "Job <id> (<label>) cannot be admitted at <station>:
+  with the stage as `stepId` and the job as `jobId`), question "Job <id> (<label>) cannot be admitted at <stage>:
   <reason>". It shows in the panel's "Needs you", in `list_gates` and in `get_run`, and `gate.opened` fires. A pipeline
   has no manager: a human answers in the panel, with an optional comment: **Check again** (`retry`: run the check now,
   the job stays held), **Withdraw the job** (`withdraw`: the job leaves the pipeline like a canceled hand-off, and
   its hand-off step ends `failure` with the reason; it is not retried) or **Admit anyway** (`admit`: the job may
-  board and the script no longer holds it). One ask is open per job: the script escalating again does not open another. The
+  join and the script no longer holds it). One ask is open per job: the script escalating again does not open another. The
   ask closes by itself when the script admits the job or the job leaves the pipeline (withdrawn by its run, failed).
 - **Events:** `job.held` (+ `reason`, only when the hold or its reason changes), `job.admitted` (+ `via: script | human`,
   `reason`: the human's comment) and `job.escalated` (+ `reason`, `gateId`), on the same payload as the other `job.*`
-  events (`station`, `jobId`, `playbook`...): a manager subscribes instead of polling.
-- **Seeing it:** `get_run` lists each held job's reason per station (`held: { <station>: { reason, since, checkedAt } }`
-  in the jobs section). The panel's station shows a "Held" badge and the reason on each waiting job, since when it waits,
+  events (`stage`, `jobId`, `playbook`...): a manager subscribes instead of polling.
+- **Seeing it:** `get_run` lists each held job's reason per stage (`held: { <stage>: { reason, since, checkedAt } }`
+  in the jobs section). The panel's stage shows a "Held" badge and the reason on each waiting job, since when it waits,
   when it was checked, and "Admission: checking" or "Admission: waiting, next check in ~Ns", with the alert of a failed check.
   The panel's status is live in memory: after a daemon restart it is empty until the next check.
 
@@ -633,10 +633,10 @@ A **hand-off step** gives a singleton a job and waits until the job leaves the p
 - The plugin starts it and completes it; the manager never calls `start_step` or
   `complete_step` for it. Canceling the run, or a `goto` that resets the step, withdraws the
   job. While the run is paused, a result waits for the resume.
-- When a train carrying the job waits for a human (a gate or an ask), the manager is told, and
+- When a batch carrying the job waits for a human (a gate or an ask), the manager is told, and
   told again once it is decided, so it can pass it on where it reports (a chat or a thread). The
   decision is made in the Playbooks panel, on the singleton's card: the gate belongs to the
-  train, not to the handing-off run.
+  batch, not to the handing-off run.
 - A hand-off that leads back to its own playbook is refused.
 
 **Without waiting**, `handoff: { name: release_trains, wait: false }` (default `true`): the step
@@ -645,13 +645,13 @@ moves on.
 
 - The job then belongs to the pipeline: it survives the run completing, failing or being
   canceled, is never withdrawn by it, and how it ends is recorded on the pipeline only (the run
-  is not told, nor of the train's gates). Its card still shows which run handed it off, and
+  is not told, nor of the batch's gates). Its card still shows which run handed it off, and
   `{{ run.jobs }}` marks it `detached: true`.
 - The step gives no outputs: reading `steps.<id>.outputs.*` from it is refused, and `on` may
   only name the first outcome or `failure` (the job could not be handed off).
-- **Rework after an eject:** the train's manager can start a new run of any playbook with
+- **Rework after an eject:** the batch's manager can start a new run of any playbook with
   `start_playbook(playbook, inputs, newWorkspace: true)`. It gets a new workspace (branched off
-  the pipeline's) and its own Playbook Manager; the train's manager does not manage it. Write
+  the pipeline's) and its own Playbook Manager; the batch's manager does not manage it. Write
   in the singleton's playbook when to do it, e.g. in the prompt of the step that ejects:
   "after `settle_job(… outcome: ejected)`, call `start_playbook` with playbook `pr-to-prod`,
   inputs `{ pr_urls, ticket }` from the job, and `newWorkspace: true`".
@@ -897,13 +897,13 @@ error.
 - after-tasks have no `needs`, and only after-tasks have `trigger`
 - `isolation` is `none`, `worktree`, or a block `{ mode, submodules, base, allow_gitlink_removal }` (mistyped keys fail); a singleton cannot ask for `worktree`
 - a `script` names an existing, executable file of `scripts/`; `poll` and `wake_on` go in the `script:` block; `wake_on` needs `poll`, names known event types and, in `filter`, fields of those types
-- `queue.admit` only on a singleton's station: `script` names an executable of `scripts/`, `poll` is required, `wake_on` follows the script rules (`admit` is not a flat field of the step)
+- `queue.admit` only on a singleton's stage: `script` names an executable of `scripts/`, `poll` is required, `wake_on` follows the script rules (`admit` is not a flat field of the step)
 - a `fanout` names a playbook of the same folder that is valid, not a singleton and not this one (directly or through
   another fan-out, hand-off or sub-playbook), maps every required input of it, reads a declared step input in `items`, and
   uses only `item`, `item.<field>`, `index` and `inputs.<name>` in its per-item templates
 - a `handoff` names a singleton playbook of the same folder, and does not lead back to its
   own playbook; a singleton is never a sub-playbook or an after-task, its steps never wire a
-  job's input, its roles are all `readonly`, and its stations do not `goto` each other;
+  job's input, its roles are all `readonly`, and its stages do not `goto` each other;
   `queue` only goes on a singleton's top-level steps
 - `when` names the run's inputs (never a singleton's: they are each job's) with values of their
   type; a skipped step's outputs are read only by steps with the same `when`
@@ -949,7 +949,7 @@ isolation: { mode: worktree, submodules: [ops/api, ops/web], base: main }   # bl
 - **Gitlink guard**: after each step the plugin fails the step, naming the paths, if the run's branch deletes a submodule entry (mode 160000) present in its base; `isolation: { allow_gitlink_removal: true }` turns it off (default `false`). Agents are also told never to `git add -A`/`git add .`/`git commit -a`.
 - **Concurrency**: isolated runs share a workspace freely; a run without isolation still needs the workspace to
   itself and is refused while an isolated run is active there (and the other way round). Singletons and release
-  trains are never isolated.
+  batches are never isolated.
 - Scripts of an isolated run run in the worktree (`PLAYBOOK_WORKSPACE` is the worktree; the original is
   `PLAYBOOK_ORIGINAL_WORKSPACE`).
 
@@ -1002,7 +1002,7 @@ steps that completed:
      Manager is created there; the history records the move. `create_workspace` makes a
      workspace; check out the run's branch in it first if the work lives there.
 
-`archive_run` (`runId`, optional `force`) archives a run that has ended, like the panel's archive button: after `cancel_run` or a finished run, once its job is settled. It hides the run from the panel and from `list_runs` (without `archived: true`); `restart_run` still reopens it. It refuses an active run, and a run whose hand-off job is still open at a pipeline station or train unless `force: true`; archiving twice is fine.
+`archive_run` (`runId`, optional `force`) archives a run that has ended, like the panel's archive button: after `cancel_run` or a finished run, once its job is settled. It hides the run from the panel and from `list_runs` (without `archived: true`); `restart_run` still reopens it. It refuses an active run, and a run whose hand-off job is still open at a pipeline stage or batch unless `force: true`; archiving twice is fine.
 
 `restart_run` refuses an active run (cancel it first), a step whose needs did not complete,
 and a workspace that is gone or already has another active run (the message names that run and

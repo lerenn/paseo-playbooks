@@ -76,7 +76,7 @@ How to run a playbook:
    touch the child runs: their gates go to the human in the Playbooks panel.
    Hand-off steps (\`handoff:\` instead of a role) are not yours either: the plugin hands
    their job to a singleton playbook, which runs it in its own run, and wakes you with the
-   result (the step's outcome and outputs) and what is ready next. When a train carrying its
+   result (the step's outcome and outputs) and what is ready next. When a batch carrying its
    job waits for a human (a gate or an ask), you are told, and told again once it is decided:
    pass it on where you report (a chat or thread), saying it is decided in the Playbooks
    panel. It is not your gate: never call resume for it. A hand-off with \`wait: false\`
@@ -290,22 +290,22 @@ export function managerAfterRestart(ready: string[], reported: string[]): string
     .join(" ");
 }
 
-/** Kickoff for the manager of a train: one run of a singleton pipeline's station, carrying jobs. */
+/** Kickoff for the manager of a batch: one run of a singleton pipeline's stage, carrying jobs. */
 export function singletonKickoff(run: Run, ready: string[]): string {
   const jobs = jobsText(run);
   return `${withInstructions(MANAGER_PROTOCOL, run.playbook)}
 
-You are the Playbook Manager of run ${run.id}: a train of station "${run.train?.station ?? "?"}" of the singleton
-pipeline "${run.train?.playbook ?? run.playbook.id}", in the pipeline's shared workspace. The run already exists: do not
+You are the Playbook Manager of run ${run.id}: a batch of stage "${run.batch?.stage ?? "?"}" of the singleton
+pipeline "${run.batch?.playbook ?? run.playbook.id}", in the pipeline's shared workspace. The run already exists: do not
 call start_playbook for it. To start another playbook (for example rework for a job you eject), call
 start_playbook with newWorkspace: true: it gets its own workspace and manager, and you do not manage it.
 
-This train carries jobs, handed off by other runs (most wait for them; a job marked "detached" was handed
+This batch carries jobs, handed off by other runs (most wait for them; a job marked "detached" was handed
 off without waiting, so nobody is told how it ends but the pipeline). Each job has its own inputs (and the
-outputs set at earlier stations); the steps read them all through {{ run.jobs }}. Use settle_job:
-- without an outcome, to set a job's outputs (for example a release tag that later stations read);
+outputs set at earlier stages); the steps read them all through {{ run.jobs }}. Use settle_job:
+- without an outcome, to set a job's outputs (for example a release tag that later stages read);
 - with an outcome (for example "ejected"), to end a job now: the run that handed it off is told at once
-  (unless the job is detached), and this train goes on with the others.
+  (unless the job is detached), and this batch goes on with the others.
 A step with \`settle\` (see get_run) settles the jobs itself: when you complete it, the plugin applies its
 settle output (YAML per job id: outputs, and an outcome for a job that ends now), and complete_step refuses
 entries that do not apply. Do not call settle_job for those entries, and do not pass the settle output in
@@ -313,9 +313,9 @@ complete_step: the plugin takes it from the step's report (a value of yours repl
 entries). Never turn an outcome the agent did not give into one (no_deploy, ejected...): send the step back.
 A step that reports an outcome with an \`ask\` (asking, needs_input) has its ask opened by the plugin at once: it
 is answered through that ask (the human, or resume), never by a nudge_step.
-When the train completes, its jobs still open pass this station and go on to the next ones. If the train
-fails, they wait here for the next train (within the station's retries), then fail.
-${jobs ? `Jobs on this train:\n${jobs}` : "This train carries no job."}
+When the batch completes, its jobs still open pass this stage and go on to the next ones. If the batch
+fails, they wait here for the next batch (within the stage's retries), then fail.
+${jobs ? `Jobs on this batch:\n${jobs}` : "This batch carries no job."}
 
 Ready now: ${ready.join(", ") || "none"}. Start them with start_step.`;
 }

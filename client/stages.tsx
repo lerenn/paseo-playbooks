@@ -3,24 +3,24 @@ import { useQuery } from "@tanstack/react-query";
 import { Fragment, useEffect, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { admissionStatusRpc } from "../shared/contracts";
-import { isTerminal, type RunSummary, type Station } from "../shared/types";
+import { isTerminal, type RunSummary, type Stage } from "../shared/types";
 import { ADMISSION_POLL_MS, admissionLine, failureHeading, heldView } from "./admission";
 import { lastLines } from "./script-output";
 import type { Theme } from "./theme";
 
-/** What the stations need of a run: a summary or a whole run. */
-export type StationRun = Pick<RunSummary, "id" | "createdAt" | "status" | "train" | "jobs" | "playbook" | "gates">;
+/** What the stages need of a run: a summary or a whole run. */
+export type StageRun = Pick<RunSummary, "id" | "createdAt" | "status" | "batch" | "jobs" | "playbook" | "gates">;
 
-/** The trains of a pipeline, newest first. */
-export function trainsOf(pipeline: StationRun, runs: readonly StationRun[]): StationRun[] {
-  return runs.filter((run) => run.train?.pipelineId === pipeline.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+/** The batches of a pipeline, newest first. */
+export function batchesOf(pipeline: StageRun, runs: readonly StageRun[]): StageRun[] {
+  return runs.filter((run) => run.batch?.pipelineId === pipeline.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
-/** A train's name, from its station: "Dev train". */
-export function trainName(run: StationRun): string {
+/** A batch's name, from its stage: "Dev batch". */
+export function batchName(run: StageRun): string {
   const title = run.playbook.title;
   const cut = title.lastIndexOf(" · ");
-  return `${cut === -1 ? (run.train?.station ?? title) : title.slice(cut + 3)} train`;
+  return `${cut === -1 ? (run.batch?.stage ?? title) : title.slice(cut + 3)} batch`;
 }
 
 /** "1 job", "3 jobs". */
@@ -29,13 +29,13 @@ function jobsLabel(count: number): string {
 }
 
 /** Jobs not ended yet, on a pipeline: "1 job", "3 jobs". */
-export function openJobsLabel(pipeline: StationRun): string {
+export function openJobsLabel(pipeline: StageRun): string {
   return jobsLabel(pipeline.jobs.filter((job) => job.status === "open").length);
 }
 
-/** A station's admission check (`queue.admit`): running or waiting for the next one, with an alert when the last check failed. */
-function AdmissionInfo(props: { theme: Theme; pipeline: StationRun; station: Station; waiting: number }) {
-  const { theme, pipeline, station } = props;
+/** A stage's admission check (`queue.admit`): running or waiting for the next one, with an alert when the last check failed. */
+function AdmissionInfo(props: { theme: Theme; pipeline: StageRun; stage: Stage; waiting: number }) {
+  const { theme, pipeline, stage } = props;
   const fetchStatus = useRpc(admissionStatusRpc);
   const query = useQuery({
     queryKey: ["playbooks", "admission", pipeline.id],
@@ -48,10 +48,10 @@ function AdmissionInfo(props: { theme: Theme; pipeline: StationRun; station: Sta
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
   }, [props.waiting]);
-  const status = query.data?.stations[station.id];
+  const status = query.data?.stages[stage.id];
   const line = admissionLine(status, props.waiting, now);
   return (
-    <View accessibilityLabel={`${station.title} admission: ${line.text}`} style={{ gap: 2 }}>
+    <View accessibilityLabel={`${stage.title} admission: ${line.text}`} style={{ gap: 2 }}>
       <Text style={{ color: line.kind === "failed" ? theme.colors.statusDanger : theme.colors.foregroundMuted, fontSize: 11 }}>{line.text}</Text>
       {line.error && status ? (
         <View accessibilityRole="alert" style={{ gap: 2, borderRadius: 6, borderWidth: 1, borderColor: theme.colors.statusDanger, padding: 6 }}>
@@ -68,10 +68,10 @@ function AdmissionInfo(props: { theme: Theme; pipeline: StationRun; station: Sta
   );
 }
 
-/** A waiting job: its label, and when a station's admission holds it, a "Held" badge with the reason, since when and the last check. */
-function WaitingJob(props: { theme: Theme; job: StationRun["jobs"][number]; station: string; asked: boolean; now: number }) {
+/** A waiting job: its label, and when a stage's admission holds it, a "Held" badge with the reason, since when and the last check. */
+function WaitingJob(props: { theme: Theme; job: StageRun["jobs"][number]; stage: string; asked: boolean; now: number }) {
   const { theme, job } = props;
-  const entry = job.waiting.find((place) => place.station === props.station)!;
+  const entry = job.waiting.find((place) => place.stage === props.stage)!;
   const held = heldView(entry, props.now);
   return (
     <View accessibilityLabel={held ? `${job.label}: ${held.badge.toLowerCase()}, ${held.reason}` : job.label} style={{ gap: 1 }}>
@@ -99,13 +99,13 @@ function WaitingJob(props: { theme: Theme; job: StationRun["jobs"][number]; stat
 }
 
 /**
- * A singleton pipeline's stations, in `needs` order: each one's waiting list (the jobs waiting
- * there, oldest first) and its current train.
+ * A singleton pipeline's stages, in `needs` order: each one's waiting list (the jobs waiting
+ * there, oldest first) and its current batch.
  */
-export function Stations(props: { theme: Theme; pipeline: StationRun; runs: readonly StationRun[]; onOpenTrain?: (run: StationRun) => void }) {
+export function Stages(props: { theme: Theme; pipeline: StageRun; runs: readonly StageRun[]; onOpenBatch?: (run: StageRun) => void }) {
   const { theme, pipeline } = props;
-  const stations = pipeline.playbook.singleton?.stations ?? [];
-  const trains = trainsOf(pipeline, props.runs);
+  const stages = pipeline.playbook.singleton?.stages ?? [];
+  const batches = batchesOf(pipeline, props.runs);
   const [now, setNow] = useState(() => Date.now());
   const anyHeld = pipeline.jobs.some((job) => job.waiting.some((place) => place.held));
   useEffect(() => {
@@ -114,45 +114,45 @@ export function Stations(props: { theme: Theme; pipeline: StationRun; runs: read
     return () => clearInterval(timer);
   }, [anyHeld]);
   return (
-    // The stations share the row's width, with an arrow between each one and the next.
+    // The stages share the row's width, with an arrow between each one and the next.
     <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
-      {stations.map((station, index) => {
+      {stages.map((stage, index) => {
         const waiting = pipeline.jobs
-          .filter((job) => job.status === "open" && job.waiting.some((place) => place.station === station.id))
-          .sort((a, b) => a.waiting.find((place) => place.station === station.id)!.since.localeCompare(b.waiting.find((place) => place.station === station.id)!.since));
-        const train = trains.find((candidate) => candidate.train!.station === station.id && !isTerminal(candidate.status));
-        const last = trains.find((candidate) => candidate.train!.station === station.id && isTerminal(candidate.status));
-        const riding = train ? train.jobs.filter((job) => job.status === "open").length : 0;
+          .filter((job) => job.status === "open" && job.waiting.some((place) => place.stage === stage.id))
+          .sort((a, b) => a.waiting.find((place) => place.stage === stage.id)!.since.localeCompare(b.waiting.find((place) => place.stage === stage.id)!.since));
+        const batch = batches.find((candidate) => candidate.batch!.stage === stage.id && !isTerminal(candidate.status));
+        const last = batches.find((candidate) => candidate.batch!.stage === stage.id && isTerminal(candidate.status));
+        const inBatch = batch ? batch.jobs.filter((job) => job.status === "open").length : 0;
         return (
-          <Fragment key={station.id}>
+          <Fragment key={stage.id}>
             {index > 0 ? (
               <Text accessibilityElementsHidden importantForAccessibility="no" style={{ color: theme.colors.foregroundMuted, fontSize: 14 }}>
                 →
               </Text>
             ) : null}
             <View
-              accessibilityLabel={`Station ${station.title}: ${jobsLabel(waiting.length)} waiting, ${train ? `train ${train.id} running with ${jobsLabel(riding)}` : "no train running"}`}
-              style={{ flexGrow: 1, flexBasis: 0, minWidth: 200, alignSelf: "stretch", borderRadius: 10, borderWidth: 1, borderColor: train ? theme.colors.accent : theme.colors.border, backgroundColor: theme.colors.surface1, padding: 10, gap: 6 }}
+              accessibilityLabel={`Stage ${stage.title}: ${jobsLabel(waiting.length)} waiting, ${batch ? `batch ${batch.id} running with ${jobsLabel(inBatch)}` : "no batch running"}`}
+              style={{ flexGrow: 1, flexBasis: 0, minWidth: 200, alignSelf: "stretch", borderRadius: 10, borderWidth: 1, borderColor: batch ? theme.colors.accent : theme.colors.border, backgroundColor: theme.colors.surface1, padding: 10, gap: 6 }}
             >
               <Text style={{ color: theme.colors.foreground, fontSize: 13, fontWeight: "600" }}>
-                {station.title}
-                <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11, fontWeight: "400" }}> · {station.mode}</Text>
+                {stage.title}
+                <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11, fontWeight: "400" }}> · {stage.mode}</Text>
               </Text>
               <View style={{ gap: 2 }}>
                 <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>Waiting list</Text>
                 {waiting.length === 0 ? (
                   <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>empty</Text>
                 ) : (
-                  waiting.map((job) => <WaitingJob key={job.id} theme={theme} job={job} station={station.id} asked={pipeline.gates.some((gate) => gate.kind === "admission" && gate.jobId === job.id && gate.status === "pending")} now={now} />)
+                  waiting.map((job) => <WaitingJob key={job.id} theme={theme} job={job} stage={stage.id} asked={pipeline.gates.some((gate) => gate.kind === "admission" && gate.jobId === job.id && gate.status === "pending")} now={now} />)
                 )}
-                {station.admit ? <AdmissionInfo theme={theme} pipeline={pipeline} station={station} waiting={waiting.filter((job) => !job.waiting.find((place) => place.station === station.id)!.forced).length} /> : null}
+                {stage.admit ? <AdmissionInfo theme={theme} pipeline={pipeline} stage={stage} waiting={waiting.filter((job) => !job.waiting.find((place) => place.stage === stage.id)!.forced).length} /> : null}
               </View>
               <View style={{ gap: 2 }}>
-                <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>Train</Text>
-                {train ? (
-                  <Pressable accessibilityRole="button" accessibilityLabel={`Open train ${train.id}`} disabled={!props.onOpenTrain} onPress={() => props.onOpenTrain?.(train)}>
+                <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>Batch</Text>
+                {batch ? (
+                  <Pressable accessibilityRole="button" accessibilityLabel={`Open batch ${batch.id}`} disabled={!props.onOpenBatch} onPress={() => props.onOpenBatch?.(batch)}>
                     <Text numberOfLines={2} style={{ color: theme.colors.accent, fontSize: 12 }}>
-                      {train.id.replace(/^run_/, "")} · {jobsLabel(riding)} · {train.status === "waiting_gate" ? "waiting for a human" : "running"}
+                      {batch.id.replace(/^run_/, "")} · {jobsLabel(inBatch)} · {batch.status === "waiting_gate" ? "waiting for a human" : "running"}
                     </Text>
                   </Pressable>
                 ) : (

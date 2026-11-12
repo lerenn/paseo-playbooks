@@ -206,7 +206,7 @@ export class OversightProducer {
       if (!seeding) await this.lifecycle(run);
       if (run.status === "failed" && !this.failures.has(run.id)) {
         this.failures.add(run.id);
-        if (seeding || run.train) continue;
+        if (seeding || run.batch) continue;
         const lost = (run.failure ?? "").startsWith("manager lost");
         const { runId, playbook, runName: name, projectId, workspaceDir, failure, restartableFrom } = failedListing(run);
         await this.bus.emit(lost ? "run.manager_lost" : "run.failed", { runId, playbook, runName: name, projectId, workspaceDir, failure, restartableFrom }, { runId: run.id, source: SOURCE });
@@ -224,7 +224,7 @@ export class OversightProducer {
   private async lifecycle(run: Run): Promise<void> {
     const from = this.cursor.get(run.id) ?? 0;
     this.cursor.set(run.id, run.seq);
-    if (run.train) return;
+    if (run.batch) return;
     const base = { runId: run.id, playbook: run.playbook.id, runName: run.name ?? null, projectId: run.projectId, workspaceDir: run.workspaceDir };
     const meta = { runId: run.id, source: SOURCE };
     for (const entry of run.history) {

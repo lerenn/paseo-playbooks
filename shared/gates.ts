@@ -18,8 +18,8 @@ export function gateChoices(step: Pick<Step, "choices">): GateChoice[] {
 }
 
 /**
- * The choices of an `admission` gate (a job a station's admission script escalated): check again and keep holding it,
- * take it out of the pipeline, or let it board anyway.
+ * The choices of an `admission` gate (a job a stage's admission script escalated): check again and keep holding it,
+ * take it out of the pipeline, or let it join anyway.
  */
 export const ADMISSION_CHOICES: GateChoice[] = [
   { id: "retry", label: "Check again", comment: "optional" },

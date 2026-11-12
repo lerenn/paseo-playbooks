@@ -68,7 +68,7 @@ describe("summarizeRun", () => {
     run.name = "flaky-fix";
     const summary = summarizeRun(run);
     expect(RunSummarySchema.parse(summary)).toEqual(summary);
-    expect(summary).toMatchObject({ id: "run_heavy", workspaceId: "ws", projectId: "proj", managerAgentId: "manager", name: "flaky-fix", status: run.status, pausedAt: run.pausedAt, seenAt: run.seenAt, train: null });
+    expect(summary).toMatchObject({ id: "run_heavy", workspaceId: "ws", projectId: "proj", managerAgentId: "manager", name: "flaky-fix", status: run.status, pausedAt: run.pausedAt, seenAt: run.seenAt, batch: null });
     expect(summary.steps[first.id]).toEqual({ status: "running" });
     expect(Object.keys(summary.steps)).toEqual(Object.keys(run.steps));
     expect(summary.playbook.steps.map((step) => step.id)).toEqual(playbook.steps.map((step) => step.id));
@@ -103,8 +103,8 @@ describe("summarizeRun", () => {
         createdAt: run.createdAt,
         endedAt: null,
         passed: [],
-        waiting: [{ station: "dev", since: run.createdAt, held: null, forced: false }],
-        riding: [],
+        waiting: [{ stage: "dev", since: run.createdAt, held: null, forced: false }],
+        batches: [],
         failedRides: {},
         detached: false,
       },
@@ -115,7 +115,7 @@ describe("summarizeRun", () => {
     expect(text).not.toContain("zzzz");
     expect(text).not.toContain("background");
     expect(text).not.toContain("iiii");
-    expect(summary.jobs).toEqual([{ id: "j1", label: "Job one", status: "open", waiting: [{ station: "dev", since: run.createdAt, held: null, forced: false }] }]);
+    expect(summary.jobs).toEqual([{ id: "j1", label: "Job one", status: "open", waiting: [{ stage: "dev", since: run.createdAt, held: null, forced: false }] }]);
     for (const step of summary.playbook.steps) expect(step).not.toHaveProperty("prompt");
   });
 

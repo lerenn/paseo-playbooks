@@ -69,11 +69,15 @@ export const scriptOutputRpc = defineRpc({
   output: ScriptOutputSchema,
 });
 
-/** The admission checks of a pipeline's stations (`queue.admit`), by station id. The station view polls it. */
+/** The admission checks of a pipeline's stages (`queue.admit`), by stage id. The stage view polls it. */
 export const admissionStatusRpc = defineRpc({
   name: "runs.admission",
   input: z.object({ runId: z.string() }),
-  output: z.object({ stations: z.record(z.string(), AdmissionStatusSchema) }),
+  output: z.object({
+    stages: z.record(z.string(), AdmissionStatusSchema),
+    /** Deprecated name of `stages`, sent next to it (ADR 2026-11-12-stage-batch-rename). */
+    stations: z.record(z.string(), AdmissionStatusSchema).optional(),
+  }),
 });
 
 export const startRun = defineRpc({
