@@ -74,4 +74,12 @@ describe("sidekick chat reducer", () => {
     state = reduce(state, { type: "refetch", items: [{ key: "seq:1", item: { type: "assistant_message", text: "Checking" } }, { key: "seq:2", item: { type: "assistant_message", text: "Done" } }] });
     expect(state.items.map((item) => item.kind)).toEqual(["assistant", "tool", "assistant"]);
   });
+
+  it("keeps a live notice and an unlisted message when a page replaces the items", () => {
+    let state = reduce(initialState(), timeline({ type: "assistant_message", text: "Checking" }));
+    state = reduce(state, { type: "event", event: { type: "turn_canceled" } });
+    state = reduce(state, timeline({ type: "assistant_message", text: "Later" }));
+    state = reduce(state, { type: "refetch", items: [{ key: "seq:1", item: { type: "assistant_message", text: "Checking" } }] });
+    expect(state.items.map((item) => item.kind)).toEqual(["assistant", "notice", "assistant"]);
+  });
 });

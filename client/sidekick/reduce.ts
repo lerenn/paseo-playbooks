@@ -115,19 +115,26 @@ function applyItem(state: ChatState, raw: RawItem): ChatState {
   return { ...state, items: markInstructions([...close(state.items), item]), nextSeq: state.nextSeq + 1 };
 }
 
+/** Whether the page already shows this live item (a tool call by id, a text by its content). */
+function inPage(item: Item, page: Item[]): boolean {
+  if (item.kind === "tool") return page.some((entry) => entry.kind === "tool" && entry.callId === item.callId);
+  const text = item.text.trim();
+  return page.some((entry) => entry.kind === item.kind && "text" in entry && (entry.text.includes(text) || text.includes(entry.text.trim())));
+}
+
 /**
- * A page replaces the items, but it can miss tool calls the live events already showed (the daemon projects
- * a settled turn without them): those stay, each placed after the item that preceded it.
+ * Nothing shown is ever removed: a page replaces the items, but it can miss ones the live events already
+ * showed (tool calls, a notice, a message not yet in the page). Those stay, each placed after the item that
+ * preceded it.
  */
-function keepLiveTools(live: Item[], page: Item[]): Item[] {
-  const known = new Set(page.flatMap((item) => (item.kind === "tool" ? [item.callId] : [])));
+function keepLiveItems(live: Item[], page: Item[]): Item[] {
   const out = page.slice();
   live.forEach((item, index) => {
-    if (item.kind !== "tool" || known.has(item.callId)) return;
+    if (inPage(item, page)) return;
     let after = -1;
     for (let back = index - 1; back >= 0 && after < 0; back--) {
       const prev = live[back]!;
-      after = out.findIndex((entry) => (prev.kind === "tool" ? entry.kind === "tool" && entry.callId === prev.callId : entry.kind === prev.kind && entry.kind !== "notice" && entry.text === (prev as { text: string }).text));
+      after = out.findIndex((entry) => entry.key === prev.key || (entry.kind === prev.kind && inPage(prev, [entry])));
     }
     out.splice(after + 1, 0, item);
   });
@@ -157,7 +164,7 @@ export function reduce(state: ChatState, action: ChatAction): ChatState {
         }
         deduped.push(item);
       }
-      return { ...state, items: markInstructions(keepLiveTools(state.items, deduped)) };
+      return { ...state, items: markInstructions(keepLiveItems(state.items, deduped)) };
     }
     case "event": {
       const event = action.event;
