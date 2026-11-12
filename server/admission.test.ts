@@ -129,6 +129,12 @@ describe("queue.admit: loading", () => {
     expect(apply.playbook!.singleton!.stations[1]!.admit).toBeUndefined();
   });
 
+  it("accepts the staged_release example", async () => {
+    const entry = (await loadPlaybooks(EXAMPLES)).entries.find((candidate) => candidate.id === "staged_release")!;
+    expect(entry.errors).toEqual([]);
+    expect(entry.playbook!.singleton!.stations[1]!.admit).toMatchObject({ pollMs: 600_000, wakeOn: [{ types: ["job.advanced", "job.settled"], filter: { playbook: "qa_pipeline", station: "smoke" } }] });
+  });
+
   it("accepts the new job events as wake_on types, and their declared fields as filters", async () => {
     const yaml = APPLY("{ script: admit.sh, poll: 10m, wake_on: [{ types: [\"job.*\"], filter: { playbook: other } }, { types: [job.held], filter: { reason: x } }] }");
     expect(await errorsOf(yaml)).toBe("");

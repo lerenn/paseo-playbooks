@@ -293,6 +293,7 @@ several lines:
 | `script.run` | Required: an executable of `scripts/` (see "Script steps"). |
 | `script.poll` | Rerun the script this often (`30s`, `1m`) while it exits with 75. |
 | `script.wake_on` | Needs `poll`. A list of `{ types: [<event type or glob>…], filter: { <payload field>: <value> } }`: a matching bus event (the types of `subscribe_events`; `filter` matches payload fields by equality) runs a check at once instead of waiting for the poll, which stays as the safety net. See "Script steps". |
+| `queue.admit` | On a singleton's station, inside `queue:`: `{ script: admit_x.sh, poll: 10m, wake_on: [...] }` (`poll` required, `wake_on` as for scripts). The plugin runs the script on the station's waiting jobs and it says which may board. See "Admission on a station's queue". |
 | `playbook.name` | Required: a playbook of the same folder (see "Sub-playbooks"). |
 
 `outputs`, `outcomes` and `timeout` stay on the step (agent and script steps share them).
@@ -544,6 +545,76 @@ steps:
 - Every role a singleton uses must be `readonly` (trains share one checkout). A singleton
   cannot set `concurrency` or `after`, and cannot be a sub-playbook or an after-task. When no
   train is running, its workspace is fast-forwarded to `branch` and its playbook read again.
+
+#### Admission on a station's queue (`queue.admit`)
+
+A job's precondition (QA passed, a dependency deployed, a ticket state) may fail while the others are fine. A station's
+queue can run a script that decides, **per waiting job**, who may board the next train; the others wait without blocking
+them. No train, no manager, no agent and no tokens are involved: the plugin runs the script itself, as it runs a script step.
+
+```yaml
+  - id: staging
+    needs: [dev]
+    playbook: { name: train }
+    queue:
+      mode: fifo                                   # or merge
+      admit:
+        script: admit_staging.sh                   # an executable of scripts/
+        poll: 10m                                  # required: the safety net
+        wake_on:                                   # optional, as for script steps
+          - { types: [job.advanced, job.settled], filter: { playbook: qa_pipeline, station: smoke } }
+```
+
+- **When it runs:** when jobs wait at the station and one of these happens: the first look (a job joined an empty
+  queue, or the daemon restarted: the check reruns, so it must be idempotent), a new job of **this** queue
+  (`job.queued` of the pipeline for this station: always on, never written in `wake_on`), a `wake_on` event,
+  the `poll` timer, or a human choosing "Check again" on an escalation. One check per station at a time; events during
+  one cause one more after it, and checks are at least 5 s apart. A queue with no waiting job costs no check. The
+  events its own check makes (`job.held`, `job.admitted`, `job.escalated` of this station) never wake it. A check
+  that runs longer than 5 minutes is killed and counts as failed. It is allowed on the first station like any other.
+- **Where:** it is not inside a train, so it runs in the **pipeline's workspace** (the shared checkout the trains use,
+  the script's `cwd`), from the folder's `scripts/`. If the file is missing there (it was added to the branch after
+  the pipeline last refreshed, which happens when no train runs) the plugin refreshes the workspace once; a workspace
+  or script that still does not exist fails the check visibly. It must not edit the checkout.
+- **Input** (environment): `PLAYBOOK_JOBS`, a JSON list of the station's **waiting** jobs, oldest first, each
+  `{ id, label, since, inputs }` (`since`: when it started waiting here; `inputs`: all of the job's own inputs, strings cut
+  at 10,000 characters); `PLAYBOOK_STATION` (the station id), `PLAYBOOK_PIPELINE` (the playbook id),
+  `PLAYBOOK_RUN_ID` (the pipeline run), `PLAYBOOK_STEP_ID` (the station), `PLAYBOOK_CHECK`, `PLAYBOOK_WORKSPACE`, and
+  `PLAYBOOK_JOBS_OMITTED`. The list holds at most 100 jobs and 100,000 characters (at least one job always goes);
+  the rest, `PLAYBOOK_JOBS_OMITTED` of them, are looked at by a later check once the first ones board or leave. Jobs a
+  human admitted anyway are not in it.
+- **Result:** the last line of stdout, a JSON object (the same keys under `outputs` work too):
+  `{"admit": ["job_a"], "hold": {"job_b": "QA not passed"}, "escalate": {"job_c": "its dependency failed"}}`, each key
+  optional. A job the script does **not name is held** with the reason "not admitted by the script" (the safe default).
+  A job named in several keys gets the strictest (`escalate`, then `hold`, then `admit`). An id the script was not given
+  is ignored, with a warning on the station. Exit **75** ("not yet") or any failure, timeout or unreadable result line
+  changes nothing: the next trigger retries, and a failure shows as an alert on the station (checks so far, the message
+  and the end of the output).
+- **State:** each waiting entry has `held: { reason, checkedAt } | null` (null: it may board; `checkedAt` null: the
+  first check has not run yet; a new job at a station with `admit` starts held, so nothing boards before the script
+  has spoken). `held` changes only when the verdict does: a script that holds a job for the same reason on every
+  poll changes nothing and sends no event. `checkedAt` is when that reason was decided. Admission acts only on
+  waiting jobs, before a train leaves: a job already riding is never held, and a job a train retries (its train failed)
+  waits again admitted. A later check may hold an admitted job that has not boarded yet.
+- **Trains:** the next train of a station takes the oldest waiting job that is not held (`fifo`), or every one
+  that is not held (`merge`). A held job never blocks the others: a held oldest job does not stop `fifo` from
+  taking the next. Without `admit` on a station, nothing is held. If the block is removed from the playbook while jobs
+  are held, they board as usual; if the station is removed, its jobs fail as they do for any removed station.
+- **Escalation:** `escalate` holds the job and opens a **human ask** on the pipeline run for that job (kind `admission`,
+  with the station as `stepId` and the job as `jobId`), question "Job <id> (<label>) cannot be admitted at <station>:
+  <reason>". It shows in the panel's "Needs you", in `list_gates` and in `get_run`, and `gate.opened` fires. A pipeline
+  has no manager: a human answers in the panel, with an optional comment: **Check again** (`retry`: run the check now,
+  the job stays held), **Withdraw the job** (`withdraw`: the job leaves the pipeline like a canceled hand-off, and
+  its hand-off step ends `failure` with the reason; it is not retried) or **Admit anyway** (`admit`: the job may
+  board and the script no longer holds it). One ask is open per job: the script escalating again does not open another. The
+  ask closes by itself when the script admits the job or the job leaves the pipeline (withdrawn by its run, failed).
+- **Events:** `job.held` (+ `reason`, only when the hold or its reason changes), `job.admitted` (+ `via: script | human`,
+  `reason`: the human's comment) and `job.escalated` (+ `reason`, `gateId`), on the same payload as the other `job.*`
+  events (`station`, `jobId`, `playbook`...): a manager subscribes instead of polling.
+- **Seeing it:** `get_run` lists each held job's reason per station (`held: { <station>: { reason, since, checkedAt } }`
+  in the jobs section). The panel's station shows a "Held" badge and the reason on each waiting job, since when it waits,
+  when it was checked, and "Admission: checking" or "Admission: waiting, next check in ~Ns", with the alert of a failed check.
+  The panel's status is live in memory: after a daemon restart it is empty until the next check.
 
 A **hand-off step** gives a singleton a job and waits until the job leaves the pipeline:
 
@@ -826,6 +897,7 @@ error.
 - after-tasks have no `needs`, and only after-tasks have `trigger`
 - `isolation` is `none`, `worktree`, or a block `{ mode, submodules, base, allow_gitlink_removal }` (mistyped keys fail); a singleton cannot ask for `worktree`
 - a `script` names an existing, executable file of `scripts/`; `poll` and `wake_on` go in the `script:` block; `wake_on` needs `poll`, names known event types and, in `filter`, fields of those types
+- `queue.admit` only on a singleton's station: `script` names an executable of `scripts/`, `poll` is required, `wake_on` follows the script rules (`admit` is not a flat field of the step)
 - a `fanout` names a playbook of the same folder that is valid, not a singleton and not this one (directly or through
   another fan-out, hand-off or sub-playbook), maps every required input of it, reads a declared step input in `items`, and
   uses only `item`, `item.<field>`, `index` and `inputs.<name>` in its per-item templates

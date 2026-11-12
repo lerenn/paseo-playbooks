@@ -94,6 +94,33 @@ during a running check cause one more check after it, never two at once; checks 
 by events about itself. See `examples/.paseo/plugins/playbooks/wait_for_upstream.yaml` and
 `docs/adrs/2026-11-12-script-wake-on.md`.
 
+### Admission on a station's queue
+
+A station of a singleton pipeline can decide, per waiting job, who may board its next train, with a script the plugin
+runs itself (no train, no manager, no agent):
+
+```yaml
+  - id: staging
+    needs: [dev]
+    playbook: { name: train }
+    queue:
+      mode: fifo
+      admit:
+        script: admit_staging.sh
+        poll: 10m                       # required: the safety net
+        wake_on:                        # optional; a new job of this queue always wakes it
+          - { types: [job.advanced, job.settled], filter: { playbook: qa_pipeline, station: smoke } }
+```
+
+The script runs in the pipeline's workspace and reads `PLAYBOOK_JOBS` (the station's waiting jobs: `id`, `label`,
+`since` and all their `inputs`), `PLAYBOOK_STATION` and `PLAYBOOK_PIPELINE`. Its last stdout line is JSON:
+`{"admit": ["job_a"], "hold": {"job_b": "QA not passed"}, "escalate": {"job_c": "dependency failed"}}`. A job it does
+not name is held ("not admitted by the script"); exit 75 or a failure changes nothing (a failure shows as an alert on
+the station). A held job never blocks the others, and the panel shows each one's "Held" badge with the reason, since
+when it waits and the last check. `escalate` also asks a human in "Needs you": check again, withdraw the job, or admit it
+anyway. `job.held`, `job.admitted` (`via: script | human`) and `job.escalated` are public events. See
+`examples/.paseo/plugins/playbooks/staged_release.yaml` and `docs/adrs/2026-11-12-event-core-queue-admission.md`.
+
 The Sidekick can start playbook runs with `start_playbook` (`workspaceId` of a visible workspace of its project, or
 that with `newWorkspace`, and `workspaceName` to title the new workspace; never its own hidden workspace), and `list_playbooks` shows what is on offer. When you ask
 it to merge a pull request, it starts the project's merging playbook (for example `pr-to-prod`), whose manager
@@ -149,7 +176,8 @@ event_core:
 The pipeline's jobs are also announced on the event bus, for `subscribe_events` and `list_events`:
 `job.queued` (waits at a station: handed off, or unlocked by a passed station; one event per station),
 `job.boarded`, `job.advanced` (passed a station), `job.requeued` (its train failed, retries left), `job.settled`
-(left with an outcome), `job.failed`, `job.withdrawn`. Payload: `runId` (the pipeline), `playbook` (the singleton's id),
+(left with an outcome), `job.failed`, `job.withdrawn`, and, for a station with `queue.admit`, `job.held`, `job.admitted`
+and `job.escalated`. Payload: `runId` (the pipeline), `playbook` (the singleton's id),
 `jobId`, `label`, `station`, `trainRunId`, `outcome`, plus `via`, `nextStations`, `rides`/`retries`, `summary` or `reason`
 per type. `filter` matches them by equality, e.g. `{ playbook: "release_trains", station: "stg" }`.
 
