@@ -359,6 +359,8 @@ const RawStepSchema = z.object({
     poll: z.unknown().optional(),
     /** Only on a script step (inside `script:`); read here to refuse it flat. */
     wake_on: z.unknown().optional(),
+    /** Moved under `queue:`; read only to refuse it. */
+    admit: z.unknown().optional(),
     /** Only on after-tasks; read here to refuse it on a step. */
     trigger: z.unknown().optional(),
   });
@@ -1507,6 +1509,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     let pollMs: number | undefined;
     let wakeOn: WakeOn | undefined;
     if (rawStep.wake_on !== undefined) err(`${where}: \`wake_on\` only applies to a script step (under \`script:\`)`);
+    if (rawStep.admit !== undefined) err(`${where}: \`admit\` goes under \`queue:\` on a station of a singleton: write \`queue: { admit: { script: x.sh, poll: 10m } }\``);
     if (scriptStep) {
       const checked = await checkScript(root, scriptStep.run);
       if ("error" in checked) err(`${where}: script.run: ${checked.error}`);

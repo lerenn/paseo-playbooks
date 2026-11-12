@@ -285,7 +285,7 @@ function idleAdmission(): AdmissionStatus {
 }
 
 function formatMinutes(ms: number): string {
-  return ms >= 60_000 ? `${Math.round(ms / 60_000)} min` : `${Math.round(ms / 1000)} s`;
+  return ms >= 60_000 ? `${Math.round(ms / 60_000)} min` : `${+(ms / 1000).toFixed(1)} s`;
 }
 
 function tailOf(text: string): string {
