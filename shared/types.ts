@@ -662,6 +662,10 @@ export const GateSchema = z.object({
   escalated: z.string().nullable().default(null),
   /** When it was escalated. */
   escalatedAt: z.string().nullable().default(null),
+  /** A run with no manager: the step agent the plugin asked to put this gate's question to the human in its own conversation. */
+  chatAgentId: z.string().nullable().optional(),
+  /** Set once the gate is closed and that conversation was told (its open question dismissed when the panel decided). */
+  chatClosed: z.boolean().optional(),
   decidedAt: z.string().nullable(),
 });
 export type Gate = z.infer<typeof GateSchema>;

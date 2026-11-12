@@ -49,7 +49,7 @@ import { DEFAULT_SIDEKICK_RESTART_TOKENS, DEFAULT_SIDEKICK_SUBAGENT, SIDEKICK_LA
 import { BusError, EventBus, type BusEvent, type Notifier, type Subscription } from "./bus";
 import { OversightProducer, registerOversightTypes } from "./oversight-events";
 import { gateListing, listAttention, type GateFilter } from "./overseer";
-import { managerLostNotice, gateDeciderPrompt, gateDeciderSystemPrompt, gateDecisionReminder, managerAfterRestart, managerKickoff, managerTakeover, reportReminder, resumeAfterRestart, silenceReminder, singletonKickoff, stepSystemPrompt, withPreamble } from "./prompts";
+import { gateChatPrompt, managerLostNotice, gateDeciderPrompt, gateDeciderSystemPrompt, gateDecisionReminder, managerAfterRestart, managerKickoff, managerTakeover, reportReminder, resumeAfterRestart, silenceReminder, singletonKickoff, stepSystemPrompt, withPreamble } from "./prompts";
 import { askHumanText, choicesOfGate, waitsForHuman } from "../shared/gates";
 import { StaleSessions } from "./stale-sessions";
 import type { RunStore } from "./store";
@@ -76,6 +76,8 @@ export const MANAGER_TOOL_NAMES = [
   "settle_job",
 ];
 export const STEP_TOOL_NAMES = ["report_step_result"];
+/** A run with no manager also lets its step agents put a human gate's question in their conversation. */
+export const MANAGERLESS_STEP_TOOL_NAMES = [...STEP_TOOL_NAMES, "answer_gate"];
 export const GATE_TOOL_NAMES = ["report_gate_decision"];
 
 type AgentConfig = { provider: string; modeId?: string; thinkingOptionId?: string; options?: { allowedTools: string[] } };
@@ -1176,6 +1178,8 @@ export class Runtime {
       do {
         this.tickAgain = false;
         await this.driveManagerless();
+        await this.settleGateChats();
+        await this.askGatesInChat();
         await this.startScripts();
         await this.startHandoffs();
         await this.driveFanouts();
@@ -1269,6 +1273,99 @@ export class Runtime {
     if (!effects) return;
     await this.applyEffects(runId, effects);
     await this.admitQueued(runId);
+  }
+
+  /** Whether a run (by id) has no manager: for the step agents' tool list. */
+  isManagerlessRun(runId: string | undefined): boolean {
+    const run = runId ? this.store.get(runId) : undefined;
+    return run !== undefined && isManagerless(run);
+  }
+
+  /** In-memory: gates with no live agent to ask, so they are not looked at every tick (the panel decides them). */
+  private readonly chatSkipped = new Set<string>();
+
+  /**
+   * A run with no manager: a human gate is shown in the panel and, when the step agent that precedes it is still alive
+   * (not archived, idle), also put to the human in that agent's conversation: the plugin asks it to use AskUserQuestion and
+   * then answer_gate. Either surface closes the gate (settleGateChats tidies the other).
+   */
+  private async askGatesInChat(): Promise<void> {
+    for (const run of this.store.list()) {
+      if (!isManagerless(run) || !isActive(run) || isPaused(run)) continue;
+      for (const gate of run.gates) {
+        const key = `${run.id}:${gate.id}`;
+        if (!waitsForHuman(gate) || gate.chatAgentId || this.chatSkipped.has(key)) continue;
+        const step = engine.stepDef(run, gate.stepId);
+        const owners = gate.kind === "ask" ? [gate.stepId] : step.needs;
+        const candidates = owners
+          .map((id) => ({ id, attempt: run.steps[id]?.attempts.at(-1) }))
+          .filter((entry): entry is { id: string; attempt: NonNullable<typeof entry.attempt> } => entry.attempt !== undefined && !isAgentlessAttempt(entry.attempt.agentId))
+          .sort((a, b) => Date.parse(b.attempt.endedAt ?? b.attempt.startedAt) - Date.parse(a.attempt.endedAt ?? a.attempt.startedAt));
+        let target: string | null = null;
+        let busy = false;
+        for (const { attempt } of candidates) {
+          const agent = await this.api().agents.ref(attempt.agentId).refresh().catch(() => null);
+          if (!agent || agent.agent.archivedAt) continue;
+          if (agent.agent.status !== "idle") busy = true;
+          else {
+            target = attempt.agentId;
+            break;
+          }
+        }
+        if (!target) {
+          // A busy agent is asked when its turn ends; none alive: the panel only.
+          if (!busy) this.chatSkipped.add(key);
+          continue;
+        }
+        const claimed = await this.store.mutate(run.id, (current) => {
+          const live = current.gates.find((candidate) => candidate.id === gate.id);
+          if (!live || live.status !== "pending" || live.chatAgentId) return false;
+          live.chatAgentId = target;
+          return true;
+        });
+        if (!claimed) continue;
+        try {
+          await this.api().agents.ref(target).send(gateChatPrompt(run.id, gate, choicesOfGate(gate, step)));
+        } catch (error) {
+          console.error(`[playbooks] could not put gate ${gate.id} of ${run.id} to agent ${target}:`, errorText(error));
+          await this.store.mutate(run.id, (current) => {
+            const live = current.gates.find((candidate) => candidate.id === gate.id);
+            if (live) live.chatAgentId = null;
+          });
+          this.chatSkipped.add(key);
+        }
+      }
+    }
+  }
+
+  /** A gate that was put to an agent and is now closed: if the panel (or a cancel) closed it, the agent's open question is dismissed. */
+  private async settleGateChats(): Promise<void> {
+    for (const run of this.store.list()) {
+      for (const gate of run.gates) {
+        if (!gate.chatAgentId || gate.chatClosed || gate.status === "pending") continue;
+        await this.store.mutate(run.id, (current) => {
+          const live = current.gates.find((candidate) => candidate.id === gate.id);
+          if (live) live.chatClosed = true;
+        });
+        if (gate.decidedVia === "chat") continue;
+        const how = gate.decidedVia ? `in the Playbooks panel: ${gate.status}` : `because the run ${run.status}`;
+        await this.dismissQuestions(gate.chatAgentId, `Gate ${gate.id} was closed ${how}. Do not call answer_gate. End your turn.`);
+      }
+    }
+  }
+
+  /** answer_gate: the human answered the gate's question in this step agent's conversation. */
+  async answerGateFromChat(agentId: string, input: { gateId: string; decision: string; comment: string | null }): Promise<string> {
+    let found: { run: Run; gate: Gate } | null = null;
+    for (const run of this.store.list()) {
+      const gate = run.gates.find((candidate) => candidate.chatAgentId === agentId && (candidate.id === input.gateId || candidate.stepId === input.gateId));
+      if (gate) found = { run, gate };
+    }
+    if (!found) throw new UserError(`no gate "${input.gateId}" was put to you: nothing to answer`);
+    if (found.gate.status !== "pending") return `Gate ${found.gate.id} is already decided (${found.gate.status}${found.gate.decidedVia ? ` via ${found.gate.decidedVia}` : ""}). Do not answer it again: end your turn.`;
+    const result = await this.decideGate(found.run.id, found.gate.id, { decision: input.decision, comment: input.comment, by: "a human, in the conversation", via: "chat", now: nowIso() });
+    if (result.alreadyDecided) return `Gate ${result.gate.id} was just decided (${result.gate.status} via ${result.gate.decidedVia ?? "?"}). End your turn.`;
+    return `Recorded "${input.decision}" for gate ${result.gate.id}. End your turn: the plugin carries on.`;
   }
 
   /** A run with no manager stops in its failed state: visible in the panel, `run.failed` is emitted, restart_run works. */
@@ -2071,7 +2168,7 @@ export class Runtime {
     const role = run.playbook.roles[step.role]!;
     // The manager's model, else the one restart_run left for this step, else the role's chain.
     const chosen = model ?? run.steps[stepId]!.nextModel ?? undefined;
-    const config = await this.stepAgentConfig(run, step, STEP_TOOL_NAMES, chosen ? await this.checkModel(chosen) : undefined);
+    const config = await this.stepAgentConfig(run, step, isManagerless(run) ? MANAGERLESS_STEP_TOOL_NAMES : STEP_TOOL_NAMES, chosen ? await this.checkModel(chosen) : undefined);
     if (run.worktree && (run.worktree.state !== "active" || !existsSync(run.worktree.path))) {
       // An after-task or a late step of an ended run: its worktree was deleted or kept; work needs it back.
       const worktree = await this.ensureWorktree(run, run.workspaceDir);
@@ -2428,7 +2525,7 @@ export class Runtime {
     const attempt = state.attempts.at(-1)!;
     if (state.status !== "running" && state.status !== "reported") throw new UserError(`step "${stepId}" is ${state.status}; only a running or reported step can move to another model (start_step takes model too)`);
     if (attempt.report) throw new UserError(`step "${stepId}" attempt ${attempt.n} already reported ${attempt.report.outcome}: call complete_step (or nudge_step without model)`);
-    const config = await this.stepAgentConfig(run, step, STEP_TOOL_NAMES, model);
+    const config = await this.stepAgentConfig(run, step, isManagerless(run) ? MANAGERLESS_STEP_TOOL_NAMES : STEP_TOOL_NAMES, model);
     const role = run.playbook.roles[step.role]!;
     const agent = await this.api()
       .workspaces.ref(run.workspaceId)
@@ -3021,6 +3118,7 @@ export class Runtime {
       return;
     }
     await this.onManagerTurnEnded(agentId);
+    await this.askGatesInChat().catch((error) => console.error("[playbooks] gate question failed:", errorText(error)));
     await this.cleanupEndedWorktrees().catch((error) => console.error("[playbooks] worktree cleanup failed:", errorText(error)));
     await this.archiveEndedWorkspaces().catch((error) => console.error("[playbooks] workspace archive check failed:", errorText(error)));
   }

@@ -946,3 +946,7 @@ in its failed state with the reason in `failure`; `restart_run` and the panel's 
 unless the YAML says so (`retries`, `on`, `goto`). There is no stall handling beyond a step's `timeout`: with none, a step
 that never ends is not touched. `start_step`, `complete_step`, `nudge_step`, `request_gate` and `escalate_gate` are refused on
 such a run. A fan-out child uses its own playbook's mode.
+
+With no manager, a human gate is shown in the panel and also put to the human in the conversation of the step agent just before it, when
+that agent is still alive (`role: { archive_agents: false }`, idle): the plugin asks it to use `AskUserQuestion`, then `answer_gate`
+(a tool only those step agents have). Answering in the panel or in the conversation closes the gate; the other surface is dismissed.
