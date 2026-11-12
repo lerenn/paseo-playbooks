@@ -16,6 +16,7 @@ import {
   handoffAttemptId,
   isActive,
   isAgentlessAttempt,
+  isManagerless,
   isPipeline,
   isFanoutAttempt,
   fanoutAttemptId,
@@ -429,12 +430,15 @@ export class Runtime {
         continue;
       }
       if (!isActive(run) || isPipeline(run)) continue;
-      const manager = await this.api().agents.ref(run.managerAgentId).refresh().catch(() => null);
-      if (!manager || manager.agent.archivedAt) {
-        await this.failManagerLost(run.id, "manager lost", `manager ${run.managerAgentId} ${manager ? "was archived" : "no longer exists"} before the daemon started: the plugin was not running to see who archived it`, null);
-        continue;
+      // A run with no manager (manager.mode: none) cannot lose one: the plugin resumes it below and through its tick.
+      if (!isManagerless(run)) {
+        const manager = await this.api().agents.ref(run.managerAgentId).refresh().catch(() => null);
+        if (!manager || manager.agent.archivedAt) {
+          await this.failManagerLost(run.id, "manager lost", `manager ${run.managerAgentId} ${manager ? "was archived" : "no longer exists"} before the daemon started: the plugin was not running to see who archived it`, null);
+          continue;
+        }
+        if (manager.agent.status === "running") this.busyManagers.add(run.managerAgentId);
       }
-      if (manager.agent.status === "running") this.busyManagers.add(run.managerAgentId);
       for (const [stepId, state] of Object.entries(run.steps)) {
         if (state.status !== "running") continue;
         const attempt = state.attempts.at(-1)!;
@@ -500,7 +504,7 @@ export class Runtime {
    */
   private async wakeStalledManager(runId: string): Promise<void> {
     const run = this.store.get(runId);
-    if (!run || !isActive(run) || isPaused(run) || run.inbox.length > 0 || this.busyManagers.has(run.managerAgentId)) return;
+    if (!run || isManagerless(run) || !isActive(run) || isPaused(run) || run.inbox.length > 0 || this.busyManagers.has(run.managerAgentId)) return;
     const steps = Object.entries(run.steps);
     if (steps.some(([, state]) => state.status === "running")) return;
     if (run.gates.some((gate) => gate.status === "pending")) return;
@@ -592,6 +596,7 @@ export class Runtime {
   ownedRun(managerId: string, runId: string | undefined): Run {
     const run = runId ? this.store.get(runId) : this.activeRunOfManager(managerId) ?? this.runsOfManager(managerId)[0];
     if (!run) throw new UserError(runId ? `unknown run "${runId}"` : "you have no run; call start_playbook first");
+    if (isManagerless(run)) throw new UserError(`run ${run.id} has no Playbook Manager (manager.mode: none): the plugin starts its steps, applies the reports, opens the gates and stops the run on a failure by itself. Nothing to start, complete, nudge or request; a human decides its gates in the panel`);
     if (run.managerAgentId !== managerId) throw new UserError(`run ${run.id} belongs to another manager`);
     return run;
   }
@@ -600,6 +605,9 @@ export class Runtime {
 
   private async enqueue(runId: string, lines: string[]): Promise<void> {
     if (lines.length === 0) return;
+    // No manager (manager.mode: none): nobody reads an inbox; the plugin acts on the run's state itself.
+    const target = this.store.get(runId);
+    if (target && isManagerless(target)) return;
     await this.store.mutate(runId, (run) => {
       run.inbox.push(`[playbooks] ${run.id} · ${lines.join(" ")}`);
     });
@@ -609,7 +617,7 @@ export class Runtime {
   async deliver(runId: string): Promise<void> {
     const run = this.store.get(runId);
     // A pipeline has no manager: nothing to wake.
-    if (!run || !run.managerAgentId || run.inbox.length === 0 || isPaused(run) || this.busyManagers.has(run.managerAgentId)) return;
+    if (!run || !run.managerAgentId || isManagerless(run) || run.inbox.length === 0 || isPaused(run) || this.busyManagers.has(run.managerAgentId)) return;
     if (this.retiredManagers.has(run.managerAgentId)) return;
     const text = await this.store.mutate(runId, (current) => {
       const merged = current.inbox.join("\n\n");
@@ -761,7 +769,7 @@ export class Runtime {
       .workspaces.ref(run.workspaceId)
       .agents.create({
         config: { ...config, systemPrompt: gateDeciderSystemPrompt(run.playbook, gate, role, choices, run) },
-        parent: run.managerAgentId,
+        ...(run.managerAgentId ? { parent: run.managerAgentId } : {}),
         title: `${run.playbook.title} · ${role.title} · ${gate.id}`,
         labels: { [RUN_LABEL]: run.id, [GATE_LABEL]: gate.id },
       });
@@ -904,7 +912,8 @@ export class Runtime {
         workspaceDir,
         projectId: workspace.projectId,
         branch: worktree?.branch ?? reservation?.branch ?? (await currentRef(workspaceDir)),
-        managerAgentId: manager.id,
+        // manager.mode: none: the run has no manager agent (the plugin drives it); `manager` here is only the caller.
+        managerAgentId: playbook.managerMode === "none" ? "" : manager.id,
         workspaceCreated: reservation?.created === true,
         ...(worktree ? { worktree } : {}),
         ...(chosen ? { definition: chosen.definition } : {}),
@@ -1010,6 +1019,11 @@ export class Runtime {
             engine.noteEvent(run, "worktree_kept", null, `worktree ${wt.path} kept: ${keep.reason}`, nowIso());
             if (keep.violation) engine.noteEvent(run, "isolation_violation", null, keep.violation, nowIso());
           });
+          if (keep.violation && isManagerless(candidate)) {
+            // Nobody to tell (manager.mode: none): the ended run is marked failed, so the panel and the Sidekick's run.failed event show it.
+            await this.store.mutate(candidate.id, (run) => engine.failCompletedRun(run, `Isolation violated: the original workspace checkout changed (${keep.violation}) although the run works in its worktree; the worktree ${wt.path} is kept`, nowIso()));
+            continue;
+          }
           if (keep.violation) {
             await this.enqueue(candidate.id, [`Isolation guard: the run ended but the original workspace checkout changed (${keep.violation}) although the run works in its worktree. Tell the human; the worktree ${wt.path} is kept.`]);
             await this.deliver(candidate.id);
@@ -1146,6 +1160,7 @@ export class Runtime {
     try {
       do {
         this.tickAgain = false;
+        await this.driveManagerless();
         await this.startScripts();
         await this.startHandoffs();
         await this.driveFanouts();
@@ -1159,6 +1174,93 @@ export class Runtime {
     } finally {
       this.ticking = false;
     }
+  }
+
+  // ---------------------------------------------------------------- runs with no manager (manager.mode: none)
+
+  /**
+   * The plugin does what a Playbook Manager does, for every active, unpaused run with `manager.mode: none`: normalizes its
+   * gates (a manager-decided gate goes to a human), applies the reported steps, opens the gates of ready gate steps and
+   * starts the ready agent steps. One pass per tick; each outcome of a pass makes ready steps, so the tick runs again.
+   */
+  private async driveManagerless(): Promise<void> {
+    for (const candidate of this.store.list()) {
+      if (!isManagerless(candidate) || !isActive(candidate) || isPaused(candidate)) continue;
+      const runId = candidate.id;
+      // No manager decides a gate: one that named the manager is a human's.
+      await this.store.mutate(runId, (run) => {
+        for (const gate of run.gates) if (gate.status === "pending" && gate.decider.by === "manager") gate.decider = { by: "human" };
+      });
+      for (const step of candidate.playbook.steps) {
+        const run = this.store.get(runId)!;
+        if (!isActive(run) || isPaused(run)) break;
+        if (step.kind === "agent" && run.steps[step.id]!.status === "reported" && isStepLive(run, step.id)) await this.applyReportedByPlugin(runId, step.id);
+      }
+      for (const stepId of engine.readySteps(this.store.get(runId)!)) {
+        const run = this.store.get(runId)!;
+        if (!isActive(run) || isPaused(run)) break;
+        const step = engine.stepDef(run, stepId);
+        if (run.steps[stepId]!.status !== "ready") continue;
+        if (step.kind === "gate") {
+          await this.store.mutate(runId, (current) => {
+            if (current.steps[stepId]!.status !== "ready") return;
+            const gate = engine.requestGate(current, stepId, step.title || step.id, nowIso());
+            if (gate.decider.by === "manager") gate.decider = { by: "human" };
+          });
+        } else if (step.kind === "agent") {
+          try {
+            await this.startStep("", runId, stepId, "");
+          } catch (error) {
+            await this.stopRunByPlugin(runId, `step "${stepId}" could not start: ${errorText(error)}`);
+          }
+        }
+      }
+      // A gate opened above starts its role decider in the same tick (runDeciders follows).
+    }
+  }
+
+  /**
+   * A reported agent step of a run with no manager: every reported outcome is applied as the manager's complete_step would
+   * (same checks, same events). A step that ended with no report, or whose agent was lost or stopped, counts as a failure
+   * (the YAML's `retries` / `on` decide what follows; a lost or stopped agent stops the run). A failure that ends the run
+   * leaves it failed, with the step's text in `failure`.
+   */
+  private async applyReportedByPlugin(runId: string, stepId: string): Promise<void> {
+    const run = this.store.get(runId)!;
+    const step = engine.stepDef(run, stepId);
+    const attempt = run.steps[stepId]!.attempts.at(-1)!;
+    const head = `step "${stepId}" attempt ${attempt.n}`;
+    let report = attempt.report;
+    if (!report) {
+      const why = `${head} ended (${attempt.turnEnd ?? "?"}) without reporting${attempt.lastMessage ? `: ${attempt.lastMessage.slice(0, 500)}` : ""}`;
+      if (attempt.turnEnd === "lost" || attempt.turnEnd === "canceled" || !step.outcomes.includes("failure")) return this.stopRunByPlugin(runId, why);
+      report = { outcome: "failure", summary: why, outputs: {} };
+    }
+    if (!step.outcomes.includes(report.outcome)) return this.stopRunByPlugin(runId, `${head} reported "${report.outcome}", which the step does not declare (${step.outcomes.join(", ")}): ${report.summary}`);
+    const input = { outcome: report.outcome, summary: report.summary, outputs: report.outputs, now: nowIso() };
+    let effects: engine.Effects | null;
+    try {
+      effects = await this.store.mutate(runId, (current) => {
+        const live = current.steps[stepId];
+        if (live?.status !== "reported" || live.attempts.at(-1)?.n !== attempt.n || isPaused(current)) return null;
+        const done = engine.completeStep(current, stepId, input);
+        // A run that ends on this report says why: the step's own text, not only that it ended.
+        if (current.status === "failed" && current.failure && report.summary && !current.failure.includes(report.summary)) current.failure = `${current.failure}: ${report.summary.slice(0, 500)}`;
+        return done;
+      });
+    } catch (error) {
+      return this.stopRunByPlugin(runId, `${head} reported ${report.outcome} but it could not be applied: ${errorText(error)}`);
+    }
+    if (!effects) return;
+    await this.applyEffects(runId, effects);
+    await this.admitQueued(runId);
+  }
+
+  /** A run with no manager stops in its failed state: visible in the panel, `run.failed` is emitted, restart_run works. */
+  private async stopRunByPlugin(runId: string, reason: string): Promise<void> {
+    const run = this.store.get(runId);
+    if (!run || isTerminal(run.status)) return;
+    await this.failRun(runId, reason);
   }
 
   // ---------------------------------------------------------------- workspace archiving
@@ -1898,7 +2000,7 @@ export class Runtime {
   async autoStartReady(managerId: string, runId: string): Promise<{ started: Array<{ stepId: string; agentId: string; attempt: number; target: string }>; failed: Array<{ stepId: string; error: string }> }> {
     const started: Array<{ stepId: string; agentId: string; attempt: number; target: string }> = [];
     const failed: Array<{ stepId: string; error: string }> = [];
-    const run = this.ownedRun(managerId, runId);
+    const run = managerId === "" ? this.store.get(runId)! : this.ownedRun(managerId, runId);
     for (const stepId of engine.readySteps(run)) {
       if (engine.stepDef(run, stepId).kind !== "agent") continue;
       try {
@@ -1911,7 +2013,8 @@ export class Runtime {
   }
 
   async startStep(managerId: string, runId: string, stepId: string, brief: string, model?: ModelChoice): Promise<{ agentId: string; attempt: number; target: string }> {
-    let run = this.ownedRun(managerId, runId);
+    // managerId "": the plugin itself, for a run with no manager (manager.mode: none); its step agents are top-level agents of the workspace.
+    let run = managerId === "" ? this.store.get(runId)! : this.ownedRun(managerId, runId);
     const step = engine.stepDef(run, stepId);
     if (step.kind === "script") throw new UserError(`step "${stepId}" is a script step: the plugin runs it by itself and wakes you with its result`);
     if (step.kind === "fanout") throw new UserError(`step "${stepId}" is a fan-out step: the plugin starts the runs of "${step.fanout!.playbook}" itself and wakes you when they have all ended`);
@@ -1937,7 +2040,7 @@ export class Runtime {
       .workspaces.ref(run.workspaceId)
       .agents.create({
         config: { ...config, systemPrompt: stepSystemPrompt(run.playbook, step, role, run) },
-        parent: managerId,
+        ...(managerId ? { parent: managerId } : {}),
         title: `${run.playbook.title} · ${role.title} #${attemptNo}`,
         labels: { [RUN_LABEL]: run.id, [STEP_LABEL]: stepId, "playbooks/attempt": String(attemptNo) },
       });
@@ -1959,7 +2062,7 @@ export class Runtime {
 
   /** The targets of a step's chain (primary first) with their resolved provider and model. */
   private async stepCandidates(run: Run, step: Pick<Step, "id" | "agent">) {
-    const manager = await this.api().agents.ref(run.managerAgentId).refresh().catch(() => null);
+    const manager = run.managerAgentId ? await this.api().agents.ref(run.managerAgentId).refresh().catch(() => null) : null;
     const [first, ...rest] = [
       { ...step.agent, fallback: undefined } as AgentTarget,
       ...(step.agent.fallback ?? []),
@@ -2110,7 +2213,7 @@ export class Runtime {
     await this.admitQueued(runId);
     if (!result.alreadyDecided && decision.via === "panel") {
       const run = this.store.get(runId)!;
-      await this.dismissQuestions(run.managerAgentId, `The human decided gate ${result.gate.id} in the Playbooks panel instead: ${decision.decision}. Do not call resume. End your turn; you are woken with what comes next.`);
+      if (run.managerAgentId) await this.dismissQuestions(run.managerAgentId, `The human decided gate ${result.gate.id} in the Playbooks panel instead: ${decision.decision}. Do not call resume. End your turn; you are woken with what comes next.`);
       const comment = decision.comment ? `: "${decision.comment}"` : "";
       await this.enqueue(runId, [
         `Gate ${result.gate.stepId} ${decision.decision} by ${decision.by ?? "a human"} via panel${comment}.`,
@@ -2183,7 +2286,7 @@ export class Runtime {
     await this.admitQueued(runId);
     if (by && !isPipeline(this.store.get(runId)!)) {
       const status = this.store.get(runId)!.status;
-      await this.dismissQuestions(this.store.get(runId)!.managerAgentId, `The run was canceled ${by}. End your turn.`);
+      if (this.store.get(runId)!.managerAgentId) await this.dismissQuestions(this.store.get(runId)!.managerAgentId, `The run was canceled ${by}. End your turn.`);
       await this.enqueue(runId, [
         status === "canceled"
           ? `The run was canceled ${by}: ${reason}. Tell the human and stop.`
@@ -2286,7 +2389,7 @@ export class Runtime {
       .workspaces.ref(run.workspaceId)
       .agents.create({
         config: { ...config, systemPrompt: stepSystemPrompt(run.playbook, step, role, run) },
-        parent: run.managerAgentId,
+        ...(run.managerAgentId ? { parent: run.managerAgentId } : {}),
         title: `${run.playbook.title} · ${role.title} #${attempt.n}`,
         labels: { [RUN_LABEL]: run.id, [STEP_LABEL]: stepId, "playbooks/attempt": String(attempt.n) },
       });
@@ -2309,11 +2412,17 @@ export class Runtime {
   async startAfterTask(runId: string, taskId: string, by: string | null = null): Promise<Run> {
     const run = this.store.get(runId);
     if (!run) throw new UserError(`unknown run "${runId}"`);
-    const manager = await this.api().agents.ref(run.managerAgentId).refresh().catch(() => null);
-    if (!manager || manager.agent.archivedAt) throw new UserError("this run's Playbook Manager no longer exists");
+    if (!isManagerless(run)) {
+      const manager = await this.api().agents.ref(run.managerAgentId).refresh().catch(() => null);
+      if (!manager || manager.agent.archivedAt) throw new UserError("this run's Playbook Manager no longer exists");
+    }
     const busy = this.workspaceConflict(run.workspaceId, run.playbook.isolation.mode === "worktree", run.id);
     if (busy) throw new UserError(`this workspace has another active run (${busy.id}); wait for it to end`);
     const effects = await this.store.mutate(runId, (current) => engine.startAfterTask(current, taskId, nowIso()));
+    if (isManagerless(run)) {
+      await this.admitQueued(runId);
+      return this.store.get(runId)!;
+    }
     if (by === run.managerAgentId) return this.store.get(runId)!;
     const who = by ? `Agent ${by} started the after-task "${taskId}" at the human's request.` : `A human started the after-task "${taskId}" from the panel.`;
     await this.enqueue(runId, [who, ...effects.notes]);
@@ -2386,9 +2495,12 @@ export class Runtime {
         throw new UserError(`"${playbookId}" allows ${limit} active run(s) in this project; held by: ${holders.filter((id) => !id.startsWith(run.id)).join(", ")}. Try again once one ends.`);
       }
     }
-    const manager = takeOver || move ? null : await this.api().agents.ref(run.managerAgentId).refresh().catch(() => null);
+    const managerless = isManagerless(run);
+    // A run with no manager (manager.mode: none) is restarted by the plugin: no manager is woken, created or taken over.
+    if (managerless) takeOver = undefined;
+    const manager = managerless || takeOver || move ? null : await this.api().agents.ref(run.managerAgentId).refresh().catch(() => null);
     // A run moved to another workspace always gets a manager there.
-    const managerGone = !takeOver && (Boolean(move) || !manager || Boolean(manager.agent.archivedAt));
+    const managerGone = !managerless && !takeOver && (Boolean(move) || !manager || Boolean(manager.agent.archivedAt));
     // The original manager was archived (which also archives its runs): a new one takes over.
     // It is created without a prompt, so it cannot look for the run before the run is its own.
     const replacement = managerGone ? await this.createReplacementManager(homeId, run.playbook) : null;
@@ -2484,6 +2596,7 @@ export class Runtime {
   async askManagerToRetry(runId: string, stepId: string): Promise<void> {
     const run = this.store.get(runId);
     if (run && isPaused(run)) throw new UserError(`run ${runId} is paused: resume it first`);
+    if (run && isManagerless(run)) throw new UserError(`run ${runId} has no Playbook Manager (manager.mode: none): restart the run from the step instead`);
     await this.enqueue(runId, [`A human asked to retry step "${stepId}" from the panel. Check get_run and start it again if it is ready, or complete it with "failure" first so it becomes ready.`]);
     await this.deliver(runId);
   }
@@ -2579,6 +2692,12 @@ export class Runtime {
     const run = this.store.get(runId)!;
     const attempt = run.steps[stepId]!.attempts.at(-1)!;
     if (run.steps[stepId]!.status !== "reported" || attempt.agentId !== agentId || !attempt.report) return;
+    if (isManagerless(run)) {
+      const found = await this.checkoutViolation(run, attempt);
+      if (found) await this.store.mutate(runId, (current) => engine.markReadonlyViolation(current, stepId, found.detail, nowIso(), found.kind));
+      await this.tick();
+      return;
+    }
     const violation = await this.checkoutViolation(run, attempt);
     if (violation) await this.store.mutate(runId, (current) => engine.markReadonlyViolation(current, stepId, violation.detail, nowIso(), violation.kind));
     if (!violation && (await this.autoCompleteReport(runId, stepId))) return;
@@ -2662,6 +2781,11 @@ export class Runtime {
       return result;
     });
     if (!ended) return;
+    // No manager: the plugin applies the report (or the failure) itself, in its tick.
+    if (isManagerless(run)) {
+      await this.tick();
+      return;
+    }
     const report = this.store.get(runId)!.steps[ended.stepId]!.attempts.at(-1)!.report;
     const head = `step "${ended.stepId}" attempt ${ended.attempt.n}`;
     const line = !report && outOfTokens
@@ -3013,7 +3137,8 @@ export class Runtime {
   private armWatch(run: Run, stepId: string, activeAt: number, notBefore = 0): void {
     const step = engine.stepDef(run, stepId);
     const attempt = run.steps[stepId]!.attempts.at(-1);
-    if (!attempt || isAgentlessAttempt(attempt.agentId) || attempt.silenceReminded || run.steps[stepId]!.status !== "running") return;
+    // No manager (manager.mode: none): no stall handling beyond the step's own `timeout`; the silence reminder is a nudge.
+    if (!attempt || isManagerless(run) || isAgentlessAttempt(attempt.agentId) || attempt.silenceReminded || run.steps[stepId]!.status !== "running") return;
     const due = silenceDue(step, attempt, activeAt);
     if (due === null) return;
     const existing = this.watches.get(attempt.agentId);
@@ -3031,7 +3156,7 @@ export class Runtime {
     this.watches.delete(agentId);
     const run = this.store.get(runId);
     const attempt = run?.steps[stepId]?.attempts.at(-1);
-    if (!run || attempt?.agentId !== agentId || attempt.silenceReminded || run.steps[stepId]!.status !== "running") return;
+    if (!run || isManagerless(run) || attempt?.agentId !== agentId || attempt.silenceReminded || run.steps[stepId]!.status !== "running") return;
     const step = engine.stepDef(run, stepId);
     const snapshot = await this.api().agents.ref(agentId).refresh().catch(() => null);
     // An agent that is not running has ended its turn: the turn-end hook handles it.
@@ -3244,7 +3369,14 @@ export class Runtime {
     if (same && !input.force) {
       return { status: "duplicate" as const, runId: same.id, message: `Run ${same.id} of "${playbook.id}" is already active with the same inputs.` };
     }
+    if (input.agentId && playbook.managerMode === "none") throw new UserError(`"${playbook.id}" has no Playbook Manager (manager.mode: none): no agent manages it; start it without choosing one`);
     if (input.agentId) return this.startWithAgent(workspace.id, input.agentId, playbook, resolved.inputs);
+    if (input.sameWorkspace && playbook.managerMode === "none") {
+      const busy = this.workspaceConflict(workspace.id, playbook.isolation.mode === "worktree");
+      if (busy) throw new UserError(`this workspace already has an active run (${busy.id}); use "Start in a new workspace"${playbook.isolation.mode === "worktree" ? "" : ", or give the playbook `isolation: worktree` so runs can share a workspace"}`);
+      const run = await this.startPlaybook({ id: "", workspaceId: workspace.id, cwd: workspaceDir }, playbook.id, resolved.inputs, { playbook });
+      return { status: "started" as const, workspaceId: workspace.id, managerAgentId: "", runId: run.id, queued: false };
+    }
     if (input.sameWorkspace) {
       const busy = this.workspaceConflict(workspace.id, playbook.isolation.mode === "worktree");
       if (busy) throw new UserError(`this workspace already has an active run (${busy.id}); use "Start in a new workspace"${playbook.isolation.mode === "worktree" ? "" : ", or give the playbook `isolation: worktree` so runs can share a workspace"}`);
@@ -3497,6 +3629,16 @@ export class Runtime {
       source: { kind: "worktree", cwd: workspaceDir, action: "branch-off", branchName: branch, ...(base ? { refName: base } : {}) },
     });
     this.addReservation(created.id, { runId, branch, playbook, inputs, created: true, ...(child ? { parent: child.parent } : {}) });
+    if (playbook.managerMode === "none") {
+      // No manager agent: the plugin creates the run itself, from the reservation, and drives it.
+      try {
+        const run = await this.startPlaybook({ id: "", workspaceId: created.id, cwd: workspaceDir }, playbook.id, inputs, { playbook });
+        return { status: "started" as const, workspaceId: created.id, managerAgentId: "", runId: run.id };
+      } catch (error) {
+        this.reservations.delete(created.id);
+        throw error;
+      }
+    }
     const manager = await created.agents.create({
       config: this.managerConfig(playbook),
       title: `Playbook Manager · ${playbook.title}`,

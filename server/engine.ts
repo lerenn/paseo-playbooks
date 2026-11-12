@@ -1551,6 +1551,18 @@ export function failRun(run: Run, reason: string, now: string): Effects {
 }
 
 /**
+ * A run that already completed turns out to have broken a guard (isolation): a run with no manager has nobody to tell,
+ * so it becomes failed, with the reason in `failure`. Returns false when the run was not completed.
+ */
+export function failCompletedRun(run: Run, reason: string, now: string): boolean {
+  if (run.status !== "completed") return false;
+  run.status = "failed";
+  run.failure = reason;
+  log(run, now, "run_failed", null, reason);
+  return true;
+}
+
+/**
  * Pauses the run (drain): no step starts and the manager is not woken until resume. Steps
  * already running finish their turn; their reports wait in the inbox. Returns false if it
  * was already paused.

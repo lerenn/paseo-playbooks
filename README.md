@@ -226,3 +226,10 @@ with that tag.
   message to, skipping agents that already manage a run), because the panel cannot see
   which tab has focus. To pick a specific agent, send it a message first, or use "Start on
   a new agent".
+
+## Runs with no Playbook Manager
+
+`manager: { mode: none }` in a playbook (default `always_on`; repo-wide default `manager: { lifecycle: none }` in
+`defaults/main.yaml`) runs it without a manager agent: the plugin starts the steps, applies every reported outcome, opens the gates
+(a human gate in the panel, a role gate with its decider) and stops the run in its failed state on a failure or a timeout.
+See `examples/.paseo/plugins/playbooks/unattended.yaml` and `docs/adrs/2026-11-12-manager-mode.md`.

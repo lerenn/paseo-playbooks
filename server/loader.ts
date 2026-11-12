@@ -24,7 +24,7 @@ import type {
   VarValue,
   When,
 } from "../shared/types";
-import { AgentSettingsSchema, DEFAULT_EXHAUSTED_FOR_MS, DEFAULT_MANAGER_COMPACT, ManagerCompactSchema, type Isolation, VarTypeSchema, VarValueSchema } from "../shared/types";
+import { AgentSettingsSchema, DEFAULT_EXHAUSTED_FOR_MS, DEFAULT_MANAGER_COMPACT, DEFAULT_MANAGER_MODE, ManagerCompactSchema, ManagerModeSchema, type ManagerMode, type Isolation, VarTypeSchema, VarValueSchema } from "../shared/types";
 import { readProjectDefault, readProjectProfiles } from "./config";
 import { bareId, DEFAULT_REPO, qualified } from "../shared/repos";
 import { coerceValue, parseDuration, replaceRefs, singleRef, templateRefs, typeCompatible } from "../shared/vars";
@@ -346,6 +346,13 @@ const RawIsolationSchema = z.union([
 ]);
 type RawIsolation = z.infer<typeof RawIsolationSchema>;
 
+/** `manager.mode` / `manager.lifecycle`: the value, or the message that refuses it. */
+function parseManagerMode(value: string): string {
+  if (value === "always_on" || value === "none") return value;
+  if (value === "on_demand") return "`on_demand` is not supported yet (planned; use `always_on` or `none`)";
+  return `"${value}" is not a manager mode: use \`always_on\` (default) or \`none\``;
+}
+
 /** A playbook's isolation over the defaults': the playbook's own fields win, field by field. */
 function resolveIsolation(own: RawIsolation | undefined, fallback: RawIsolation | undefined): Isolation {
   const fields = (raw: RawIsolation | undefined) => (typeof raw === "string" ? { mode: raw } : (raw ?? {}));
@@ -366,6 +373,8 @@ const RawPlaybookSchema = z.object({
         prompt: z.string().optional(),
         /** When the plugin compacts the manager's context. */
         compact: ManagerCompactSchema.optional(),
+        /** `always_on` (default): a Playbook Manager agent drives the run. `none`: no manager, the plugin drives it. */
+        mode: z.string().optional(),
       })
       .strict()
       .optional(),
@@ -407,7 +416,8 @@ const RawDefaultsSchema = z.object({
     /** Named agent settings roles, steps and playbooks reference with `agent: { tier: <name> }`. */
     tiers: z.record(z.string(), RawTierSchema).optional(),
     agent: RawAgentSchema.optional(),
-    manager: RawAgentSchema.extend({ compact: ManagerCompactSchema.optional() }).optional(),
+    /** `lifecycle` is the repo-wide default of a playbook's `manager.mode` (here `mode` is the manager agent's own permission mode). */
+    manager: RawAgentSchema.extend({ compact: ManagerCompactSchema.optional(), lifecycle: z.string().optional() }).optional(),
     workspace: RawWorkspaceSchema.optional(),
     isolation: RawIsolationSchema.optional(),
     /** Provider failover (a tier listing several targets). */
@@ -441,7 +451,7 @@ const RawDefaultsSchema = z.object({
     silence: z.unknown().optional(),
     archive_agents: z.unknown().optional(),
   });
-type RawDefaults = Omit<z.infer<typeof RawDefaultsSchema>, "tiers"> & { tiers?: Tiers; managerCompact?: ManagerCompact };
+type RawDefaults = Omit<z.infer<typeof RawDefaultsSchema>, "tiers"> & { tiers?: Tiers; managerCompact?: ManagerCompact; managerMode?: ManagerMode };
 
 function formatZodError(file: string, error: z.ZodError): string[] {
   return error.issues.map((issue) => {
@@ -591,9 +601,14 @@ async function loadDefaults(root: string, relDir: string): Promise<{ defaults: R
   const defaults: RawDefaults = { ...parsed.data, tiers };
   if (parsed.data.agent) defaults.agent = resolveAgent(parsed.data.agent, tiers, "agent", fail);
   if (parsed.data.manager) {
-    const { compact, ...settings } = parsed.data.manager;
+    const { compact, lifecycle, ...settings } = parsed.data.manager;
     defaults.manager = resolveAgent(settings, tiers, "manager", fail);
     if (compact !== undefined) defaults.managerCompact = compact;
+    if (lifecycle !== undefined) {
+      const mode = parseManagerMode(lifecycle);
+      if (typeof mode === "string" && ManagerModeSchema.safeParse(mode).success) defaults.managerMode = mode as ManagerMode;
+      else fail(`manager.lifecycle: ${mode}`);
+    }
   }
   if (parsed.data.timeout && parseDuration(parsed.data.timeout) === null) {
     errors.push(`${rel}: timeout: expected a duration such as 30m or 2h`);
@@ -1768,6 +1783,17 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     isolation = { ...isolation, mode: "none" };
   }
   if (errors.length > 0) return fail(errors);
+  let managerMode: ManagerMode = defaults.managerMode ?? DEFAULT_MANAGER_MODE;
+  if (pb.manager?.mode !== undefined) {
+    const parsedMode = parseManagerMode(pb.manager.mode);
+    if (ManagerModeSchema.safeParse(parsedMode).success) managerMode = parsedMode as ManagerMode;
+    else err(`manager.mode: ${parsedMode}`);
+  }
+  if (managerMode === "none" && singleton) {
+    if (pb.manager?.mode !== undefined) err("`manager: { mode: none }` does not apply to a singleton: a pipeline's trains each have a manager");
+    managerMode = "always_on";
+  }
+  if (errors.length > 0) return fail(errors);
   const manager = mergeAgent(defaults.agent?.provider ? { provider: defaults.agent.provider, model: defaults.agent.model } : undefined, defaults.manager);
   entry.playbook = {
     id: qid,
@@ -1780,6 +1806,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     roles,
     manager,
     managerCompact: pb.manager?.compact ?? defaults.managerCompact ?? DEFAULT_MANAGER_COMPACT,
+    managerMode,
     exhaustedForMs: (defaults.providers?.exhausted_for ? parseDuration(defaults.providers.exhausted_for) : null) ?? DEFAULT_EXHAUSTED_FOR_MS,
     onExhausted: defaults.providers?.on_exhausted ?? "fail",
     maxWaitMs: (defaults.providers?.max_wait ? parseDuration(defaults.providers.max_wait) : null) ?? null,
