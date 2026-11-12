@@ -412,18 +412,6 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
               </>
             ) : null}
           </Text>
-          <SortMenu
-            theme={theme}
-            outline
-            align="right"
-            noun="playbooks"
-            options={PLAYBOOK_SORTS}
-            value={playbookSort}
-            onChange={(key) => {
-              setPicked(key);
-              if (settings.status === "ready") void settings.save({ ...settings.values, sort: key }, settings.revision);
-            }}
-          />
           {runState !== "hidden" ? <RunPlaybookButton theme={theme} loading={runState === "loading"} onPress={() => setRunForm(true)} /> : null}
           {!layout.compact ? (
             <Pressable
@@ -465,7 +453,9 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
         ) : (
           <>
         <View style={{ gap: 8 }}>
-          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+          {/* The playbook sort sits at the right of the filter row, in the Runs tab only; zIndex so its menu opens over what follows. */}
+          <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 8, zIndex: 50 }}>
+          <View style={{ flex: 1, minWidth: 0, flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
             <Chip
               theme={theme}
               label="All projects"
@@ -489,6 +479,21 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
               />
             ))}
             <Chip theme={theme} label="Show done" icon={showDone ? "Check" : undefined} selected={showDone} onPress={() => setShowDone(!showDone)} />
+          </View>
+          <View style={{ flexShrink: 0 }}>
+          <SortMenu
+            theme={theme}
+            outline
+            align="right"
+            noun="playbooks"
+            options={PLAYBOOK_SORTS}
+            value={playbookSort}
+            onChange={(key) => {
+              setPicked(key);
+              if (settings.status === "ready") void settings.save({ ...settings.values, sort: key }, settings.revision);
+            }}
+          />
+          </View>
           </View>
           {project && workspaceChips.length > 0 ? (
             <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, paddingLeft: 12, borderLeftWidth: 2, borderLeftColor: theme.colors.border }}>
