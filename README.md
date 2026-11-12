@@ -206,6 +206,13 @@ once, but if that agent is busy, its kickoff waits until its current turn ends).
 next to Start offers "Start on a new agent", which creates a new manager agent in the same
 workspace, and "Start in a new workspace", which creates a new worktree and manager.
 
+The overview screen lists one section per playbook (its runs inside). The **sort** button in its header, next to Sidekick,
+orders those sections: **Name (A-Z)** (the default, so the order never jumps), **Last activity** (the playbook with the most
+recently updated run first), **Status** (the playbook with a run waiting for you first, then working, failed, done, paused,
+seen) or **Start time** (the playbook with the newest run first). The choice is kept by the host, so it survives reloads;
+"Needs you" follows the same order. Playbooks never leave the list because of the sort, only their order changes (and, with
+Last activity or Status, as runs change). The Runs sort inside each playbook is separate and unchanged.
+
 The **Run Playbook** button in the header of the overview screen (the one with the Runs, Analytics and Profiles tabs,
 next to Sidekick) opens a form to start any valid playbook of a project in a new workspace: a project dropdown
 (preselected to the project chip selected on the screen; with "All projects" you choose one), a workspace name (optional; empty keeps the default title, the playbook title and the
