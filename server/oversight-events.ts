@@ -10,6 +10,7 @@ export const DEFAULT_STALE_MINUTES = 30;
 const SOURCE = "runs";
 
 const runFields = { runId: z.string(), playbook: z.string(), runName: z.string().nullable(), projectId: z.string(), workspaceDir: z.string() };
+const stepFields = { ...runFields, stepId: z.string(), attempt: z.number().int().nullable() };
 const gateFields = {
   ...runFields,
   gateId: z.string(),
@@ -81,7 +82,36 @@ export const OVERSIGHT_TYPES: EventTypeDef[] = [
     payload: z.object({ ...runFields, failure: z.string().nullable(), restartableFrom: z.array(z.string()) }),
     line: (event) => failedLine(event, "run.manager_lost"),
   },
+  {
+    type: "step.started",
+    description: "A step attempt started (agent and script steps; each attempt of a retried or looped step again): stepId and attempt number.",
+    payload: z.object(stepFields),
+    line: (event) => stepLine(event, "started"),
+  },
+  {
+    type: "step.completed",
+    description: "A step ended an attempt with an outcome, failure outcomes and retried ones included (a branch step: its case): stepId, attempt (null for a branch step) and outcome.",
+    payload: z.object({ ...stepFields, outcome: z.string() }),
+    line: (event) => stepLine(event, `ended with outcome ${String(event.payload.outcome)}`),
+  },
+  {
+    type: "run.completed",
+    description: "A run completed (its main steps are done; after-tasks may still run).",
+    payload: z.object(runFields),
+    line: (event) => `- run.completed: ${runName(event.payload)} in ${String(event.payload.workspaceDir)} completed. Tools: get_run { runId: "${event.runId}" }.`,
+  },
+  {
+    type: "run.canceled",
+    description: 'A run was canceled (status "canceled"): the reason, when given.',
+    payload: z.object({ ...runFields, reason: z.string().nullable() }),
+    line: (event) => `- run.canceled: ${runName(event.payload)} in ${String(event.payload.workspaceDir)} was canceled${event.payload.reason ? `: ${String(event.payload.reason)}` : ""}. Tools: get_run { runId: "${event.runId}" }.`,
+  },
 ];
+
+function stepLine(event: BusEvent, what: string): string {
+  const p = event.payload as { stepId: string; attempt: number | null };
+  return `- ${event.type}: step ${p.stepId}${p.attempt ? ` (attempt ${p.attempt})` : ""} of ${runName(event.payload)} ${what}. Tools: get_run { runId: "${event.runId}" }.`;
+}
 
 function failedLine(event: BusEvent, label: string): string {
   const p = event.payload as { failure: string | null; restartableFrom: string[]; workspaceDir: string };
@@ -113,6 +143,10 @@ export class OversightProducer {
   private readonly failures = new Set<string>();
   private readonly escalatedSeen = new Set<string>();
   private readonly staleDone = new Set<string>();
+  /** Per run, the last history entry looked at: step and run events come from the entries after it. */
+  private readonly cursor = new Map<string, number>();
+  private readonly attempts = new Map<string, number>();
+  private readonly reported = new Set<string>();
   private seeded = false;
 
   constructor(private readonly bus: EventBus) {}
@@ -127,7 +161,11 @@ export class OversightProducer {
     const thresholds = await this.bus.thresholds("gate.stale");
     const open = new Set<string>();
     for (const run of runs) {
-      if (run.archivedAt) continue;
+      if (run.archivedAt) {
+        if (seeding) this.cursor.set(run.id, run.seq);
+        continue;
+      }
+      if (seeding) this.cursor.set(run.id, run.seq);
       for (const gate of run.gates) {
         const key = `${run.id}/${gate.id}`;
         if (gate.status === "pending") {
@@ -157,6 +195,8 @@ export class OversightProducer {
           );
         }
       }
+      // After the gates: a decision is announced before the step and run it ends.
+      if (!seeding) await this.lifecycle(run);
       if (run.status === "failed" && !this.failures.has(run.id)) {
         this.failures.add(run.id);
         if (seeding || run.train) continue;
@@ -167,6 +207,40 @@ export class OversightProducer {
     }
     for (const key of [...this.known.keys()]) if (!open.has(key)) this.known.delete(key);
     for (const key of [...this.escalatedSeen]) if (!open.has(key) && !this.known.has(key)) this.escalatedSeen.delete(key);
+  }
+
+  /**
+   * Step and run events, from the history entries written since the last look: a daemon restart
+   * starts at the end of each run's history, so past transitions are not announced again.
+   * step.completed follows `step_outcome`; a `step_completed` with none before it (a branch step) is one too.
+   */
+  private async lifecycle(run: Run): Promise<void> {
+    const from = this.cursor.get(run.id) ?? 0;
+    this.cursor.set(run.id, run.seq);
+    if (run.train) return;
+    const base = { runId: run.id, playbook: run.playbook.id, runName: run.name ?? null, projectId: run.projectId, workspaceDir: run.workspaceDir };
+    const meta = { runId: run.id, source: SOURCE };
+    for (const entry of run.history) {
+      if (entry.seq <= from) continue;
+      const key = `${run.id}/${entry.stepId}`;
+      if (entry.type === "step_started" && entry.stepId) {
+        const attempt = Number(/^attempt (\d+)/.exec(entry.detail)?.[1] ?? run.steps[entry.stepId]?.attempts.at(-1)?.n ?? 0) || null;
+        this.attempts.set(key, attempt ?? 0);
+        this.reported.delete(key);
+        await this.bus.emit("step.started", { ...base, stepId: entry.stepId, attempt }, meta);
+      } else if ((entry.type === "step_outcome" || entry.type === "step_completed") && entry.stepId) {
+        if (entry.type === "step_completed" && this.reported.delete(key)) continue;
+        const branch = entry.type === "step_completed" && entry.detail.startsWith("branch ");
+        if (entry.type === "step_outcome") this.reported.add(key);
+        const outcome = branch ? (run.steps[entry.stepId]?.branch ?? entry.detail) : entry.type === "step_outcome" ? entry.detail.split(" (")[0]! : entry.detail;
+        const attempt = branch ? null : (this.attempts.get(key) ?? run.steps[entry.stepId]?.attempts.at(-1)?.n ?? null) || null;
+        await this.bus.emit("step.completed", { ...base, stepId: entry.stepId, attempt, outcome }, meta);
+      } else if (entry.type === "run_completed") {
+        await this.bus.emit("run.completed", base, meta);
+      } else if (entry.type === "run_canceled") {
+        await this.bus.emit("run.canceled", { ...base, reason: entry.detail || null }, meta);
+      }
+    }
   }
 
   /** Emits gate.escalated once per gate (remembered through the log across restarts): when a manager or role decider handed it to a human, a restart that lost the decider included. */
