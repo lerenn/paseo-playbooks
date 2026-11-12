@@ -178,7 +178,7 @@ function ago(iso: string): string {
 }
 
 function gateKindLabel(gate: Gate): string {
-  return gate.kind === "ask" ? "Answer" : gate.kind === "loop_limit" ? "Loop limit" : "Decide";
+  return gate.kind === "ask" ? "Answer" : gate.kind === "loop_limit" ? "Loop limit" : gate.kind === "admission" ? "Admission" : "Decide";
 }
 
 /**
@@ -1172,7 +1172,7 @@ function RunActions(props: {
   const archivable = isTerminal(run.status) && !isActive(run);
   return (
     <View style={{ width: props.compact ? undefined : ACTIONS_WIDTH, flexDirection: "row", justifyContent: "flex-end", gap: 10 }}>
-      {props.onOpenAgent ? (
+      {props.onOpenAgent && run.managerAgentId ? (
         <IconButton theme={theme} icon="Bot" label={`Open the Playbook Manager of run ${shortId(run)}`} onPress={() => props.onOpenAgent!(run.managerAgentId)} />
       ) : null}
       {props.onOpenWorkspace ? (

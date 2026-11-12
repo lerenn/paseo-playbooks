@@ -17,7 +17,7 @@ const temps: string[] = [];
 const runtimes: Runtime[] = [];
 afterEach(async () => {
   await Promise.all(runtimes.splice(0).map((runtime) => runtime.dispose()));
-  await Promise.all(temps.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+  await Promise.all(temps.splice(0).map((dir) => rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })));
 });
 
 const T0 = "2026-11-12T10:00:00.000Z";
@@ -466,7 +466,7 @@ describe("queue.admit: the runtime", () => {
     const id = pipe().jobs[0]!.id;
     await write("verdict.json", JSON.stringify({ admit: [id] }));
     await runtime.bus.emit("job.settled", { runId: "x", playbook: "other", runName: null, projectId: "p", workspaceDir: "/", jobId: "z", label: "z", station: "stg", trainRunId: null, outcome: "done", summary: null }, { runId: "x", source: "pipelines" });
-    await until(() => train() !== undefined);
+    await until(() => train() !== undefined && pipe().jobs[0]!.riding.length === 1);
     expect(pipe().jobs[0]).toMatchObject({ waiting: [], riding: [expect.objectContaining({ station: "dev" })] });
     expect(types("job.admitted")).toHaveLength(1);
     expect(types("job.admitted")[0]!.payload).toMatchObject({ jobId: id, station: "dev", via: "script", reason: null });
