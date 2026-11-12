@@ -35,7 +35,6 @@ export const AgentUsageSchema = z.object({
     inputTokens: z.number().optional(),
     cachedInputTokens: z.number().optional(),
     outputTokens: z.number().optional(),
-    totalCostUsd: z.number().optional(),
     contextWindowUsedTokens: z.number().optional(),
   }),
 });
@@ -58,7 +57,7 @@ export const AnalyticsSchema = z.object({
   byModel: z.array(UsageRowSchema),
   /** Managers and gate deciders: spend outside the steps. */
   overhead: z.object({ manager: UsageSchema, deciders: UsageSchema }),
-  /** The agents that spent the most (by cost, then tokens), whatever they are; unknown for agents before this was recorded. */
+  /** The agents that spent the most (by tokens), whatever they are; unknown for agents before this was recorded. */
   topAgents: z.array(AgentRowSchema).default([]),
 });
 export type Analytics = z.infer<typeof AnalyticsSchema>;
@@ -76,7 +75,6 @@ function plus(a: Usage, b: Usage | null | undefined): Usage {
     inputTokens: a.inputTokens + b.inputTokens,
     cachedInputTokens: a.cachedInputTokens + b.cachedInputTokens,
     outputTokens: a.outputTokens + b.outputTokens,
-    costUsd: a.costUsd + b.costUsd,
     contextPeak: Math.max(a.contextPeak, b.contextPeak),
   };
 }
@@ -179,7 +177,7 @@ export function analyze(runs: Run[], options: AnalyticsOptions = {}): Analytics 
   const topAgents = (options.agents ?? [])
     .filter((agent) => (!since || agent.at >= since) && (!filtered || (agent.runId !== null && pickedIds.has(agent.runId))))
     .map(({ last: _last, ...row }): AgentRow => row)
-    .sort((a, b) => b.usage.costUsd - a.usage.costUsd || b.usage.cachedInputTokens + tokensOf(b.usage) - (a.usage.cachedInputTokens + tokensOf(a.usage)))
+    .sort((a, b) => b.usage.cachedInputTokens + tokensOf(b.usage) - (a.usage.cachedInputTokens + tokensOf(a.usage)))
     .slice(0, limit);
   return {
     since,

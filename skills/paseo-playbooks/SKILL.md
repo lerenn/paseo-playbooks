@@ -981,8 +981,8 @@ outputs:
 ## Improve a playbook from its token spend
 
 `get_analytics` (read-only; `days`, `playbook`, `projectId`, `limit`) sums what agents spent, by playbook, step
-(with its role and model), role and model: tokens, cost, peak context, and wasted attempts (retried, or whose
-agent did not finish) with their tokens. Look for steps that cost the most, retry the most or fill their context,
+(with its role and model), role and model: tokens, peak context, and wasted attempts (retried, or whose
+agent did not finish) with their tokens. Look for steps that use the most tokens, retry the most or fill their context,
 and for a big model on a simple step; then propose a change to the playbook, role or model. `overhead` is the
 managers' and gate deciders' share. Usage exists only for runs that ended turns after v0.58.0.
 

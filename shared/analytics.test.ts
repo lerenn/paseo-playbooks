@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { analyze } from "./analytics";
 import { addUsage } from "./types";
 
-const usage = (input: number, output: number) => addUsage(null, { inputTokens: input, outputTokens: output, totalCostUsd: 0.01, contextWindowUsedTokens: input });
+const usage = (input: number, output: number) => addUsage(null, { inputTokens: input, outputTokens: output, contextWindowUsedTokens: input });
 
 function run(id: string, attempts: Array<ReturnType<typeof usage>>): any {
   return {
@@ -33,9 +33,9 @@ describe("analyze", () => {
     expect(analyze([old], { since: "2026-06-01T00:00:00Z" }).runs).toBe(0);
   });
 
-  it("lists the top agents by cost, within the window, with their runs filtered like the rest", () => {
-    const entry = (agentId: string, cost: number, at: string, runId: string | null) => ({
-      agentId, title: agentId, kind: "other", role: null, model: "claude/opus", runId, at, usage: { ...addUsage(null, { totalCostUsd: cost, contextWindowUsedTokens: 9 }) }, last: {},
+  it("lists the top agents by tokens, within the window, with their runs filtered like the rest", () => {
+    const entry = (agentId: string, tokens: number, at: string, runId: string | null) => ({
+      agentId, title: agentId, kind: "other", role: null, model: "claude/opus", runId, at, usage: { ...addUsage(null, { inputTokens: tokens, contextWindowUsedTokens: 9 }) }, last: {},
     });
     const agents = [entry("cheap", 1, "2026-11-10T00:00:00Z", "r1"), entry("drain", 50, "2026-11-10T00:00:00Z", null), entry("old", 99, "2026-01-01T00:00:00Z", null)];
     const all = analyze([run("r1", [])], { agents, since: "2026-06-01T00:00:00Z" });
