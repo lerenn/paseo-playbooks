@@ -323,6 +323,50 @@ steps:
     const errorsOf = async (files: Record<string, string>, id = "pb") =>
       (await loadPlaybooks(await workspace(files))).entries.find((entry) => entry.id === id)!.errors;
 
+    describe("role.completion.auto", () => {
+      const step = (extra: string) => `
+steps:
+  - id: qa
+    outcomes: [success, merged, needs_work, failure]
+    on: { needs_work: { goto: qa, max_loops: 2 }, merged: end }
+    role: { name: reviewer, completion: ${extra} }
+`;
+      it("reads the outcomes the plugin applies", async () => {
+        const entry = (await loadPlaybooks(await workspace({ "pb.yaml": step("{ auto: [success, merged, needs_work] }") }))).entries.find((candidate) => candidate.id === "pb")!;
+        expect(entry.errors).toEqual([]);
+        expect(entry.playbook!.steps[0]!.autoComplete).toEqual(["success", "merged", "needs_work"]);
+      });
+      it("is unset by default", async () => {
+        const entry = (await loadPlaybooks(await workspace({ "pb.yaml": "steps:\n  - { id: a, role: { name: reviewer } }\n" }))).entries.find((candidate) => candidate.id === "pb")!;
+        expect(entry.playbook!.steps[0]!.autoComplete).toBeUndefined();
+      });
+      it("refuses an outcome the step does not declare", async () => {
+        expect(await errorsOf({ "pb.yaml": step("{ auto: [success, nope] }") })).toEqual([expect.stringContaining('role.completion.auto: "nope" is not an outcome of this step')]);
+      });
+      it("refuses failures and asks", async () => {
+        expect(await errorsOf({ "pb.yaml": step("{ auto: [failure] }") })).toEqual([expect.stringContaining('"failure" is a failure')]);
+        const asks = `
+steps:
+  - id: qa
+    outcomes: [success, asking]
+    on: { asking: { ask: "Which way?" } }
+    role: { name: reviewer, completion: { auto: [asking] } }
+`;
+        expect(await errorsOf({ "pb.yaml": asks })).toEqual([expect.stringContaining('"asking" opens an ask for a human')]);
+      });
+      it("refuses an empty list, a duplicate and an unknown key", async () => {
+        expect((await errorsOf({ "pb.yaml": step("{ auto: [] }") })).length).toBeGreaterThan(0);
+        expect((await errorsOf({ "pb.yaml": step("{ auto: [success], manager: false }") })).length).toBeGreaterThan(0);
+        expect(await errorsOf({ "pb.yaml": step("{ auto: [success, success] }") })).toEqual([expect.stringContaining("duplicate outcome")]);
+      });
+      it("is refused on a gate, script, hand-off, branch and fan-out step", async () => {
+        for (const kind of ["gate: { question: Ok? }", "script: { run: x.sh }", "handoff: { name: other }", "branch: { cases: [{ name: other }] }", "fanout: { playbook: sub, items: '[]', inputs: {} }"]) {
+          const errors = await errorsOf({ "pb.yaml": `steps:\n  - { id: a, role: { name: reviewer, completion: { auto: [success] } }, ${kind} }\n` });
+          expect(errors.some((message) => message.includes("set exactly one of"))).toBe(true);
+        }
+      });
+    });
+
     it("reads each kind's block into the step", async () => {
       const dir = await workspace({
         "scripts/wait.sh": "#!/bin/sh\nexit 0\n",

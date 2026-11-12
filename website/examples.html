@@ -308,7 +308,8 @@ outputs:
 
 steps:
   - id: release
-    role: { name: dev_env_releaser, prompt: &quot;Deploy {{ inputs.pr_url }} to the development environment.&quot; }
+    # The plugin applies a reported success itself and starts qa: the manager is not woken for it.
+    role: { name: dev_env_releaser, prompt: &quot;Deploy {{ inputs.pr_url }} to the development environment.&quot;, completion: { auto: [success] } }
     inputs: [pr_url]
     outputs:
       env_url: { type: string, description: URL of the deployed dev environment }
@@ -316,7 +317,8 @@ steps:
     timeout: 30m
 
   - id: qa
-    role: { name: dev_env_qa, prompt: &quot;Check {{ inputs.pr_url }} on {{ inputs.env_url }}.&quot; }
+    # redeploy loops back to release, which the plugin applies; success ends the run, so the manager is woken for it.
+    role: { name: dev_env_qa, prompt: &quot;Check {{ inputs.pr_url }} on {{ inputs.env_url }}.&quot;, completion: { auto: [redeploy] } }
     needs: [release]
     inputs: [env_url, pr_url]
     outputs:
@@ -326,7 +328,7 @@ steps:
     on:
       redeploy: { goto: release, max_loops: 1 }
 </code></pre>
-<p>The Release to dev roles, <code>dev_env_releaser</code> and <code>dev_env_qa</code>, deploy and check the change with the process your repository documents, and report a failure when there is none.</p>
+<p>The Release to dev roles, <code>dev_env_releaser</code> and <code>dev_env_qa</code>, deploy and check the change with the process your repository documents, and report a failure when there is none. <code>completion.auto</code> lets the plugin apply the outcomes it lists without waking the manager, as long as an agent or script step follows (<a href="reference.html#steps">reference</a>).</p>
 
 <h2 id="docs">Docs check</h2>
 <p>From <a href="https://github.com/lerenn/paseo-playbooks/tree/main/.paseo/plugins/playbooks"><code>.paseo/plugins/playbooks/</code></a> at the root of this repository, the playbook that checks this repository's own docs. Every role only reads or edits files, so <code>default</code> and <code>acceptEdits</code> are enough. The verdict step loops back to the writer at most twice, and a rejected gate sends the work back with your comment.</p>

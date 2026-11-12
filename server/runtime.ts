@@ -462,6 +462,10 @@ export class Runtime {
         if (agent && !agent.agent.archivedAt && !attempt.report && (await this.resumeStep(run.id, stepId, attempt.agentId))) continue;
         await this.onStepTurnEnded(run.id, attempt.agentId, "lost");
       }
+      // A report the restart cut between its recording and its application: applied now, or left reported for the manager.
+      for (const [stepId, state] of Object.entries(this.store.get(run.id)!.steps)) {
+        if (state.status === "reported") await this.autoCompleteReport(run.id, stepId);
+      }
       await this.settleScripts(run.id);
       await this.reconcileDeciders(run.id);
       await this.wakeStalledManager(run.id);
@@ -2025,6 +2029,11 @@ export class Runtime {
 
   async completeStep(managerId: string, runId: string, stepId: string, input: { outcome: string; summary?: string; outputs?: Record<string, unknown> }): Promise<Run> {
     const run = this.ownedRun(managerId, runId);
+    const stepState = run.steps[stepId];
+    const autoApplied = run.playbook.steps.find((candidate) => candidate.id === stepId)?.autoComplete;
+    if (stepState && autoApplied && stepState.status !== "running" && stepState.status !== "reported" && stepState.attempts.at(-1)?.outcome && autoApplied.includes(stepState.attempts.at(-1)!.outcome!)) {
+      throw new UserError(`step "${stepId}" is ${stepState.status}: its outcome "${stepState.attempts.at(-1)!.outcome}" is one the plugin applies itself (role.completion.auto) and it has already been applied; do not call complete_step for it`);
+    }
     // A train step with `settle`: its entries must apply before the step may complete.
     const step = run.train ? engine.stepDef(run, stepId) : null;
     const settles = step?.settle && engine.completesStep(step, input.outcome) ? step.settle.output : null;
@@ -2572,6 +2581,7 @@ export class Runtime {
     if (run.steps[stepId]!.status !== "reported" || attempt.agentId !== agentId || !attempt.report) return;
     const violation = await this.checkoutViolation(run, attempt);
     if (violation) await this.store.mutate(runId, (current) => engine.markReadonlyViolation(current, stepId, violation.detail, nowIso(), violation.kind));
+    if (!violation && (await this.autoCompleteReport(runId, stepId))) return;
     const asked = violation ? null : await this.openReportedAsk(runId, stepId);
     await this.enqueue(runId, [
       `${reportedLine(stepId, attempt.n, this.store.get(runId)!.steps[stepId]!.attempts.at(-1)!.report!)} It reported after its turn had ended.`,
@@ -2579,6 +2589,51 @@ export class Runtime {
       ...(asked ?? [`Call complete_step for "${stepId}".`]),
     ].filter(Boolean));
     await this.deliver(runId);
+  }
+
+  /**
+   * `role.completion.auto`: a step whose agent reported an outcome the step lists is completed by the plugin, the
+   * same way the manager's complete_step would (same validation, same events), and the steps that become ready
+   * are started. Only when everything that follows is an agent or script step (engine.autoCompleteBlocker);
+   * otherwise it stays reported and the manager is woken as usual. The manager gets a line in its inbox but is not
+   * woken for it, unless a ready step could not be started. Returns whether the step was applied.
+   */
+  private async autoCompleteReport(runId: string, stepId: string): Promise<boolean> {
+    const run = this.store.get(runId);
+    if (!run || isPaused(run) || !isActive(run) || isPipeline(run)) return false;
+    const step = engine.stepDef(run, stepId);
+    const attempt = run.steps[stepId]?.attempts.at(-1);
+    const report = attempt?.report;
+    if (step.kind !== "agent" || !step.autoComplete?.length || !attempt || !report || run.steps[stepId]!.status !== "reported" || !isStepLive(run, stepId)) return false;
+    if (!step.autoComplete.includes(report.outcome)) return false;
+    const input = { outcome: report.outcome, summary: report.summary, outputs: report.outputs, now: nowIso() };
+    let effects: engine.Effects | null;
+    try {
+      // Checked again inside the mutation: the run may have moved since the snapshot above.
+      effects = await this.store.mutate(runId, (current) => {
+        const live = current.steps[stepId];
+        if (live?.status !== "reported" || live.attempts.at(-1)?.n !== attempt.n || isPaused(current)) return null;
+        if (engine.autoCompleteBlocker(current, stepId, input) !== null) return null;
+        return engine.completeStep(current, stepId, input);
+      });
+    } catch (error) {
+      console.error(`[playbooks] could not auto-complete step "${stepId}" of ${runId}:`, errorText(error));
+      return false;
+    }
+    if (!effects) return false;
+    await this.applyEffects(runId, effects);
+    await this.admitQueued(runId);
+    const manager = this.store.get(runId)!.managerAgentId;
+    const { started, failed } = await this.autoStartReady(manager, runId).catch((error: unknown) => ({ started: [], failed: [{ stepId: "(run)", error: errorText(error) }] }));
+    await this.enqueue(runId, [
+      reportedLine(stepId, attempt.n, report),
+      `The plugin applied it (role.completion.auto): do not call complete_step for "${stepId}".`,
+      ...effects.notes,
+      started.length > 0 ? `The plugin started: ${started.map((entry) => entry.stepId).join(", ")}.` : "",
+      ...failed.map((entry) => `The plugin could not start "${entry.stepId}" (${entry.error}): start it with start_step.`),
+    ].filter(Boolean));
+    if (failed.length > 0) await this.deliver(runId);
+    return true;
   }
 
   async onStepTurnEnded(runId: string, agentId: string, turnEnd: "completed" | "failed" | "canceled" | "lost" | "timeout", canWait = true): Promise<void> {
@@ -2616,6 +2671,7 @@ export class Runtime {
       : ended.attempt.reminded
         ? `${head} ended (${turnEnd}) without reporting, even after the plugin asked it to.${lastMessage ? ` Last message: ${lastMessage.slice(0, 1500)}` : ""} If it is still waiting on something, nudge_step it later. If it could not report (e.g. report_step_result "not found"), check the outputs it gave in its conversation and call complete_step with them.`
         : `${head} ended (${turnEnd}) without reporting.${lastMessage ? ` Last message: ${lastMessage.slice(0, 1500)}` : ""} Use nudge_step to ask it to report, or complete_step.`;
+    if (report && !violation && turnEnd === "completed" && (await this.autoCompleteReport(runId, ended.stepId))) return;
     const asked = report && !violation ? await this.openReportedAsk(runId, ended.stepId) : null;
     const others = Object.entries(this.store.get(runId)!.steps)
       .filter(([, state]) => state.status === "running")

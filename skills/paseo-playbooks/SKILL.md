@@ -258,7 +258,7 @@ refused.
 
 ```yaml
 - id: review
-  role: { name: reviewer, prompt: "Review {{ inputs.pr_url }}", silence: 1h, archive_agents: false, agent: { thinking: high } }
+  role: { name: reviewer, prompt: "Review {{ inputs.pr_url }}", silence: 1h, archive_agents: false, agent: { thinking: high }, completion: { auto: [success] } }
 - id: approve
   gate: { question: Ship it?, choices: { ship: ~, hold: { comment: required } } }
 - id: wait_ci
@@ -284,6 +284,7 @@ several lines:
 | `role.prompt` | Template; may use only `{{ inputs.<name> }}`, `{{ run.id }}`, `{{ worktree }}` (the run's worktree, else the workspace), `{{ run.jobs }}` (a singleton train's open jobs, as YAML), `{{ attempt }}` (retries), `{{ loop }}` (times a `goto` sent the run back through this step: 0 on the first pass). |
 | `role.silence` | After this long without agent activity (default `30m`, or `off`), the plugin asks the agent once to report or say what it is waiting for, and tells the manager. |
 | `role.archive_agents` | When the step completes, or its run or after-task ends, its agents are archived, and an attempt's agent is archived when the next attempt starts (default `true`). `false` keeps them, e.g. to debug. |
+| `role.completion.auto` | List of the step's outcomes the plugin applies itself when the agent reports them (`completion: { auto: [success, merged] }`), as `complete_step` would, then starts the agent and script steps that become ready. The manager is not woken (its inbox gets a line) and must not call `complete_step` for them. Any other outcome, every failure and every `ask` outcome (refused in the list) stays reported and wakes the manager. So does an outcome whose application would end the run, open a gate (a gate step, a loop limit) or make a gate, hand-off or fan-out step ready, and any step of a train. |
 | `role.agent` | Step-level agent settings, or `{ tier: <name> }` (a tier of `defaults/main.yaml`) with fields that override it. |
 | `gate.question` | Required: the message shown on the gate. |
 | `gate.decider` | Who decides the gate besides a human in the panel: `{ by: human \| manager \| role, role: <id> }` (default `{ by: human }`). See "Who decides a gate". |
