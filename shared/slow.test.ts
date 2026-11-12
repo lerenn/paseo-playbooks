@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { baselineMs, DEFAULT_SLOW_WARNING, keepSlow, slowDetail, slowSteps, type SlowRunView } from "./slow";
+import { baselineMs, DEFAULT_SLOW_WARNING, formatSlowDuration, keepSlow, slowDetail, slowSteps, type SlowRunView } from "./slow";
 
 const T0 = Date.parse("2026-11-12T10:00:00.000Z");
 const iso = (minutes: number) => new Date(T0 + minutes * 60_000).toISOString();
@@ -50,5 +50,30 @@ describe("keepSlow", () => {
   it("keeps a warning that is no longer computed", () => {
     const info = { elapsedMs: 3, baselineMs: 1, ratio: 3, samples: 3 };
     expect(keepSlow({ build: info }, {})).toEqual({ build: info });
+  });
+});
+
+describe("trivial baselines (13s vs the usual 0s)", () => {
+  const instant = (id: string, at: number): SlowRunView => ({
+    id,
+    playbook: { id: "pr", slowWarning: DEFAULT_SLOW_WARNING },
+    steps: { build: { status: "completed", startedAt: iso(at), endedAt: new Date(Date.parse(iso(at)) + 40).toISOString() } },
+  });
+  const trivial = [instant("a", 0), instant("b", 10), instant("c", 20)];
+  const thirteen = (since: number): SlowRunView => ({ ...running("r", since), steps: { build: { status: "completed", startedAt: iso(since), endedAt: new Date(Date.parse(iso(since)) + 13_000).toISOString() } } });
+  it("ignores instant completions as samples", () => {
+    expect(baselineMs(trivial, "pr", "build", 10, "x")).toBeNull();
+    expect(slowSteps(thirteen(100), trivial, T0 + 200 * 60_000)).toEqual({});
+  });
+  it("does not warn under the minimum elapsed time even on a small real baseline", () => {
+    const small = [1, 2, 3].map((n) => ({ ...instant(`s${n}`, n), steps: { build: { status: "completed", startedAt: iso(n), endedAt: new Date(Date.parse(iso(n)) + 1_500).toISOString() } } }));
+    const fast: SlowRunView = { ...thirteen(100), steps: { build: { status: "completed", startedAt: iso(100), endedAt: new Date(Date.parse(iso(100)) + 8_000).toISOString() } } };
+    expect(slowSteps(fast, small, T0 + 200 * 60_000)).toEqual({});
+    expect(Object.keys(slowSteps(thirteen(100), small, T0 + 200 * 60_000))).toEqual(["build"]);
+  });
+  it("never formats a non-zero duration as 0s", () => {
+    expect(formatSlowDuration(40)).toBe("<1s");
+    expect(formatSlowDuration(0)).toBe("0s");
+    expect(formatSlowDuration(13_000)).toBe("13s");
   });
 });

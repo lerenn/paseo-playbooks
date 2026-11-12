@@ -1085,7 +1085,7 @@ mean duration of its last `runs` (default 10, at least 3) completed runs of the 
   (step ids) and `slow` (per step: `elapsedMs`, `baselineMs`, `factor`, `ratio`, `samples`, `running`).
 - One run: `get_run { runId }` (compact or full): `slowSteps` on the run and `slow` on each slow step. A slow step
   that already ended is listed there too (`running: false`).
-- Normal `list_runs` rows carry `slowSteps` as well. A step with fewer than 3 completed runs has no baseline and is never slow.
+- Normal `list_runs` rows carry `slowSteps` as well. A step with fewer than 3 completed runs has no baseline and is never slow. Completed steps shorter than 1s are not samples, and a step that has taken less than 10s is never slow.
 - `subscribe_events` with type `step.slow` (scoped, like the other step events): one message when a running step
   first goes past the threshold (measured every 30 s; not repeated, and not announced for steps already slow when the
   daemon restarts). A slow step is often stuck: read its agent with `read_agent_conversation` before nudging it.
