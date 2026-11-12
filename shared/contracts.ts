@@ -1,7 +1,7 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 import { AnalyticsSchema } from "./analytics";
-import { PlaybookEntrySchema, ProfileInfoSchema, RunSchema, RunSummarySchema, VarValueSchema } from "./types";
+import { PlaybookEntrySchema, ProfileInfoSchema, RunSchema, RunSummarySchema, ScriptOutputSchema, VarValueSchema } from "./types";
 
 export const listPlaybooks = defineRpc({
   name: "playbooks.list",
@@ -60,6 +60,13 @@ export const listRuns = defineRpc({
   name: "runs.list",
   input: z.object({ workspaceId: z.string() }),
   output: z.object({ runs: z.array(RunSchema) }),
+});
+
+/** The live output of a script step: what its running check printed so far and the last checks. The step sheet polls it. */
+export const scriptOutputRpc = defineRpc({
+  name: "runs.script-output",
+  input: z.object({ runId: z.string(), stepId: z.string() }),
+  output: ScriptOutputSchema,
 });
 
 export const startRun = defineRpc({

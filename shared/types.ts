@@ -720,6 +720,29 @@ export const HistoryEventSchema = z.object({
   detail: z.string(),
 });
 
+/** What a script step's checks print: the running check's live tail and the last ended checks (memory only; empty after a daemon restart). */
+export const ScriptOutputSchema = z.object({
+  /** A check is running now. */
+  running: z.boolean(),
+  /** When the running check started. */
+  since: z.string().nullable(),
+  /** The running check's latest output, bounded. */
+  tail: z.string(),
+  /** Ended checks, oldest first, each with its own bounded tail. */
+  checks: z.array(
+    z.object({
+      n: z.number().int(),
+      startedAt: z.string(),
+      endedAt: z.string(),
+      /** "not_yet" (the script asked to be run again), or the reported outcome. */
+      outcome: z.string(),
+      exitCode: z.number().int().nullable(),
+      tail: z.string(),
+    }),
+  ),
+});
+export type ScriptOutput = z.infer<typeof ScriptOutputSchema>;
+
 export const RunSchema = z.object({
   version: z.literal(1),
   id: z.string(),

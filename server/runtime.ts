@@ -6,6 +6,7 @@ import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 
 /** The daemon API handed to plugin handlers (typed via the SDK, so the build needs no @getpaseo/client). */
 type PaseoApi = PluginHandlerContext["paseo"];
+import type { ScriptOutput } from "../shared/types";
 import type { AgentSettings, AgentTarget, Attempt, FanoutChild as FanoutChildState, Gate, Job, Playbook, Run, RunWorktree, Step, VarValue } from "../shared/types";
 import { addUsage } from "../shared/types";
 import { UsageLedger } from "./usage-ledger";
@@ -225,6 +226,18 @@ function scriptEnv(run: Run, stepId: string, attempt: Run["steps"][string]["atte
   return env;
 }
 
+/** How many ended checks of a running script attempt the panel can show. */
+const SCRIPT_CHECKS_KEPT = 5;
+
+interface ScriptLive {
+  /** ISO time the running check started; null between checks. */
+  runningSince: string | null;
+  /** Latest output of the running check (stdout and stderr, in arrival order), bounded by SCRIPT_OUTPUT_MAX. */
+  tail: string;
+  /** Ended checks, oldest first. */
+  checks: ScriptOutput["checks"];
+}
+
 function tailOf(text: string): string {
   return text.length > SCRIPT_OUTPUT_MAX ? text.slice(-SCRIPT_OUTPUT_MAX) : text;
 }
@@ -306,6 +319,8 @@ export class Runtime {
   private readonly pendingHandoffs = new Map<string, string>();
   /** Script steps in flight, by attempt id: the running check, or the timer of the next one. */
   private readonly scripts = new Map<string, { child: ChildProcess | null; next: ReturnType<typeof setTimeout> | null }>();
+  /** What a script attempt's checks printed, by attempt id: the running check's live tail and the last few checks. In memory only; dropped when the attempt stops. */
+  private readonly scriptLive = new Map<string, ScriptLive>();
   /** Feedback a script attempt started with (after a goto), passed to each of its checks. */
   private readonly scriptFeedback = new Map<string, string>();
   /** Pipelines being created (with their workspace), by project and playbook. */
@@ -1862,6 +1877,10 @@ export class Runtime {
     let stdout = "";
     let stderr = "";
     let settled = false;
+    const live = this.scriptLive.get(attemptId) ?? { runningSince: null, tail: "", checks: [] };
+    this.scriptLive.set(attemptId, live);
+    live.runningSince = nowIso();
+    live.tail = "";
     const done = (exit: { code: number | null; signal: string | null }, spawnError?: string) => {
       if (settled) return;
       settled = true;
@@ -1871,6 +1890,17 @@ export class Runtime {
       const result = spawnError
         ? { outcome: "failure", summary: `${step.script}: ${spawnError}`, outputs: {} }
         : scriptResult(step, exit, stdout, stderr);
+      live.checks.push({
+        n: (attempt.checks ?? 0) + 1,
+        startedAt: live.runningSince ?? nowIso(),
+        endedAt: nowIso(),
+        outcome: typeof result === "string" ? result : result.outcome,
+        exitCode: exit.code,
+        tail: tailOf([stdout.trimEnd(), stderr.trimEnd()].filter(Boolean).join("\n")),
+      });
+      if (live.checks.length > SCRIPT_CHECKS_KEPT) live.checks.splice(0, live.checks.length - SCRIPT_CHECKS_KEPT);
+      live.runningSince = null;
+      live.tail = "";
       this.onCheckEnded(runId, stepId, attemptId, result, tailOf([stdout.trimEnd(), stderr.trimEnd()].filter(Boolean).join("\n"))).catch((error: unknown) => console.error(`[playbooks] script check of "${stepId}" failed:`, error));
     };
     try {
@@ -1882,8 +1912,14 @@ export class Runtime {
         stdio: ["ignore", "pipe", "pipe"],
       });
       slot.child = child;
-      child.stdout!.on("data", (chunk: Buffer) => (stdout = tailOf(stdout + chunk.toString())));
-      child.stderr!.on("data", (chunk: Buffer) => (stderr = tailOf(stderr + chunk.toString())));
+      child.stdout!.on("data", (chunk: Buffer) => {
+        stdout = tailOf(stdout + chunk.toString());
+        live.tail = tailOf(live.tail + chunk.toString());
+      });
+      child.stderr!.on("data", (chunk: Buffer) => {
+        stderr = tailOf(stderr + chunk.toString());
+        live.tail = tailOf(live.tail + chunk.toString());
+      });
       child.on("error", (error) => done({ code: null, signal: null }, errorText(error)));
       child.on("close", (code, signal) => done({ code, signal }));
     } catch (error) {
@@ -1981,11 +2017,20 @@ export class Runtime {
     await this.deliver(runId);
   }
 
+  /** The live output of a script step's current attempt, for the panel. Empty after a daemon restart. */
+  scriptOutput(runId: string, stepId: string): ScriptOutput {
+    const attempt = this.store.get(runId)?.steps[stepId]?.attempts.at(-1);
+    const live = attempt ? this.scriptLive.get(attempt.agentId ?? "") : undefined;
+    if (!attempt || !live) return { running: false, since: null, tail: "", checks: [] };
+    return { running: live.runningSince !== null, since: live.runningSince, tail: live.tail, checks: live.checks.map((check) => ({ ...check })) };
+  }
+
   /** Kills a script's running check and drops its next one. */
   private stopScript(attemptId: string): void {
     const slot = this.scripts.get(attemptId);
     this.scripts.delete(attemptId);
     this.scriptFeedback.delete(attemptId);
+    this.scriptLive.delete(attemptId);
     if (!slot) return;
     if (slot.next) clearTimeout(slot.next);
     slot.child?.kill("SIGTERM");

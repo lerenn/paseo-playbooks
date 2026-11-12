@@ -193,3 +193,56 @@ steps:
     expect(store.get(run.id)!.steps.check!.attempts[0]!.checks).toBe(checks);
   });
 });
+
+describe("script live output", () => {
+  const HOLD_SH = `#!/bin/sh
+echo "first line"
+if [ "$PLAYBOOK_CHECK" = "1" ]; then
+  while [ ! -f "$PWD/go" ]; do sleep 0.05; done
+  echo "after go"
+  exit 75
+fi
+echo '{"summary": "done", "outputs": {"merged_sha": "abc"}}'
+`;
+
+  it("streams the running check's tail, keeps ended checks, and clears at the end", async () => {
+    const { loaded, store, runtime, dir } = await setup(POLLING, { "wait.sh": HOLD_SH });
+    const run = await runtime.startPlaybook({ id: "m", workspaceId: "ws", cwd: "/" }, "wait", { pr: "1" }, { playbook: loaded.playbook! });
+    await until(() => runtime.scriptOutput(run.id, "wait_merge").tail.includes("first line"));
+    const live = runtime.scriptOutput(run.id, "wait_merge");
+    expect(live).toMatchObject({ running: true, checks: [] });
+    expect(live.since).not.toBeNull();
+    await writeFile(path.join(dir, "go"), "");
+    await until(() => runtime.scriptOutput(run.id, "wait_merge").checks.length === 1);
+    const between = runtime.scriptOutput(run.id, "wait_merge");
+    expect(between.running).toBe(false);
+    expect(between.tail).toBe("");
+    expect(between.checks[0]).toMatchObject({ n: 1, outcome: "not_yet", exitCode: 75, tail: "first line\nafter go" });
+    await until(() => store.get(run.id)!.steps.wait_merge!.status === "completed");
+    // The attempt ended: nothing is kept in memory.
+    expect(runtime.scriptOutput(run.id, "wait_merge")).toEqual({ running: false, since: null, tail: "", checks: [] });
+  });
+
+  it("bounds the tail and the kept checks", async () => {
+    const noisy = `#!/bin/sh
+i=0
+while [ $i -lt 600 ]; do echo "line $i padding padding padding padding padding"; i=$((i+1)); done
+[ "$PLAYBOOK_CHECK" -lt 8 ] && exit 75
+echo '{"summary": "done", "outputs": {"merged_sha": "abc"}}'
+`;
+    const fast = POLLING.replace("poll: 1s", "poll: 1s");
+    const { loaded, runtime } = await setup(fast, { "wait.sh": noisy });
+    const run = await runtime.startPlaybook({ id: "m", workspaceId: "ws", cwd: "/" }, "wait", { pr: "1" }, { playbook: loaded.playbook! });
+    await until(() => runtime.scriptOutput(run.id, "wait_merge").checks.length >= 2, 10_000);
+    const output = runtime.scriptOutput(run.id, "wait_merge");
+    expect(output.checks.every((check) => check.tail.length <= 4000)).toBe(true);
+    expect(output.checks[0]!.tail).toContain("line 599");
+    expect(output.checks.length).toBeLessThanOrEqual(5);
+    expect(output.tail.length).toBeLessThanOrEqual(4000);
+  });
+
+  it("is empty for a run or step that does not exist", async () => {
+    const { runtime } = await setup(POLLING, { "wait.sh": WAIT_SH });
+    expect(runtime.scriptOutput("nope", "wait_merge")).toEqual({ running: false, since: null, tail: "", checks: [] });
+  });
+});
