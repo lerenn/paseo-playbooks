@@ -77,7 +77,6 @@ export function PlaybooksPanel(props: PluginWorkspacePanelProps) {
       workspaceId={workspaceId}
       hostLabel={props.host.label}
       onOpenAgent={(agentId) => navigation?.openAgent({ agentId })}
-      onOpenWorkspace={(id) => navigation?.openWorkspace({ workspaceId: id })}
       readRuns={readRuns}
       onRead={markRead}
     />
@@ -230,7 +229,6 @@ function PlaybookCard(props: {
   workspaceId: string;
   hostLabel: string;
   onOpenAgent(agentId: string): void;
-  onOpenWorkspace(workspaceId: string): void;
   readRuns: string[];
   onRead(runId: string): void;
 }) {
@@ -404,11 +402,9 @@ function PlaybookCard(props: {
           target={starting}
           compact={props.compact}
           onClose={() => setStarting(null)}
-          onStarted={(result) => {
+          onStarted={() => {
             setStarting(null);
             void queryClient.invalidateQueries({ queryKey: ["playbooks"] });
-            if (result.sameWorkspace && result.managerAgentId) props.onOpenAgent(result.managerAgentId);
-            else props.onOpenWorkspace(result.workspaceId);
           }}
         />
       ) : null}

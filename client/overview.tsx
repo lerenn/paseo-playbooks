@@ -546,10 +546,9 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
           initial={defaultProject(runnableProjects, project)}
           compact={layout.compact}
           onClose={() => setRunForm(false)}
-          onStarted={(result) => {
+          onStarted={() => {
             setRunForm(false);
             void queryClient.invalidateQueries({ queryKey: ["playbooks"] });
-            navigation?.openWorkspace({ workspaceId: result.workspaceId });
           }}
         />
       ) : null}
