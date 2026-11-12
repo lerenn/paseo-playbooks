@@ -80,6 +80,12 @@ workspace resolution); pass `autoStart: false` to leave them ready. Script, hand
 this way, and `start_step` on a step already running is refused. This also holds for runs started from the panel, whose
 manager calls `start_playbook`.
 
+A script step's sheet in the run graph shows whether a check is **running now** or the step is **waiting** ("next
+check in ~30 s"), the running check's output (refreshed about every 2 s) and the last five checks with their
+outcome and exit code. The output is kept in memory only (the last 4000 characters per check, gone when the step
+ends or the daemon restarts, after which the run's recorded last-check output is shown) and is not redacted:
+anyone who can see the panel sees what the script prints.
+
 The Sidekick can start playbook runs with `start_playbook` (`workspaceId` of a visible workspace of its project, or
 that with `newWorkspace`, and `workspaceName` to title the new workspace; never its own hidden workspace), and `list_playbooks` shows what is on offer. When you ask
 it to merge a pull request, it starts the project's merging playbook (for example `pr-to-prod`), whose manager

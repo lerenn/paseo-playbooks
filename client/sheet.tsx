@@ -1,12 +1,13 @@
 import { useRpc } from "@getpaseo/plugin/client";
 import { Icon, Markdown, Modal, TextInput, useToast } from "@getpaseo/plugin/client/ui";
-import { useQueryClient } from "@tanstack/react-query";
-import { useState, type ReactNode } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useState, type ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
-import { decideGateRpc, nudgeStepRpc, restartRunRpc, retryStepRpc } from "../shared/contracts";
+import { decideGateRpc, nudgeStepRpc, restartRunRpc, retryStepRpc, scriptOutputRpc } from "../shared/contracts";
 import { askChoices, askTransitionOf, choicesOfGate, destinationOf, gateText, linkify } from "../shared/gates";
 import { conditionText } from "../shared/labels";
 import { attemptTimeoutMs, isPaused, isStepLive, restartBlocker, type Gate, type GateChoice, type Playbook, type Run, type RunSummary } from "../shared/types";
+import { SCRIPT_OUTPUT_POLL_MS, checkHeading, lastLines, scriptActivity } from "./script-output";
 import { stepTitle, stepTitleOf, type Theme } from "./theme";
 
 /** A poll interval as people say it: 30 s, 1 min, 2 h. */
@@ -36,9 +37,9 @@ export function Button(props: { theme: Theme; label: string; onPress(): void; ki
 
 
 /** A collapsible section of the step sheet, closed by default. */
-export function Section(props: { theme: Theme; title: string; children: ReactNode }) {
+export function Section(props: { theme: Theme; title: string; children: ReactNode; defaultOpen?: boolean }) {
   const { theme } = props;
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(props.defaultOpen === true);
   return (
     <View style={{ borderRadius: 8, borderWidth: 1, borderColor: theme.colors.border, overflow: "hidden" }}>
       <Pressable
@@ -265,6 +266,64 @@ function RestartRun(props: { theme: Theme; run: Run; stepId: string; hostLabel: 
   );
 }
 
+/** A script step's live output: running now or waiting for the next check, the running check's tail, and the last checks. */
+function ScriptLive(props: { theme: Theme; run: Run; stepId: string; latest: Run["steps"][string]["attempts"][number] | undefined }) {
+  const { theme, run, stepId, latest } = props;
+  const fetchOutput = useRpc(scriptOutputRpc);
+  const stepRunning = run.steps[stepId]?.status === "running";
+  const query = useQuery({
+    queryKey: ["playbooks", "script-output", run.id, stepId, latest?.n ?? 0],
+    queryFn: () => fetchOutput({ runId: run.id, stepId }),
+    enabled: latest !== undefined,
+    refetchInterval: stepRunning ? SCRIPT_OUTPUT_POLL_MS : false,
+  });
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!stepRunning) return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [stepRunning]);
+  if (!latest) return null;
+  const output = query.data;
+  const activity = scriptActivity(output, latest.nextCheckAt, stepRunning, now);
+  const checks = output?.checks ?? [];
+  const tail = output?.running ? output.tail : "";
+  // Nothing in memory (the daemon restarted, or the attempt ended): the last check's tail the run recorded.
+  const fallback = checks.length === 0 && !tail ? latest.lastMessage : null;
+  const color = activity.kind === "running" ? theme.colors.statusSuccess : theme.colors.foregroundMuted;
+  return (
+    <View style={{ gap: 6 }}>
+      {activity.kind !== "idle" ? (
+        <Text accessibilityRole="text" accessibilityLabel={`Script ${activity.text}`} style={{ color, fontSize: 13, fontWeight: "600" }}>
+          {activity.kind === "running" ? "● " : "○ "}
+          {activity.text}
+        </Text>
+      ) : null}
+      {activity.kind === "running" ? (
+        <Section theme={theme} title="Live output" defaultOpen>
+          <Line theme={theme} muted>
+            {tail ? lastLines(tail, 40) : "No output yet."}
+          </Line>
+        </Section>
+      ) : null}
+      {[...checks].reverse().map((check) => (
+        <Section key={check.n} theme={theme} title={checkHeading(check)} defaultOpen={check === checks.at(-1) && activity.kind !== "running"}>
+          <Line theme={theme} muted>
+            {check.tail ? lastLines(check.tail, 40) : "No output."}
+          </Line>
+        </Section>
+      ))}
+      {fallback ? (
+        <Section theme={theme} title={latest.report ? "Output" : "Output of the last check"} defaultOpen>
+          <Line theme={theme} muted>
+            {fallback}
+          </Line>
+        </Section>
+      ) : null}
+    </View>
+  );
+}
+
 export function StepSheet(props: {
   theme: Theme;
   playbook: Playbook;
@@ -417,12 +476,8 @@ export function StepSheet(props: {
             ))}
           </Section>
         ) : null}
-        {step.kind === "script" && latest?.lastMessage ? (
-          <Section theme={theme} title={latest.report ? "Output" : "Output of the last check"}>
-            <Line theme={theme} muted>
-              {latest.lastMessage}
-            </Line>
-          </Section>
+        {step.kind === "script" && run ? (
+          <ScriptLive theme={theme} run={run} stepId={stepId} latest={latest} />
         ) : step.kind !== "handoff" && !latest?.report && latest?.lastMessage ? (
           <Section theme={theme} title="Ended without a report · last message">
             <Line theme={theme}>{latest.lastMessage}</Line>
