@@ -407,7 +407,7 @@ function PlaybookCard(props: {
           onStarted={(result) => {
             setStarting(null);
             void queryClient.invalidateQueries({ queryKey: ["playbooks"] });
-            if (result.sameWorkspace) props.onOpenAgent(result.managerAgentId);
+            if (result.sameWorkspace && result.managerAgentId) props.onOpenAgent(result.managerAgentId);
             else props.onOpenWorkspace(result.workspaceId);
           }}
         />
@@ -604,6 +604,7 @@ function RunChip(props: { theme: Theme; run: Run; label?: string | undefined; se
                 </>
               ) : null}
             </View>
+            {props.run.managerAgentId ? (
             <Pressable
               accessibilityRole="menuitem"
               onPress={() => {
@@ -615,6 +616,7 @@ function RunChip(props: { theme: Theme; run: Run; label?: string | undefined; se
               <Icon name="ExternalLink" size={15} color={theme.colors.accent} />
               <Text style={{ color: theme.colors.accent, fontSize: 13 }}>Open the Playbook Manager</Text>
             </Pressable>
+            ) : null}
             {active ? (
             <>
             <View style={{ height: 1, backgroundColor: theme.colors.border }} />

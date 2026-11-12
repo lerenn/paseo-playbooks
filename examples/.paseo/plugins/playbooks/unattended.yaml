@@ -1,0 +1,32 @@
+title: Unattended change
+description: A run with no Playbook Manager agent. The plugin starts each step, applies what the step agents report, stops the run if one fails, and leaves the gates to a human (panel) and to a reviewer role.
+
+manager: { mode: none }        # always_on (default): a manager agent drives the run; none: the plugin does, no manager agent is created
+
+inputs:
+  request:
+    type: string
+    required: true
+    description: The change to make
+
+steps:
+  - id: implement
+    role: { name: implementer }
+    timeout: 45m                # with no manager there is no stall handling: the timeout is what stops a step that never ends
+    outputs:
+      branch: { type: string, description: The branch holding the change }
+
+  # A human gate: shown in the Playbooks panel (Review / Needs you).
+  - id: approve
+    needs: [implement]
+    gate: { question: "Ship {{ steps.implement.outputs.branch }}?" }
+
+  # A role gate: the plugin starts the reviewer itself; it may decide or leave the gate to a human.
+  - id: judge
+    needs: [approve]
+    gate: { question: Is the change safe to merge?, decider: { by: role, role: reviewer } }
+
+  - id: ship
+    needs: [judge]
+    retries: 1                  # no retry unless the YAML says so
+    role: { name: implementer }

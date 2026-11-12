@@ -129,6 +129,7 @@ export function runCompact(run: Run, only?: string[]) {
     playbook: run.playbook.id,
     status: run.status,
     failure: run.failure,
+    managerMode: run.playbook.managerMode,
     active: isActive(run),
     paused: isPaused(run),
     branch: run.branch,
@@ -374,14 +375,14 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
           if (workspaceId || (await runtime.isSidekick(agent.id))) {
             const started = await runtime.startPlaybookInWorkspace(agent, { playbook, inputs, workspaceId, newWorkspace, autoStart, workspaceName });
             return ok(
-              `Run ${started.runId} of "${playbook}" is starting in ${newWorkspace ? "a new workspace" : "workspace"} ${started.workspaceId} with its own Playbook Manager (${started.managerAgentId}). You do not manage it: the plugin tells you how it goes through your event subscription (list_runs shows it).`,
+              `Run ${started.runId} of "${playbook}" is starting in ${newWorkspace ? "a new workspace" : "workspace"} ${started.workspaceId} with ${started.managerAgentId ? `its own Playbook Manager (${started.managerAgentId})` : "no Playbook Manager (manager.mode: none): the plugin drives it"}. You do not manage it: the plugin tells you how it goes through your event subscription (list_runs shows it).`,
               started,
             );
           }
           if (newWorkspace) {
             const started = await runtime.startPlaybookElsewhere(agent, playbook, inputs, workspaceName);
             return ok(
-              `Run ${started.runId} of "${playbook}" is starting in a new workspace (${started.workspaceId}) with its own Playbook Manager (${started.managerAgentId}). You do not manage it: carry on with your own run.`,
+              `Run ${started.runId} of "${playbook}" is starting in a new workspace (${started.workspaceId}) with ${started.managerAgentId ? `its own Playbook Manager (${started.managerAgentId})` : "no Playbook Manager (manager.mode: none): the plugin drives it"}. You do not manage it: carry on with your own run.`,
               started,
             );
           }
@@ -390,6 +391,12 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
             return ok(
               `"${playbook}" is a singleton: its pipeline is run ${run.id}, in its own workspace. Hand-off steps give it jobs; each station's trains get their own Playbook Manager there. You do not manage it.`,
               { runId: run.id, status: run.status },
+            );
+          }
+          if (run.managerAgentId === "") {
+            return ok(
+              `Run ${run.id} of "${playbook}" started on branch ${run.branch ?? "(unknown)"} with no Playbook Manager (manager.mode: none): you do not manage it. The plugin starts its steps, applies their reports, opens its gates (a human decides them in the Playbooks panel) and stops the run in its failed state on a failure (autoStart does not apply). It tells you how it goes through your event subscription; list_runs and get_run show it.`,
+              runListing(run),
             );
           }
           const instructions = managerInstructionsText(run.playbook);
@@ -571,6 +578,8 @@ export function runListing(run: Run) {
     branch: run.branch,
     ...worktreeView(run),
     managerAgentId: run.managerAgentId,
+    /** `none`: no manager agent; the plugin drives the run (managerAgentId is empty). */
+    managerMode: run.playbook.managerMode,
     createdAt: run.createdAt,
     runningSteps: Object.entries(run.steps).filter(([, state]) => state.status === "running").map(([id]) => id),
     archived: run.archivedAt !== null,
@@ -783,6 +792,7 @@ export function runTools(runtime: Runtime): AgentToolDefinition[] {
               runChange(run),
             );
           }
+          if (run.managerAgentId === "") return ok(`After-task "${taskId}" of run ${run.id} started. The run has no manager (manager.mode: none): the plugin runs it.`, runListing(run));
           return ok(`After-task "${taskId}" of run ${run.id} started. Its manager (agent ${run.managerAgentId}) was woken and runs it.`, runListing(run));
         }),
     }),
@@ -812,7 +822,9 @@ export function runTools(runtime: Runtime): AgentToolDefinition[] {
           }
           const { run, newManager } = await runtime.restartRun(runId, stepId, note?.trim() || null, agent.id, "agent", takeOver ? { id: agent.id, workspaceId: agent.workspaceId } : undefined, workspaceId, modelChoice(model, thinking));
           const isManager = run.managerAgentId === agent.id;
-          const next = isManager
+          const next = run.managerAgentId === ""
+            ? "The run has no manager (manager.mode: none): the plugin starts the ready steps itself."
+            : isManager
             ? `You manage it${newManager ? " now (get_run with view \"full\" shows the completed steps' reports and outputs)" : ""}: start the ready steps (${engine.readySteps(run).join(", ") || "none"}) with start_step.`
             : newManager
               ? `Its previous manager was archived: a new Playbook Manager (agent ${run.managerAgentId}) took it over and starts the ready steps.`

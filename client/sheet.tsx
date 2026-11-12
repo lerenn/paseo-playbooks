@@ -290,8 +290,8 @@ export function StepSheet(props: {
   // A script step has no agent to talk to.
   const canNudge = active && step.kind !== "script" && step.kind !== "handoff" && step.kind !== "fanout" && (state?.status === "running" || state?.status === "reported");
   const canRestart = run !== null && restartBlocker(run, stepId) === null;
-  // Retry goes through the manager, which a paused run does not wake.
-  const canRetry = active && !isPaused(run) && state?.status === "reported" && (latest?.report?.outcome === "failure" || latest?.report === null);
+  // Retry goes through the manager, which a paused run does not wake (a run with no manager has none to ask: restart it from the step).
+  const canRetry = active && !isPaused(run) && run.playbook.managerMode !== "none" && state?.status === "reported" && (latest?.report?.outcome === "failure" || latest?.report === null);
 
   // The latest attempt's timeout (a templated one resolved at its start), else the step's.
   const timeoutMs = latest ? attemptTimeoutMs(step, latest) : step.timeout ? undefined : step.timeoutMs;

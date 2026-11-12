@@ -84,6 +84,7 @@ agent:                 # defaults for every step
 manager:               # settings of the manager agent when Start creates a new one
   mode: default
   compact: { above_tokens: 150000 }  # when to /compact the manager: never | on_step | on_gate_decided | { above_tokens: N } (default shown)
+  # lifecycle: always_on   # repo-wide default of a playbook's `manager: { mode }`: always_on (default) | none (here `mode` is the manager agent's permission mode)
 providers:             # provider failover
   exhausted_for: 1h    # an exhausted provider/model is skipped this long, then tried again (default 1h)
   on_exhausted: fail   # when every provider of a role is out of tokens: fail (to the manager, default) | wait (restart by itself)
@@ -178,7 +179,7 @@ title: Pull request
 description: Investigate, implement, open a PR and babysit it until it is green.
 agent: { model: claude-opus-5-5 }          # optional playbook-wide settings
 concurrency: 1                             # optional: max active runs (or held blocks) in the project
-manager: { prompt: Check the PR exists before accepting implement., compact: on_step }  # optional: prompt is added to the manager's instructions; compact overrides the default
+manager: { prompt: Check the PR exists before accepting implement., compact: on_step, mode: always_on }  # optional: prompt is added to the manager's instructions; compact overrides the default; mode: none = no manager agent, the plugin drives the run (see "Runs with no manager")
 workspace: { archive: on_end }             # optional: overrides defaults/main.yaml's workspace block
 isolation: { mode: worktree, submodules: none }  # optional: each run works in its own git worktree (see "Isolated runs"); the string form `isolation: worktree` also works
 hidden: false                              # optional: true moves it to the panel's collapsed "Hidden playbooks" section (for one meant as a sub-playbook or after-task; it can still be started from there or by start_playbook)
@@ -932,3 +933,16 @@ Paseo archives an agent's children with it. If a coordinator that created the ma
 archived, the run does not fail: a new Playbook Manager takes it over and restarts the
 steps whose agents were archived too. Archiving the manager itself still fails its active
 run; recover it as above.
+
+## Runs with no manager
+
+`manager: { mode: none }` (default `always_on`; repo-wide default `manager: { lifecycle: none }` in `defaults/main.yaml`;
+`on_demand` is not supported yet) makes a run with no Playbook Manager agent: nobody starts it in chat, and
+`managerAgentId` is empty. The plugin starts the ready agent steps (as top-level agents of the run's workspace, not
+subagents), applies every outcome the step agents report, and opens the gates: a human gate shows in the panel
+(Review / Needs you), a role gate starts its decider, and a `by: manager` gate is a human's. A failure (an outcome whose
+transition is `fail`, a step that ends without reporting, a timeout, a step that cannot start, a lost agent) stops the run
+in its failed state with the reason in `failure`; `restart_run` and the panel's restart work as usual. Nothing is retried
+unless the YAML says so (`retries`, `on`, `goto`). There is no stall handling beyond a step's `timeout`: with none, a step
+that never ends is not touched. `start_step`, `complete_step`, `nudge_step`, `request_gate` and `escalate_gate` are refused on
+such a run. A fan-out child uses its own playbook's mode.

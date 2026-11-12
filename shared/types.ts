@@ -45,6 +45,15 @@ export const ManagerCompactSchema = z.union([
   z.object({ above_tokens: z.number().int().positive() }).strict(),
 ]);
 export type ManagerCompact = z.infer<typeof ManagerCompactSchema>;
+/**
+ * Whether a run has a Playbook Manager: `always_on` (default) is one agent that drives the run from start to end;
+ * `none` has no manager agent: the plugin starts steps, applies reports, opens gates and stops the run on failure.
+ */
+export const ManagerModeSchema = z.enum(["always_on", "none"]);
+export type ManagerMode = z.infer<typeof ManagerModeSchema>;
+/** Used when neither the playbook nor `defaults/main.yaml` sets `manager.mode`. */
+export const DEFAULT_MANAGER_MODE: ManagerMode = "always_on";
+
 /** Used when neither the playbook nor `defaults/main.yaml` sets `manager.compact`. */
 export const DEFAULT_MANAGER_COMPACT: ManagerCompact = { above_tokens: 150_000 };
 
@@ -338,6 +347,8 @@ export const PlaybookSchema = z.object({
   manager: AgentSettingsSchema,
   /** When the manager is compacted (`manager.compact`). Unset on runs from before it. */
   managerCompact: ManagerCompactSchema.default(DEFAULT_MANAGER_COMPACT),
+  /** `manager.mode`: `none` = no manager agent, the plugin drives the run. Unset on runs from before it (= always_on). */
+  managerMode: ManagerModeSchema.default(DEFAULT_MANAGER_MODE),
   /** How long an exhausted `provider/model` is skipped before it is tried again (`providers.exhausted_for`), in ms. */
   exhaustedForMs: z.number().default(DEFAULT_EXHAUSTED_FOR_MS),
   /** What a step does when every provider of its role is out of tokens (`providers.on_exhausted`). */
@@ -922,6 +933,11 @@ export function isAgentlessAttempt(agentId: string): boolean {
 }
 
 /** A singleton's pipeline run: it keeps the waiting lists and jobs; its trains are other runs. */
+/** A run with no Playbook Manager (`manager: { mode: none }`): the plugin drives it. */
+export function isManagerless(run: { playbook: { managerMode?: string | undefined; singleton?: unknown }; train?: unknown }): boolean {
+  return run.playbook.managerMode === "none" && !run.playbook.singleton && !run.train;
+}
+
 export function isPipeline(run: { playbook: { singleton?: unknown }; train: unknown }): boolean {
   return run.playbook.singleton !== undefined && run.train === null;
 }

@@ -182,6 +182,7 @@ function describeOutputs(step: Step): string {
 
 /** System prompt for a step agent: role instructions plus the step protocol. */
 export function stepSystemPrompt(playbook: Playbook, step: Step, role: Role, run?: Pick<Run, "worktree" | "workspaceDir">): string {
+  const managerless = playbook.managerMode === "none";
   const readonly = role.readonly
     ? `\n\nThis role is READONLY: do not edit, create or delete tracked files, do not commit and do not switch branches. The plugin checks the checkout when you finish and fails the step if anything changed. Build output in ignored files is fine.`
     : "";
@@ -190,14 +191,13 @@ export function stepSystemPrompt(playbook: Playbook, step: Step, role: Role, run
   const staging = preamble ? "" : `\n\n${GIT_STAGING_RULE}`;
   return `${preamble ? `${preamble}\n\n` : ""}${instructions}${readonly}${staging}
 
-You are running step "${step.id}" (${role.title}) of the playbook "${playbook.title}", started by a
-Playbook Manager agent. Other steps may share this checkout.
+You are running step "${step.id}" (${role.title}) of the playbook "${playbook.title}", started by ${managerless ? "the playbooks plugin (this run has no Playbook Manager)" : "a\nPlaybook Manager agent"}. Other steps may share this checkout.
 
 When you are done, call the report_step_result tool exactly once, as your last action:
 - outcome: one of ${step.outcomes.map((outcome) => `"${outcome}"`).join(", ")}${step.outcomes.includes("failure") ? ' (use "failure" if you could not do the work)' : ""}
-- summary: what you did and found, for the manager and the next steps
+- summary: what you did and found, for ${managerless ? "the human and " : "the manager and "}the next steps
 - outputs: ${describeOutputs(step)}
-${step.autoComplete?.length ? `The plugin applies ${step.autoComplete.map((outcome) => `"${outcome}"`).join(", ")} itself as soon as you report it, so report exactly the outcome you mean: there is no manager review of it. Any other outcome goes to the manager.\n` : ""}If the tool refuses your report, fix what it says and call it again. If the tool is missing or
+${managerless ? "There is no manager and nobody to call: the plugin applies the outcome you report as soon as your turn ends and starts what follows. Report exactly the outcome you mean and stop. A failure stops the run unless the playbook retries it.\n" : ""}${!managerless && step.autoComplete?.length ? `The plugin applies ${step.autoComplete.map((outcome) => `"${outcome}"`).join(", ")} itself as soon as you report it, so report exactly the outcome you mean: there is no manager review of it. Any other outcome goes to the manager.\n` : ""}If the tool refuses your report, fix what it says and call it again. If the tool is missing or
 "not found", do not work around it: write the outcome, summary and outputs in your last message and
 end your turn; the plugin then asks you to report again, with the tool available. Do not create
 other agents.

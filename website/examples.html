@@ -21,6 +21,7 @@
 <li><a href="#capability">Capability</a>: the Pull request playbook, a human gate, then the Release to dev playbook, as <a href="reference.html#subplaybooks">sub-playbooks</a>.</li>
 <li><a href="#release">Release to dev</a>: deploy the change to the development environment, check it there, and redeploy when the check asks for it.</li>
 <li><a href="#route">Route a change</a>: classify a change, then take the branch that fits it (<a href="reference.html#branches">if / else-if / else</a> on a step's output), and join.</li>
+<li><a href="#unattended">Unattended change</a>: a run with <a href="reference.html#manager-mode">no Playbook Manager</a>: the plugin drives it, a human gate and a role gate decide.</li>
 <li><a href="#docs">Docs check</a>: compare the docs with the code, fix them, review and check in parallel, loop until clean, human gate. It needs no shell commands.</li>
 </ul>
 
@@ -242,6 +243,42 @@ steps:
   - id: release
     needs: [approve]
     playbook: { name: release }  # pr_url comes from the pr block
+</code></pre>
+<h2 id="unattended">Unattended change</h2>
+<p>From <a href="https://github.com/lerenn/paseo-playbooks/tree/main/examples/.paseo/plugins/playbooks"><code>examples/.paseo/plugins/playbooks/</code></a>. <code>manager: { mode: none }</code>: no manager agent is created; the plugin starts the steps, applies what they report and stops the run on a failure.</p>
+<p class="file">unattended.yaml</p>
+<pre><code>title: Unattended change
+description: A run with no Playbook Manager agent. The plugin starts each step, applies what the step agents report, stops the run if one fails, and leaves the gates to a human (panel) and to a reviewer role.
+
+manager: { mode: none }        # always_on (default): a manager agent drives the run; none: the plugin does, no manager agent is created
+
+inputs:
+  request:
+    type: string
+    required: true
+    description: The change to make
+
+steps:
+  - id: implement
+    role: { name: implementer }
+    timeout: 45m                # with no manager there is no stall handling: the timeout is what stops a step that never ends
+    outputs:
+      branch: { type: string, description: The branch holding the change }
+
+  # A human gate: shown in the Playbooks panel (Review / Needs you).
+  - id: approve
+    needs: [implement]
+    gate: { question: "Ship {{ steps.implement.outputs.branch }}?" }
+
+  # A role gate: the plugin starts the reviewer itself; it may decide or leave the gate to a human.
+  - id: judge
+    needs: [approve]
+    gate: { question: Is the change safe to merge?, decider: { by: role, role: reviewer } }
+
+  - id: ship
+    needs: [judge]
+    retries: 1                  # no retry unless the YAML says so
+    role: { name: implementer }
 </code></pre>
 <h2 id="route">Route a change</h2>
 <p>From <a href="https://github.com/lerenn/paseo-playbooks/tree/main/examples/.paseo/plugins/playbooks"><code>examples/.paseo/plugins/playbooks/</code></a>. A <code>branch</code> step takes the first case whose <code>if</code> holds; only the steps of that case run, and the join runs after it.</p>

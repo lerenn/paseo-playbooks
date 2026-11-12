@@ -250,7 +250,7 @@ export class OversightProducer {
     // Gates escalated before this version recorded when: not announced now.
     if (gate.escalatedAt === null) return;
     const by = gate.decider.by === "role" ? "role" : "manager";
-    const actors = by === "role" ? (gate.deciderAgentId ? [gate.deciderAgentId] : []) : [run.managerAgentId];
+    const actors = by === "role" ? (gate.deciderAgentId ? [gate.deciderAgentId] : []) : [run.managerAgentId].filter(Boolean);
     await this.bus.emit(
       "gate.escalated",
       { ...gatePayload(listing), heldBefore: by, heldBeforeRole: by === "role" ? gate.decider.role ?? null : null, reason: gate.escalated, escalatedAt: gate.escalatedAt ?? null, waitingForHuman: true },
