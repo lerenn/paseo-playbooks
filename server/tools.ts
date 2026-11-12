@@ -887,6 +887,20 @@ export function stepTool(runtime: Runtime): AgentToolDefinition {
   });
 }
 
+/** For the step agents of a run with no manager: puts the human's answer to a gate's question (asked in their conversation) into the run. */
+export function answerGateTool(runtime: Runtime): AgentToolDefinition {
+  return defineAgentTool({
+    name: "answer_gate",
+    description: "Record the human's answer to the playbook gate you were asked to put to them (with AskUserQuestion). Call it once, right after they answer. If the panel already decided, it says so: end your turn.",
+    input: z.object({
+      gateId: z.string().describe("The gate id from the message that asked you"),
+      decision: z.string().describe("The id of the choice the human picked"),
+      comment: z.string().optional().describe("The human's comment, if any"),
+    }),
+    execute: ({ gateId, decision, comment }, { agent }) => guard(async () => ok(await runtime.answerGateFromChat(agent.id, { gateId, decision, comment: comment ?? null }))),
+  });
+}
+
 export function gateTool(runtime: Runtime): AgentToolDefinition {
   return defineAgentTool({
     name: "report_gate_decision",

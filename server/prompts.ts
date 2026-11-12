@@ -251,6 +251,18 @@ export function gateDecisionReminder(gateId: string): string {
   return `[playbooks] Your turn ended without a decision for gate "${gateId}". Call report_gate_decision now, with one of the gate's choices or "escalate", and your reason as comment.`;
 }
 
+/** Sent to the step agent that precedes a human gate of a run with no manager: it asks the human in its own conversation. */
+export function gateChatPrompt(runId: string, gate: Gate, choices: GateChoice[]): string {
+  const list = choices.map((choice) => `- "${choice.id}": ${choice.label}${choice.comment === "required" ? " (ask for a comment too)" : ""}`).join("\n");
+  return `[playbooks] ${runId} reached gate "${gate.id}" and a human must decide it. Ask the human now with the AskUserQuestion tool, one question with one option per choice, then call answer_gate with the id of the choice they pick and their comment (gateId "${gate.id}").
+
+Question: ${gate.summary || gate.message}${gate.details ? `\n\nDetails:\n${gate.details}` : ""}
+
+Choices:\n${list}
+
+The human may decide in the Playbooks panel instead: your question is then closed and answer_gate says so; end your turn. Do nothing else (no step work, no other tool).`;
+}
+
 /** Sent to a step agent whose turn ended without a report; the new prompt also restores its plugin tools. */
 export function reportReminder(stepId: string): string {
   return `[playbooks] Your turn ended without a report for step "${stepId}". If your work is done, call report_step_result now; it is available again even if it was "not found" before. If you are still waiting for something, keep waiting in this turn with a bounded foreground poll (not a Monitor, background command or timer), then call report_step_result.`;

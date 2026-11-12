@@ -489,6 +489,10 @@ export function StepSheet(props: {
               <Line theme={theme} muted>
                 Role {pendingGate.decider.role} is deciding; you can still decide first.
               </Line>
+            ) : pendingGate.chatAgentId ? (
+              <Line theme={theme} muted>
+                Also asked in the step agent's conversation; answering there closes it here.
+              </Line>
             ) : pendingGate.decider?.by === "manager" && pendingGate.escalated === null ? (
               <Line theme={theme} muted>
                 The manager may decide this gate; you can still decide first.
