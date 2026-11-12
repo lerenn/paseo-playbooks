@@ -10,8 +10,8 @@ step runs as a subagent, the plugin enforces the graph, and humans approve gates
 Playbooks panel. You write the playbooks; the plugin validates them.
 
 **Always finish by calling the `validate_playbooks` tool and fixing every error it reports.**
-It uses the same checks as the Playbooks panel. Its result is compact (`results[]`: `id`, `valid`, `errors`,
-input names, step ids); pass `view: "full"` for every playbook in detail (large: add `playbookId`) or
+It uses the same checks as the Playbooks panel. Its result is compact (`results[]`: `id`, `valid`, `errors`, and, when the file parses, `title`, `hidden`,
+`inputs` (names), `steps` (ids), `after` (task ids), plus `source`, and `ref` or `note` when present); pass `view: "full"` for every playbook in detail (large: add `playbookId`) or
 `playbookId` for one. `list_playbooks` takes the same two options.
 
 ## Layout
@@ -64,10 +64,14 @@ its tab offers "Create the Sidekick files".
 sidekick:
   model: claude-opus-5-5        # provider, model, mode, thinking: as an agent block
   watch: [gate.escalated, run.failed, run.manager_lost]   # event types or globs, for this project's runs
+  subagents: { provider: claude, model: claude-sonnet-5-5, mode: acceptEdits }   # what it creates for jobs (default claude / claude-sonnet-5-5; mode defaults to its own)
+  session: { restart_above_tokens: 300000 }   # hand off and restart when its context grows past this (default 300000)
+  runs: { max_concurrent: 5, confirm_bulk: true }   # rules for the runs it starts; max_concurrent unset means unlimited, confirm_bulk defaults to false
 ```
 
-`sidekick/instructions.md` holds the repository's rules for it; they add to its built-in rules and never
-replace them. `validate_playbooks` reports errors in both files.
+`sidekick.runs` is enforced by its prompt only, not by the plugin. Its prompt also forbids it to edit files or run
+commands itself: it sends subagents for that work. `sidekick/instructions.md` holds the repository's rules for it;
+they add to its built-in rules and never replace them. `validate_playbooks` reports errors in both files.
 
 ## defaults/main.yaml
 
@@ -767,20 +771,20 @@ after:
 - Canceling the run while after-tasks run cancels them; the run's status stays.
 - The "may both edit files" rule applies between after-tasks, not between an after-task and
   a main step.
-- Step agents cannot call `get_run`. Other agents can read any run with it (read-only), and
+- Step and gate agents cannot call `get_run` (or `list_gates`). Other agents can read any run with it (read-only), and
   `list_gates` lists every open gate and ask across runs (a gate a decider left to a human shows `waitingForHuman`, `escalatedAt` and
   `escalationReason`; `subscribe_events` on `gate.escalated` tells agents when that happens; its `delivery` is `idle` by default, which holds the notice until the subscriber's turn ends, or `steer` to inject it into the running turn). A retro step that reviews the whole run gets it from
   the manager: tell the manager (in the playbook `description`) to put `get_run` with
   `view: "full"` in the step's brief. The default `get_run` view is compact (per step: status,
   outcome, attempts, turn end and the first 300 characters of the summary), without reports
   or outputs.
-  `read_agent_conversation` (every agent but step agents) reads any agent's conversation as text, newest page first,
+  `read_agent_conversation` (every agent but step and gate agents) reads any agent's conversation as text, newest page first,
   with reasoning and tool input opt-in and a `before` cursor for older entries.
 
 ### Variables
 
-Types: `string`, `number`, `boolean`, `enum` (with `values: [...]`); each may have
-`required`, `default`, `description`.
+Types: `string`, `number`, `boolean`, `enum` (with `values: [...]`), `list` (a JSON array of strings, numbers,
+booleans or flat objects; see "List values" for fan-out); each may have `required`, `default`, `description`.
 
 Two namespaces: in a step's `inputs:` map, sources are `{{ playbook.inputs.x }}` and
 `{{ steps.<id>.outputs.y }}`; in a `prompt`, you only read the step's own inputs as

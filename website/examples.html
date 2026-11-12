@@ -15,13 +15,15 @@
 <main>
 
 <h1>Examples</h1>
-<p class="lead">Five complete playbooks: Pull request, Release to dev, Route a change and Capability are in <code>examples/</code>, and Docs check is at the root of this repository. Copy a folder into your repository as <code>.paseo/plugins/playbooks/</code> or <code>.paseo/playbooks/</code>, adjust it, then run <code>validate_playbooks</code>.</p>
+<p class="lead">Eight complete playbooks: Pull request, Capability, Unattended change, Route a change, Release to dev, Wait for upstream and Staged release are in <code>examples/</code>, and Docs check is at the root of this repository. Copy a folder into your repository as <code>.paseo/plugins/playbooks/</code> or <code>.paseo/playbooks/</code>, adjust it, then run <code>validate_playbooks</code>.</p>
 <ul>
 <li><a href="#pr">Pull request</a>: investigate runs first, then implement, then review and local QA run in parallel, and babysit the PR until it is green.</li>
 <li><a href="#capability">Capability</a>: the Pull request playbook, a human gate, then the Release to dev playbook, as <a href="reference.html#subplaybooks">sub-playbooks</a>.</li>
 <li><a href="#release">Release to dev</a>: deploy the change to the development environment, check it there, and redeploy when the check asks for it.</li>
 <li><a href="#route">Route a change</a>: classify a change, then take the branch that fits it (<a href="reference.html#branches">if / else-if / else</a> on a step's output), and join.</li>
 <li><a href="#unattended">Unattended change</a>: a run with <a href="reference.html#manager-mode">no Playbook Manager</a>: the plugin drives it, a human gate and a role gate decide.</li>
+<li><a href="#wait-for-upstream">Wait for upstream</a>: a script step waits for an event on another run (with <code>wake_on</code>) before the next step starts.</li>
+<li><a href="#staged-release">Staged release</a>: a release that waits for queue admission before its staging stage, as a singleton pipeline.</li>
 <li><a href="#docs">Docs check</a>: compare the docs with the code, fix them, review and check in parallel, loop until clean, human gate. It needs no shell commands.</li>
 </ul>
 
