@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Superseded in part by 2026-11-13-sidekick-gets-start-playbook.md (workspaceId and the hidden workspace)
 
 ## Context
 
