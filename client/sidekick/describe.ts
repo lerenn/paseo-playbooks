@@ -63,3 +63,32 @@ export function describePermission(name: string | undefined, input: unknown): De
   const summary = short === "Bash" ? text(fields.command) : pick(fields, known.keys);
   return { sentence: `The Sidekick wants to ${known.sentence}`, summary, toolId };
 }
+
+/** "mcp__paseo__create_agent" -> "Create agent"; "Bash" -> "Bash"; "ToolSearch" -> "Toolsearch". */
+export function humanizeTool(name: string): string {
+  const words = shortToolName(name).replace(/[_-]+/g, " ").trim();
+  return words ? words.charAt(0).toUpperCase() + words.slice(1).toLowerCase() : "Tool";
+}
+
+const SUMMARY_KEYS = ["command", "title", "query", "path", "file_path", "filePath", "url", "name", "description", "prompt", "pattern", "id"];
+
+/** One short line about what a tool call did, from the keys of its detail (or its input), or null. */
+export function toolSummary(detail: Record<string, unknown> | null, max = 120): string | null {
+  if (!detail) return null;
+  const sources = [detail, ...(typeof detail.input === "object" && detail.input ? [detail.input as Input] : [])];
+  for (const source of sources) {
+    for (const key of SUMMARY_KEYS) {
+      const shown = text((source as Input)[key], max);
+      if (shown) return shown;
+    }
+  }
+  return null;
+}
+
+/** The leading icon of a tool row: a terminal for shell commands, a bot for agents, a wrench otherwise. */
+export function toolIcon(name: string): "Terminal" | "Bot" | "Wrench" {
+  const short = shortToolName(name).toLowerCase();
+  if (/^(bash|shell|exec)|command/.test(short)) return "Terminal";
+  if (/agent/.test(short)) return "Bot";
+  return "Wrench";
+}
