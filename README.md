@@ -75,6 +75,11 @@ until it is idle. It saves a short decision ledger with `sidekick_handoff`. When
 `sidekick.session.restart_above_tokens` (default 300000) it is asked to hand off and is replaced by a new
 session that starts from the ledger.
 
+`start_playbook` starts the run's ready agent steps itself, as `start_step` would with no brief (same model, role and
+workspace resolution); pass `autoStart: false` to leave them ready. Script, hand-off and gate steps are not started
+this way, and `start_step` on a step already running is refused. This also holds for runs started from the panel, whose
+manager calls `start_playbook`.
+
 The Sidekick can start playbook runs with `start_playbook` (`workspaceId` of a visible workspace of its project, or
 that with `newWorkspace`; never its own hidden workspace), and `list_playbooks` shows what is on offer. When you ask
 it to merge a pull request, it starts the project's merging playbook (for example `pr-to-prod`), whose manager

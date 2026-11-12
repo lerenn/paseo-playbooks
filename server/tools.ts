@@ -353,11 +353,15 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
           .string()
           .optional()
           .describe("A workspace of this project (list_workspaces) to run in instead of yours: the run starts there with a new Playbook Manager (or, with newWorkspace, in a new workspace branched off it); you do not manage it. A Sidekick has no workspace to run in and must pass it"),
+        autoStart: z
+          .boolean()
+          .default(true)
+          .describe("Start the run's ready agent steps right away, as start_step would with no brief (default true). false: leave them ready; with workspaceId or a Sidekick, the new manager then waits to be told to start them"),
       }),
-      execute: ({ playbook, inputs, name, newWorkspace, workspaceId }, { agent }) =>
+      execute: ({ playbook, inputs, name, newWorkspace, workspaceId, autoStart }, { agent }) =>
         guard(async () => {
           if (workspaceId || (await runtime.isSidekick(agent.id))) {
-            const started = await runtime.startPlaybookInWorkspace(agent, { playbook, inputs, workspaceId, newWorkspace });
+            const started = await runtime.startPlaybookInWorkspace(agent, { playbook, inputs, workspaceId, newWorkspace, autoStart });
             return ok(
               `Run ${started.runId} of "${playbook}" is starting in ${newWorkspace ? "a new workspace" : "workspace"} ${started.workspaceId} with its own Playbook Manager (${started.managerAgentId}). You do not manage it: the plugin tells you how it goes through your event subscription (list_runs shows it).`,
               started,
@@ -378,8 +382,15 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
             );
           }
           const instructions = managerInstructionsText(run.playbook);
+          const auto = autoStart ? await runtime.autoStartReady(agent.id, run.id) : null;
+          const current = runtime.ownedRun(agent.id, run.id);
+          const pending = engine.readySteps(current).filter((id) => !auto?.started.some((s) => s.stepId === id));
+          const startedText = auto?.started.length
+            ? ` Already started (autoStart): ${auto.started.map((s) => `${s.stepId} (agent ${s.agentId}, attempt ${s.attempt})`).join(", ")}; do not start_step them again.`
+            : "";
+          const failedText = auto?.failed.length ? ` Could not start: ${auto.failed.map((f) => `${f.stepId} (${f.error})`).join("; ")}.` : "";
           return ok(
-            `Run ${run.id} started on branch ${run.branch ?? "(unknown)"}. Ready: ${engine.readySteps(run).join(", ") || "none"}. Start them with start_step.${run.worktree ? `\n\n${worktreePreamble(run)}\n` : ""}${definitionNote(run)}${engine.queuedSteps(run).length ? ` Queued for a free concurrency slot of another run: ${engine.queuedSteps(run).join(", ")}; you are woken when they are ready.` : ""}${instructions ? `\n\n${instructions}` : ""}`,
+            `Run ${run.id} started on branch ${run.branch ?? "(unknown)"}.${startedText}${failedText} Ready${auto ? " and not started" : ""}: ${pending.join(", ") || "none"}.${pending.length ? " Start them with start_step." : auto?.started.length ? " End your turn; you will be woken when a step finishes." : ""}${run.worktree ? `\n\n${worktreePreamble(run)}\n` : ""}${definitionNote(run)}${engine.queuedSteps(run).length ? ` Queued for a free concurrency slot of another run: ${engine.queuedSteps(run).join(", ")}; you are woken when they are ready.` : ""}${instructions ? `\n\n${instructions}` : ""}`,
             runChange(run),
           );
         }),
