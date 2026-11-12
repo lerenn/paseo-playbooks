@@ -1,3 +1,5 @@
+import { SlowIndex, slowEntries, slowEntry } from "./slow";
+import type { SlowInfo } from "../shared/slow";
 import { checkSubscriptionScope } from "./bus";
 import { defineAgentTool, type AgentToolDefinition, type AgentToolResult } from "@getpaseo/plugin/server";
 import { askHumanText, choicesOfGate, GATE_SUMMARY_MAX } from "../shared/gates";
@@ -136,7 +138,7 @@ function attemptModels(attempts: Run["steps"][string]["attempts"]) {
 }
 
 /** The default get_run view: one short line of state per step, no reports, outputs or inputs. */
-export function runCompact(run: Run, only?: string[]) {
+export function runCompact(run: Run, only?: string[], slow: Record<string, SlowInfo> = {}) {
   return {
     runId: run.id,
     playbook: run.playbook.id,
@@ -151,6 +153,7 @@ export function runCompact(run: Run, only?: string[]) {
     ready: engine.readySteps(run),
     queued: engine.queuedSteps(run),
     running: runningSteps(run),
+    slowSteps: Object.keys(slow),
     steps: Object.fromEntries(
       viewSteps(run, only).map((id) => {
         const step = engine.stepDef(run, id);
@@ -166,6 +169,7 @@ export function runCompact(run: Run, only?: string[]) {
             attempts: state.attempts.length,
             ...(attempt?.target ? { model: attempt.target } : {}),
             turnEnd: attempt?.turnEnd ?? null,
+            ...(slow[id] ? { slow: slowEntry(run, id, slow[id]!) } : {}),
             summary: clip(state.summary ?? attempt?.report?.summary ?? null),
           },
         ];
@@ -179,7 +183,7 @@ export function runCompact(run: Run, only?: string[]) {
 }
 
 /** The full get_run view: every step's definition, latest report, outputs and summary, with the gates in full. */
-export function runFull(run: Run, only?: string[]) {
+export function runFull(run: Run, only?: string[], slow: Record<string, SlowInfo> = {}) {
   return {
     runId: run.id,
     playbook: run.playbook.id,
@@ -195,6 +199,7 @@ export function runFull(run: Run, only?: string[]) {
     outputs: run.outputs,
     ready: engine.readySteps(run),
     queued: engine.queuedSteps(run),
+    slowSteps: Object.keys(slow),
     steps: Object.fromEntries(
       viewSteps(run, only).map((id) => {
         const step = engine.stepDef(run, id);
@@ -223,6 +228,7 @@ export function runFull(run: Run, only?: string[]) {
             report: attempt?.report ?? null,
             lastMessage: attempt?.report ? null : attempt?.lastMessage ?? null,
             turnEnd: attempt?.turnEnd ?? null,
+            ...(slow[step.id] ? { slow: slowEntry(run, step.id, slow[step.id]!) } : {}),
             outputs: state.outputs,
             summary: state.summary,
           },
@@ -593,7 +599,7 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
 }
 
 /** One line per run for agents that do not manage it. */
-export function runListing(run: Run) {
+export function runListing(run: Run, slow: Record<string, SlowInfo> = {}) {
   return {
     runId: run.id,
     playbook: run.playbook.id,
@@ -612,6 +618,9 @@ export function runListing(run: Run) {
     managerMode: run.playbook.managerMode,
     createdAt: run.createdAt,
     runningSteps: Object.entries(run.steps).filter(([, state]) => state.status === "running").map(([id]) => id),
+    /** Steps slower than usual (shared/slow.ts), and how much. */
+    slowSteps: Object.keys(slow),
+    ...(Object.keys(slow).length > 0 ? { slow: slowEntries(run, slow) } : {}),
     archived: run.archivedAt !== null,
     /** After-tasks and their status; start_after_task starts a pending manual one. */
     after: run.playbook.after.map((task) => ({ id: task.id, title: task.title, trigger: task.trigger, status: run.after[task.id]?.status ?? "pending" })),
@@ -641,24 +650,31 @@ export function runTools(runtime: Runtime): AgentToolDefinition[] {
     defineAgentTool({
       name: "list_runs",
       description:
-        "List playbook runs on this Paseo daemon (by default only active ones): id, playbook, status, workspace, branch, manager, running steps, and where a finished run can be restarted from.",
+        "List playbook runs on this Paseo daemon (by default only active ones): id, playbook, status, workspace, branch, manager, running steps, `slowSteps` (steps slower than usual, with `slow` detail: elapsedMs, baselineMs, factor, ratio, samples, running) and where a finished run can be restarted from. slow: true lists only the runs with a step that is slow right now, e.g. to answer \"which steps take longer than usual\".",
       input: z.object({
         all: z.boolean().default(false).describe("Include finished runs that are not archived"),
         archived: z.boolean().default(false).describe("Also include archived runs (archiving a manager archives its runs)"),
+        slow: z
+          .boolean()
+          .default(false)
+          .describe("Only runs with a step that is slow right now (running longer than `factor` times its usual duration: the \"attention\" triangle of the panel), each with its slow steps. The usual duration is the mean of the step's last completed runs on the whole history."),
       }),
-      execute: ({ all, archived }) =>
+      execute: ({ all, archived, slow }) =>
         guard(async () => {
-          const runs = runtime
-            .allRuns()
-            .filter((run) => (archived || !run.archivedAt) && (all || archived || isActive(run)))
-            .map(runListing);
-          return ok(runs.length === 0 ? (all || archived ? "No runs." : "No active run.") : JSON.stringify(runs, null, 2), { runs });
+          const every = runtime.allRuns();
+          const index = new SlowIndex(every);
+          const now = Date.now();
+          const rows = every.filter((run) => (archived || !run.archivedAt) && (slow || all || archived || isActive(run))).map((run) => ({ run, slow: index.of(run, now) }));
+          const runs = rows
+            .filter(({ run, slow: found }) => !slow || (!run.archivedAt && Object.keys(found).some((id) => run.steps[id]?.status === "running")))
+            .map(({ run, slow: found }) => runListing(run, found));
+          return ok(runs.length === 0 ? (slow ? "No step is slow right now." : all || archived ? "No runs." : "No active run.") : JSON.stringify(runs, null, 2), { runs });
         }),
     }),
     defineAgentTool({
       name: "get_run",
       description:
-        'Show a run\'s state. Read-only on a run you do not manage (any run id works); the tools that change it refuse it. Without runId, your active (or latest) run. view "compact" (default): per step its status, outcome, attempts, turn end and the start of its summary, plus gates, loops and after-tasks. view "full": every step\'s definition, full report, outputs and summary, the run inputs and the gates in full (e.g. for a retro brief). steps limits either view to those steps.',
+        'Show a run\'s state. Read-only on a run you do not manage (any run id works); the tools that change it refuse it. Without runId, your active (or latest) run. view "compact" (default): per step its status, outcome, attempts, turn end and the start of its summary, plus gates, loops and after-tasks. view "full": every step\'s definition, full report, outputs and summary, the run inputs and the gates in full (e.g. for a retro brief). steps limits either view to those steps. A step slower than usual (the "attention" triangle of the panel) has `slow` {elapsedMs, baselineMs, factor, ratio, samples, running}; `slowSteps` lists them.',
       input: z.object({
         runId: IdArg.optional(),
         view: z.enum(["compact", "full"]).default("compact").describe('"compact" (default) or "full" (reports, outputs, inputs, gate details)'),
@@ -668,7 +684,8 @@ export function runTools(runtime: Runtime): AgentToolDefinition[] {
         guard(async () => {
           const run = runtime.readableRun(agent.id, runId);
           if (run.managerAgentId === agent.id) await runtime.clearInbox(run.id);
-          const summary = view === "full" ? runFull(run, steps) : runCompact(run, steps);
+          const slow = new SlowIndex(runtime.allRuns()).of(run);
+          const summary = view === "full" ? runFull(run, steps, slow) : runCompact(run, steps, slow);
           return ok(JSON.stringify(summary, null, 2), summary);
         }),
     }),
@@ -727,7 +744,7 @@ export function runTools(runtime: Runtime): AgentToolDefinition[] {
     defineAgentTool({
       name: "subscribe_events",
       description:
-        'Get a plain-text message from the plugin when events happen on the daemon. types: exact names or globs ("gate.*", "run.failed", "*"). Types today: gate.opened (a gate step, ask or loop-limit gate opened: question, choices, decider and who holds it), gate.stale (still open after filter.olderThanMinutes, default 30; once per gate), gate.decided (who, via panel/chat/manager/role, and the comment; not sent to the manager or role agent that decided it), run.failed (reason and restartableFrom), run.manager_lost, step.started (stepId, attempt), step.completed (stepId, attempt, outcome: every applied outcome, failures and retried ones included; gate and branch steps too, those without step.started), run.completed, run.canceled (reason). Step and run events carry runId, playbook, runName, projectId, workspaceDir. filter: payload fields that must equal a value (e.g. { playbook: "release", deciderBy: "role" }, { runId }), plus olderThanMinutes for gate.stale. Bursts are merged into one message. delivery: "idle" (default) holds the message until your current turn has ended, then sends it as one new message, so it never interrupts you (an interactive question, say); "steer" sends it into your running turn at once. Held messages survive restarts (at most 50 per subscription; older ones are dropped, list_events replays them). The subscriber is you; it survives daemon restarts and ends when you are archived. Returns the subscription id. list_events replays what you missed. A new subscription must be scoped: pass filter { runId } (or { workspaceDir } for runs you drive; projectId or playbook also work); only gate.escalated, run.failed and run.manager_lost may be unscoped. Avoid step.completed unless you need it: it fires on every step.',
+        'Get a plain-text message from the plugin when events happen on the daemon. types: exact names or globs ("gate.*", "run.failed", "*"). Types today: gate.opened (a gate step, ask or loop-limit gate opened: question, choices, decider and who holds it), gate.stale (still open after filter.olderThanMinutes, default 30; once per gate), gate.decided (who, via panel/chat/manager/role, and the comment; not sent to the manager or role agent that decided it), run.failed (reason and restartableFrom), run.manager_lost, step.started (stepId, attempt), step.completed (stepId, attempt, outcome: every applied outcome, failures and retried ones included; gate and branch steps too, those without step.started), step.slow (a running step first went past factor x its usual duration: elapsedMs, baselineMs, ratio, samples; once per step run), run.completed, run.canceled (reason). Step and run events carry runId, playbook, runName, projectId, workspaceDir. filter: payload fields that must equal a value (e.g. { playbook: "release", deciderBy: "role" }, { runId }), plus olderThanMinutes for gate.stale. Bursts are merged into one message. delivery: "idle" (default) holds the message until your current turn has ended, then sends it as one new message, so it never interrupts you (an interactive question, say); "steer" sends it into your running turn at once. Held messages survive restarts (at most 50 per subscription; older ones are dropped, list_events replays them). The subscriber is you; it survives daemon restarts and ends when you are archived. Returns the subscription id. list_events replays what you missed. A new subscription must be scoped: pass filter { runId } (or { workspaceDir } for runs you drive; projectId or playbook also work); only gate.escalated, run.failed and run.manager_lost may be unscoped. Avoid step.completed unless you need it: it fires on every step.',
       input: z.object({
         types: z.array(z.string()).min(1).describe('Event types or globs, e.g. ["gate.*", "run.failed"]'),
         filter: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).default({}).describe("Payload fields to match by equality; olderThanMinutes picks the delay of a stale event"),
