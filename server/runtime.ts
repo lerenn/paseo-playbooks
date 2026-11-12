@@ -1730,6 +1730,27 @@ export class Runtime {
     slot.child?.kill("SIGTERM");
   }
 
+  /**
+   * start_playbook's autoStart: starts the new run's ready agent steps, one after the other, through startStep (same
+   * model resolution, role and workspace as the manager's own call). Script, hand-off and gate steps are not started
+   * here (the plugin runs the first two itself; a gate is opened with request_gate). A step that cannot start is
+   * reported, not thrown: the run stays usable and the manager starts it with start_step.
+   */
+  async autoStartReady(managerId: string, runId: string): Promise<{ started: Array<{ stepId: string; agentId: string; attempt: number; target: string }>; failed: Array<{ stepId: string; error: string }> }> {
+    const started: Array<{ stepId: string; agentId: string; attempt: number; target: string }> = [];
+    const failed: Array<{ stepId: string; error: string }> = [];
+    const run = this.ownedRun(managerId, runId);
+    for (const stepId of engine.readySteps(run)) {
+      if (engine.stepDef(run, stepId).kind !== "agent") continue;
+      try {
+        started.push({ stepId, ...(await this.startStep(managerId, runId, stepId, "")) });
+      } catch (error) {
+        failed.push({ stepId, error: errorText(error) });
+      }
+    }
+    return { started, failed };
+  }
+
   async startStep(managerId: string, runId: string, stepId: string, brief: string, model?: ModelChoice): Promise<{ agentId: string; attempt: number; target: string }> {
     let run = this.ownedRun(managerId, runId);
     const step = engine.stepDef(run, stepId);
@@ -2951,7 +2972,7 @@ export class Runtime {
     return (await this.sidekickRegistry.findByAgent(agentId)) !== null;
   }
 
-  async startPlaybookInWorkspace(caller: { id: string; workspaceId: string | null }, input: { playbook: string; inputs: Record<string, VarValue>; workspaceId: string | undefined; newWorkspace: boolean }) {
+  async startPlaybookInWorkspace(caller: { id: string; workspaceId: string | null }, input: { playbook: string; inputs: Record<string, VarValue>; workspaceId: string | undefined; newWorkspace: boolean; autoStart?: boolean }) {
     const isSidekick = await this.isSidekick(caller.id);
     if (!input.workspaceId) throw new UserError(isSidekick ? "name the workspace: pass workspaceId (list_workspaces) of a visible workspace of this project; you have no workspace of your own to run in" : "workspaceId is missing");
     if (input.workspaceId === caller.workspaceId && isSidekick) throw new UserError("that is your own hidden workspace: pick a visible workspace of this project (list_workspaces), with newWorkspace to start the run in a new one");
@@ -2959,7 +2980,7 @@ export class Runtime {
     if (!workspace) throw new UserError(`workspace "${input.workspaceId}" not found (list_workspaces lists them)`);
     const callerProject = await this.projectIdOf(caller.workspaceId);
     if (callerProject && workspace.projectId !== callerProject) throw new UserError("that workspace belongs to another project");
-    const started = await this.startFromPanel({ workspaceId: workspace.id, playbook: input.playbook, inputs: input.inputs, force: false, sameWorkspace: !input.newWorkspace });
+    const started = await this.startFromPanel({ workspaceId: workspace.id, playbook: input.playbook, inputs: input.inputs, force: false, sameWorkspace: !input.newWorkspace, autoStart: input.autoStart !== false });
     if (started.status === "duplicate") throw new UserError(`${started.message} Not started again.`);
     return started;
   }
@@ -2971,6 +2992,8 @@ export class Runtime {
     force: boolean;
     agentId?: string | undefined;
     sameWorkspace?: boolean | undefined;
+    /** false: the new manager creates the run and leaves its ready steps unstarted (default true). */
+    autoStart?: boolean | undefined;
   }) {
     const workspace = await this.api().workspaces.ref(input.workspaceId).refresh();
     if (!workspace) throw new UserError("workspace not found");
@@ -3009,7 +3032,7 @@ export class Runtime {
         config: this.managerConfig(playbook),
         title: `Playbook Manager · ${playbook.title}`,
         labels: { [MANAGER_LABEL]: "true" },
-        prompt: managerKickoff(playbook, resolved.inputs),
+        prompt: managerKickoff(playbook, resolved.inputs, input.autoStart !== false),
       });
       return { status: "started" as const, workspaceId: workspace.id, managerAgentId: manager.id, runId, queued: false };
     }

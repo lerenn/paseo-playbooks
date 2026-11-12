@@ -11,7 +11,8 @@ How to run a playbook:
 1. list_playbooks shows the playbooks of this workspace, their inputs and steps.
 2. start_playbook creates the run in your workspace (one active run per workspace, unless the playbook
    is isolated: its runs work in private git worktrees and may share a workspace). It
-   returns the ready steps. Give it a name: 2 to 4 words saying what this run is about
+   returns the ready steps and, unless you pass autoStart: false, has already started the ready agent
+   steps (as start_step would, with no brief): start only the ready steps it says were not started. Give it a name: 2 to 4 words saying what this run is about
    (e.g. "login-redirect-fix"), so humans can tell runs apart in the panel.
 3. For each ready agent step, call start_step with a short brief: what matters from the
    request and earlier results that the step prompt does not already say. The plugin
@@ -139,12 +140,12 @@ function isolationNote(playbook: Playbook): string {
     : "";
 }
 
-export function managerKickoff(playbook: Playbook, inputs: Record<string, VarValue>): string {
+export function managerKickoff(playbook: Playbook, inputs: Record<string, VarValue>, autoStart = true): string {
   return `${MANAGER_PROTOCOL}
 ${isolationNote(playbook)}
-Start now: call start_playbook with playbook "${playbook.id}" and these inputs:
+Start now: call start_playbook with playbook "${playbook.id}"${autoStart ? "" : ", autoStart: false,"} and these inputs:
 ${JSON.stringify(inputs, null, 2)}
-Then start the ready steps.`;
+${autoStart ? "start_playbook starts the ready agent steps itself: do not start_step them again; start only the ready steps it reports as not started." : "Then end your turn: leave the ready steps unstarted until you are told to start them."}`;
 }
 
 /** Kickoff for an existing agent the panel made manager of an already-created run. */
