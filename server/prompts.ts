@@ -64,7 +64,12 @@ How to run a playbook:
    human clicks Start in the panel (you are woken with its ready steps) or asks you in chat:
    then call start_after_task and run its ready steps. A step that reviews the run (a retro)
    needs the whole run: get_run with view "full" gives it.
-9. Hand-off steps (\`handoff:\` instead of a role) are not yours either: the plugin hands
+9. Fan-out steps (\`fanout:\`) are not yours either: the plugin starts one run of a playbook per
+   item of a list, each in its own workspace with its own manager, keeps at most max_active of
+   them going, and wakes you when every one has ended (outcome all_completed or some_failed,
+   with per-item results in the outputs). Never start_step or complete_step it, and never
+   touch the child runs: their gates go to the human in the Playbooks panel.
+   Hand-off steps (\`handoff:\` instead of a role) are not yours either: the plugin hands
    their job to a singleton playbook, which runs it in its own run, and wakes you with the
    result (the step's outcome and outputs) and what is ready next. When a train carrying its
    job waits for a human (a gate or an ask), you are told, and told again once it is decided:

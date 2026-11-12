@@ -201,6 +201,9 @@ export function runFull(run: Run, only?: string[]) {
             ...(step.kind === "handoff" ? { handoff: step.handoff, job: attempt?.job ?? null } : {}),
             ...(step.kind === "script" ? { script: step.script, checks: attempt?.checks ?? 0, nextCheckAt: attempt?.nextCheckAt ?? null } : {}),
             ...(step.kind === "branch" ? { chosen: state.branch } : {}),
+            ...(step.kind === "fanout" && state.fanout && state.status !== "pending" && state.status !== "ready"
+              ? { fanout: { playbook: step.fanout!.playbook, loop: state.fanout.loop, ...engine.fanoutCounts(state.fanout), children: state.fanout.children.map((child) => ({ key: child.key, status: child.status, runId: child.runId, ...(child.error ? { error: child.error } : {}) })), passes: state.fanoutPast.length } }
+              : {}),
             ...(state.status === "skipped" ? { skipped: run.history.findLast((event) => event.type === "step_skipped" && event.stepId === id)?.detail ?? null } : {}),
             report: attempt?.report ?? null,
             lastMessage: attempt?.report ? null : attempt?.lastMessage ?? null,
@@ -263,6 +266,7 @@ function describeEntry(entry: PlaybookEntry) {
       gate: step.gate ?? null,
       ...(step.kind === "script" ? { script: step.script, poll: step.pollMs ? `${step.pollMs / 1000}s` : null } : {}),
       ...(step.kind === "handoff" ? { handoff: step.handoff, ...(step.handoffWait === false ? { wait: false } : {}) } : {}),
+      ...(step.fanout ? { fanout: { playbook: step.fanout.playbook, maxActive: step.fanout.maxActive, cancelChildren: step.fanout.cancelChildren } } : {}),
       ...(step.when ? { when: whenView(step.when) } : {}),
       ...(step.branch ? { branch: step.branch.cases.map((candidate) => (candidate.when ? { case: candidate.name, if: whenView(candidate.when) } : { case: candidate.name, else: true })) } : {}),
       afterTask: step.afterTask ?? null,

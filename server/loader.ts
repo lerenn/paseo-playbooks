@@ -189,6 +189,26 @@ const RawHandoffStepSchema = z
   })
   .strict();
 
+/** A fan-out: one run of a playbook from the same folder per item of a list, each in its own new workspace; the step joins them. */
+const RawFanoutStepSchema = z
+  .object({
+    /** The playbook started once per item (not this one, not a singleton). */
+    playbook: z.string().min(1),
+    /** Renders to the list: a JSON array. Write `{{ inputs.<name> }}` of a declared step input (an output of an earlier step of type `list`). */
+    items: z.string().min(1),
+    /** The child's inputs. Templates over `item` (`{{ item }}`, `{{ item.<field> }}`), `index` and `inputs.<name>`. */
+    inputs: z.record(z.string(), RawScalarSchema.transform(String)).optional(),
+    /** A stable key per item (`{{ item.id }}`): a child run is never started twice for one key. Default: the item itself, for a list of scalars. */
+    key: z.string().min(1).optional(),
+    /** Title of each child's workspace, templated like `inputs`. */
+    workspace_name: z.string().min(1).optional(),
+    /** At most this many child runs active at once. Default 1. */
+    max_active: z.number().int().positive().max(50).default(1),
+    /** Cancel the active child runs when the parent run is canceled or fails, or the step is reset. Default true. */
+    cancel_children: z.boolean().default(true),
+  })
+  .strict();
+
 /**
  * One operand test of a condition (`when`, a branch case's `if`): a value, a list of values (any of),
  * or `{ empty: true }` / `{ empty: false }`. The key is an input, `steps.<id>.outputs.<name>` or `steps.<id>.outcome`.
@@ -216,6 +236,20 @@ const RawBranchStepSchema = z
   })
   .strict();
 
+/** A fan-out step's outcomes: every item completed, or at least one did not (failed, canceled or never started); `failure` is the step itself failing (bad list, timeout). */
+const FANOUT_OUTCOMES = ["all_completed", "some_failed", "failure"];
+/** What a fan-out step reports when it joins; later steps read them as `steps.<id>.outputs.<name>`. */
+const FANOUT_OUTPUTS: Record<string, VarDef> = {
+  results: { type: "list" },
+  total: { type: "number" },
+  started: { type: "number" },
+  completed: { type: "number" },
+  failed: { type: "number" },
+  canceled: { type: "number" },
+  not_started: { type: "number" },
+  any_failed: { type: "boolean" },
+};
+
 /** Fields that moved into a kind's block; read flat only to refuse them with the new form. */
 const MOVED_FIELDS = { prompt: "role", silence: "role", archive_agents: "role", agent: "role", choices: "gate", poll: "script" } as const;
 type MovedField = keyof typeof MOVED_FIELDS;
@@ -233,6 +267,7 @@ const RawStepSchema = z.object({
     script: kindBlock(RawScriptStepSchema).optional(),
     handoff: kindBlock(RawHandoffStepSchema).optional(),
     branch: RawBranchStepSchema.optional(),
+    fanout: RawFanoutStepSchema.optional(),
     /** A singleton's station: which waiting jobs a train takes. */
     queue: z
       .object({
@@ -1129,8 +1164,8 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     const isBlock = playbookStep !== undefined;
     const isScript = scriptStep !== undefined;
     const isHandoff = rawStep.handoff !== undefined;
-    if ([roleStep, gateStep, playbookStep, scriptStep, rawStep.handoff, rawStep.branch].filter((value) => value !== undefined).length !== 1) {
-      err(`${where}: set exactly one of \`role\`, \`gate\`, \`playbook\`, \`script\`, \`handoff\` or \`branch\``);
+    if ([roleStep, gateStep, playbookStep, scriptStep, rawStep.handoff, rawStep.branch, rawStep.fanout].filter((value) => value !== undefined).length !== 1) {
+      err(`${where}: set exactly one of \`role\`, \`gate\`, \`playbook\`, \`script\`, \`handoff\`, \`branch\` or \`fanout\``);
     }
     refuseFlatForms(where, rawStep, err);
     if (typeof rawStep.handoff === "string") err(`${where}: handoff: write \`handoff: { name: ${rawStep.handoff} }\``);
@@ -1141,7 +1176,8 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     }
     const when = task ? undefined : parseWhen(where, rawStep.when);
     const conditional = when ? { when } : {};
-    if (rawStep.settle !== undefined && (isGate || isBlock || isHandoff || task)) {
+    if (rawStep.fanout !== undefined && (task || singleton)) err(`${where}: \`fanout\` does not apply to ${task ? "an after-task" : "a singleton's station"}`);
+    if (rawStep.settle !== undefined && (isGate || isBlock || isHandoff || task || rawStep.fanout !== undefined)) {
       err(`${where}: \`settle\` only applies to a role or script step (its outputs settle the train's jobs)`);
     }
     if (rawStep.branch !== undefined) {
@@ -1308,6 +1344,79 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
         on,
         choices: [],
         ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+        ...(rawStep.title !== undefined ? { title: rawStep.title } : {}),
+        ...(rawStep.short_title !== undefined ? { shortTitle: rawStep.short_title } : {}),
+        ...conditional,
+      });
+      continue;
+    }
+    if (rawStep.fanout !== undefined) {
+      // One run of a playbook of the folder per item of a list; the step joins them.
+      for (const field of ["outputs", "outcomes"] as const) {
+        if (rawStep[field] !== undefined) err(`${where}: \`${field}\` does not apply to a fan-out step (its outcomes and outputs are fixed: see the format reference)`);
+      }
+      const fan = rawStep.fanout;
+      const targetId = fan.playbook;
+      let target: Playbook | null = null;
+      if (targetId === id || stack.includes(targetId)) {
+        err(`${where}: fanout.playbook: "${targetId}" leads back to this playbook (${[...stack, id, targetId].join(" → ")}); a fan-out must not start its own playbook`);
+      } else if (!folder.ids.has(targetId)) {
+        err(`${where}: fanout.playbook: playbook "${targetId}" not found in ${folder.relDir}/`);
+      } else {
+        const loaded = await folder.load(targetId, [...stack, id]);
+        target = loaded.entry.playbook;
+        if (!target) err(`${where}: fanout.playbook: playbook "${targetId}" is invalid: ${loaded.entry.errors[0] ?? "see that file"}`);
+        else if (target.singleton) {
+          err(`${where}: fanout.playbook: playbook "${targetId}" is a singleton: its runs only come from hand-offs; use \`handoff: { name: ${targetId} }\``);
+          target = null;
+        }
+      }
+      const mapped = fan.inputs ?? {};
+      if (target) {
+        for (const name of Object.keys(mapped)) {
+          if (!target.inputs[name]) err(`${where}: fanout.inputs.${name}: playbook "${targetId}" has no input "${name}" (it has: ${Object.keys(target.inputs).join(", ") || "none"})`);
+        }
+        for (const [name, def] of Object.entries(target.inputs)) {
+          if (def.required && def.default === undefined && !(name in mapped)) err(`${where}: fanout.inputs.${name}: playbook "${targetId}" requires input "${name}"; map it, e.g. ${name}: "{{ item }}"`);
+        }
+      }
+      const on: Record<string, Transition> = {};
+      for (const [outcome, transition] of Object.entries(rawStep.on ?? {})) {
+        if (!FANOUT_OUTCOMES.includes(outcome)) err(`${where}: on.${outcome}: not an outcome of a fan-out step (${FANOUT_OUTCOMES.join(", ")})`);
+        if (typeof transition === "string") on[outcome] = { kind: transition };
+        else if ("ask" in transition) err(`${where}: on.${outcome}: \`ask\` does not apply to a fan-out step`);
+        else if ("end" in transition) on[outcome] = endTransition(`${where}: on.${outcome}`, transition.end);
+        else on[outcome] = transition.max_loops !== undefined ? { kind: "goto", target: transition.goto, maxLoops: transition.max_loops } : { kind: "goto", target: transition.goto };
+      }
+      let timeoutMs = defaultTimeout;
+      const timeoutTemplate = rawStep.timeout !== undefined && templateRefs(rawStep.timeout).length > 0 ? rawStep.timeout : undefined;
+      if (rawStep.timeout !== undefined && timeoutTemplate === undefined) {
+        timeoutMs = parseDuration(rawStep.timeout) ?? undefined;
+        if (timeoutMs === undefined) err(`${where}: timeout: expected a duration such as 30m or 2h`);
+      }
+      steps.push({
+        id: rawStep.id,
+        kind: "fanout",
+        needs: rawStep.needs,
+        prompt: "",
+        inputs: {},
+        outputs: FANOUT_OUTPUTS,
+        outcomes: FANOUT_OUTCOMES,
+        retries: rawStep.retries,
+        agent: {},
+        on,
+        choices: [],
+        fanout: {
+          playbook: qualifyId(folder.repo, targetId),
+          items: fan.items,
+          inputs: mapped,
+          ...(fan.key !== undefined ? { key: fan.key } : {}),
+          ...(fan.workspace_name !== undefined ? { workspaceName: fan.workspace_name } : {}),
+          maxActive: fan.max_active,
+          cancelChildren: fan.cancel_children,
+        },
+        ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+        ...(timeoutTemplate !== undefined ? { timeout: timeoutTemplate } : {}),
         ...(rawStep.title !== undefined ? { title: rawStep.title } : {}),
         ...(rawStep.short_title !== undefined ? { shortTitle: rawStep.short_title } : {}),
         ...conditional,
@@ -1535,6 +1644,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
       if (sub) wireBlock(step, raw, sub, steps, ancestors, inputs, err, after);
       else if (target) wireBlock(step, raw, target, steps, ancestors, inputs, err, after);
       else wireStep(step, raw, steps, ancestors, inputs, err, new Set(), undefined, after);
+      if (step.fanout) checkFanoutRefs(step, err);
     }
   }
 
@@ -1903,6 +2013,33 @@ function wireStep(
       }
     }
   }
+}
+
+/** A fan-out's templates: `items` reads a declared step input; the per-item ones also read `item`, `item.<field>` and `index`. */
+function checkFanoutRefs(step: Step, err: (message: string) => void): void {
+  const where = `step "${step.id}"`;
+  const fan = step.fanout!;
+  const check = (at: string, template: string, perItem: boolean) => {
+    for (const ref of templateRefs(template)) {
+      const input = /^inputs\.([A-Za-z_][\w-]*)$/.exec(ref)?.[1];
+      if (input !== undefined) {
+        if (!(input in step.inputs)) err(`${where}: ${at} uses "{{ ${ref} }}" but the step declares no such input (declare it under \`inputs\`)`);
+      } else if (!perItem || !/^(item(\.[A-Za-z_][\w-]*)?|index)$/.test(ref)) {
+        err(`${where}: ${at} uses "{{ ${ref} }}"; ${perItem ? "it may use item, item.<field>, index and inputs.<name>" : "it may only use inputs.<name> (a declared input of the step)"}`);
+      }
+    }
+  };
+  check("fanout.items", fan.items, false);
+  const source = singleRef(fan.items);
+  const sourceInput = source ? /^inputs\.([A-Za-z_][\w-]*)$/.exec(source)?.[1] : undefined;
+  if (sourceInput === undefined) err(`${where}: fanout.items must be exactly one reference to a declared input, e.g. "{{ inputs.ready }}" with \`inputs: { ready: "{{ steps.<id>.outputs.<list> }}" }\``);
+  else {
+    const type = step.inputs[sourceInput]?.type;
+    if (type !== undefined && type !== "list" && type !== "string") err(`${where}: fanout.items: input "${sourceInput}" is ${type}, not a list (a \`list\` output or input, or a string holding a JSON array)`);
+  }
+  for (const [name, template] of Object.entries(fan.inputs)) check(`fanout.inputs.${name}`, template, true);
+  if (fan.key !== undefined) check("fanout.key", fan.key, true);
+  if (fan.workspaceName !== undefined) check("fanout.workspace_name", fan.workspaceName, true);
 }
 
 /** Wires a playbook step: its inputs are the sub-playbook's inputs, by name or mapped explicitly. */

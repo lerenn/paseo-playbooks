@@ -288,7 +288,7 @@ export function StepSheet(props: {
   const [message, setMessage] = useState("");
   const active = run !== null && isStepLive(run, stepId);
   // A script step has no agent to talk to.
-  const canNudge = active && step.kind !== "script" && step.kind !== "handoff" && (state?.status === "running" || state?.status === "reported");
+  const canNudge = active && step.kind !== "script" && step.kind !== "handoff" && step.kind !== "fanout" && (state?.status === "running" || state?.status === "reported");
   const canRestart = run !== null && restartBlocker(run, stepId) === null;
   // Retry goes through the manager, which a paused run does not wake.
   const canRetry = active && !isPaused(run) && state?.status === "reported" && (latest?.report?.outcome === "failure" || latest?.report === null);
@@ -298,7 +298,7 @@ export function StepSheet(props: {
   const timeoutText = timeoutMs ? ` · timeout ${Math.round(timeoutMs / 60000)} min` : step.timeout ? ` · timeout ${step.timeout}` : "";
 
   return (
-    <Modal title={`${stepTitle(step)}${role ? ` · ${role.title}` : step.kind === "gate" ? " · Gate" : step.kind === "script" ? " · Script" : step.kind === "handoff" ? " · Hand-off" : step.kind === "branch" ? " · Branch" : ""}`} open onOpenChange={(open) => !open && props.onClose()}>
+    <Modal title={`${stepTitle(step)}${role ? ` · ${role.title}` : step.kind === "gate" ? " · Gate" : step.kind === "script" ? " · Script" : step.kind === "handoff" ? " · Hand-off" : step.kind === "branch" ? " · Branch" : step.kind === "fanout" ? " · Fan-out" : ""}`} open onOpenChange={(open) => !open && props.onClose()}>
       <Modal.Content>
         {state ? <Line theme={theme}>Status: {state.status}{latest ? ` · attempt ${latest.n}` : ""}{latest?.waiting && state.status === "running" ? ` · waiting for tokens until ${new Date(latest.waiting.until).toLocaleString()}` : ""}</Line> : null}
         {step.kind === "agent" ? (
@@ -338,6 +338,30 @@ export function StepSheet(props: {
               </Line>
             ) : null}
             {latest?.lastMessage && !latest.report ? <Line theme={theme}>{latest.lastMessage}</Line> : null}
+          </Section>
+        ) : null}
+        {step.kind === "fanout" && step.fanout ? (
+          <Section theme={theme} title="Fan-out">
+            <Line theme={theme} muted>
+              One run of "{step.fanout.playbook}" per item, each in its own workspace · at most {step.fanout.maxActive} at once
+              {step.fanout.cancelChildren ? " · canceled with this run" : " · kept running if this run ends"}
+              {timeoutText}
+            </Line>
+            {state?.fanout ? (
+              <>
+                <Line theme={theme}>
+                  Pass {state.fanout.loop + 1}: {state.fanout.children.filter((child) => ["completed", "failed", "canceled", "not_started"].includes(child.status)).length} of {state.fanout.children.length} done
+                  {state.fanoutPast.length ? ` · ${state.fanoutPast.length} earlier pass(es) in the Playbooks screen` : ""}
+                </Line>
+                {state.fanout.children.map((child) => (
+                  <Line key={child.key} theme={theme} muted>
+                    {child.key} · {child.status.replace("_", " ")}
+                    {child.runId ? ` · ${child.runId}` : ""}
+                    {child.error ? ` · ${child.error}` : ""}
+                  </Line>
+                ))}
+              </>
+            ) : null}
           </Section>
         ) : null}
         {step.when?.length ? (

@@ -1,0 +1,28 @@
+title: Batch
+description: Lists the ready items, works on each in its own run in parallel, and goes round again while items remain.
+steps:
+  - id: list
+    script: { run: list_items.sh }
+    outputs:
+      items: { type: list, description: "Ready items: [{id, title}]" }
+  - id: confirm
+    needs: [list]
+    gate: { question: "Start these items? {{ steps.list.outputs.items }}" }
+  - id: spawn
+    needs: [confirm]
+    inputs: { items: "{{ steps.list.outputs.items }}" }
+    fanout:
+      playbook: batch_item
+      items: "{{ inputs.items }}"
+      key: "{{ item.id }}"
+      inputs: { item_id: "{{ item.id }}", title: "{{ item.title }}" }
+      workspace_name: "Batch: {{ item.id }}"
+      max_active: 3
+    on: { some_failed: complete }
+    timeout: 8h
+  - id: check_more
+    needs: [spawn]
+    script: { run: check_more.sh }
+    outcomes: [done, more]
+    on:
+      more: { goto: list, max_loops: 10 }
