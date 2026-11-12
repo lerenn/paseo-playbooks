@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { Gate, Run } from "../shared/types";
 import { isActive } from "../shared/types";
 import { type BusEvent, type EventBus, type EventTypeDef } from "./bus";
+import { formatSlowDuration } from "../shared/slow";
 import { slowEntry, SlowIndex } from "./slow";
 import { failedListing, gateListing, type GateListing } from "./overseer";
 
@@ -110,7 +111,7 @@ export const OVERSIGHT_TYPES: EventTypeDef[] = [
     payload: z.object({ ...stepFields, elapsedMs: z.number(), baselineMs: z.number(), factor: z.number(), ratio: z.number(), samples: z.number().int() }),
     line: (event) => {
       const p = event.payload as { stepId: string; elapsedMs: number; baselineMs: number; ratio: number };
-      return `- step.slow: step ${p.stepId} of ${runName(event.payload)} has run ${Math.round(p.elapsedMs / 1000)}s, ${p.ratio}x the usual ${Math.round(p.baselineMs / 1000)}s. It may be stuck. Tools: get_run { runId: "${event.runId}" }, read_agent_conversation.`;
+      return `- step.slow: step ${p.stepId} of ${runName(event.payload)} has run ${formatSlowDuration(p.elapsedMs)}, ${p.ratio}x the usual ${formatSlowDuration(p.baselineMs)}. It may be stuck. Tools: get_run { runId: "${event.runId}" }, read_agent_conversation.`;
     },
   },
   {

@@ -10,6 +10,16 @@ export const DEFAULT_SLOW_WARNING: SlowWarning = { runs: 10, factor: 2 };
 /** Fewer completed samples than this and a step has no baseline, so it never warns. */
 export const MIN_SLOW_SAMPLES = 3;
 
+/**
+ * Completed steps shorter than this are not baseline samples: they did not really run (a step completed
+ * at once, an empty batch, an auto-completion), and counting them drags the usual duration to ~0 so that any
+ * real run looks hundreds of times slower.
+ */
+export const MIN_SLOW_SAMPLE_MS = 1_000;
+
+/** A step that has taken less than this never warns, whatever the ratio: a few seconds is not "stuck". */
+export const MIN_SLOW_ELAPSED_MS = 10_000;
+
 /** What the warning needs of a step: its status and when it started and ended (null = not yet). */
 export interface SlowStepView {
   status: string;
@@ -82,7 +92,7 @@ export function baseline(history: readonly SlowRunView[], playbook: string, step
     if (!step || step.status !== "completed") continue;
     const end = ms(step.endedAt);
     const duration = elapsedMs(step, 0);
-    if (end === null || duration === null) continue;
+    if (end === null || duration === null || duration < MIN_SLOW_SAMPLE_MS) continue;
     samples.push({ end, duration });
   }
   const latest = samples.sort((a, b) => b.end - a.end).slice(0, runs);
@@ -96,7 +106,7 @@ export function slowSteps(run: SlowRunView, history: readonly SlowRunView[], now
   const slow: Record<string, SlowInfo> = {};
   for (const [stepId, step] of Object.entries(run.steps)) {
     const elapsed = elapsedMs(step, now);
-    if (elapsed === null) continue;
+    if (elapsed === null || elapsed < MIN_SLOW_ELAPSED_MS) continue;
     const base = baseline(history, run.playbook.id, stepId, runs, run.id);
     if (base === null || base.mean <= 0 || elapsed <= factor * base.mean) continue;
     slow[stepId] = { elapsedMs: elapsed, baselineMs: base.mean, ratio: elapsed / base.mean, samples: base.samples };
@@ -109,8 +119,9 @@ export function keepSlow(shown: Record<string, SlowInfo>, current: Record<string
   return { ...shown, ...current };
 }
 
-/** `45s`, `12m`, `1h05m`. */
+/** `<1s`, `45s`, `12m`, `1h05m`. A non-zero duration is never shown as `0s`. */
 export function formatSlowDuration(value: number): string {
+  if (value > 0 && value < 500) return "<1s";
   const seconds = Math.round(value / 1000);
   if (seconds < 60) return `${seconds}s`;
   const minutes = Math.round(seconds / 60);

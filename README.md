@@ -245,7 +245,7 @@ with that tag.
   the daemon is down.
 - Slow-step warning: a step that takes more than `factor` (default 2) times the mean duration of its last `runs`
   (default 10, at least 3) completed runs of the same playbook and step gets a yellow triangle in the run's row on the
-  Playbooks screen and on the step in the panel, with e.g. "12m, 3.1x the usual 4m". It needs 3 completed runs;
+  Playbooks screen and on the step in the panel, with e.g. "12m, 3.1x the usual 4m". It needs 3 completed runs, ignores samples under 1s (steps that did not really run) and never warns under 10s;
   it is computed from the run history the panel has loaded (nothing is stored) and, once shown, stays on screen.
   Set `slow_warning: { runs, factor }` in a playbook or in `defaults/main.yaml` (the playbook's wins, field by field).
 - Slow steps for agents (same rule, `shared/slow.ts`, but on the server's whole run history): `get_run` shows
