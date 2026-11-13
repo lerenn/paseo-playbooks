@@ -1,7 +1,7 @@
 import { useRpc } from "@getpaseo/plugin/client";
 import { useEffect, useState } from "react";
 import { Pressable, Text, View } from "react-native";
-import { tokensOf, type AgentRow, type Analytics, type UsageRow } from "../shared/analytics";
+import { tokensOf, type AgentRow, type Analytics, type DailySeries, type UsageRow } from "../shared/analytics";
 import { analyticsStateRpc } from "../shared/contracts";
 import type { Usage } from "../shared/types";
 import type { Theme } from "./theme";
@@ -19,6 +19,86 @@ export function compactNumber(value: number): string {
   return String(Math.round(value));
 }
 
+function localTimeZone(): string | undefined {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+const SERIES_COLORS = ["#4C78A8", "#F58518", "#54A24B", "#B279A2", "#E4B73D"];
+
+/** Tokens per day of one breakdown: stacked bars, one colour per group (the biggest ones; the rest are "Other"). Tap a day for exact values. */
+function DailyChart(props: { theme: Theme; title: string; chart: DailySeries | undefined }) {
+  const { theme, chart } = props;
+  const [picked, setPicked] = useState<number | null>(null);
+  if (!chart || chart.series.length === 0) return null;
+  const colorOf = (index: number, other: boolean) => (other ? theme.colors.foregroundMuted : SERIES_COLORS[index % SERIES_COLORS.length]!);
+  const totals = chart.days.map((_, i) => chart.series.reduce((sum, row) => sum + row.tokens[i]!, 0));
+  const peak = Math.max(...totals, 1);
+  const lastWithData = totals.reduce((found, value, i) => (value > 0 ? i : found), chart.days.length - 1);
+  const shown = picked !== null && picked < chart.days.length ? picked : lastWithData;
+  const height = 96;
+  const muted = theme.colors.foregroundMuted;
+  return (
+    <View style={{ gap: 8 }}>
+      <Text accessibilityRole="header" style={{ color: theme.colors.foreground, fontSize: 15, fontWeight: "700" }}>
+        {props.title}
+      </Text>
+      <View style={{ gap: 8, borderRadius: 10, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface1, padding: 12 }}>
+        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 12 }}>
+          {chart.series.map((row, index) => (
+            <View key={row.key} style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
+              <View style={{ width: 9, height: 9, borderRadius: 2, backgroundColor: colorOf(index, row.other) }} />
+              <Text style={{ color: theme.colors.foreground, fontSize: 11 }}>
+                {row.key} · {compactNumber(row.total)}
+              </Text>
+            </View>
+          ))}
+        </View>
+        <View style={{ flexDirection: "row", alignItems: "flex-end", height, gap: chart.days.length > 45 ? 1 : 2 }}>
+          {chart.days.map((day, i) => (
+            <Pressable
+              key={day}
+              accessibilityRole="button"
+              accessibilityLabel={`${day}: ${totals[i]!.toLocaleString()} tokens`}
+              onPress={() => setPicked(i)}
+              style={{ flex: 1, height, justifyContent: "flex-end", borderRadius: 2, backgroundColor: i === shown ? theme.colors.surface2 : "transparent" }}
+            >
+              <View style={{ height: totals[i]! > 0 ? Math.max(2, Math.round((totals[i]! / peak) * (height - 4))) : 0, flexDirection: "column-reverse", overflow: "hidden", borderRadius: 2 }}>
+                {chart.series.map((row, index) =>
+                  row.tokens[i]! > 0 ? <View key={row.key} style={{ flex: row.tokens[i]!, backgroundColor: colorOf(index, row.other) }} /> : null,
+                )}
+              </View>
+            </Pressable>
+          ))}
+        </View>
+        <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
+          <Text style={{ color: muted, fontSize: 11 }}>{chart.days[0]}</Text>
+          <Text style={{ color: muted, fontSize: 11 }}>peak {peak.toLocaleString()} tokens/day</Text>
+          <Text style={{ color: muted, fontSize: 11 }}>{chart.days.at(-1)}</Text>
+        </View>
+        <View style={{ gap: 2 }}>
+          <Text style={{ color: theme.colors.foreground, fontSize: 12, fontWeight: "600" }}>
+            {chart.days[shown]} · {totals[shown]!.toLocaleString()} tokens
+          </Text>
+          {chart.series
+            .map((row, index) => ({ row, index }))
+            .filter(({ row }) => row.tokens[shown]! > 0)
+            .map(({ row, index }) => (
+              <Text key={row.key} style={{ color: muted, fontSize: 11 }}>
+                <Text style={{ color: colorOf(index, row.other) }}>■ </Text>
+                {row.key}: {row.tokens[shown]!.toLocaleString()}
+              </Text>
+            ))}
+          {totals[shown] === 0 ? <Text style={{ color: muted, fontSize: 11 }}>No usage that day.</Text> : null}
+        </View>
+      </View>
+    </View>
+  );
+}
+
 /** The Analytics tab of the Playbooks screen: where the tokens went, by playbook, step, role and model. */
 export function AnalyticsView(props: { theme: Theme }) {
   const { theme } = props;
@@ -30,7 +110,7 @@ export function AnalyticsView(props: { theme: Theme }) {
   useEffect(() => {
     let live = true;
     setError(null);
-    fetchAnalytics(days === undefined ? {} : { days })
+    fetchAnalytics({ ...(days === undefined ? {} : { days }), timeZone: localTimeZone() })
       .then((result) => live && setData(result))
       .catch((failure: unknown) => live && setError(failure instanceof Error ? failure.message : String(failure)));
     return () => {
@@ -58,9 +138,13 @@ export function AnalyticsView(props: { theme: Theme }) {
             </Text>
           ) : null}
           <Table theme={theme} title="By playbook" rows={data.byPlaybook} />
+          <DailyChart theme={theme} title="By playbook per day" chart={data.daily?.byPlaybook} />
           <Table theme={theme} title="By step" rows={data.byStep} showWaste />
+          <DailyChart theme={theme} title="By step per day" chart={data.daily?.byStep} />
           <Table theme={theme} title="By role" rows={data.byRole} showWaste />
+          <DailyChart theme={theme} title="By role per day" chart={data.daily?.byRole} />
           <Table theme={theme} title="By model" rows={data.byModel} showWaste />
+          <DailyChart theme={theme} title="By model per day" chart={data.daily?.byModel} />
           <TopAgents theme={theme} rows={data.topAgents} />
         </>
       ) : null}

@@ -226,7 +226,7 @@ export const needsYouRpc = defineRpc({
 /** Where the tokens went, summed over the runs on disk (archived ones too): by playbook, step, role and model. */
 export const analyticsStateRpc = defineRpc({
   name: "analytics.state",
-  input: z.object({ days: z.number().int().positive().optional(), playbook: z.string().optional(), projectId: z.string().optional() }),
+  input: z.object({ days: z.number().int().positive().optional(), playbook: z.string().optional(), projectId: z.string().optional(), timeZone: z.string().optional() }),
   output: AnalyticsSchema,
 });
 
