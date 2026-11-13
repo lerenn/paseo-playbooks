@@ -86,7 +86,7 @@
 <li>On start, steps whose agents stopped without reporting are marked lost and the manager is told. A run whose manager no longer exists is failed, and can be recovered with <code>restart_run</code>.</li>
 <li>If the manager is archived during a run, the run fails with "manager lost (archived)". The exception is a manager archived along with the agent that created it: a new Playbook Manager takes the run over, and completed steps keep their outputs.</li>
 <li>A completed or canceled isolated run's worktree and branch are removed (see <a href="reference.html#isolation">isolated runs</a>). Step agents are archived when no longer needed if <code>role.archive_agents</code> is true (the default).</li>
-<li>If a step fails because its provider is out of tokens and its tier lists several providers, the attempt restarts on the next one. The exhausted <code>provider/model</code> is skipped for <code>providers.exhausted_for</code> (default 1h).</li>
+<li>If a step fails because its provider is out of tokens and its tier lists several providers, the attempt restarts on the next one. The exhausted <code>provider/model</code> is skipped for <code>providers.exhausted_for</code> (default 1h). Before starting, the plugin also skips a provider whose reported usage is already full (<code>providers.usage</code>), for every run on the host.</li>
 <li>Two limits: a plugin reload removes the playbook tools from running agents until their next message, and a busy agent's queued kickoff is kept in memory only, so a daemon restart before it is delivered leaves the run with nothing driving it (cancel it and start again).</li>
 </ul>
 

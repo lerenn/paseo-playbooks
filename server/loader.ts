@@ -501,6 +501,16 @@ const RawDefaultsSchema = z.object({
         max_wait: z.string().optional(),
         /** `provider/model` targets every step agent of these playbooks falls back to, in order, after its own chain (`[codex/gpt-5.5, claude/claude-opus-5-5]`). Default none. */
         fallback: z.array(z.string()).optional(),
+        /** Skip a target whose provider's reported usage is full, before starting on it. */
+        usage: z
+          .object({
+            /** Read the provider usage the daemon reports (`paseo usage`) and skip full targets. Default true. */
+            check: z.boolean().optional(),
+            /** A target is skipped when a usage window of its provider is at or above this percentage (1-100). Default 100. */
+            threshold: z.number().optional(),
+          })
+          .strict()
+          .optional(),
       })
       .strict()
       .optional(),
@@ -691,6 +701,8 @@ async function loadDefaults(root: string, relDir: string): Promise<{ defaults: R
   for (const entry of parsed.data.providers?.fallback ?? []) {
     if (!/^[^/\s]+\/\S+$/.test(entry)) errors.push(`${rel}: providers.fallback: "${entry}" is not a provider/model such as claude/claude-opus-5-5`);
   }
+  const threshold = parsed.data.providers?.usage?.threshold;
+  if (threshold !== undefined && !(threshold > 0 && threshold <= 100)) errors.push(`${rel}: providers.usage.threshold: expected a percentage from 1 to 100, got ${threshold}`);
   if (parsed.data.providers?.max_wait !== undefined) {
     if (parsed.data.providers.on_exhausted !== "wait") errors.push(`${rel}: providers.max_wait only applies with providers.on_exhausted: wait`);
     if (parseDuration(parsed.data.providers.max_wait) === null) errors.push(`${rel}: providers.max_wait: expected a duration such as 30m or 2h`);
@@ -1905,6 +1917,8 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     onExhausted: defaults.providers?.on_exhausted ?? "fail",
     maxWaitMs: (defaults.providers?.max_wait ? parseDuration(defaults.providers.max_wait) : null) ?? null,
     fallback: defaults.providers?.fallback ?? [],
+    usageCheck: defaults.providers?.usage?.check ?? true,
+    usageThreshold: defaults.providers?.usage?.threshold ?? 100,
     slowWarning: { runs: pb.slow_warning?.runs ?? defaults.slow_warning?.runs ?? DEFAULT_SLOW_WARNING.runs, factor: pb.slow_warning?.factor ?? defaults.slow_warning?.factor ?? DEFAULT_SLOW_WARNING.factor },
     managerInstructions: managerInstructions(folder.managerText, qid, pb.manager?.prompt, [...blocks.values()]),
     outcomes: playbookOutcomes,

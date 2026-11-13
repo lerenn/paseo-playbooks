@@ -94,6 +94,7 @@ providers:             # provider failover
   on_exhausted: fail   # when every provider of a role is out of tokens: fail (to the manager, default) | wait (restart by itself)
   # max_wait: 12h      # with wait: give up and fail to the manager after this long (default: no limit)
   fallback: [codex/gpt-5.5, claude/claude-opus-5-5]  # provider/model targets every step falls back to, after its own tier (default none)
+  usage: { check: true, threshold: 100 }  # skip a target whose provider's reported usage window is at/over threshold % (defaults shown; check: false disables)
 timeout: 1h            # default step timeout (optional)
 slow_warning: { runs: 10, factor: 2 }  # warn when a step takes more than factor x the mean of its last `runs` completed runs (defaults shown; also allowed in a playbook)
 role:                  # defaults for agent steps, in the shape of a step's `role:` block
@@ -128,6 +129,19 @@ earliest end of `exhausted_for`; it waits again if the provider is still out) un
 (default: no limit) is spent. Do not nudge or complete a waiting step. A multi-entry tier cannot be combined with inline `provider`, `model`, `mode`
 or `thinking` on the same `agent` block: define another tier. On `manager` it only picks the first
 entry when a manager is created; the manager never switches mid-run.
+
+Provider usage: before a step agent, gate decider or manager starts, the plugin reads the usage the
+daemon reports (`paseo usage`; host-wide, not per run, cached about 45 s, never forced to refresh) and skips every
+target of the tier, in order, whose provider has a usage window at or above `providers.usage.threshold` (default
+`100`), starting on the first target not skipped, untested. A window whose id names a model
+(`weekly_model_fable`) only counts for a target whose model id contains that name; other windows are
+provider-wide. A provider whose usage is missing, `unavailable`, in error, without windows, or unreadable is
+treated as usable, and the failure-based fail-over above stays the safety net (usage only improves the order).
+A skip is logged as `provider_usage_skip` (percentage and reset time) and reported by `start_step` and the
+fail-over notice. If every target is skipped the step starts on the primary and, on its first quota failure, fails
+over, waits (`on_exhausted: wait`, until the earliest reset time the provider windows give, else `exhausted_for`)
+or fails as above. `providers: { usage: { check: false } }` turns it off. Because usage is per host, a new run
+also skips a full provider from the start, while `run.exhausted` (failures) stays per run.
 
 `providers.fallback` (a list of `provider/model`) is appended to every step agent's chain, after its
 tier's own entries (duplicates skipped), so a role with a single model still moves on when it runs out.

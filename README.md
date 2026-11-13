@@ -276,6 +276,13 @@ with that tag.
   with inline `provider`, `model`, `mode` or `thinking` on the same `agent` block. Each entry has its own
   `mode` and `thinking`. The run log gets a `provider_exhausted` line.
   The manager itself never switches mid-run (see `docs/adrs/2026-11-10-provider-fallback-tiers.md`).
+- Usage-aware fallback: `providers: { usage: { check: true, threshold: 100 } }` (defaults; `check: false` disables).
+  Before a step agent, gate decider or manager starts, the plugin reads the provider usage the daemon reports
+  (`paseo usage`, per host, so every run sees it) and skips the tiers' targets whose provider has a usage window
+  at or above the threshold, starting on the first one that is not. A window named for another model
+  (`weekly_model_<x>`) is ignored for a target whose model does not contain `<x>`. If usage cannot be read, the target is
+  used, and the failure-based fail-over above stays the safety net. The run log gets `provider_usage_skip`.
+  With `on_exhausted: wait` the wake-up is the provider's reset time. See `docs/adrs/2026-11-13-usage-aware-fallback.md`.
 - `providers: { fallback: [codex/gpt-5.5, claude/claude-opus-5-5] }` in `defaults/main.yaml` adds
   `provider/model` fallbacks to every step agent, after its tier's own entries, so a role with one model
   moves on too. Out of tokens is also detected when a turn ends normally on the provider's notice
