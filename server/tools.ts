@@ -224,7 +224,7 @@ export function runFull(run: Run, only?: string[], slow: Record<string, SlowInfo
             ...(step.kind === "script" ? { script: step.script, checks: attempt?.checks ?? 0, nextCheckAt: attempt?.nextCheckAt ?? null } : {}),
             ...(step.kind === "branch" ? { chosen: state.branch } : {}),
             ...(step.kind === "fanout" && state.fanout && state.status !== "pending" && state.status !== "ready"
-              ? { fanout: { playbook: step.fanout!.playbook, loop: state.fanout.loop, ...engine.fanoutCounts(state.fanout), children: state.fanout.children.map((child) => ({ key: child.key, status: child.status, runId: child.runId, ...(child.error ? { error: child.error } : {}) })), passes: state.fanoutPast.length } }
+              ? { fanout: { playbook: step.fanout!.playbook, loop: state.fanout.loop, ...engine.fanoutCounts(state.fanout), children: state.fanout.children.map((child) => ({ key: child.key, status: child.status, runId: child.runId, ...(child.error ? { error: child.error } : {}), ...(child.previous.length ? { previous: child.previous.map((entry) => ({ runId: entry.runId, status: entry.status, reason: entry.reason })) } : {}) })), passes: state.fanoutPast.length } }
               : {}),
             ...(state.status === "skipped" ? { skipped: run.history.findLast((event) => event.type === "step_skipped" && event.stepId === id)?.detail ?? null } : {}),
             report: attempt?.report ?? null,
@@ -349,7 +349,7 @@ export function definitionNote(run: Pick<Run, "definition">): string {
 }
 
 /** The two manager-tools a Sidekick also gets (it manages no run, so not the others): see which runs it can start. */
-export const SIDEKICK_MANAGER_TOOLS = ["list_playbooks", "start_playbook"];
+export const SIDEKICK_MANAGER_TOOLS = ["list_playbooks", "start_playbook", "replace_child"];
 
 /** The part of the manager tools given to a Sidekick: list_playbooks and start_playbook (with workspaceId, newWorkspace, forJob). */
 export function sidekickStartTools(runtime: Runtime): AgentToolDefinition[] {
@@ -402,12 +402,17 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
           .string()
           .optional()
           .describe("A batch manager starting the follow-up (rework) of a detached job it settled with an outcome (ejected...): its job id. The plugin records the run you start as that job's follow-up (record_followup, get_run `jobs[].followUps`) so the batch is not left with a hand-off pending. Works whether the run starts in a workspace of its own or in yours (isolated playbook)"),
+        replaces: z
+          .string()
+          .optional()
+          .describe("A fan-out child run this run replaces (e.g. you restart your own run, canceling it and starting a new one for the same item): its run id. The new run is attached to the same item of the parent's fan-out (same key, same slot), the replaced run is canceled if still active, and the fan-out ends only when the last run of the item's chain does. The new run must be of the same playbook (its inputs may differ). Refused if the run is not a child of a running fan-out step. Starts in a new workspace, like forJob"),
+        replaceReason: z.string().max(500).optional().describe("With replaces: why (shown in the item's chain, get_run, the events and the Playbooks panel)"),
         autoStart: z
           .boolean()
           .default(true)
           .describe("Start the run's ready agent steps right away, as start_step would with no brief (default true). false: leave them ready; with workspaceId or a Sidekick, the new manager then waits to be told to start them"),
       }),
-      execute: ({ playbook, inputs, name, newWorkspace: requested, workspaceId, autoStart, workspaceName, forJob }, { agent }) =>
+      execute: ({ playbook, inputs, name, newWorkspace: requested, workspaceId, autoStart, workspaceName, forJob, replaces, replaceReason }, { agent }) =>
         guard(async () => {
           const sidekick = await runtime.isSidekick(agent.id);
           // New workspace by default. Exceptions: a Playbook Manager the plugin created for a reserved workspace creates its run there;
@@ -425,10 +430,18 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
             if (!newWorkspace && !inPlace) throw new UserError("forJob records the run you start as the job's follow-up: it starts in a new workspace, not as your own run");
             runtime.checkFollowUp(forJob);
           }
+          if (replaces) {
+            if (!newWorkspace && !inPlace) throw new UserError("replaces attaches the run you start to a fan-out item: it starts in a new workspace, not as your own run");
+            runtime.checkReplacement(replaces, playbook);
+          }
+          const afterStart = async (started: { runId: string }) => {
+            if (forJob) await runtime.recordFollowUp(forJob, { runId: started.runId, note: null, by: agent.id });
+            if (replaces) await runtime.replaceChild({ runId: replaces, newRunId: started.runId, reason: replaceReason ?? null, by: agent.id, cancelBy: runtime.allRuns().find((run) => run.id === replaces)?.managerAgentId === agent.id ? null : `by agent ${agent.id}` });
+          };
           if (workspaceName?.trim() && !newWorkspace) throw new UserError("workspaceName names a new workspace: it does not apply to a run that starts in an existing one (your reserved workspace, or an isolated run in yours)");
           if (inPlace) {
             const started = await runtime.startPlaybookInWorkspace(agent, { playbook, inputs, workspaceId: target!, newWorkspace: false, autoStart });
-            if (forJob) await runtime.recordFollowUp(forJob, { runId: started.runId, note: null, by: agent.id });
+            await afterStart(started);
             return ok(
               `Run ${started.runId} of "${playbook}" is starting in workspace ${started.workspaceId}, in its own private worktree (isolation: worktree), with ${started.managerAgentId ? `its own Playbook Manager (${started.managerAgentId})` : "no Playbook Manager (manager.mode: none): the plugin drives it"}. It shows in that workspace's Playbook panel next to its other runs. You do not manage it: the plugin tells you how it goes through your event subscription (list_runs shows it).`,
               started,
@@ -436,7 +449,7 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
           }
           if (workspaceId || sidekick) {
             const started = await runtime.startPlaybookInWorkspace(agent, { playbook, inputs, workspaceId, newWorkspace: true, autoStart, workspaceName });
-            if (forJob) await runtime.recordFollowUp(forJob, { runId: started.runId, note: null, by: agent.id });
+            await afterStart(started);
             return ok(
               `Run ${started.runId} of "${playbook}" is starting in a new workspace ${started.workspaceId} with ${started.managerAgentId ? `its own Playbook Manager (${started.managerAgentId})` : "no Playbook Manager (manager.mode: none): the plugin drives it"}. You do not manage it: the plugin tells you how it goes through your event subscription (list_runs shows it).`,
               started,
@@ -444,7 +457,7 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
           }
           if (newWorkspace) {
             const started = await runtime.startPlaybookElsewhere(agent, playbook, inputs, workspaceName);
-            if (forJob) await runtime.recordFollowUp(forJob, { runId: started.runId, note: null, by: agent.id });
+            await afterStart(started);
             return ok(
               `Run ${started.runId} of "${playbook}" is starting in a new workspace (${started.workspaceId}) with ${started.managerAgentId ? `its own Playbook Manager (${started.managerAgentId})` : "no Playbook Manager (manager.mode: none): the plugin drives it"}. You do not manage it: carry on with your own run.`,
               started,
@@ -821,6 +834,28 @@ export function runTools(runtime: Runtime): AgentToolDefinition[] {
         guard(async () => {
           const result = await runtime.bus.recent(query);
           return ok(result.events.length === 0 ? `No event${query.since === undefined ? "" : ` after ${query.since}`}. lastSeq: ${result.lastSeq}.` : JSON.stringify(result, null, 2), result);
+        }),
+    }),
+    defineAgentTool({
+      name: "replace_child",
+      description:
+        "A child run of a fan-out step (a run whose parent is a fan-out item, get_run on the parent lists them) was replaced by a NEW run of the same playbook (e.g. its manager canceled it and started another for the same ticket): link them. newRunId (start_playbook gives it; it may still be starting) becomes the current run of runId's item: same key, same slot (max_active is not charged twice), and the item stays running; the fan-out ends only when the last run of the item's chain ends, and the replaced run is not counted as a failure of the item. runId is canceled if it is still active. get_run on the parent shows `children[].previous` (run, status, reason). Callable by the child's manager, the parent's manager or any other agent. Also: start_playbook with `replaces` starts and links in one call; restart_run of a child needs no call (the item follows its run). Refused when runId is not a child of a RUNNING fan-out step (an ended fan-out is not reopened), when newRunId is of another playbook, or already belongs to another item. Idempotent: repeating the same link changes nothing (changed: false); replacing a run that was already replaced by another is refused (pass the current run). Emits fanout.child_replaced.",
+      input: z.object({
+        runId: IdArg.describe("The child run being replaced"),
+        newRunId: IdArg.describe("The run that replaces it"),
+        reason: z.string().max(500).optional().describe("Why (e.g. \"Restarting on the fixed playbook\"); shown in the chain"),
+      }),
+      execute: ({ runId, newRunId, reason }, { agent }) =>
+        guard(async () => {
+          const old = runtime.allRuns().find((run) => run.id === runId);
+          const wasActive = old !== undefined && !isTerminal(old.status);
+          const result = await runtime.replaceChild({ runId, newRunId, reason: reason ?? null, by: agent.id, cancelBy: old?.managerAgentId === agent.id ? null : `by agent ${agent.id}` });
+          return ok(
+            result.changed
+              ? `Run ${newRunId} now replaces ${runId} as item "${result.key}" of fan-out step "${result.stepId}" of run ${result.parentRunId}${wasActive ? " (the replaced run was canceled)" : ""}. Earlier runs of the item: ${result.previous.join(", ")}. The fan-out keeps waiting for ${newRunId}.`
+              : `Nothing changed: ${newRunId} already is the current run of item "${result.key}" of run ${result.parentRunId}.`,
+            result,
+          );
         }),
     }),
     defineAgentTool({

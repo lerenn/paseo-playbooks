@@ -427,6 +427,7 @@ export function StepSheet(props: {
                     {child.key} · {child.status.replace("_", " ")}
                     {child.runId ? ` · ${child.runId}` : ""}
                     {child.error ? ` · ${child.error}` : ""}
+                    {child.previous.length ? ` · restarted ×${child.previous.length} (earlier: ${child.previous.map((entry) => `${entry.runId} ${entry.status.replace("_", " ")}`).join(", ")})` : ""}
                   </Line>
                 ))}
               </>

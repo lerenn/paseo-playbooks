@@ -51,6 +51,7 @@ import { DEFAULT_SIDEKICK_RESTART_TOKENS, DEFAULT_SIDEKICK_SUBAGENT, SIDEKICK_LA
 import { BusError, EventBus, globToRegExp, type BusEvent, type Notifier, type Subscription } from "./bus";
 import { OversightProducer, registerOversightTypes } from "./oversight-events";
 import { JOB_TYPES, publicJobEvents } from "./job-events";
+import { FANOUT_TYPES } from "./fanout-events";
 import { gateListing, listAttention, type GateFilter } from "./overseer";
 import { gateChatPrompt, managerLostNotice, gateDeciderPrompt, gateDeciderSystemPrompt, gateDecisionReminder, managerAfterRestart, managerKickoff, managerTakeover, reportReminder, resumeAfterRestart, silenceReminder, singletonKickoff, stepSystemPrompt, withPreamble } from "./prompts";
 import { askHumanText, choicesOfGate, waitsForHuman } from "../shared/gates";
@@ -433,6 +434,7 @@ export class Runtime {
     this.bus = new EventBus({ events: path.join(dir, "events.json"), subscriptions: path.join(dir, "subscriptions.json"), pending: path.join(dir, "pending-events.json") }, options.debounceMs === undefined ? {} : { debounceMs: options.debounceMs });
     registerOversightTypes(this.bus);
     for (const def of JOB_TYPES) this.bus.register(def);
+    for (const def of FANOUT_TYPES) this.bus.register(def);
     // The jobs of a pipeline: committed mutations become the public job.* events (job-events.ts), in order.
     let jobEvents: Promise<unknown> = Promise.resolve();
     store.onEvents((run, events) => {
@@ -1798,6 +1800,74 @@ export class Runtime {
       }
       engine.noteEvent(current, "fanout_canceled", step.id, `${outcomes.size} child run(s) stopped: ${reason}`, nowIso());
     });
+  }
+
+  // ---------------------------------------------------------------- replaced fan-out children
+
+  /**
+   * What a replacement of `replacedRunId` by a run of `playbookId` would touch, or the reason it is refused. `link` is the
+   * item it belongs to; `done` is true when the replacement is already recorded (a repeated call).
+   */
+  private replacementTarget(replacedRunId: string, newRun: { id: string; playbookId: string | null } | null): { parent: Run; stepId: string; child: FanoutChildState; done: boolean } {
+    const found = this.store.list().flatMap((parent) => { const hit = engine.findFanoutItem(parent, replacedRunId); return hit ? [{ parent, ...hit }] : []; })[0];
+    if (!found) {
+      const known = this.store.get(replacedRunId);
+      if (!known) throw new UserError(`unknown run "${replacedRunId}"`);
+      const owner = known.parent ? this.store.get(known.parent.runId) : undefined;
+      if (!known.parent) throw new UserError(`run ${replacedRunId} is not a child of a fan-out step: only a run a fan-out step started can be replaced (start a new run on its own and leave this one)`);
+      throw new UserError(`the fan-out step "${known.parent.stepId}" of run ${known.parent.runId} is no longer running${owner ? ` (${owner.steps[known.parent.stepId]?.status ?? "gone"})` : ""}: an ended fan-out is not reopened. Start the new run on its own`);
+    }
+    const step = engine.stepDef(found.parent, found.stepId);
+    if (!found.current) {
+      if (newRun && newRun.id === found.child.runId) return { parent: found.parent, stepId: found.stepId, child: found.child, done: true };
+      throw new UserError(`run ${replacedRunId} was already replaced: item "${found.child.key}" now runs as ${found.child.runId}. Pass that run to replace it again`);
+    }
+    if (newRun) {
+      if (newRun.id === replacedRunId) throw new UserError("a run cannot replace itself (restart_run reopens the same run: the item follows it by itself)");
+      if (newRun.playbookId !== null && newRun.playbookId !== step.fanout!.playbook) throw new UserError(`the new run is of "${newRun.playbookId}", but item "${found.child.key}" runs "${step.fanout!.playbook}": a replacement is a run of the same playbook (its inputs may differ)`);
+      const other = this.store.get(newRun.id)?.parent ?? [...this.reservations.values()].flat().find((reservation) => reservation.runId === newRun.id)?.parent;
+      if (other && !(other.runId === found.parent.id && other.stepId === found.stepId && other.key === found.child.key)) throw new UserError(`run ${newRun.id} already belongs to fan-out item "${other.key}" of run ${other.runId}`);
+    }
+    return { parent: found.parent, stepId: found.stepId, child: found.child, done: false };
+  }
+
+  /** Checks, without changing anything, that a run of `playbookId` can replace `replacedRunId` (start_playbook replaces checks it before it starts a run). */
+  checkReplacement(replacedRunId: string, playbookId: string): void {
+    this.replacementTarget(replacedRunId, { id: "", playbookId });
+  }
+
+  /**
+   * replace_child / start_playbook replaces: `newRunId` (a run, or one still being created) becomes the current run of the item
+   * `replacedRunId` belongs to. The replaced run is canceled if still active; the item stays running under the new run, takes
+   * no second slot, and the fan-out joins only when the last run of the chain ends. Idempotent.
+   */
+  async replaceChild(input: { runId: string; newRunId: string; reason: string | null; by: string | null; cancelBy: string | null }): Promise<{ parentRunId: string; stepId: string; key: string; previous: string[]; changed: boolean }> {
+    const created = this.store.get(input.newRunId);
+    const reservation = [...this.reservations.values()].flat().find((candidate) => candidate.runId === input.newRunId);
+    const target = this.replacementTarget(input.runId, { id: input.newRunId, playbookId: created?.playbook.id ?? reservation?.playbook.id ?? null });
+    const report = (changed: boolean) => {
+      const item = engine.findFanoutItem(this.store.get(target.parent.id)!, input.newRunId) ?? engine.findFanoutItem(this.store.get(target.parent.id)!, input.runId);
+      return { parentRunId: target.parent.id, stepId: target.stepId, key: target.child.key, previous: item?.child.previous.map((entry) => entry.runId) ?? [], changed };
+    };
+    if (target.done) return report(false);
+    if (!created && !reservation) throw new UserError(`unknown run "${input.newRunId}": start it first (start_playbook), then name it here`);
+    const old = this.store.get(input.runId);
+    const wasActive = old !== undefined && !isTerminal(old.status);
+    const link: NonNullable<Run["parent"]> = { runId: target.parent.id, stepId: target.stepId, key: target.child.key };
+    const result = await this.store.mutate(target.parent.id, (current) => {
+      const item = engine.findFanoutItem(current, input.runId);
+      if (!item?.current) return null;
+      // Linked before the old run is canceled: the item never shows as ended, so the scan cannot give its slot away or join without it.
+      const state = old && isTerminal(old.status) ? (old.status as "completed" | "failed" | "canceled") : item.child.status === "completed" || item.child.status === "failed" ? item.child.status : "canceled";
+      engine.replaceFanoutChild(current, item.stepId, item.child.key, { oldStatus: state, oldEndedAt: old && isTerminal(old.status) ? old.updatedAt : nowIso(), newRunId: input.newRunId, reason: input.reason ?? old?.failure ?? item.child.error, by: input.by, now: nowIso() });
+      return { restarts: item.child.previous.length };
+    });
+    if (!result) throw new UserError(`the fan-out step of run ${target.parent.id} changed while replacing: try again`);
+    if (created) await this.store.mutate(created.id, (current) => void (current.parent = link));
+    else if (reservation) reservation.parent = link;
+    if (wasActive) await this.cancelRun(input.runId, `replaced by run ${input.newRunId}${input.reason ? `: ${input.reason}` : ""}`, input.cancelBy).catch((error: unknown) => console.error(`[playbooks] could not cancel replaced child run ${input.runId}:`, errorText(error)));
+    await this.bus.emit("fanout.child_replaced", { runId: target.parent.id, stepId: target.stepId, key: link.key, replacedRunId: input.runId, newRunId: input.newRunId, reason: input.reason, restarts: result.restarts }, { runId: target.parent.id, source: "fanout" }).catch((error: unknown) => console.error("[playbooks] could not emit fanout.child_replaced:", errorText(error)));
+    return report(true);
   }
 
   // ---------------------------------------------------------------- hand-offs and singleton pipelines

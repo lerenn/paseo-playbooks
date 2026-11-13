@@ -2364,7 +2364,7 @@ export function startFanout(run: Run, stepId: string, input: { agentId: string; 
     const clash = seen.get(key);
     if (clash !== undefined) return fail(`items ${clash} and ${index} have the same key "${key}": a key must identify one item`);
     seen.set(key, index);
-    const child: FanoutChild = { key, index, item: JSON.stringify(item), inputs: {}, workspaceName: "", status: "pending", runId: null, workspaceId: null, error: null, startedAt: null, endedAt: null, outputs: {} };
+    const child: FanoutChild = { key, index, item: JSON.stringify(item), inputs: {}, workspaceName: "", status: "pending", runId: null, workspaceId: null, error: null, startedAt: null, endedAt: null, outputs: {}, previous: [] };
     const failChild = (error: string) => {
       child.status = "not_started";
       child.error = error;
@@ -2410,6 +2410,17 @@ export function syncFanout(
     changed = true;
   };
   for (const child of state.children) {
+    // restart_run reopened the run of an item that had ended: the item follows it again (same key, same run), and its earlier end is kept.
+    if (child.runId && (child.status === "completed" || child.status === "failed" || child.status === "canceled")) {
+      const reopened = input.runOf(child.runId);
+      if (reopened && !isTerminal(reopened.status)) {
+        child.previous.push({ runId: child.runId, status: child.status, reason: child.error ?? "its run was restarted", endedAt: child.endedAt, replacedAt: input.now, by: null });
+        Object.assign(child, { status: "running", error: null, endedAt: null, outputs: {} });
+        changed = true;
+        log(run, input.now, "fanout_child_replaced", stepId, `${child.key}: run ${child.runId} restarted in place`);
+        continue;
+      }
+    }
     if (child.status !== "starting" && child.status !== "running") continue;
     const childRun = child.runId ? input.runOf(child.runId) : undefined;
     if (childRun) {
@@ -2430,6 +2441,37 @@ export function syncFanout(
   }
   if (changed) log(run, input.now, "fanout_progress", stepId, fanoutSummaryText(state));
   return changed;
+}
+
+/** The item of a running fan-out step whose chain holds the run, as its current run or an earlier one. */
+export function findFanoutItem(run: Run, childRunId: string): { stepId: string; child: FanoutChild; current: boolean } | null {
+  for (const step of run.playbook.steps) {
+    const state = run.steps[step.id];
+    if (!step.fanout || !state?.fanout || state.status !== "running") continue;
+    for (const child of state.fanout.children) {
+      if (child.runId === childRunId) return { stepId: step.id, child, current: true };
+      if (child.previous.some((entry) => entry.runId === childRunId)) return { stepId: step.id, child, current: false };
+    }
+  }
+  return null;
+}
+
+/**
+ * Makes `newRunId` the current run of an item: the run it replaces moves to the item's chain (`previous`, with how it ended and
+ * why), and the item runs again under the new one (`starting` until its run exists). The item never counted as ended, so it
+ * takes no second slot and the join waits for the last run of the chain.
+ */
+export function replaceFanoutChild(
+  run: Run,
+  stepId: string,
+  key: string,
+  input: { oldStatus: "completed" | "failed" | "canceled" | "not_started"; oldEndedAt: string | null; newRunId: string; reason: string | null; by: string | null; now: string },
+): void {
+  const child = run.steps[stepId]?.fanout?.children.find((candidate) => candidate.key === key);
+  if (!child?.runId) throw new EngineError(`item "${key}" has no run to replace`);
+  child.previous.push({ runId: child.runId, status: input.oldStatus, reason: input.reason, endedAt: input.oldEndedAt, replacedAt: input.now, by: input.by });
+  Object.assign(child, { status: "starting", runId: input.newRunId, workspaceId: null, error: null, startedAt: input.now, endedAt: null, outputs: {} });
+  log(run, input.now, "fanout_child_replaced", stepId, `${key}: ${child.previous.at(-1)!.runId} → ${input.newRunId}${input.reason ? ` (${input.reason.slice(0, 200)})` : ""}`);
 }
 
 export interface FanoutCounts {
@@ -2485,6 +2527,7 @@ export function fanoutResult(state: FanoutState): { outcome: string; summary: st
     key: child.key,
     runId: child.runId ?? "",
     outcome: (isChildDone(child) ? child.status : "not_started") as string,
+    ...(child.previous.length ? { restarts: child.previous.length, previous_runs: child.previous.map((entry) => entry.runId).join(",") } : {}),
     ...(child.error ? { error: child.error.slice(0, 200) } : {}),
     ...(withOutputs ? Object.fromEntries(Object.entries(child.outputs).map(([name, value]) => [`output_${name}`, value])) : {}),
   });

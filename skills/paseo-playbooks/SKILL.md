@@ -509,6 +509,22 @@ workspace** with its own Playbook Manager, keeps at most `max_active` going, and
   `any_failed` (boolean). An empty list completes at once with `all_completed`.
 - Canceling or failing the parent run, resetting the step with a `goto`, or its `timeout` cancels the active children and
   drops the waiting ones (`cancel_children: false` leaves them running). Archiving the ended parent does not touch them.
+- **Replaced children.** A child's manager sometimes cancels its run and starts a new one of the same playbook for the same
+  item (`Restarting on the fixed playbook`). Link them so the item stays running: `replace_child { runId: "<old>",
+  newRunId: "<new>", reason? }` (child's manager, parent's manager or any other non-step agent), or in one call
+  `start_playbook { playbook, inputs, replaces: "<old run id>", replaceReason? }` (new workspace, like `forJob`). The new
+  run (it may still be starting) becomes the item's current run: same key, same slot (`max_active` is not charged twice;
+  the replacement may take a slot a waiting item just got, so the cap can be exceeded by the replacements only), same
+  position in the lanes. The earlier run moves to the item's chain (`previous`: run, status, reason) and is not a failure
+  of the item; the fan-out joins when the last run of the chain ends. Replacing a run that is still active cancels it.
+  `restart_run` of a child needs no call: the run keeps its id and parent, and the item follows it again (the earlier end is
+  kept in the chain). Refused: a run that is not a child of a **running** fan-out step (an ended fan-out is not reopened),
+  a new run of another playbook (its inputs may differ) or already attached to another item, a run that was already
+  replaced (the error names the current one). Repeating a call changes nothing (`changed: false`). `get_run` on the parent
+  lists `children[].previous`; the lane shows `restarted ×N` (tap for the earlier runs); the run log has
+  `fanout_child_replaced`; the event bus has `fanout.child_replaced`; `results` entries carry `restarts` and `previous_runs`.
+  The chain is stored in the run file (older files load with empty chains); a replacement still being created when the
+  daemon restarts becomes `not_started` like any child whose start was cut.
 - A loop works with the existing mechanisms: a script step after the fan-out with outcomes `[done, more]` and
   `on: { more: { goto: list, max_loops: 10 } }`. Earlier passes' children stay viewable.
 - The plugin does the waiting (no agent, no tokens). Each child has its own manager: set `manager:` on the child playbook

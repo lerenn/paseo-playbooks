@@ -602,6 +602,20 @@ export type AttemptAgent = z.infer<typeof AttemptAgentSchema>;
 export const FanoutOutcomeSchema = z.enum(["completed", "failed", "canceled", "not_started"]);
 export type FanoutOutcome = z.infer<typeof FanoutOutcomeSchema>;
 
+/** An earlier run of a fan-out item that a later one replaced (or that was reopened): how it ended and why. */
+export const FanoutPreviousSchema = z.object({
+  runId: z.string(),
+  /** How that run stood when it was replaced. */
+  status: z.enum(["completed", "failed", "canceled", "not_started"]),
+  reason: z.string().nullable().default(null),
+  endedAt: z.string().nullable().default(null),
+  /** When the replacement was linked. */
+  replacedAt: z.string(),
+  /** Who linked it: an agent id, or null (the plugin: a restart of the same run). */
+  by: z.string().nullable().default(null),
+});
+export type FanoutPrevious = z.infer<typeof FanoutPreviousSchema>;
+
 /** One item of a fan-out: its stable key, the child run started for it and where that stands. */
 export const FanoutChildSchema = z.object({
   key: z.string(),
@@ -623,6 +637,8 @@ export const FanoutChildSchema = z.object({
   endedAt: z.string().nullable().default(null),
   /** The child run's outputs, once it completed. */
   outputs: z.record(z.string(), VarValueSchema).default({}),
+  /** Earlier runs of this item that were replaced (oldest first); `runId` is the current one. The item ends when the last of the chain ends. */
+  previous: z.array(FanoutPreviousSchema).default([]),
 });
 export type FanoutChild = z.infer<typeof FanoutChildSchema>;
 
@@ -922,7 +938,14 @@ export const PlaybookSummarySchema = PlaybookSchema.pick({ id: true, title: true
 export type PlaybookSummary = z.infer<typeof PlaybookSummarySchema>;
 
 /** A fan-out child as the Playbooks screen draws a lane: its key, its run (null until created) and where it stands. */
-export const FanoutChildSummarySchema = z.object({ key: z.string(), runId: z.string().nullable(), status: FanoutChildSchema.shape.status, error: z.string().nullable().default(null) });
+export const FanoutChildSummarySchema = z.object({
+  key: z.string(),
+  runId: z.string().nullable(),
+  status: FanoutChildSchema.shape.status,
+  error: z.string().nullable().default(null),
+  /** Earlier runs of the item, oldest first. */
+  previous: z.array(FanoutPreviousSchema.pick({ runId: true, status: true, reason: true })).default([]),
+});
 export const FanoutPassSummarySchema = z.object({ loop: z.number().int(), children: z.array(FanoutChildSummarySchema) });
 /** Earlier passes the summary carries per fan-out step. */
 export const SUMMARY_FANOUT_PASSES = 5;
@@ -1019,7 +1042,7 @@ export function summarizeRun(run: Run): RunSummary {
 }
 
 function summarizeChildren(state: FanoutState): Array<z.infer<typeof FanoutChildSummarySchema>> {
-  return state.children.map((child) => ({ key: child.key, runId: child.runId, status: child.status, error: child.error }));
+  return state.children.map((child) => ({ key: child.key, runId: child.runId, status: child.status, error: child.error, previous: child.previous.map((entry) => ({ runId: entry.runId, status: entry.status, reason: entry.reason })) }));
 }
 
 /** Exit code a script step uses to say "not done yet, run me again after `poll`" (EX_TEMPFAIL). */
