@@ -20,4 +20,7 @@ A run pins its playbook definition at start, and an isolated run's script steps 
 ## Consequences
 
 - A refreshed script may expect inputs or outputs the pinned step does not declare. The tool lists the changed scripts so the manager can judge, and a changed step definition still needs `restart_run`.
+- After a refresh the overlay shadows the worktree: a script the run's own branch changes later is not run (the overlay copy is). Refreshing again re-exports from the base branch; a worktree script change made before the refresh is refused, one made after is ignored until the overlay is dropped (restart the run).
+- A refreshed script runs from the overlay, so `$0`-relative paths that reach outside `scripts/` (for example `$(dirname "$0")/../x`) resolve inside the overlay, not the worktree.
+- A failed `git diff` of the worktree is a refusal with the git error, never a skipped check.
 - Run files from older versions load (`scriptsRefresh` defaults to null). Minor version bump.

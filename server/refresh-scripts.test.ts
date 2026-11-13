@@ -191,6 +191,18 @@ describe("refresh_scripts", () => {
       expect(ctx.store.get(run.id)!.scriptsRefresh).toBeNull();
     });
 
+    it("a failed git diff of the worktree is a refusal with the git error, not a skipped check", async () => {
+      const ctx = await setup();
+      const run = await ctx.runtime.startPlaybook(mgr(ctx.dir), "iso", {});
+      await pushScript(ctx.dir, script("new"));
+      await ctx.store.mutate(run.id, (current) => {
+        current.worktree!.baseSha = "0".repeat(40);
+      });
+      await expect(ctx.runtime.refreshScripts(run.id)).rejects.toThrow(/could not check whether run .* changed scripts \(git diff failed: [\s\S]+\)[\s\S]*previous scripts/);
+      expect(existsSync(path.join(ctx.data, "script-overlays", run.id))).toBe(false);
+      expect(ctx.store.get(run.id)!.scriptsRefresh).toBeNull();
+    });
+
     it("a failed fetch, reporting the error and keeping the previous scripts", async () => {
       const ctx = await setup();
       const run = await ctx.runtime.startPlaybook(mgr(ctx.dir), "iso", {});

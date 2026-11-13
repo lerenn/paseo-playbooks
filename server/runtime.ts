@@ -1190,7 +1190,9 @@ export class Runtime {
     if (wt.state === "removed" || !existsSync(wt.path)) throw new UserError(`run ${runId} has no worktree on disk (${wt.state}): nothing to refresh`);
     const repo = await this.repoOf(run, wt);
     const pinnedDirs = await this.scriptDirs(repo, wt.baseSha);
-    const mine = await changedSince(wt.path, wt.baseSha, pinnedDirs).catch(() => [] as string[]);
+    const mine = await changedSince(wt.path, wt.baseSha, pinnedDirs).catch((error: unknown) => {
+      throw new UserError(`could not check whether run ${runId}'s worktree changed scripts (git diff failed: ${errorText(error)}); not refreshing, the run keeps its previous scripts`);
+    });
     if (mine.length > 0) throw new UserError(`run ${runId}'s worktree changed script(s) itself (${mine.slice(0, 10).join(", ")}${mine.length > 10 ? ", …" : ""}): refreshing would overwrite them; commit or drop those changes first, or restart the run`);
     if (!wt.base.startsWith("origin/")) throw new UserError(`run ${runId}'s base "${wt.base}" is not a remote branch: nothing to fetch`);
     const branch = wt.base.slice("origin/".length);
