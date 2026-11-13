@@ -344,9 +344,29 @@ function loopTest(test: { op: "==" | ">=" | "<=" | ">" | "<"; value: number }, l
   }
 }
 
+/**
+ * Gives every playbook step and after-task of the run the state record it lacks (a run file written
+ * before a step existed in its playbook, or by a pipeline): pending, like a step not reached yet.
+ * Returns the ids it added.
+ */
+export function repairRun(run: Run): string[] {
+  const added: string[] = [];
+  for (const step of run.playbook.steps) {
+    if (run.steps[step.id]) continue;
+    run.steps[step.id] = { status: "pending", attempts: [], outputs: {}, summary: null, feedback: null, loop: 0, completedSeq: null, branch: null, fanout: null, fanoutPast: [], queuedAt: null, nextModel: null };
+    added.push(step.id);
+  }
+  for (const task of run.playbook.after) {
+    if (run.after[task.id]) continue;
+    run.after[task.id] = { status: "pending", startedAt: null, endedAt: null, detail: null };
+    added.push(`after:${task.id}`);
+  }
+  return added;
+}
+
 /** Steps waiting for a free `concurrency` slot of their block. */
 export function queuedSteps(run: Run): string[] {
-  return run.playbook.steps.filter((step) => run.steps[step.id]!.status === "queued").map((step) => step.id);
+  return run.playbook.steps.filter((step) => run.steps[step.id]?.status === "queued").map((step) => step.id);
 }
 
 /** Lets a queued block start: its queued steps become ready. Returns them. */
@@ -372,28 +392,28 @@ function queueNote(run: Run, queued: string[]): string {
  */
 export function readySteps(run: Run): string[] {
   return run.playbook.steps
-    .filter((step) => step.kind !== "script" && step.kind !== "handoff" && step.kind !== "fanout" && run.steps[step.id]!.status === "ready" && isStepLive(run, step.id))
+    .filter((step) => step.kind !== "script" && step.kind !== "handoff" && step.kind !== "fanout" && run.steps[step.id]?.status === "ready" && isStepLive(run, step.id))
     .map((step) => step.id);
 }
 
 /** Ready hand-off steps, which the plugin starts on its own. */
 export function readyHandoffs(run: Run): string[] {
   return run.playbook.steps
-    .filter((step) => step.kind === "handoff" && run.steps[step.id]!.status === "ready" && isStepLive(run, step.id))
+    .filter((step) => step.kind === "handoff" && run.steps[step.id]?.status === "ready" && isStepLive(run, step.id))
     .map((step) => step.id);
 }
 
 /** Ready fan-out steps, which the plugin starts on its own. */
 export function readyFanouts(run: Run): string[] {
   return run.playbook.steps
-    .filter((step) => step.kind === "fanout" && run.steps[step.id]!.status === "ready" && isStepLive(run, step.id))
+    .filter((step) => step.kind === "fanout" && run.steps[step.id]?.status === "ready" && isStepLive(run, step.id))
     .map((step) => step.id);
 }
 
 /** Ready script steps, which the plugin starts on its own. */
 export function readyScripts(run: Run): string[] {
   return run.playbook.steps
-    .filter((step) => step.kind === "script" && run.steps[step.id]!.status === "ready" && isStepLive(run, step.id))
+    .filter((step) => step.kind === "script" && run.steps[step.id]?.status === "ready" && isStepLive(run, step.id))
     .map((step) => step.id);
 }
 
