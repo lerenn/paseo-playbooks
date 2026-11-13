@@ -256,6 +256,7 @@ steps:
 | --- | --- |
 | `id` | Unique; `end`, `fail` and `outputs` are reserved. |
 | `title` | Full name, shown in the step's details and on its graph node. Default: the id, capitalised (`investigate` → Investigate). On a playbook step it names the block's frame. |
+| `description` | Optional text for people (at most 2000 characters, plain text), shown at the top of the step's details sheet and returned by `get_run` and `list_playbooks` (`view: full`), so anyone can see why the step exists and how it works. Never added to an agent's prompt or brief. Works on every step kind and after-task: `description: Waits until the blocking PRs are merged, so the release does not ship half a change.` |
 | `short_title` | Name in the Playbooks screen's step columns. Default: `title`. Not on playbook steps (their own steps are the columns). |
 | `needs` | Steps that must complete first. No `needs` = starts with the run. Steps ready together run in parallel. File order does not matter. |
 | `role` / `gate` / `playbook` / `script` / `handoff` / `branch` / `fanout` | Exactly one, as a block: an agent step, a human gate, a sub-playbook, a script the plugin runs itself, a hand-off to a singleton playbook, a branch, or a fan-out of one run per list item (see "Step kinds", "List values and fan-out steps" and "Singleton playbooks and hand-off steps" below). |

@@ -328,6 +328,46 @@ steps:
     expect((await loadPlaybooks(bad)).entries.flatMap((entry) => entry.errors).join("\n")).toMatch(/step "ok": `archive_agents` only applies to an agent step/);
   });
 
+  describe("step description", () => {
+    it("is kept, trimmed, on an agent, script and gate step, and never put in the prompt", async () => {
+      const dir = await workspace({
+        "d.yaml": "steps:\n  - id: a\n    description: '  Why: reviews. How: reads the diff.  '\n    role: { name: reviewer, prompt: go }\n  - id: g\n    needs: [a]\n    description: Ask a human.\n    gate: { question: Go? }\n",
+        "s.yaml": "steps:\n  - id: w\n    description: Waits for CI.\n    script: { run: wait.sh }\n",
+      });
+      await mkdir(path.join(dir, ".paseo/plugins/playbooks/scripts"), { recursive: true });
+      await writeFile(path.join(dir, ".paseo/plugins/playbooks/scripts/wait.sh"), "#!/bin/sh\n", { mode: 0o755 });
+      const entries = (await loadPlaybooks(dir)).entries;
+      const d = entries.find((entry) => entry.id === "d")!;
+      expect(d.errors).toEqual([]);
+      const [a, g] = d.playbook!.steps;
+      expect(a!.description).toBe("Why: reviews. How: reads the diff.");
+      expect(g!.description).toBe("Ask a human.");
+      expect(a!.prompt).not.toContain("reviews");
+      expect(JSON.stringify(a!.inputs)).not.toContain("reviews");
+      const s = entries.find((entry) => entry.id === "s")!;
+      expect(s.errors).toEqual([]);
+      expect(s.playbook!.steps[0]!.description).toBe("Waits for CI.");
+    });
+    it("is absent when not written", async () => {
+      const dir = await workspace({ "d.yaml": "steps:\n  - { id: a, role: { name: reviewer } }\n" });
+      const d = (await loadPlaybooks(dir)).entries.find((entry) => entry.id === "d")!;
+      expect(d.playbook!.steps[0]!).not.toHaveProperty("description");
+    });
+    it("refuses an empty, blank, non-string or too long description", async () => {
+      for (const value of ['""', "'   '", "[a]", `"${"x".repeat(2001)}"`]) {
+        const dir = await workspace({ "d.yaml": `steps:\n  - id: a\n    description: ${value}\n    role: { name: reviewer }\n` });
+        const d = (await loadPlaybooks(dir)).entries.find((entry) => entry.id === "d")!;
+        expect(d.errors.join("\n")).toMatch(/description/);
+      }
+    });
+    it("is accepted on an after-task step", async () => {
+      const dir = await workspace({ "d.yaml": "steps:\n  - { id: a, role: { name: reviewer } }\nafter:\n  - id: retro\n    trigger: manual\n    description: Looks back.\n    role: { name: reviewer }\n" });
+      const d = (await loadPlaybooks(dir)).entries.find((entry) => entry.id === "d")!;
+      expect(d.errors).toEqual([]);
+      expect(d.playbook!.steps.find((step) => step.id === "retro")?.description).toBe("Looks back.");
+    });
+  });
+
   it("refuses short_title on a playbook step", async () => {
     const dir = await workspace({
       "outer.yaml": "steps:\n  - { id: pr, playbook: { name: inner }, short_title: PR }\n",

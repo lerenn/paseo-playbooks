@@ -21,6 +21,7 @@ outputs:
 
 steps:
   - id: investigate
+    description: Reads the code and writes a plan before anything is changed, so the implementation starts from the cause and not from a guess.
     role:
       name: investigator
       prompt: |
@@ -64,6 +65,7 @@ steps:
       tests_passed: { type: boolean }
 
   - id: babysit
+    description: Keeps watching the pull request after it is opened, answers review comments and fixes CI, until it is merged or needs a human.
     role:
       name: babysitter
       prompt: |

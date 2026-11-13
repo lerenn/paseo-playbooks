@@ -178,6 +178,8 @@ export const StepSchema = z.object({
   title: z.string().optional(),
   /** Name in the Playbooks screen columns. Unset = the title. */
   shortTitle: z.string().optional(),
+  /** For people only (step sheet, graph info, get_run): why and how the step exists. Never in an agent's prompt or brief. */
+  description: z.string().optional(),
   kind: z.enum(["agent", "gate", "script", "handoff", "branch", "fanout"]),
   role: z.string().optional(),
   gate: z.string().optional(),
@@ -893,6 +895,7 @@ export const StepSummarySchema = StepSchema.pick({
   id: true,
   title: true,
   shortTitle: true,
+  description: true,
   kind: true,
   when: true,
   branch: true,
@@ -968,10 +971,11 @@ export function summarizeRun(run: Run): RunSummary {
       singleton,
       blocks,
       slowWarning,
-      steps: run.playbook.steps.map(({ id, title, shortTitle, kind, when, branch, needs, outcomes, on, choices, afterTask }) => ({
+      steps: run.playbook.steps.map(({ id, title, shortTitle, description, kind, when, branch, needs, outcomes, on, choices, afterTask }) => ({
         id,
         title,
         shortTitle,
+        description,
         kind,
         when,
         branch,

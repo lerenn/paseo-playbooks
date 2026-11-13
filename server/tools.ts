@@ -163,6 +163,7 @@ export function runCompact(run: Run, only?: string[], slow: Record<string, SlowI
           id,
           {
             kind: step.kind,
+            ...(step.description ? { description: step.description } : {}),
             ...(step.afterTask ? { afterTask: step.afterTask } : {}),
             status: state.status,
             outcome: attempt?.outcome ?? attempt?.report?.outcome ?? null,
@@ -209,6 +210,7 @@ export function runFull(run: Run, only?: string[], slow: Record<string, SlowInfo
           step.id,
           {
             kind: step.kind,
+            ...(step.description ? { description: step.description } : {}),
             role: step.role ?? null,
             afterTask: step.afterTask ?? null,
             needs: step.needs,
@@ -287,6 +289,7 @@ function describeEntry(entry: PlaybookEntry) {
     steps: pb.steps.map((step) => ({
       id: step.id,
       kind: step.kind,
+      ...(step.description ? { description: step.description } : {}),
       role: step.role ? `${step.role} (${pb.roles[step.role]!.title}${pb.roles[step.role]!.readonly ? ", readonly" : ""})` : null,
       gate: step.gate ?? null,
       ...(step.kind === "script" ? { script: step.script, poll: step.pollMs ? `${step.pollMs / 1000}s` : null } : {}),

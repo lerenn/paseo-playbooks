@@ -1,7 +1,7 @@
 {
   "name": "paseo-playbooks",
   "private": true,
-  "version": "0.104.1",
+  "version": "0.105.0",
   "files": [
     "paseo-plugin.json",
     "OVERVIEW*.md",
