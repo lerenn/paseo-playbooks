@@ -354,6 +354,16 @@ export const RunWorktreeSchema = z.object({
 });
 export type RunWorktree = z.infer<typeof RunWorktreeSchema>;
 
+/** The refreshed script copy of a run (ADR 2026-11-13-refresh-run-scripts). */
+export const RunScriptsSchema = z.object({
+  /** The commit of origin/<branch> the scripts were copied from. */
+  sha: z.string(),
+  /** The directory holding the copy: script paths (`<relDir>/scripts/<name>`) resolve inside it. */
+  dir: z.string(),
+  refreshedAt: z.string(),
+});
+export type RunScripts = z.infer<typeof RunScriptsSchema>;
+
 /** Where an isolated run's playbook definition (and roles) came from: see ADR 2026-11-10-playbooks-from-fresh-main. */
 export const RunDefinitionSchema = z.object({
   /** `origin`: read from the run's worktree, off a freshly fetched origin/<base>; `workspace`: the shared checkout. */
@@ -942,6 +952,8 @@ export const RunSchema = z.object({
   exhausted: z.array(ExhaustedEntrySchema).default([]),
   /** The run's private git worktree (`isolation: worktree`); null when it works in the workspace checkout. */
   worktree: RunWorktreeSchema.nullable().default(null),
+  /** A copy of the run's `<relDir>/scripts/` tree from origin/<branch>, taken by `refresh_scripts`; script steps run it before the worktree's. Null until refreshed. */
+  scripts: RunScriptsSchema.nullable().default(null),
   /** Where the playbook definition came from (isolated runs); null on other runs and runs from before. */
   definition: RunDefinitionSchema.nullable().default(null),
   /** A short name the Playbook Manager gave the run (e.g. "login-redirect-fix"): its tab label. */

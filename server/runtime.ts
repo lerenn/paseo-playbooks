@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, readdir, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 
@@ -34,7 +35,7 @@ import { isQuotaError, isQuotaMessage } from "./quota";
 import { UsageCache, usageBlock, type UsageBlock, type UsageSnapshot } from "./usage";
 import * as engine from "./engine";
 import { ADMISSION_TIMEOUT_MS, admissionInput, readAdmission } from "./admission";
-import { checkoutSnapshot, currentRef, defaultBranch, fastForward, freshRef, removedGitlinks, snapshotDiff } from "./git";
+import { checkoutSnapshot, currentRef, defaultBranch, exportPaths, fastForward, freshRef, freshRefInfo, git as gitOutput, removedGitlinks, snapshotDiff } from "./git";
 import { workspaceTitle } from "../shared/workspace-name";
 import { createWorktree, dirtyPaths, linkedSubmodules, listWorktreeDirs, pruneWorktrees, removeWorktree, repoOfWorktree, worktreeBranch, worktreePath } from "./worktree";
 import { chooseDefinition } from "./fresh";
@@ -78,6 +79,7 @@ export const MANAGER_TOOL_NAMES = [
   "get_run",
   "list_runs",
   "cancel_run",
+  "refresh_scripts",
   "restart_run",
   "archive_run",
   "requeue_job",
@@ -383,6 +385,8 @@ export class Runtime {
   private readonly reservations = new Map<string, Reservation[]>();
   /** Where isolated runs' worktrees live: `<plugin data>/worktrees/<runId>`. */
   readonly worktreesDir: string;
+  /** Per-run copies of the scripts taken by `refresh_scripts`: `<dir>/run-scripts/<runId>`. */
+  readonly runScriptsDir: string;
   /** Worktrees being created, which the orphan sweep must not touch. */
   private readonly creatingWorktrees = new Set<string>();
   /** Runs started from the panel for a busy agent: agent id → run id, delivered when its turn ends. */
@@ -433,6 +437,7 @@ export class Runtime {
   ) {
     const dir = options.dataDir ?? path.dirname(store.dir);
     this.worktreesDir = path.join(dir, "worktrees");
+    this.runScriptsDir = path.join(dir, "run-scripts");
     this.sessions = new StaleSessions(path.join(dir, "sessions.json"));
     this.usageLedger = new UsageLedger(path.join(dir, "agent-usage.json"));
     this.sidekickRegistry = new SidekickRegistry(path.join(dir, "sidekick.json"));
@@ -1209,8 +1214,10 @@ export class Runtime {
         }
         const removed = await this.dropWorktree(candidate.id, wt, await this.repoOf(candidate, wt), false);
         this.cleanupBackoff.clear(candidate.id);
+        await this.dropRunScripts(candidate.id);
         await this.store.mutate(candidate.id, (run) => {
           run.worktree = { ...wt, state: "removed" };
+          run.scripts = null;
           engine.noteEvent(run, "worktree_removed", null, `worktree ${wt.path} removed${removed.keptBranch ? `; branch ${removed.keptBranch} kept: it has commits that are not pushed` : `; branch ${wt.branch} deleted`}`, nowIso());
         });
       } catch (error) {
@@ -1282,10 +1289,66 @@ export class Runtime {
         console.error(`[playbooks] could not remove orphan worktree ${dir}:`, errorText(error));
       }
     }
+    for (const name of await readdir(this.runScriptsDir).catch(() => [] as string[])) {
+      const record = runs.get(name);
+      if (record?.worktree && record.worktree.state !== "removed") continue;
+      await this.dropRunScripts(name);
+    }
     for (const repo of new Set(this.store.list().map((run) => run.workspaceDir))) {
       await pruneWorktrees(repo);
     }
     return removed;
+  }
+
+  /** Removes the per-run script copy of `refresh_scripts` (and its half-written temp dirs); never fails. */
+  private async dropRunScripts(runId: string): Promise<void> {
+    await rm(path.join(this.runScriptsDir, runId), { recursive: true, force: true }).catch(() => undefined);
+    for (const name of await readdir(this.runScriptsDir).catch(() => [] as string[])) {
+      if (name.startsWith(`.${runId}.`)) await rm(path.join(this.runScriptsDir, name), { recursive: true, force: true }).catch(() => undefined);
+    }
+  }
+
+  /**
+   * `refresh_scripts`: copies the run's `<relDir>/scripts/` tree from a freshly fetched origin/<branch> into
+   * `<data>/run-scripts/<runId>`, which script steps then run from. The pinned step definitions are untouched.
+   */
+  async refreshScripts(runId: string, reason: string, by: string): Promise<{ ref: string; sha: string; before: string | null; changed: boolean }> {
+    const run = this.store.get(runId);
+    if (!run) throw new UserError(`unknown run "${runId}"`);
+    if (!isActive(run)) throw new UserError(`run ${runId} has ended (${run.status}): its scripts are not run again`);
+    const wt = run.worktree;
+    if (!wt || wt.state === "removed") throw new UserError(`run ${runId} has no worktree: its scripts already run from the workspace checkout`);
+    if (!wt.base.startsWith("origin/")) throw new UserError(`run ${runId}'s worktree was created from "${wt.base}", not from origin/<branch>: there is no fresh remote ref to refresh from`);
+    const branch = wt.base.slice("origin/".length);
+    const dirs = new Set<string>();
+    for (const step of run.playbook.steps) if (step.kind === "script" && step.script) dirs.add(path.posix.dirname(step.script));
+    if (dirs.size === 0) throw new UserError(`run ${runId} has no script step`);
+    const repo = await this.repoOf(run, wt);
+    const fresh = await freshRefInfo(repo, branch);
+    if (fresh.fetchError) throw new UserError(`could not fetch origin/${branch}: ${fresh.fetchError}`);
+    if (fresh.ref !== wt.base) throw new UserError(`no ref ${wt.base} after the fetch (got ${fresh.ref})`);
+    const sha = (await gitOutput(repo, ["rev-parse", fresh.ref])).trim();
+    const before = run.scripts?.sha ?? null;
+    if (before === sha && existsSync(run.scripts!.dir)) return { ref: fresh.ref, sha, before, changed: false };
+    await mkdir(this.runScriptsDir, { recursive: true });
+    const final = path.join(this.runScriptsDir, runId);
+    const tmp = await mkdtemp(path.join(this.runScriptsDir, `.${runId}.`));
+    try {
+      await exportPaths(repo, fresh.ref, [...dirs], tmp);
+      // Written aside and renamed, so a running check never sees a half-written copy.
+      const old = `${tmp}.old`;
+      await rename(final, old).catch(() => undefined);
+      await rename(tmp, final);
+      await rm(old, { recursive: true, force: true }).catch(() => undefined);
+    } catch (error) {
+      await rm(tmp, { recursive: true, force: true }).catch(() => undefined);
+      throw new UserError(`could not copy the scripts of ${fresh.ref}: ${errorText(error)}`);
+    }
+    await this.store.mutate(runId, (current) => {
+      current.scripts = { sha, dir: final, refreshedAt: nowIso() };
+      engine.noteEvent(current, "scripts_refreshed", null, `scripts refreshed from ${fresh.ref} by ${by}: ${before ?? wt.baseSha} -> ${sha}${reason ? ` (${reason})` : ""}`, nowIso());
+    });
+    return { ref: fresh.ref, sha, before, changed: true };
   }
 
   /** Removes a run's worktree and records nothing; callers write the history. */
@@ -2576,8 +2639,11 @@ export class Runtime {
     };
     try {
       // An isolated run's scripts run in its worktree; one the worktree's commit lacks (uncommitted in the workspace) runs from the workspace.
+      // After refresh_scripts, the run's own copy of origin/<branch>'s scripts comes first.
+      const refreshed = run.scripts ? path.join(run.scripts.dir, step.script!) : null;
       const inWorktree = run.worktree ? path.join(run.worktree.path, step.script!) : null;
-      const child = spawn(inWorktree && existsSync(inWorktree) ? inWorktree : path.join(run.workspaceDir, step.script!), [], {
+      const scriptFile = refreshed && existsSync(refreshed) ? refreshed : inWorktree && existsSync(inWorktree) ? inWorktree : path.join(run.workspaceDir, step.script!);
+      const child = spawn(scriptFile, [], {
         cwd: engine.workDir(run),
         env: scriptEnv(run, stepId, attempt, this.scriptFeedback.get(attemptId) ?? null),
         stdio: ["ignore", "pipe", "pipe"],
@@ -4168,6 +4234,7 @@ export class Runtime {
       if (isActive(run)) await this.cancelRun(run.id, "worktree archived", null).catch(() => undefined);
       const wt = this.store.get(run.id)?.worktree;
       if (wt && wt.state !== "removed") await this.dropWorktree(run.id, wt, await this.repoOf(run, wt), true).catch((error: unknown) => console.error(`[playbooks] could not remove the worktree of ${run.id}:`, errorText(error)));
+      await this.dropRunScripts(run.id);
       await this.store.delete(run.id);
     }
     this.reservations.delete(workspaceId);
