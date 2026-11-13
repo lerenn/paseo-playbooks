@@ -74,7 +74,7 @@ describe("analyze", () => {
       const result = analyze([at("r1", "2026-11-11T23:00:00Z", "2026-11-12T01:00:00Z", "opus", 100)], { since: "2026-11-10T12:00:00Z", now, timeZone: "UTC" });
       const chart = result.daily!.byModel;
       expect(chart.days).toEqual(["2026-11-10", "2026-11-11", "2026-11-12", "2026-11-13"]);
-      expect(chart.series).toEqual([{ key: "opus", other: false, total: 100, tokens: [0, 0, 100, 0] }]);
+      expect(chart.series).toEqual([{ key: "opus", manager: false, other: false, total: 100, tokens: [0, 0, 100, 0] }]);
     });
 
     it("moves usage to the previous day for a western time zone", () => {
@@ -102,18 +102,27 @@ describe("analyze", () => {
     const b = run("r2", []);
     b.managerUsage = usage(50, 50);
     const result = analyze([a, b], { now: new Date("2026-11-11T12:00:00Z"), timeZone: "UTC" });
-    expect(result.byRole.find((row) => row.key === "(manager)")).toMatchObject({ runs: 2, usage: { inputTokens: 55 } });
-    expect(result.byStep.find((row) => row.key === "pb/(manager)")).toMatchObject({ runs: 2, wastedAttempts: 0 });
+    expect(result.byRole.find((row) => row.manager)).toMatchObject({ runs: 2, usage: { inputTokens: 55 } });
+    expect(result.byStep.find((row) => row.manager && row.key === "pb/Playbook Manager")).toMatchObject({ runs: 2, wastedAttempts: 0 });
     expect(result.byModel.find((row) => row.key === "claude/opus")!.usage.inputTokens).toBe(5);
     expect(result.byModel.find((row) => row.key === "default")!.usage.inputTokens).toBe(50);
-    const seriesOf = (chart: { series: Array<{ key: string; total: number }> }, key: string) => chart.series.find((row) => row.key === key)?.total;
-    expect(seriesOf(result.daily!.byRole, "(manager)")).toBe(110);
-    expect(seriesOf(result.daily!.byStep, "pb/(manager)")).toBe(110);
+    const seriesOf = (chart: { series: Array<{ key: string; manager: boolean; total: number }> }, key: string, manager = key.endsWith("Playbook Manager")) => chart.series.find((row) => row.manager === manager && row.key === key)?.total;
+    expect(seriesOf(result.daily!.byRole, "Playbook Manager")).toBe(110);
+    expect(seriesOf(result.daily!.byStep, "pb/Playbook Manager")).toBe(110);
     expect(seriesOf(result.daily!.byPlaybook, "pb")).toBe(110); // the test attempts carry no timestamp, so only the managers are on a day
     // by-playbook still counts it
     expect(result.byPlaybook[0]!.usage.inputTokens).toBe(155);
+    // a role and a step a playbook author named like the manager stay apart from it
+    const c = run("r3", [usage(1, 1)]);
+    c.playbook.steps[0]!.role = "Playbook Manager";
+    c.playbook.steps.push({ id: "Playbook Manager", role: "dev", agent: { model: "opus" } });
+    c.steps["Playbook Manager"] = { attempts: [{ agentId: "a9", usage: usage(1, 1), turnEnd: "completed" }] };
+    c.managerUsage = usage(7, 7);
+    const clash = analyze([c], { now: new Date("2026-11-11T12:00:00Z"), timeZone: "UTC" });
+    expect(clash.byRole.filter((row) => row.key === "Playbook Manager").map((row) => row.manager).sort()).toEqual([false, true]);
+    expect(clash.byStep.filter((row) => row.key === "pb/Playbook Manager").map((row) => row.manager).sort()).toEqual([false, true]);
     const old = run("r4", []);
     old.usageDeltas = false;
-    expect(analyze([old]).byRole.find((row) => row.key === "(manager)")).toBeUndefined();
+    expect(analyze([old]).byRole.find((row) => row.manager)).toBeUndefined();
   });
 });
