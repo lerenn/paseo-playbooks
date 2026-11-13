@@ -64,13 +64,15 @@ export const AnalyticsSchema = z.object({
   byStep: z.array(UsageRowSchema),
   byRole: z.array(UsageRowSchema),
   byModel: z.array(UsageRowSchema),
+  /** Run managers, one row per playbook and manager model; empty from servers older than this breakdown. */
+  byManager: z.array(UsageRowSchema).default([]),
   /** Managers and gate deciders: spend outside the steps. */
   overhead: z.object({ manager: UsageSchema, deciders: UsageSchema }),
   /** The agents that spent the most (by tokens), whatever they are; unknown for agents before this was recorded. */
   topAgents: z.array(AgentRowSchema).default([]),
   /** The same breakdowns by day (see `dailySeries`); absent from servers older than the daily graphs. */
   daily: z
-    .object({ byPlaybook: DailySeriesSchema, byStep: DailySeriesSchema, byRole: DailySeriesSchema, byModel: DailySeriesSchema })
+    .object({ byPlaybook: DailySeriesSchema, byStep: DailySeriesSchema, byRole: DailySeriesSchema, byModel: DailySeriesSchema, byManager: DailySeriesSchema.optional() })
     .nullable()
     .default(null),
 });
@@ -201,13 +203,14 @@ export function analyze(runs: Run[], options: AnalyticsOptions = {}): Analytics 
   const byStep = new Groups();
   const byRole = new Groups();
   const byModel = new Groups();
+  const byManager = new Groups();
   let total = zero();
   let manager = zero();
   let deciders = zero();
   let withoutUsage = 0;
   let invalidManager = 0;
   const tz = options.timeZone ?? null;
-  const daily = { byPlaybook: new Daily(), byStep: new Daily(), byRole: new Daily(), byModel: new Daily() };
+  const daily = { byPlaybook: new Daily(), byStep: new Daily(), byRole: new Daily(), byModel: new Daily(), byManager: new Daily() };
   let firstDay = "";
   const note = (day: string) => {
     if (day && (!firstDay || day < firstDay)) firstDay = day;
@@ -222,6 +225,9 @@ export function analyze(runs: Run[], options: AnalyticsOptions = {}): Analytics 
     const runDay = dayKey(run.createdAt, tz);
     if (managerUsage) {
       daily.byPlaybook.add(playbook, runDay, tokensOf(managerUsage));
+      const managerKey = `${playbook} · ${[run.playbook.manager?.provider, run.playbook.manager?.model].filter(Boolean).join("/") || "default"}`;
+      daily.byManager.add(managerKey, runDay, tokensOf(managerUsage));
+      byManager.add(managerKey, null, run.id, managerUsage, false);
       note(runDay);
     }
     manager = plus(manager, managerUsage);
@@ -289,6 +295,7 @@ export function analyze(runs: Run[], options: AnalyticsOptions = {}): Analytics 
     byStep: byStep.rows(limit),
     byRole: byRole.rows(limit),
     byModel: byModel.rows(limit),
+    byManager: byManager.rows(limit),
     overhead: { manager, deciders },
     topAgents,
     daily: {
@@ -296,6 +303,7 @@ export function analyze(runs: Run[], options: AnalyticsOptions = {}): Analytics 
       byStep: daily.byStep.series(dayList, top),
       byRole: daily.byRole.series(dayList, top),
       byModel: daily.byModel.series(dayList, top),
+      byManager: daily.byManager.series(dayList, top),
     },
   };
 }
