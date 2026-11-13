@@ -119,7 +119,13 @@ const RawTransitionSchema = z.union([
     decider: RawDeciderSchema.optional(),
   }),
   /** `decider`: who decides the loop-limit gate `max_loops` opens. */
-  z.object({ goto: z.string(), max_loops: z.number().int().positive().optional(), decider: RawDeciderSchema.optional() }),
+  z.object({
+    goto: z.string(),
+    max_loops: z.number().int().positive().optional(),
+    decider: RawDeciderSchema.optional(),
+    /** How long after the outcome the target starts, such as `2m` (parsed like `timeout`). Unset = at once. */
+    delay: z.string().optional(),
+  }),
 ]);
 
 /**
@@ -1284,6 +1290,13 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
   }
 
   /** A gate's `decider`: `role` goes with `by: role` only, and names a readonly role. */
+  /** A goto's `delay` in ms: a duration such as 30s, 2m or 1h, or an error. */
+  const gotoDelay = (at: string, raw: string | undefined): number | undefined => {
+    if (raw === undefined) return undefined;
+    const ms = parseDuration(raw);
+    if (ms === null) err(`${at}: expected a duration such as 30s, 2m or 1h`);
+    return ms ?? undefined;
+  };
   const parseDecider = (at: string, raw: RawDecider | undefined): GateDecider | undefined => {
     if (raw === undefined) return undefined;
     if (raw.by !== "role") {
@@ -1565,7 +1578,10 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
         if (typeof transition === "string") on[outcome] = { kind: transition };
         else if ("ask" in transition) err(`${where}: on.${outcome}: \`ask\` does not apply to a fan-out step`);
         else if ("end" in transition) on[outcome] = endTransition(`${where}: on.${outcome}`, transition.end);
-        else on[outcome] = transition.max_loops !== undefined ? { kind: "goto", target: transition.goto, maxLoops: transition.max_loops } : { kind: "goto", target: transition.goto };
+        else {
+          const delayMs = gotoDelay(`${where}: on.${outcome}.delay`, transition.delay);
+          on[outcome] = { kind: "goto", target: transition.goto, ...(transition.max_loops !== undefined ? { maxLoops: transition.max_loops } : {}), ...(delayMs !== undefined ? { delayMs } : {}) };
+        }
       }
       let timeoutMs = defaultTimeout;
       const timeoutTemplate = rawStep.timeout !== undefined && templateRefs(rawStep.timeout).length > 0 ? rawStep.timeout : undefined;
@@ -1693,11 +1709,13 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
         err(`${where}: on.${outcome}.decider: a \`goto\` opens a gate only with \`max_loops\` (its loop-limit gate); add \`max_loops\` or remove \`decider\``);
       }
       const gotoDecider = parseDecider(`${where}: on.${outcome}.decider`, transition.decider);
+      const gotoDelayMs = gotoDelay(`${where}: on.${outcome}.delay`, transition.delay);
       on[outcome] = {
         kind: "goto",
         target: transition.goto,
         ...(transition.max_loops !== undefined ? { maxLoops: transition.max_loops } : {}),
         ...(gotoDecider && transition.max_loops !== undefined ? { decider: gotoDecider } : {}),
+        ...(gotoDelayMs !== undefined ? { delayMs: gotoDelayMs } : {}),
       };
     }
     // One rule for agent steps and gates: the first outcome completes by default, `failure`

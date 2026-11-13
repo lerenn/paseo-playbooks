@@ -266,7 +266,7 @@ steps:
 | `inputs` | List of names (auto-matched) or map of name → source (`"{{ playbook.inputs.x }}"`, `"{{ steps.<id>.outputs.y }}"`) or `~`. |
 | `outputs` | Typed values the step must return with any outcome except `failure` (a failure report skips output validation). All are required then. |
 | `outcomes` | Default `[success, failure]`. See "Outcomes" below. |
-| `on` | Per outcome: `complete`, `end`, `{ end: <playbook outcome> }`, `fail`, `{ goto: <earlier step>, max_loops: N }`, or `{ ask: "<text>", goto: <step>, max_loops: N, choices: {...} }` (agent steps; a choice may `goto` a step or end the step with an `outcome` and `outputs`; see Loops). |
+| `on` | Per outcome: `complete`, `end`, `{ end: <playbook outcome> }`, `fail`, `{ goto: <earlier step>, max_loops: N, delay: 2m }` (`delay` optional: the target starts only that long after the outcome; see Loops), or `{ ask: "<text>", goto: <step>, max_loops: N, choices: {...} }` (agent steps; a choice may `goto` a step or end the step with an `outcome` and `outputs`; see Loops). |
 | `retries` | Extra attempts after `failure`. |
 | `timeout` | `30m`, `2h`…, or a template of the step's inputs (`"{{ inputs.release_timeout }}"`), rendered when each attempt starts; an empty value falls back to the default timeout, a value that is not a duration fails the start (or the run's start, when it only depends on the run's inputs). Expiry counts as a failure. The agent is reminded shortly before. If its work turns out done, `nudge_step` it: its next report replaces the timeout failure. |
 
@@ -941,6 +941,13 @@ target and every step after it. The step or gate that looped hands its summary o
 to the target as "Feedback to address". Reaching `max_loops` opens a "loop limit" gate; approving it
 sends the target the step's feedback and the decision's comment ("On the loop limit, the human said: …"). A comment
 from the manager or a role decider reads "the manager said"/"the role "x" said", whichever gate it is.
+
+`delay` on a `goto` (a duration such as `30s`, `2m`, `1h`, parsed like `timeout`) holds the target back after
+the outcome: it stays pending, the graph card shows "waits until <time>", and it becomes ready (and starts as any
+ready step does) when the time comes. The due time is saved in the run, so a plugin restart resumes it; pausing
+holds it until resume; canceling the run drops it. The delay is not running time. Use it on a polling loop so a
+check that keeps answering the same way does not spin:
+`on: { recheck: { goto: check_script, delay: 2m } }`. It does not apply to `ask` choices or a loop-limit approval.
 
 A `max_loops` inside a block holds per pass: when a `goto` from outside re-enters the block (an outer
 loop over items, say), the counters of the block's own loops start again from 0. The outer
