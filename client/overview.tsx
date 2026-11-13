@@ -10,6 +10,7 @@ import { DEFAULT_PLAYBOOK_SORT, PLAYBOOK_SORTS, sortPlaybooks, type PlaybookSort
 import { isActive, isPaused, isPipeline, isTerminal, type Gate, type RunSummary, type StepSummary } from "../shared/types";
 import { slowDetail, slowView } from "../shared/slow";
 import { useSlowSteps } from "./slow";
+import { laneTone } from "./lane-tone";
 import { AnalyticsView } from "./analytics";
 import { useReduceMotion } from "./graph";
 import { LABEL_WIDTH, labelLayout, ROW_HEIGHT } from "./layout";
@@ -1189,10 +1190,13 @@ const LANE_STATUS: Record<FanoutChildInfo["status"], string> = { pending: "Waiti
 /** One child run: key, its own progress line, status, and a marker when a human is needed. */
 function Lane(props: { theme: Theme; child: FanoutChildInfo; compact: boolean; run: RunSummary | undefined; onOpenWorkspace?: ((workspaceId: string) => void) | undefined }) {
   const { theme, child, run } = props;
-  const state = run ? progress(run) : null;
-  const color = state ? toneColor(theme, state.tone) : child.status === "not_started" || child.status === "failed" || child.status === "canceled" ? theme.colors.statusDanger : theme.colors.foregroundMuted;
+  const runState = run ? progress(run) : null;
+  const tone = laneTone(child.status, runState?.tone ?? null);
+  const state = runState && tone ? { ...runState, tone } : null;
+  const color = tone ? toneColor(theme, tone) : theme.colors.foregroundMuted;
   const gates = run?.gates.filter(waitsForHuman).length ?? 0;
-  const status = state ? state.status : child.error && child.status === "not_started" ? `Not started: ${child.error}` : LANE_STATUS[child.status];
+  const recordFinal = child.status === "completed" || child.status === "failed" || child.status === "canceled" || child.status === "not_started";
+  const status = runState && !recordFinal ? runState.status : child.error && child.status === "not_started" ? `Not started: ${child.error}` : LANE_STATUS[child.status];
   const open = run && props.onOpenWorkspace ? () => props.onOpenWorkspace!(run.workspaceId) : undefined;
   const columns = run ? mainSteps(run).length + 1 : 0;
   const line = state && run ? <ProgressLine theme={theme} total={columns} position={state.position} marks={state.marks} color={color} moving={isMoving(state.tone)} /> : null;
