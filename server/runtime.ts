@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
+import { mkdir as mkdirAsync, readdir, rename as renameAsync, rm as rmAsync } from "node:fs/promises";
 import path from "node:path";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 
@@ -34,12 +35,12 @@ import { isQuotaError, isQuotaMessage } from "./quota";
 import { UsageCache, usageBlock, type UsageBlock, type UsageSnapshot } from "./usage";
 import * as engine from "./engine";
 import { ADMISSION_TIMEOUT_MS, admissionInput, readAdmission } from "./admission";
-import { checkoutSnapshot, currentRef, defaultBranch, fastForward, freshRef, removedGitlinks, snapshotDiff } from "./git";
+import { changedBetween, changedSince, checkoutSnapshot, currentRef, defaultBranch, exportPaths, fastForward, freshRef, freshRefInfo, listTreeDirs, removedGitlinks, revParse, snapshotDiff } from "./git";
 import { workspaceTitle } from "../shared/workspace-name";
 import { createWorktree, dirtyPaths, linkedSubmodules, listWorktreeDirs, pruneWorktrees, removeWorktree, repoOfWorktree, worktreeBranch, worktreePath } from "./worktree";
 import { chooseDefinition } from "./fresh";
 import { runWorktreeTeardown } from "./teardown";
-import { loadPlaybooks, loadSidekick } from "./loader";
+import { loadPlaybooks, loadSidekick, PLAYBOOKS_DIRS, PROFILES_DIR } from "./loader";
 import { findEntry } from "../shared/repos";
 
 /** The entry a stored or typed playbook id means: bare ids resolve to the one namespaced entry (and the reverse); ambiguity or absence gives undefined. */
@@ -382,6 +383,8 @@ export class Runtime {
   private readonly reservations = new Map<string, Reservation[]>();
   /** Where isolated runs' worktrees live: `<plugin data>/worktrees/<runId>`. */
   readonly worktreesDir: string;
+  /** Where `refresh_scripts` exports a run's fresh scripts: `<plugin data>/script-overlays/<runId>/`. */
+  readonly scriptOverlaysDir: string;
   /** Worktrees being created, which the orphan sweep must not touch. */
   private readonly creatingWorktrees = new Set<string>();
   /** Runs started from the panel for a busy agent: agent id → run id, delivered when its turn ends. */
@@ -432,6 +435,7 @@ export class Runtime {
   ) {
     const dir = options.dataDir ?? path.dirname(store.dir);
     this.worktreesDir = path.join(dir, "worktrees");
+    this.scriptOverlaysDir = path.join(dir, "script-overlays");
     this.sessions = new StaleSessions(path.join(dir, "sessions.json"));
     this.usageLedger = new UsageLedger(path.join(dir, "agent-usage.json"));
     this.sidekickRegistry = new SidekickRegistry(path.join(dir, "sidekick.json"));
@@ -1170,6 +1174,61 @@ export class Runtime {
     }
   }
 
+  /**
+   * refresh_scripts: makes the script steps of an isolated run run the scripts of the base branch's current commit.
+   * The base branch is fetched, `scripts/` (and each profile's) is exported from it into an overlay outside the
+   * worktree, and the run records the commit. The pinned step definition (`run.playbook`) and the worktree are
+   * not touched; a check already running finishes with the old file. Refused, with the reason, for a run without
+   * a worktree, an ended or archived run, a worktree that changed scripts itself, and a failed fetch.
+   */
+  async refreshScripts(runId: string, by: string | null = null): Promise<{ fromSha: string; toSha: string; changed: string[]; missing: string[]; unchanged: boolean }> {
+    const run = this.store.get(runId);
+    if (!run) throw new UserError(`unknown run "${runId}"`);
+    const wt = run.worktree;
+    if (!wt) throw new UserError(`run ${runId} is not isolated (no \`isolation: worktree\`): its scripts already run from the live workspace checkout, there is nothing to refresh`);
+    if (run.archivedAt || isTerminal(run.status)) throw new UserError(`run ${runId} is ${run.archivedAt ? "archived" : run.status}: scripts are refreshed on a running run (restart_run reopens an ended one, with the base branch's scripts as they are then)`);
+    if (wt.state === "removed" || !existsSync(wt.path)) throw new UserError(`run ${runId} has no worktree on disk (${wt.state}): nothing to refresh`);
+    const repo = await this.repoOf(run, wt);
+    const pinnedDirs = await this.scriptDirs(repo, wt.baseSha);
+    const mine = await changedSince(wt.path, wt.baseSha, pinnedDirs).catch((error: unknown) => {
+      throw new UserError(`could not check whether run ${runId}'s worktree changed scripts (git diff failed: ${errorText(error)}); not refreshing, the run keeps its previous scripts`);
+    });
+    if (mine.length > 0) throw new UserError(`run ${runId}'s worktree changed script(s) itself (${mine.slice(0, 10).join(", ")}${mine.length > 10 ? ", …" : ""}): refreshing would overwrite them; commit or drop those changes first, or restart the run`);
+    if (!wt.base.startsWith("origin/")) throw new UserError(`run ${runId}'s base "${wt.base}" is not a remote branch: nothing to fetch`);
+    const branch = wt.base.slice("origin/".length);
+    const fresh = await freshRefInfo(repo, branch);
+    if (fresh.fetchError || fresh.ref !== wt.base) throw new UserError(`could not fetch ${wt.base}: ${fresh.fetchError ?? "no such remote branch"}; the run keeps its previous scripts`);
+    const toSha = await revParse(repo, fresh.ref);
+    const freshDirs = await this.scriptDirs(repo, toSha);
+    const overlay = path.join(this.scriptOverlaysDir, runId);
+    const staging = `${overlay}.${process.pid}.tmp`;
+    await rmAsync(staging, { recursive: true, force: true });
+    await mkdirAsync(staging, { recursive: true });
+    try {
+      await exportPaths(repo, toSha, freshDirs, staging);
+      await rmAsync(overlay, { recursive: true, force: true });
+      await renameAsync(staging, overlay);
+    } catch (error) {
+      await rmAsync(staging, { recursive: true, force: true }).catch(() => undefined);
+      throw new UserError(`could not export the scripts of ${fresh.ref}: ${errorText(error)}; the run keeps its previous scripts`);
+    }
+    const changed = await changedBetween(repo, wt.baseSha, toSha, [...new Set([...pinnedDirs, ...freshDirs])]).catch(() => [] as string[]);
+    const missing = run.playbook.steps.flatMap((step) => (step.script && !existsSync(path.join(overlay, step.script)) ? [step.script] : []));
+    const at = nowIso();
+    await this.store.mutate(runId, (current) => {
+      current.scriptsRefresh = { sha: toSha, fromSha: wt.baseSha, at, by };
+      engine.noteEvent(current, "scripts_refreshed", null, `scripts refreshed from ${fresh.ref}: ${wt.baseSha.slice(0, 8)} -> ${toSha.slice(0, 8)}; changed: ${changed.length ? changed.join(", ") : "none"}${missing.length ? `; not in the fresh commit (the pinned copy runs): ${missing.join(", ")}` : ""}`, at);
+    });
+    return { fromSha: wt.baseSha, toSha, changed, missing, unchanged: changed.length === 0 };
+  }
+
+  /** The scripts directories of a commit: `scripts/` of each playbooks folder and of each profile. */
+  private async scriptDirs(repo: string, sha: string): Promise<string[]> {
+    const dirs: string[] = PLAYBOOKS_DIRS.map((dir) => `${dir}/scripts`);
+    for (const profile of await listTreeDirs(repo, sha, `${PLAYBOOKS_DIRS[0]}/${PROFILES_DIR}`)) dirs.push(`${profile}/scripts`);
+    return dirs;
+  }
+
   /** The repository a run's worktree belongs to: read from the worktree itself, else the workspace. */
   private async repoOf(run: Run, worktree: RunWorktree): Promise<string> {
     return (await repoOfWorktree(worktree.path))?.repo ?? run.workspaceDir;
@@ -1207,6 +1266,7 @@ export class Runtime {
         const removed = await this.dropWorktree(candidate.id, wt, await this.repoOf(candidate, wt), false);
         await this.store.mutate(candidate.id, (run) => {
           run.worktree = { ...wt, state: "removed" };
+          run.scriptsRefresh = null;
           engine.noteEvent(run, "worktree_removed", null, `worktree ${wt.path} removed${removed.keptBranch ? `; branch ${removed.keptBranch} kept: it has commits that are not pushed` : `; branch ${wt.branch} deleted`}`, nowIso());
         });
       } catch (error) {
@@ -1259,6 +1319,12 @@ export class Runtime {
         console.error(`[playbooks] could not remove orphan worktree ${dir}:`, errorText(error));
       }
     }
+    // Script overlays of runs that are gone, or whose worktree was removed.
+    for (const name of await readdir(this.scriptOverlaysDir).catch(() => [] as string[])) {
+      const record = runs.get(name);
+      if (record?.worktree && record.worktree.state !== "removed") continue;
+      await rmAsync(path.join(this.scriptOverlaysDir, name), { recursive: true, force: true }).catch(() => undefined);
+    }
     for (const repo of new Set(this.store.list().map((run) => run.workspaceDir))) {
       await pruneWorktrees(repo);
     }
@@ -1269,6 +1335,7 @@ export class Runtime {
   private async dropWorktree(runId: string, worktree: RunWorktree, repo: string, force: boolean): Promise<{ keptBranch: string | null; dropped: string[] }> {
     const dir = worktree.path || worktreePath(this.worktreesDir, runId);
     await this.teardownWorktree(dir, repo);
+    await rmAsync(path.join(this.scriptOverlaysDir, runId), { recursive: true, force: true });
     return removeWorktree({ repo, dir, worktreesDir: this.worktreesDir, branch: worktree.branch, linked: worktree.linked, baseSha: worktree.baseSha, force });
   }
 
@@ -2552,8 +2619,11 @@ export class Runtime {
     };
     try {
       // An isolated run's scripts run in its worktree; one the worktree's commit lacks (uncommitted in the workspace) runs from the workspace.
+      // After `refresh_scripts`, the overlay (the base branch's scripts at the refresh) comes first.
+      const inOverlay = run.scriptsRefresh ? path.join(this.scriptOverlaysDir, run.id, step.script!) : null;
       const inWorktree = run.worktree ? path.join(run.worktree.path, step.script!) : null;
-      const child = spawn(inWorktree && existsSync(inWorktree) ? inWorktree : path.join(run.workspaceDir, step.script!), [], {
+      const file = inOverlay && existsSync(inOverlay) ? inOverlay : inWorktree && existsSync(inWorktree) ? inWorktree : path.join(run.workspaceDir, step.script!);
+      const child = spawn(file, [], {
         cwd: engine.workDir(run),
         env: scriptEnv(run, stepId, attempt, this.scriptFeedback.get(attemptId) ?? null),
         stdio: ["ignore", "pipe", "pipe"],

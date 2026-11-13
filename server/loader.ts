@@ -986,7 +986,7 @@ async function listFolder(root: string): Promise<string[] | null> {
 }
 
 /** Folder of the profiles, inside the primary playbooks folder: `profiles/<id>/` is a repository like the folder itself. */
-const PROFILES_DIR = "profiles";
+export const PROFILES_DIR = "profiles";
 
 /** Loads one repository folder (the playbooks folder itself, or a profile): its entries, using its own roles/, defaults/ and scripts/. */
 async function loadRepo(repo: string, root: string, relDir: string, names: string[]): Promise<PlaybookEntry[]> {

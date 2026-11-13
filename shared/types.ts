@@ -354,6 +354,17 @@ export const RunWorktreeSchema = z.object({
 });
 export type RunWorktree = z.infer<typeof RunWorktreeSchema>;
 
+/** An explicit refresh of an isolated run's scripts (`refresh_scripts`): its script steps run the scripts of `sha` (a commit of the base branch) from an on-disk overlay. */
+export const RunScriptsRefreshSchema = z.object({
+  /** The base-branch commit the overlay was exported from. */
+  sha: z.string(),
+  /** The commit the run's worktree was created from (the scripts it was pinned to before). */
+  fromSha: z.string(),
+  at: z.string(),
+  by: z.string().nullable(),
+});
+export type RunScriptsRefresh = z.infer<typeof RunScriptsRefreshSchema>;
+
 /** Where an isolated run's playbook definition (and roles) came from: see ADR 2026-11-10-playbooks-from-fresh-main. */
 export const RunDefinitionSchema = z.object({
   /** `origin`: read from the run's worktree, off a freshly fetched origin/<base>; `workspace`: the shared checkout. */
@@ -935,6 +946,8 @@ export const RunSchema = z.object({
   exhausted: z.array(ExhaustedEntrySchema).default([]),
   /** The run's private git worktree (`isolation: worktree`); null when it works in the workspace checkout. */
   worktree: RunWorktreeSchema.nullable().default(null),
+  /** Set once `refresh_scripts` ran: the script steps run the scripts of this base-branch commit (overlay under the plugin data dir). The pinned step definition is never touched. */
+  scriptsRefresh: RunScriptsRefreshSchema.nullable().default(null),
   /** Where the playbook definition came from (isolated runs); null on other runs and runs from before. */
   definition: RunDefinitionSchema.nullable().default(null),
   /** A short name the Playbook Manager gave the run (e.g. "login-redirect-fix"): its tab label. */
