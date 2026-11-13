@@ -219,7 +219,6 @@ export function AnalyticsView(props: { theme: Theme }) {
           <Breakdown theme={theme} title="By playbook" rows={data.byPlaybook} chart={data.daily?.byPlaybook} />
           <Breakdown theme={theme} title="By step" rows={data.byStep} chart={data.daily?.byStep} showWaste />
           <Breakdown theme={theme} title="By role" rows={data.byRole} chart={data.daily?.byRole} showWaste />
-          <Breakdown theme={theme} title="By manager" rows={data.byManager} chart={data.daily?.byManager} />
           <Breakdown theme={theme} title="By model" rows={data.byModel} chart={data.daily?.byModel} showWaste />
           <TopAgents theme={theme} rows={data.topAgents} />
         </>
