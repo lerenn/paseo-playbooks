@@ -33,7 +33,7 @@ import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "./defaults";
 import { isQuotaError, isQuotaMessage } from "./quota";
 import * as engine from "./engine";
 import { ADMISSION_TIMEOUT_MS, admissionInput, readAdmission } from "./admission";
-import { checkoutSnapshot, currentRef, defaultBranch, fastForward, freshRef, removedGitlinks, snapshotDiff } from "./git";
+import { checkoutSnapshot, currentRef, defaultBranch, fastForward, freshRef, removedGitlinks, snapshotDiff, checkoutViolationSince } from "./git";
 import { workspaceTitle } from "../shared/workspace-name";
 import { createWorktree, dirtyPaths, linkedSubmodules, listWorktreeDirs, pruneWorktrees, removeWorktree, repoOfWorktree, worktreeBranch, worktreePath } from "./worktree";
 import { chooseDefinition } from "./fresh";
@@ -1137,7 +1137,7 @@ export class Runtime {
   private async worktreeKeepReason(run: Run, wt: RunWorktree): Promise<{ reason: string; violation?: string } | null> {
     if (run.status === "failed" && run.playbook.workspace.keepFailed) return { reason: "the run failed and workspace.keep_failed is true" };
     if (wt.workspaceSnapshot) {
-      const violation = snapshotDiff(wt.workspaceSnapshot, await checkoutSnapshot(run.workspaceDir));
+      const violation = await checkoutViolationSince(run.workspaceDir, wt.workspaceSnapshot);
       if (violation) return { reason: "the original workspace checkout changed during the run", violation };
     }
     if (existsSync(wt.path)) {
@@ -3301,7 +3301,7 @@ export class Runtime {
     }
     const baseline = run.worktree?.workspaceSnapshot;
     if (baseline) {
-      const detail = snapshotDiff(baseline, await checkoutSnapshot(run.workspaceDir));
+      const detail = await checkoutViolationSince(run.workspaceDir, baseline);
       if (detail) return { kind: "isolation", detail };
     }
     const wt = run.worktree;
