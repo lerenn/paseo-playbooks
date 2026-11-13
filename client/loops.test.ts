@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { badgeText, groupLoops, loopText, type LoopEdge, visibleAttempts } from "./loops";
+import { activeStep, assignLanes, badgeText, groupLoops, relatedLoops, loopText, type LoopEdge, visibleAttempts } from "./loops";
 
 const edge = (from: string, to: string, outcome: string, count = 0, max: number | undefined = 3): LoopEdge => ({ from, to, outcome, count, max });
 
@@ -40,5 +40,33 @@ describe("visibleAttempts", () => {
   });
   it("shows everything once expanded", () => {
     expect(visibleAttempts(list(44), true).shown).toHaveLength(44);
+  });
+});
+
+describe("assignLanes", () => {
+  const layer = (id: string) => ({ a: 0, b: 1, c: 2, d: 3, e: 4 })[id as "a"]!;
+  it("shares a lane between loops whose spans do not overlap", () => {
+    const { lanes, count } = assignLanes(groupLoops([edge("b", "a", "x"), edge("e", "d", "y")]), layer);
+    expect(count).toBe(1);
+    expect(lanes.get("b->a")).toBe(lanes.get("e->d"));
+  });
+  it("separates loops whose spans overlap", () => {
+    const { lanes, count } = assignLanes(groupLoops([edge("d", "a", "x"), edge("c", "b", "y")]), layer);
+    expect(count).toBe(2);
+    expect(lanes.get("d->a")).not.toBe(lanes.get("c->b"));
+  });
+});
+
+describe("relatedLoops and activeStep", () => {
+  const groups = groupLoops([edge("b", "a", "x"), edge("d", "c", "y"), edge("e", "a", "z")]);
+  it("selects the lines leaving and entering a step", () => {
+    expect([...relatedLoops(groups, "a")].sort()).toEqual(["b->a", "e->a"]);
+    expect([...relatedLoops(groups, "d")]).toEqual(["d->c"]);
+    expect(relatedLoops(groups, null).size).toBe(0);
+  });
+  it("prefers the hovered step over the pinned one", () => {
+    expect(activeStep("a", "b")).toBe("a");
+    expect(activeStep(null, "b")).toBe("b");
+    expect(activeStep(null, null)).toBeNull();
   });
 });

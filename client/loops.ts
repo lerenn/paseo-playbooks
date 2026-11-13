@@ -59,3 +59,36 @@ export function visibleAttempts<T>(attempts: readonly T[], expanded: boolean): {
   if (expanded || attempts.length <= COLLAPSE_ABOVE) return { shown: [...attempts], hidden: 0 };
   return { shown: attempts.slice(-KEEP_LAST), hidden: attempts.length - KEEP_LAST };
 }
+
+/**
+ * A lane (0, 1, ...) for each group, on the right of the graph. Groups whose spans of layers do
+ * not overlap share a lane, so there are few lanes however many loops a playbook has.
+ */
+export function assignLanes(groups: readonly LoopGroup[], layerOf: (id: string) => number): { lanes: Map<string, number>; count: number } {
+  const taken: Array<Array<[number, number]>> = [];
+  const lanes = new Map<string, number>();
+  const spans = groups
+    .map((group) => ({ key: group.key, lo: Math.min(layerOf(group.from), layerOf(group.to)), hi: Math.max(layerOf(group.from), layerOf(group.to)) }))
+    .sort((a, b) => b.hi - b.lo - (a.hi - a.lo) || a.lo - b.lo);
+  for (const span of spans) {
+    let lane = taken.findIndex((used) => used.every(([lo, hi]) => span.hi < lo || span.lo > hi));
+    if (lane < 0) {
+      lane = taken.length;
+      taken.push([]);
+    }
+    taken[lane]!.push([span.lo, span.hi]);
+    lanes.set(span.key, lane);
+  }
+  return { lanes, count: taken.length };
+}
+
+/** The keys of the loop lines to whiten for a step: those leaving it and those coming back into it. */
+export function relatedLoops(groups: readonly LoopGroup[], stepId: string | null): Set<string> {
+  if (stepId === null) return new Set();
+  return new Set(groups.filter((group) => group.from === stepId || group.to === stepId).map((group) => group.key));
+}
+
+/** The step whose lines are white: the hovered one, else the one pinned by a tap. */
+export function activeStep(hovered: string | null, pinned: string | null): string | null {
+  return hovered ?? pinned;
+}
