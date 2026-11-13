@@ -374,6 +374,8 @@ export class Runtime {
   /** Batch step attempts whose `settle` output was applied, as "<batchId>/<stepId>/<attempt>". */
   private readonly settledSteps = new Set<string>();
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** One timer per delayed step (`run/step/due`): runs the tick when its loop-back delay is over. */
+  private readonly delayTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /** Silence checks of running agent steps, by agent id. */
   private readonly watches = new Map<string, ReturnType<typeof setTimeout>>();
   /** Start reserves a run id and playbook snapshot for the worktree it creates. */
@@ -544,6 +546,8 @@ export class Runtime {
     for (const timer of [...this.timers.values(), ...this.watches.values()]) clearTimeout(timer);
     this.timers.clear();
     this.watches.clear();
+    for (const timer of this.delayTimers.values()) clearTimeout(timer);
+    this.delayTimers.clear();
     for (const id of [...this.scripts.keys()]) this.stopScript(id);
     return Promise.all([this.store.close(), this.bus.close(), this.sessions.flush(), this.usageLedger.flush()]).then(() => undefined);
   }
@@ -1322,6 +1326,41 @@ export class Runtime {
     await this.tick();
   }
 
+  /**
+   * A step a `goto` with `delay` sent back waits, pending, until its `waitUntil` (kept in the run, so a restart resumes it).
+   * Due ones are made ready here, before the phases that start ready steps; for the others one timer per step runs the
+   * tick again when they are due. A paused run keeps its delayed steps: the tick that resume runs releases them.
+   */
+  private async releaseDelayed(): Promise<void> {
+    for (const listed of this.store.list()) {
+      if (!isActive(listed) || isPaused(listed) || isPipeline(listed)) continue;
+      for (const { stepId, due } of engine.delayedSteps(listed)) {
+        const key = `${listed.id}/${stepId}/${due}`;
+        const wait = Date.parse(due) - Date.now();
+        if (wait > 0) {
+          if (this.delayTimers.has(key)) continue;
+          const timer = setTimeout(() => {
+            this.delayTimers.delete(key);
+            void this.tick().catch((error: unknown) => console.error("[playbooks] tick after a loop-back delay failed:", errorText(error)));
+          }, wait);
+          this.delayTimers.set(key, timer);
+          continue;
+        }
+        await this.store.mutate(listed.id, (current) => {
+          if (!isActive(current) || isPaused(current)) return;
+          engine.releaseDelayed(current, nowIso());
+        });
+      }
+      for (const key of [...this.delayTimers.keys()]) {
+        const [rid, sid, due] = key.split("/");
+        if (rid === listed.id && this.store.get(rid)?.steps[sid!]?.waitUntil !== due) {
+          clearTimeout(this.delayTimers.get(key));
+          this.delayTimers.delete(key);
+        }
+      }
+    }
+  }
+
   /** Starts ready script and hand-off steps, ends the jobs of ended singleton runs, and starts boarding runs. */
   private async tick(): Promise<void> {
     if (this.ticking) {
@@ -1332,6 +1371,7 @@ export class Runtime {
     try {
       do {
         this.tickAgain = false;
+        await this.tickPhase("releaseDelayed", () => this.releaseDelayed());
         await this.tickPhase("driveManagerless", () => this.driveManagerless());
         await this.tickPhase("settleGateChats", () => this.settleGateChats());
         await this.tickPhase("askGatesInChat", () => this.askGatesInChat());

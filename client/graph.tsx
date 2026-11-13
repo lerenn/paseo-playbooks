@@ -840,6 +840,11 @@ function Node(props: GraphProps & { step: Step; longNeeds: string[]; nodeWidth: 
               {stateLabel}
             </Text>
           ) : null}
+          {run && nodeState === "pending" && state?.waitUntil && !isTerminal(run.status) ? (
+            <Text numberOfLines={1} accessibilityLabel={`Waits until ${new Date(state.waitUntil).toLocaleTimeString()} (loop-back delay)`} style={{ color: theme.colors.foregroundMuted, fontSize: 10 }}>
+              {`waits until ${new Date(state.waitUntil).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`}
+            </Text>
+          ) : null}
           {elapsed ? (
             <Text numberOfLines={1} accessibilityLabel={`Running for ${elapsed}`} style={{ color: theme.colors.foregroundMuted, fontSize: 10 }}>
               {`running for ${elapsed}`}

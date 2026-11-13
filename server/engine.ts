@@ -183,7 +183,7 @@ function createRun(input: NewRunInput, inputs: Record<string, VarValue>, kind: "
     steps: Object.fromEntries(
       input.playbook.steps.map((step) => [
         step.id,
-        { status: "pending", attempts: [], outputs: {}, summary: null, feedback: null, loop: 0, completedSeq: null, branch: null, fanout: null, fanoutPast: [], queuedAt: null, nextModel: null },
+        { status: "pending", attempts: [], outputs: {}, summary: null, feedback: null, loop: 0, completedSeq: null, branch: null, fanout: null, fanoutPast: [], queuedAt: null, nextModel: null, waitUntil: null },
       ]),
     ),
     loops: {},
@@ -277,6 +277,11 @@ export function refreshReady(run: Run, now: string, fx?: Effects): { ready: stri
   for (const step of run.playbook.steps) {
     const state = run.steps[step.id]!;
     if (state.status !== "pending" || !isStepLive(run, step.id)) continue;
+    // A step a goto sent back with a `delay` stays pending until it is due.
+    if (state.waitUntil !== null) {
+      if (Date.parse(state.waitUntil) > Date.parse(now)) continue;
+      state.waitUntil = null;
+    }
     if (!step.needs.every((need) => { const status = run.steps[need]?.status; return status !== undefined && isStepDone(status); })) continue;
     const gating = limited.some(([prefix]) => blockEntrySteps(run.playbook, prefix).includes(step.id) && !holdsBlock(run, prefix));
     if (gating) {
@@ -290,6 +295,23 @@ export function refreshReady(run: Run, now: string, fx?: Effects): { ready: stri
     }
   }
   return { ready, queued };
+}
+
+/** The steps of the run that wait for a goto's `delay`, with when each is due (ISO). */
+export function delayedSteps(run: Run): Array<{ stepId: string; due: string }> {
+  return run.playbook.steps.flatMap((step) => {
+    const state = run.steps[step.id];
+    return state?.status === "pending" && state.waitUntil !== null ? [{ stepId: step.id, due: state.waitUntil }] : [];
+  });
+}
+
+/** Makes ready the steps whose delay is over (a no-op for the others). Returns the steps that became ready. */
+export function releaseDelayed(run: Run, now: string): string[] {
+  const due = delayedSteps(run).filter((entry) => Date.parse(entry.due) <= Date.parse(now)).map((entry) => entry.stepId);
+  if (due.length === 0) return [];
+  const { ready } = refreshReady(run, now);
+  for (const stepId of due) log(run, now, "delay_over", stepId, "the loop-back delay is over");
+  return ready.filter((id) => due.includes(id));
 }
 
 /** Why a step's `when` does not hold now (e.g. `when env is dev, not prd`), or null when it does. */
@@ -354,7 +376,7 @@ export function repairRun(run: Run): string[] {
   const added: string[] = [];
   for (const step of run.playbook.steps) {
     if (run.steps[step.id]) continue;
-    run.steps[step.id] = { status: "pending", attempts: [], outputs: {}, summary: null, feedback: null, loop: 0, completedSeq: null, branch: null, fanout: null, fanoutPast: [], queuedAt: null, nextModel: null };
+    run.steps[step.id] = { status: "pending", attempts: [], outputs: {}, summary: null, feedback: null, loop: 0, completedSeq: null, branch: null, fanout: null, fanoutPast: [], queuedAt: null, nextModel: null, waitUntil: null };
     added.push(step.id);
   }
   for (const task of run.playbook.after) {
@@ -1113,7 +1135,7 @@ function resetBlockLoops(run: Run, source: string, target: string): void {
   }
 }
 
-function performGoto(run: Run, source: string, target: string, feedback: string, now: string, fx: Effects): void {
+function performGoto(run: Run, source: string, target: string, feedback: string, now: string, fx: Effects, delayMs?: number): void {
   const key = `${source}->${target}`;
   resetBlockLoops(run, source, target);
   run.loops[key] = (run.loops[key] ?? 0) + 1;
@@ -1134,7 +1156,10 @@ function performGoto(run: Run, source: string, target: string, feedback: string,
     state.branch = null;
     state.completedSeq = null;
     state.loop += 1;
+    state.waitUntil = null;
   }
+  // The target is held back until the delay is over (refreshReady); the plugin releases it then.
+  if (delayMs !== undefined) run.steps[target]!.waitUntil = new Date(Date.parse(now) + delayMs).toISOString();
   for (const gate of run.gates) {
     if (gate.status === "pending" && reset.has(gate.stepId)) {
       gate.status = "rejected";
@@ -1145,15 +1170,15 @@ function performGoto(run: Run, source: string, target: string, feedback: string,
   run.steps[target]!.feedback = feedback || null;
   log(run, now, "goto", source, `${key} (loop ${run.loops[key]})`);
   const { ready, queued } = refreshReady(run, now, fx);
-  fx.notes.push(`Looping back to "${target}" (loop ${run.loops[key]}). Ready: ${readyList(run, ready) || "none"}.`);
+  fx.notes.push(`Looping back to "${target}" (loop ${run.loops[key]})${delayMs !== undefined ? `, which starts in ${Math.round(delayMs / 1000)}s (delay)` : ""}. Ready: ${readyList(run, ready) || "none"}.`);
   if (queued.length > 0) fx.notes.push(queueNote(run, queued));
 }
 
-function gotoOrLimit(run: Run, step: Step, target: string, maxLoops: number | undefined, feedback: string, now: string, fx: Effects, decider?: GateDecider): void {
+function gotoOrLimit(run: Run, step: Step, target: string, maxLoops: number | undefined, feedback: string, now: string, fx: Effects, decider?: GateDecider, delayMs?: number): void {
   const key = `${step.id}->${target}`;
   const limit = maxLoops === undefined ? Infinity : maxLoops + (run.loopAllowance[key] ?? 0);
   if ((run.loops[key] ?? 0) < limit) {
-    performGoto(run, step.id, target, feedback, now, fx);
+    performGoto(run, step.id, target, feedback, now, fx, delayMs);
     return;
   }
   run.steps[step.id]!.status = "waiting";
@@ -1312,7 +1337,7 @@ function followOutcome(run: Run, step: Step, outcome: string, summary: string, n
       break;
     }
     case "goto":
-      gotoOrLimit(run, step, transition.target, transition.maxLoops, summary, now, fx, transition.decider);
+      gotoOrLimit(run, step, transition.target, transition.maxLoops, summary, now, fx, transition.decider, transition.delayMs);
       break;
     case "ask":
       openAskGate(run, step, outcome, transition, summary, now, fx);
@@ -1574,6 +1599,7 @@ export function restartRun(run: Run, stepId: string, input: { comment: string | 
     state.completedSeq = null;
     state.queuedAt = null;
     state.nextModel = null;
+    state.waitUntil = null;
   }
   run.steps[stepId]!.nextModel = input.model ?? null;
   run.steps[stepId]!.feedback = input.comment?.trim() ? `Restarted from this step by a human: ${input.comment.trim()}` : null;

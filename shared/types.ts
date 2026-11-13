@@ -111,8 +111,11 @@ export const TransitionSchema = z.discriminatedUnion("kind", [
    */
   z.object({ kind: z.literal("end"), outcome: z.string().optional() }),
   z.object({ kind: z.literal("fail") }),
-  /** `decider`: who decides the loop-limit gate `maxLoops` opens (unset = a human). */
-  z.object({ kind: z.literal("goto"), target: z.string(), maxLoops: z.number().int().positive().optional(), decider: GateDeciderSchema.optional() }),
+  /**
+   * `decider`: who decides the loop-limit gate `maxLoops` opens (unset = a human).
+   * `delayMs`: the target starts only this long after the outcome (unset = at once).
+   */
+  z.object({ kind: z.literal("goto"), target: z.string(), maxLoops: z.number().int().positive().optional(), decider: GateDeciderSchema.optional(), delayMs: z.number().int().positive().optional() }),
   /**
    * Opens a human gate asking for an answer, then goes back to `target` with the answer as feedback.
    * With `choices`, each button goes to its own target; `target` is then the first choice's.
@@ -730,6 +733,8 @@ export const RunStepSchema = z.object({
   fanout: FanoutStateSchema.nullable().default(null),
   /** Fan-out steps: the children of earlier passes and attempts, oldest first (the last MAX_FANOUT_PAST kept). */
   fanoutPast: z.array(FanoutStateSchema).default([]),
+  /** A goto with `delay` sent the run back to this step: it becomes ready only at this time (ISO); null when it is not waiting for a delay. */
+  waitUntil: z.string().nullable().default(null),
   /** When the step started waiting for a free `concurrency` slot of its block (orders the queue). */
   queuedAt: z.string().nullable().default(null),
   /** The `model` restart_run gave for this step: its next attempt runs on it unless start_step passes its own. Null when none. */
