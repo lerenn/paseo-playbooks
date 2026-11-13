@@ -301,12 +301,17 @@ const FANOUT_OUTPUTS: Record<string, VarDef> = {
 const MOVED_FIELDS = { prompt: "role", silence: "role", archive_agents: "role", agent: "role", choices: "gate", poll: "script" } as const;
 type MovedField = keyof typeof MOVED_FIELDS;
 
+/** Longest step `description`, in characters. */
+const STEP_DESCRIPTION_MAX = 2000;
+
 const RawStepSchema = z.object({
     id: z.string(),
     /** Full name (details panel, graph); on a playbook step, the block's frame. Default: the id, capitalised. */
     title: z.string().min(1).optional(),
     /** Name in the Playbooks screen columns. Default: the title. */
     short_title: z.string().min(1).optional(),
+    /** For people only (step sheet, graph info, get_run): why and how the step exists. Never put in an agent's prompt or brief. */
+    description: z.string().trim().min(1).max(STEP_DESCRIPTION_MAX).optional(),
     needs: z.array(z.string()).default([]),
     role: kindBlock(RawRoleStepSchema).optional(),
     gate: kindBlock(RawGateStepSchema).optional(),
@@ -1328,6 +1333,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
         choices: [],
         branch: { cases },
         ...(rawStep.title !== undefined ? { title: rawStep.title } : {}),
+        ...(rawStep.description !== undefined ? { description: rawStep.description } : {}),
         ...(rawStep.short_title !== undefined ? { shortTitle: rawStep.short_title } : {}),
         ...conditional,
       });
@@ -1386,6 +1392,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
         on,
         choices: [],
         ...(rawStep.title !== undefined ? { title: rawStep.title } : {}),
+        ...(rawStep.description !== undefined ? { description: rawStep.description } : {}),
         ...conditional,
         ...afterTask,
       });
@@ -1435,6 +1442,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
         choices: [],
         ...(timeoutMs !== undefined ? { timeoutMs } : {}),
         ...(rawStep.title !== undefined ? { title: rawStep.title } : {}),
+        ...(rawStep.description !== undefined ? { description: rawStep.description } : {}),
         ...(rawStep.short_title !== undefined ? { shortTitle: rawStep.short_title } : {}),
         ...conditional,
       });
@@ -1508,6 +1516,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
         ...(timeoutMs !== undefined ? { timeoutMs } : {}),
         ...(timeoutTemplate !== undefined ? { timeout: timeoutTemplate } : {}),
         ...(rawStep.title !== undefined ? { title: rawStep.title } : {}),
+        ...(rawStep.description !== undefined ? { description: rawStep.description } : {}),
         ...(rawStep.short_title !== undefined ? { shortTitle: rawStep.short_title } : {}),
         ...conditional,
       });
@@ -1679,6 +1688,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
       ...afterTask,
     };
     if (rawStep.title !== undefined) step.title = rawStep.title;
+    if (rawStep.description !== undefined) step.description = rawStep.description;
     if (rawStep.short_title !== undefined) step.shortTitle = rawStep.short_title;
     if (roleStep) step.role = roleStep.name;
     if (autoOutcomes) step.autoComplete = [...new Set(autoOutcomes)];

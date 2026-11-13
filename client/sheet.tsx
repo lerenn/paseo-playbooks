@@ -364,6 +364,11 @@ export function StepSheet(props: {
           <Icon name={STEP_KINDS[step.kind].icon} size={14} color={theme.colors.foregroundMuted} />
           <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12, fontWeight: "600" }}>{STEP_KINDS[step.kind].label}</Text>
         </View>
+        {step.description ? (
+          <Text selectable accessibilityLabel={`About this step: ${step.description}`} style={{ color: theme.colors.foreground, fontSize: 13 }}>
+            {step.description}
+          </Text>
+        ) : null}
         {state ? <Line theme={theme}>Status: {state.status}{latest ? ` · attempt ${latest.n}` : ""}{latest?.waiting && state.status === "running" ? ` · waiting for tokens until ${new Date(latest.waiting.until).toLocaleString()}` : ""}</Line> : null}
         {step.kind === "agent" ? (
           <Section theme={theme} title="Agent">

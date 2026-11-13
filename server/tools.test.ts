@@ -84,6 +84,14 @@ describe("manager views", () => {
     expect(JSON.stringify(compact).length).toBeLessThan(1500);
   });
 
+  it("get_run shows a step's description in both views, and not when it has none", async () => {
+    const run = await viewsRun();
+    run.playbook.steps.find((step) => step.id === "investigate")!.description = "Finds the cause, so the fix is not a guess.";
+    expect(runCompact(run).steps.investigate).toMatchObject({ description: "Finds the cause, so the fix is not a guess." });
+    expect(runFull(run).steps.investigate).toMatchObject({ description: "Finds the cause, so the fix is not a guess." });
+    expect(runCompact(run).steps.implement).not.toHaveProperty("description");
+  });
+
   it("get_run full keeps every report and output; steps filters either view", async () => {
     const run = await viewsRun();
     const full = runFull(run);
