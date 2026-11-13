@@ -545,7 +545,7 @@ export class Runtime {
     this.timers.clear();
     this.watches.clear();
     for (const id of [...this.scripts.keys()]) this.stopScript(id);
-    return Promise.all([this.store.close(), this.bus.close(), this.sessions.flush()]).then(() => undefined);
+    return Promise.all([this.store.close(), this.bus.close(), this.sessions.flush(), this.usageLedger.flush()]).then(() => undefined);
   }
 
   /**

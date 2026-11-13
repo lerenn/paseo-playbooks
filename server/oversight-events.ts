@@ -241,11 +241,14 @@ export class OversightProducer {
   private async lifecycle(run: Run): Promise<void> {
     const from = this.cursor.get(run.id) ?? 0;
     this.cursor.set(run.id, run.seq);
-    if (run.batch) return;
+    // Nothing was written since the last look (every finished run, on every tick): no walk of its history.
+    if (run.batch || run.seq === from) return;
     const base = { runId: run.id, playbook: run.playbook.id, runName: run.name ?? null, projectId: run.projectId, workspaceDir: run.workspaceDir };
     const meta = { runId: run.id, source: SOURCE };
-    for (const entry of run.history) {
-      if (entry.seq <= from) continue;
+    // The history is in seq order: start at the first entry past the cursor, found from the end.
+    let first = run.history.length;
+    while (first > 0 && run.history[first - 1]!.seq > from) first--;
+    for (const entry of run.history.slice(first)) {
       const key = `${run.id}/${entry.stepId}`;
       if (entry.type === "step_started" && entry.stepId) {
         const attempt = Number(/^attempt (\d+)/.exec(entry.detail)?.[1] ?? run.steps[entry.stepId]?.attempts.at(-1)?.n ?? 0) || null;

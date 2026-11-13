@@ -3,6 +3,8 @@ import path from "node:path";
 import { type AgentUsage, AgentUsageSchema } from "../shared/analytics";
 import { addUsage, type Usage, type UsageReading, usageDelta, UsageSchema } from "../shared/types";
 
+const SAVE_DEBOUNCE_MS = 500;
+
 export type AgentUsageInfo = Omit<AgentUsage, "usage" | "last" | "agentId" | "at">;
 
 /**
@@ -14,6 +16,8 @@ export class UsageLedger {
   private readonly agents = new Map<string, AgentUsage>();
   private loaded: Promise<void> | null = null;
   private writing: Promise<void> = Promise.resolve();
+  private dirty = false;
+  private timer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private readonly file: string) {}
 
@@ -50,8 +54,14 @@ export class UsageLedger {
     return [...this.agents.values()];
   }
 
+  /** Coalesced: every turn marks the ledger dirty, one write follows a short debounce (or `flush`). */
   private save(): void {
-    const body = `${JSON.stringify(Object.fromEntries(this.agents), null, 2)}\n`;
+    this.dirty = true;
+    this.timer ??= setTimeout(() => void this.flush(), SAVE_DEBOUNCE_MS);
+  }
+
+  private writeNow(): void {
+    const body = `${JSON.stringify(Object.fromEntries(this.agents))}\n`;
     this.writing = this.writing
       .then(async () => {
         await mkdir(path.dirname(this.file), { recursive: true });
@@ -62,8 +72,14 @@ export class UsageLedger {
       .catch(() => undefined);
   }
 
-  /** Waits for the write in flight. */
+  /** Writes what is waiting (without the debounce) and waits for the write in flight. */
   flush(): Promise<void> {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+    if (this.dirty) {
+      this.dirty = false;
+      this.writeNow();
+    }
     return this.writing;
   }
 }

@@ -81,6 +81,9 @@ interface PendingQueue {
 }
 const PendingSchema = z.record(z.string(), z.object({ events: z.array(BusEventSchema), since: z.number(), dropped: z.number().default(0) }));
 
+/** How long a burst of emits waits before the event log and the held queues are rewritten. */
+const SAVE_DEBOUNCE_MS = 100;
+
 export class BusError extends Error {}
 
 /** `*` matches any run of characters, dots included; everything else matches itself. */
@@ -215,7 +218,26 @@ export class EventBus {
     return this.loaded;
   }
 
+  /** Files whose next write waits for a short debounce: the latest value wins, so a burst of emits is one rewrite. */
+  private readonly dirty = new Map<string, () => unknown>();
+  private saveTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /** Rewrites `file` soon (coalesced with the writes that follow within the debounce); `close` flushes it. */
+  private writeSoon(file: string, value: () => unknown): void {
+    this.dirty.set(file, value);
+    this.saveTimer ??= setTimeout(() => this.flushDirty(), SAVE_DEBOUNCE_MS);
+  }
+
+  private flushDirty(): void {
+    if (this.saveTimer) clearTimeout(this.saveTimer);
+    this.saveTimer = null;
+    for (const [file, value] of this.dirty) void this.write(file, value());
+    this.dirty.clear();
+  }
+
   private write(file: string, value: unknown): Promise<void> {
+    // An immediate write supersedes a queued one of the same file.
+    this.dirty.delete(file);
     this.writing = this.writing.then(async () => {
       try {
         await writeFile(`${file}.tmp`, `${JSON.stringify(value)}\n`);
@@ -228,11 +250,12 @@ export class EventBus {
   }
 
   private savePending(): void {
-    if (this.files.pending) void this.write(this.files.pending, Object.fromEntries(this.queues));
+    if (this.files.pending) this.writeSoon(this.files.pending, () => Object.fromEntries(this.queues));
   }
 
   /** Resolves once what was written is on disk. */
   async close(): Promise<void> {
+    this.flushDirty();
     await this.writing;
   }
 
@@ -248,7 +271,7 @@ export class EventBus {
     this.log.push(event);
     const capacity = this.options.capacity ?? DEFAULT_CAPACITY;
     if (this.log.length > capacity) this.log = this.log.slice(-capacity);
-    void this.write(this.files.events, this.log);
+    this.writeSoon(this.files.events, () => this.log);
     for (const subscription of this.subscriptions) {
       if (!this.wants(subscription, event, def) || meta.actors?.includes(subscription.owner)) continue;
       const queue = this.queues.get(subscription.id) ?? { events: [], since: Date.parse(event.at), dropped: 0 };

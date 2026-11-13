@@ -1,5 +1,6 @@
 import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { repairRun } from "./engine";
+import { isDeepStrictEqual } from "node:util";
 import path from "node:path";
 import { pluginDataDir } from "./data-dir";
 import { upcastRunNames } from "../shared/legacy-names";
@@ -109,6 +110,8 @@ export class RunStore {
       repairRun(working);
       const result = await fn(working);
       const events = takeEvents(working);
+      // A mutation that changed nothing (a tick with nothing to do) writes nothing: same file, same snapshot.
+      if (events.length === 0 && isDeepStrictEqual(run, working)) return result;
       if (events.length > 0) await this.commit(run, working, events);
       await this.write(working);
       this.runs.set(id, working);
@@ -193,7 +196,7 @@ export class RunStore {
     if (this.closed) return;
     const file = path.join(this.dir, `${run.id}.json`);
     const temp = `${file}.${process.pid}.tmp`;
-    const done = writeFile(temp, `${JSON.stringify(run, null, 2)}\n`, "utf8").then(() => rename(temp, file));
+    const done = writeFile(temp, `${JSON.stringify(run)}\n`, "utf8").then(() => rename(temp, file));
     this.writing.add(done);
     try {
       await done;
