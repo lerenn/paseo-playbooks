@@ -71,8 +71,8 @@ file has `role: { silence }`, not a flat `silence`.
 6. **Tests**: add loader cases in `server/loader.test.ts` (accepted, refused, misplaced, old
    form).
 7. **Docs and examples**: update `skills/paseo-playbooks/SKILL.md` (its playbook example is
-   validated by `server/skill.test.ts`), `README.md`, `website/reference.html` and
-   `website/examples.html`, `examples/.paseo/plugins/playbooks/` and this repository's own
+   validated by `server/skill.test.ts`), `README.md`, `website/reference.html` (each entry ends with an example), `examples/.paseo/plugins/playbooks/`
+   and this repository's own
    `.paseo/plugins/playbooks/`.
 8. **Validate**: `npm test`, then call `validate_playbooks` on the examples and on
    `.paseo/plugins/playbooks/`.
