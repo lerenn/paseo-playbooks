@@ -275,6 +275,7 @@ on:
 <details>
 <summary>Details</summary>
 <ul>
+<li>In a run, the panel folds a sub-playbook into one node (name, status, <code>3/5 steps</code>, elapsed time while it runs) unless a step in it is running, ready, waiting or failed; tap the node or the chevron on the frame to expand or collapse it. A group the panel opened for you stays open when it finishes.</li>
 <li>The block's first steps take its <code>needs</code>; steps that need the block wait for its last steps.</li>
 <li>Its inputs are the sub-playbook's inputs, auto-matched by name or mapped in <code>inputs</code>; unmatched ones use their default. Its outputs are the sub-playbook's outputs, usable by name or as <code>{{ steps.pr.outputs.pr_url }}</code>.</li>
 <li>Loops inside the sub-playbook stay inside. A <code>goto</code> to the block restarts it from its first step; the sub-playbook must have exactly one.</li>
