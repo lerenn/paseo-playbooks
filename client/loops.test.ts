@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assignLanes, groupLoops, loopText, type LoopEdge } from "./loops";
+import { badgeText, groupLoops, loopText, type LoopEdge, visibleAttempts } from "./loops";
 
 const edge = (from: string, to: string, outcome: string, count = 0, max: number | undefined = 3): LoopEdge => ({ from, to, outcome, count, max });
 
@@ -20,20 +20,25 @@ describe("groupLoops", () => {
   });
 });
 
-describe("assignLanes", () => {
-  const layers: Record<string, number> = { a: 0, b: 1, c: 2, d: 3, e: 4 };
-  const lane = (groups: ReturnType<typeof groupLoops>) => assignLanes(groups, (id) => layers[id]!);
-  it("shares a lane between groups whose spans do not overlap", () => {
-    const { lanes, count } = lane(groupLoops([edge("b", "a", "x"), edge("e", "d", "y")]));
-    expect(count).toBe(1);
-    expect(lanes.get("b->a")).toBe(lanes.get("e->d"));
+describe("badgeText", () => {
+  it("counts outcomes and loops taken", () => {
+    const [g] = groupLoops([edge("a", "b", "x", 40), edge("a", "b", "y", 40)]);
+    expect(badgeText(g!, "Fix it")).toBe("↩ Fix it · 2 outcomes · 80 taken");
   });
-  it("separates overlapping spans", () => {
-    const { lanes, count } = lane(groupLoops([edge("d", "a", "x"), edge("c", "b", "y")]));
-    expect(count).toBe(2);
-    expect(lanes.get("d->a")).not.toBe(lanes.get("c->b"));
+  it("shows a lone outcome with its counter", () => {
+    expect(badgeText(groupLoops([edge("a", "b", "x", 1)])[0]!, "Fix it")).toBe("↩ Fix it · x · 1/3");
   });
-  it("uses at most one lane per group", () => {
-    expect(lane(groupLoops([edge("d", "a", "x"), edge("d", "b", "y"), edge("d", "c", "z")])).count).toBe(3);
+});
+
+describe("visibleAttempts", () => {
+  const list = (n: number) => Array.from({ length: n }, (_, i) => i + 1);
+  it("shows few attempts in full", () => {
+    expect(visibleAttempts(list(6), false)).toEqual({ shown: list(6), hidden: 0 });
+  });
+  it("collapses many attempts to the latest ones", () => {
+    expect(visibleAttempts(list(44), false)).toEqual({ shown: [41, 42, 43, 44], hidden: 40 });
+  });
+  it("shows everything once expanded", () => {
+    expect(visibleAttempts(list(44), true).shown).toHaveLength(44);
   });
 });
