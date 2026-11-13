@@ -126,6 +126,32 @@ export async function exportPaths(cwd: string, ref: string, paths: readonly stri
   });
 }
 
+/** The commit `ref` points to. */
+export async function revParse(cwd: string, ref: string): Promise<string> {
+  return (await git(cwd, ["rev-parse", "--verify", `${ref}^{commit}`])).trim();
+}
+
+/** Names of the sub-directories of `dir` (a path inside the tree) at `ref`; empty when `dir` is absent. */
+export async function listTreeDirs(cwd: string, ref: string, dir: string): Promise<string[]> {
+  const out = await git(cwd, ["ls-tree", "-d", "--name-only", ref, `${dir.replace(/\/+$/, "")}/`]).catch(() => "");
+  return out.split("\n").map((line) => line.trim()).filter(Boolean);
+}
+
+/** Files of `paths` that differ between commits `from` and `to` (added, changed or deleted). */
+export async function changedBetween(cwd: string, from: string, to: string, paths: readonly string[]): Promise<string[]> {
+  if (paths.length === 0) return [];
+  const out = await git(cwd, ["-c", "core.quotepath=off", "diff", "--name-only", "--no-renames", from, to, "--", ...paths]);
+  return out.split("\n").map((line) => line.trim()).filter(Boolean);
+}
+
+/** Files of `paths` that a worktree changed against `baseSha`: committed, staged, modified or untracked. */
+export async function changedSince(cwd: string, baseSha: string, paths: readonly string[]): Promise<string[]> {
+  if (paths.length === 0) return [];
+  const tracked = await git(cwd, ["-c", "core.quotepath=off", "diff", "--name-only", "--no-renames", baseSha, "--", ...paths]);
+  const untracked = await git(cwd, ["-c", "core.quotepath=off", "ls-files", "--others", "--exclude-standard", "--", ...paths]);
+  return [...new Set([...tracked.split("\n"), ...untracked.split("\n")].map((line) => line.trim()).filter(Boolean))];
+}
+
 /** Best effort: fetches `branch` from origin and fast-forwards the checkout to it. Never fails. */
 export async function fastForward(cwd: string, branch: string): Promise<void> {
   try {

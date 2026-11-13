@@ -176,6 +176,7 @@ function createRun(input: NewRunInput, inputs: Record<string, VarValue>, kind: "
     workspaceArchive: null,
     exhausted: [],
     worktree: input.worktree ?? null,
+    scriptsRefresh: null,
     definition: input.definition ?? null,
     archivedAt: null,
     seenAt: null,

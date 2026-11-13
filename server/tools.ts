@@ -946,6 +946,20 @@ export function runTools(runtime: Runtime): AgentToolDefinition[] {
         }),
     }),
     defineAgentTool({
+      name: "refresh_scripts",
+      description:
+        "Isolated runs only: a run keeps the scripts it started with (its script steps run the `scripts/` of the worktree's base commit), so a script fix merged to the base branch after the run started does not reach it. This fetches the run's base branch from origin and makes every script step of the run (the `scripts/` of the playbooks folders and of each profile) run the script from the fresh commit on its NEXT check (a check already running finishes with the old file). Only the scripts are refreshed: the run's pinned step definition (steps, declared inputs and outputs, script names, poll and wake_on) and its worktree are untouched, so a fresh script that expects other inputs or outputs than the pinned step declares still needs restart_run; the result lists the changed scripts so you can judge. Refused, with the reason: a run without isolation (its scripts already run from the live workspace checkout), an ended or archived run, a run whose worktree changed a script itself (the scripts are named), and a failed fetch (the error is given; the previous scripts stay). Recorded as a scripts_refreshed event of the run (get_run history) with the from and to commits; calling it again re-exports the latest commit.",
+      input: z.object({ runId: IdArg }),
+      execute: ({ runId }, { agent }) =>
+        guard(async () => {
+          const result = await runtime.refreshScripts(runId, agent.id);
+          const text = result.unchanged
+            ? `Run ${runId}: scripts refreshed from ${result.toSha.slice(0, 8)} (the run started at ${result.fromSha.slice(0, 8)}); no script differs. Script steps use that commit's scripts from their next check.`
+            : `Run ${runId}: scripts refreshed ${result.fromSha.slice(0, 8)} -> ${result.toSha.slice(0, 8)}. Changed: ${result.changed.join(", ")}. Script steps run them from their next check (a running check finishes with the old file); the step definition is unchanged.`;
+          return ok(result.missing.length ? `${text} Not in the fresh commit, so the pinned copy still runs: ${result.missing.join(", ")}.` : text, result);
+        }),
+    }),
+    defineAgentTool({
       name: "restart_run",
       description:
         "Recover a finished (completed, failed, canceled, or failed with \"manager lost\") or archived run: reopen it from a step of its main graph whose needs completed. That step and everything after it run again; completed steps before it keep their outputs and are not repeated. With takeOver: true you become its manager (you must be in the run's workspace). Otherwise its manager is woken, or, if that manager was archived, a new Playbook Manager is created in the run's workspace and takes over. If the run's workspace was deleted or has another active run, pass workspaceId to restart it in another workspace of the project. See list_runs (archived: true) for runs, failure and restartableFrom. With model, the restarted step's next attempt runs on it (an agent step only; start_step may still pass another).",

@@ -319,6 +319,7 @@ with that tag.
   The definition is frozen at start; `restart_run` reuses it. `validate_playbooks` shows what a new run would load
   (`results[].source`). Only a playbook that already exists, valid and isolated, in the workspace checkout can be started.
   See `docs/adrs/2026-11-10-playbooks-from-fresh-main.md`.
+- An isolated run's script steps run the `scripts/` of its worktree's base commit, so a script fix merged later misses a run in flight. `refresh_scripts` (`runId`) fetches the base branch and makes the run's script steps use the fresh scripts from their next check, through an overlay under the plugin data dir; the step definition and the worktree are not touched (restart the run for a changed definition). It is refused for a run without isolation, an ended run, a worktree that changed a script itself, and a failed fetch, and recorded as a `scripts_refreshed` history entry. See `docs/adrs/2026-11-13-refresh-run-scripts.md`.
 - Plain Start picks the workspace's most recently used agent (the one you last sent a
   message to, skipping agents that already manage a run), because the panel cannot see
   which tab has focus. To pick a specific agent, send it a message first, or use "Start on
