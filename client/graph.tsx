@@ -6,6 +6,7 @@ import { AccessibilityInfo, Animated, Pressable, Text, View } from "react-native
 import { Button, GateActions } from "./sheet";
 import { startAfterTaskRpc } from "../shared/contracts";
 import { askChoices, waitsForHuman } from "../shared/gates";
+import { blockStats, blockStatus, collapseNodes, EMPTY_COLLAPSE, isCollapsed, markSeen, progressText, toggled, type BlockStats, type BlockStatus, type CollapseState } from "../shared/collapse";
 import { END, layerOf, layoutGraph, START, withTerminals } from "../shared/graph";
 import { isTerminal, type AfterTask, type Playbook, type Run, type Step } from "../shared/types";
 import { activeStep, assignLanes, badgeText, groupLoops, loopText, relatedLoops, visibleAttempts, type LoopEdge, type LoopGroup } from "./loops";
@@ -115,11 +116,52 @@ export function Graph(props: GraphProps) {
 /** Layered top-down DAG built from plain views: nodes in rows, org-chart connectors between rows. */
 function Dag(props: GraphProps & { steps: Step[]; terminals: boolean; available: number }) {
   const { playbook, run, theme, steps, available } = props;
+  // An after-task's own frame already holds its sub-playbook: no second frame for it.
+  const blocks = useMemo(
+    () => Object.fromEntries(Object.entries(playbook.blocks).filter(([prefix]) => !playbook.after.some((task) => task.id === prefix))),
+    [playbook],
+  );
+  // Sub-playbooks fold into one node each (ADR 2026-11-13-collapsible-sub-playbooks).
+  const stats = useMemo(() => {
+    const ids = steps.map((step) => step.id);
+    return Object.fromEntries(
+      Object.keys(blocks).map((prefix) => [
+        prefix,
+        blockStats(prefix, ids, (id) => {
+          const state = run?.steps[id];
+          return state ? { status: state.status, startedAt: state.attempts.map((attempt) => attempt.startedAt) } : undefined;
+        }),
+      ]),
+    );
+  }, [blocks, steps, run]);
+  const [collapseStates, setCollapseStates] = useState<Record<string, CollapseState>>({});
+  const runKey = run?.id ?? "definition";
+  const collapse = collapseStates[runKey] ?? EMPTY_COLLAPSE;
+  useEffect(() => {
+    setCollapseStates((current) => {
+      const before = current[runKey] ?? EMPTY_COLLAPSE;
+      const after = markSeen(before, stats);
+      return after === before ? current : { ...current, [runKey]: after };
+    });
+  }, [stats, runKey]);
+  const collapsedKey = Object.keys(blocks)
+    .filter((prefix) => stats[prefix]!.total > 0 && isCollapsed(prefix, stats[prefix]!, collapse, run !== null))
+    .join("|");
+  const collapsedSet = useMemo(() => new Set(collapsedKey ? collapsedKey.split("|") : []), [collapsedKey]);
+  const folded = useMemo(() => collapseNodes(steps, collapsedSet), [steps, collapsedSet]);
+  const setCollapsed = (prefix: string, collapsed: boolean) => setCollapseStates((current) => ({ ...current, [runKey]: toggled(current[runKey] ?? EMPTY_COLLAPSE, prefix, collapsed) }));
   // Start and End are laid out like steps: Start above the roots, End below every step nothing needs.
-  const nodes = useMemo(() => (props.terminals ? withTerminals(steps) : steps), [steps, props.terminals]);
+  const nodes = useMemo(() => (props.terminals ? withTerminals(folded.nodes) : folded.nodes), [folded, props.terminals]);
+  const needsOf = useMemo(() => new Map(folded.nodes.map((node) => [node.id, node.needs])), [folded]);
   const layout = useMemo(() => layoutGraph(nodes), [nodes]);
   const layers = useMemo(() => layerOf(nodes), [nodes]);
-  const loops = useMemo(() => loopEdges(steps, run), [steps, run]);
+  const loops = useMemo(
+    () =>
+      loopEdges(steps, run)
+        .map((loop) => ({ ...loop, from: folded.nodeOf(loop.from), to: folded.nodeOf(loop.to) }))
+        .filter((loop) => loop.from !== loop.to),
+    [steps, run, folded],
+  );
   const forward = useMemo(() => forwardLabels(steps), [steps]);
   const groups = useMemo(() => groupLoops(loops), [loops]);
   /** The loop badge tapped (its group key): its target is outlined and its outcomes listed. */
@@ -131,11 +173,6 @@ function Dag(props: GraphProps & { steps: Step[]; terminals: boolean; available:
   const active = activeStep(hovered, pinned);
   const onKeys = useMemo(() => relatedLoops(groups, active), [groups, active]);
   const { lanes, count: laneCount } = useMemo(() => assignLanes(groups, (id) => layers.get(id) ?? 0), [groups, layers]);
-  // An after-task's own frame already holds its sub-playbook: no second frame for it.
-  const blocks = useMemo(
-    () => Object.fromEntries(Object.entries(playbook.blocks).filter(([prefix]) => !playbook.after.some((task) => task.id === prefix))),
-    [playbook],
-  );
   /** Room on each side for the one back-edge lane (both sides, so the graph stays centred). */
   const gutter = groups.length > 0 ? 6 + laneCount * LANE_GAP : 0;
   const columns = Math.max(1, ...layout.layers.map((row) => row.length));
@@ -161,15 +198,16 @@ function Dag(props: GraphProps & { steps: Step[]; terminals: boolean; available:
     const row = layout.layers.find((candidate) => candidate.includes(id));
     return deciding.has(id) && row?.length === 1 ? Math.max(nodeWidth, width - GAP) : nodeWidth;
   };
-  const running = new Set(run ? steps.filter((step) => run.steps[step.id]?.status === "running").map((step) => step.id) : []);
+  const running = new Set(run ? steps.filter((step) => run.steps[step.id]?.status === "running").map((step) => folded.nodeOf(step.id)) : []);
 
   return (
     <ScrollView horizontal style={{ flexGrow: 0 }} contentContainerStyle={{ minWidth: "100%", justifyContent: "center" }}>
       <View style={{ width: width + 2 * gutter, paddingHorizontal: gutter, paddingTop: 4, paddingBottom: 16 }}>
         <BlockFrames
           theme={theme}
-          blocks={blocks}
-          stepIds={steps.map((step) => step.id)}
+          blocks={Object.fromEntries(Object.entries(blocks).filter(([prefix]) => !collapsedSet.has(prefix)))}
+          stepIds={folded.nodes.map((node) => node.id)}
+          onToggle={(prefix) => setCollapsed(prefix, false)}
           layers={layers}
           layerTops={layerTops}
           heights={heights}
@@ -221,14 +259,25 @@ function Dag(props: GraphProps & { steps: Step[]; terminals: boolean; available:
                       areaWidth={Math.max(nodeWidth, width - GAP)}
                       longNeeds={id === END ? nodes.find((node) => node.id === END)!.needs.filter((need) => (layers.get(need) ?? 0) < index - 1) : []}
                     />
+                  ) : folded.prefixes.has(id) ? (
+                    <GroupNode
+                      theme={theme}
+                      title={blocks[folded.prefixes.get(id)!]?.title ?? id}
+                      stats={stats[folded.prefixes.get(id)!]!}
+                      depth={folded.prefixes.get(id)!.split(".").length - 1}
+                      nodeWidth={nodeWidth}
+                      longNeeds={(needsOf.get(id) ?? []).filter((need) => (layers.get(need) ?? 0) < index - 1)}
+                      onToggle={() => setCollapsed(folded.prefixes.get(id)!, true)}
+                      onBoxHeight={(height) => setHeights((current) => (current[id] === height ? current : { ...current, [id]: height }))}
+                    />
                   ) : (
                   <Node
                     step={byId.get(id)!}
-                    longNeeds={byId.get(id)!.needs.filter((need) => (layers.get(need) ?? 0) < index - 1)}
+                    longNeeds={(needsOf.get(id) ?? []).filter((need) => (layers.get(need) ?? 0) < index - 1)}
                     nodeWidth={widthOf(id)}
                     loops={loops.filter((loop) => loop.from === id)}
                     loopGroups={groups.filter((group) => group.from === id)}
-                    titleOf={(target) => (byId.get(target) ? stepTitle(byId.get(target)!) : target)}
+                    titleOf={(target) => (byId.get(target) ? stepTitle(byId.get(target)!) : blocks[folded.prefixes.get(target) ?? ""]?.title ?? target)}
                     selectedLoop={selectedKey}
                     loopTarget={selectedGroup?.to === id}
                     inLoops={groups.some((group) => group.from === id || group.to === id)}
@@ -563,6 +612,8 @@ function BlockFrames(props: {
   centers: Map<string, number>;
   offset: number;
   widthOf(id: string): number;
+  /** Fold a sub-playbook (by prefix) into one node. */
+  onToggle(prefix: string): void;
 }) {
   const { theme } = props;
   const frames = Object.entries(props.blocks).flatMap(([prefix, block]) => {
@@ -589,14 +640,13 @@ function BlockFrames(props: {
     return [{ prefix, title: block.title, depth, left: left - pad, top: top - pad - 8, width: right - left + 2 * pad, height: bottom - top + 2 * pad + 8 }];
   });
   return (
-    <View pointerEvents="none" style={{ position: "absolute", left: 0, top: 0, right: 0, bottom: 0 }}>
+    <View pointerEvents="box-none" style={{ position: "absolute", left: 0, top: 0, right: 0, bottom: 0 }}>
       {frames
         .sort((a, b) => a.depth - b.depth)
         .map((frame) => (
           <View
             key={frame.prefix}
-            accessible
-            accessibilityLabel={`Sub-playbook ${frame.title}`}
+            pointerEvents="box-none"
             style={{
               position: "absolute",
               left: frame.left,
@@ -609,11 +659,88 @@ function BlockFrames(props: {
               backgroundColor: frame.depth % 2 === 0 ? theme.colors.surface0 : theme.colors.surface1,
             }}
           >
-            <Text numberOfLines={1} style={{ position: "absolute", top: 2, left: 10, right: 10, color: theme.colors.foregroundMuted, fontSize: 10, fontWeight: "600" }}>
-              {frame.title}
-            </Text>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Sub-playbook ${frame.title}, expanded. Tap to collapse`}
+              accessibilityState={{ expanded: true }}
+              hitSlop={{ top: 12, bottom: 8, left: 10, right: 10 }}
+              onPress={() => props.onToggle(frame.prefix)}
+              style={{ position: "absolute", top: 0, left: 6, right: 6, height: 18, flexDirection: "row", alignItems: "center", gap: 3 }}
+            >
+              <Icon name="ChevronDown" size={12} color={theme.colors.foregroundMuted} />
+              <Text numberOfLines={1} style={{ flex: 1, color: theme.colors.foregroundMuted, fontSize: 10, fontWeight: "600" }}>
+                {frame.title}
+              </Text>
+            </Pressable>
           </View>
         ))}
+    </View>
+  );
+}
+
+const BLOCK_STATUS_LABEL: Record<BlockStatus, string> = {
+  pending: "not started",
+  running: "running",
+  waiting: "needs attention",
+  failed: "failed",
+  completed: "completed",
+};
+
+/** A collapsed sub-playbook: one node with its name, status, progress and, while it runs, its elapsed time. Tap to expand. */
+function GroupNode(props: {
+  theme: Theme;
+  title: string;
+  stats: BlockStats;
+  depth: number;
+  nodeWidth: number;
+  longNeeds: string[];
+  onToggle(): void;
+  onBoxHeight(height: number): void;
+}) {
+  const { theme, stats } = props;
+  const status = blockStatus(stats);
+  const now = useNow();
+  const elapsed = status === "running" ? runningFor(stats.startedAt, now) : null;
+  const color =
+    status === "failed" ? theme.colors.statusDanger : status === "running" ? theme.colors.accent : status === "waiting" ? theme.colors.statusWarning : status === "completed" ? theme.colors.statusSuccess : theme.colors.border;
+  const summary = [BLOCK_STATUS_LABEL[status], progressText(stats), elapsed].filter(Boolean).join(" · ");
+  return (
+    <View style={{ width: props.nodeWidth }}>
+      <View style={{ borderRadius: 14, backgroundColor: theme.colors.surface1 }}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ expanded: false }}
+          accessibilityLabel={`Sub-playbook ${props.title}, collapsed, ${summary}. Tap to expand`}
+          onLayout={(event) => props.onBoxHeight(Math.round(event.nativeEvent.layout.height))}
+          onPress={props.onToggle}
+          style={{
+            minHeight: 48,
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 6,
+            paddingHorizontal: 10,
+            paddingVertical: 8,
+            borderRadius: 14,
+            borderWidth: status === "running" ? 2 : 1,
+            borderStyle: "dashed",
+            borderColor: color,
+            backgroundColor: theme.colors.surface0,
+          }}
+        >
+          <Icon name="ChevronRight" size={16} color={theme.colors.foregroundMuted} />
+          <View style={{ flex: 1, gap: 2 }}>
+            <Text numberOfLines={1} style={{ color: theme.colors.foreground, fontSize: 12, fontWeight: "600" }}>
+              {props.title}
+            </Text>
+            <Text numberOfLines={2} style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>
+              {summary}
+            </Text>
+          </View>
+        </Pressable>
+      </View>
+      {props.longNeeds.length > 0 ? (
+        <Text style={{ color: theme.colors.foregroundMuted, fontSize: 10, textAlign: "center" }}>also after {props.longNeeds.join(", ")}</Text>
+      ) : null}
     </View>
   );
 }
