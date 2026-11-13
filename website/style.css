@@ -275,3 +275,12 @@ details[open] > summary { border-bottom: 1px solid var(--border); }
 details > *:not(summary) { margin-left: 0.9rem; margin-right: 0.9rem; }
 details > summary + * { margin-top: 0.8rem; }
 details > :last-child { margin-bottom: 0.9rem; }
+
+.sidebar details.grp { border: 0; background: none; margin: 0; }
+.sidebar details.grp > summary { display: flex; align-items: center; padding: 0; margin-top: 0.35rem; list-style: none; cursor: pointer; }
+.sidebar details.grp > summary::-webkit-details-marker { display: none; }
+.sidebar details.grp > summary::after { content: "▸"; margin-left: auto; padding: 0 0.6rem; font-size: 0.75rem; color: var(--extra-muted-foreground); }
+.sidebar details.grp[open] > summary::after { content: "▾"; }
+.sidebar details.grp > summary a { flex: 1; color: var(--foreground); }
+.sidebar details.grp > ul { margin: 0 0 0.3rem; }
+.sidebar details.grp > *:not(summary) { margin-left: 0; margin-right: 0; }

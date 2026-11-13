@@ -16,8 +16,7 @@
 <aside class="sidebar"><nav aria-label="On this page">
 <a href="#split">Plugin and manager</a>
 <a href="#lifecycle">Lifecycle of a run</a>
-<a href="#tools">Tools</a>
-<ul><li><a href="#tools-manager">Manager</a></li><li><a href="#tools-any">Any agent</a></li><li><a href="#tools-other">Step, gate and Sidekick</a></li></ul>
+<details class="grp"><summary><a href="#tools">Tools</a></summary><ul><li><a href="#tools-manager">Manager</a></li><li><a href="#tools-any">Any agent</a></li><li><a href="#tools-other">Step, gate and Sidekick</a></li></ul></details>
 <a href="#state">Run state</a>
 <a href="#panel">The Playbooks panel</a>
 <a href="#limits">Limits with Paseo 0.14</a>
@@ -113,7 +112,7 @@
 <footer class="site"><div class="inner">Paseo Playbooks is a plugin for <a href="https://paseo.sh">Paseo</a>. Source on <a href="https://github.com/lerenn/paseo-playbooks">GitHub</a>.</div></footer>
 <script>
 (function(){var l=[].slice.call(document.querySelectorAll('.sidebar a')),m={};l.forEach(function(a){m[a.hash.slice(1)]=a});
-var o=new IntersectionObserver(function(e){e.forEach(function(x){if(x.isIntersecting){l.forEach(function(a){a.classList.remove('active')});var a=m[x.target.id];a.classList.add('active');a.scrollIntoView({block:'nearest'})}})},{rootMargin:'-70px 0px -75% 0px'});
+var o=new IntersectionObserver(function(e){e.forEach(function(x){if(x.isIntersecting){l.forEach(function(a){a.classList.remove('active')});var a=m[x.target.id];a.classList.add('active');var d=a.closest('details.grp');if(d)d.open=true;a.scrollIntoView({block:'nearest'})}})},{rootMargin:'-70px 0px -75% 0px'});
 document.querySelectorAll('main h2[id],main h3[id]').forEach(function(h){o.observe(h)})})();
 </script>
 </body>
