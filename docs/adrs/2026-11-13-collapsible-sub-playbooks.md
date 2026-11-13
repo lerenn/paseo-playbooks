@@ -10,7 +10,7 @@ The run view draws a sub-playbook as a labelled frame around all its steps. A pl
 
 ## Decision
 
-1. Each sub-playbook (each nesting level has its own) has a toggle: the chevron and title on its frame, or, when collapsed, its whole node. Taps are the only input; no hover.
+1. Each sub-playbook (each nesting level has its own) has a toggle: the whole header strip of its frame (chevron, title, `done/total`; at least 32 px tall, above the cards, edges and loop lines), or, when collapsed, its whole node. Taps are the only input; hover and press only tint the strip. The layout reserves each frame's header above its first layer (nested frames stack theirs, `shared/frames.ts`), so no card sits under it, and incoming edges are cut where they would cross a header.
 2. A collapsed sub-playbook is one node in the layout (`collapseNodes` in `shared/collapse.ts`): it needs what its steps needed from outside, and whatever needed one of its steps needs it, so edges stay intact and the layout is the ordinary memoized `layoutGraph`. Collapsing a parent hides its children; a parent's statistics count all descendant steps.
 3. The node shows the name, a status (`not started`, `running`, `needs attention`, `failed`, `completed`), progress (`3/5 steps`, done = completed or skipped) and, while running, the elapsed time since its earliest attempt (shared `now` clock).
 4. Loops: a loop between steps inside one collapsed sub-playbook is hidden; one that crosses its border is drawn to the node's edge. No per-step line is left dangling.

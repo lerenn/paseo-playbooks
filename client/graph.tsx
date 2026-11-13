@@ -7,6 +7,7 @@ import { Button, GateActions } from "./sheet";
 import { startAfterTaskRpc } from "../shared/contracts";
 import { askChoices, waitsForHuman } from "../shared/gates";
 import { blockStats, blockStatus, collapseNodes, EMPTY_COLLAPSE, isCollapsed, markSeen, progressText, toggled, type BlockStats, type BlockStatus, type CollapseState } from "../shared/collapse";
+import { clearOfHeaders, frameRects, HEADER_H, layerHeadroom, type Box, type FrameRect } from "../shared/frames";
 import { END, layerOf, layoutGraph, START, withTerminals } from "../shared/graph";
 import { isTerminal, type AfterTask, type Playbook, type Run, type Step } from "../shared/types";
 import { activeStep, assignLanes, badgeText, groupLoops, loopText, relatedLoops, visibleAttempts, type LoopEdge, type LoopGroup } from "./loops";
@@ -198,23 +199,42 @@ function Dag(props: GraphProps & { steps: Step[]; terminals: boolean; available:
     const row = layout.layers.find((candidate) => candidate.includes(id));
     return deciding.has(id) && row?.length === 1 ? Math.max(nodeWidth, width - GAP) : nodeWidth;
   };
+  /** Expanded sub-playbooks that have nodes on screen, and the room their headers need above their first layer. */
+  const shown = useMemo(
+    () =>
+      Object.keys(blocks)
+        .filter((prefix) => !collapsedSet.has(prefix))
+        .map((prefix) => ({ prefix, ids: folded.nodes.map((node) => node.id).filter((id) => id.startsWith(`${prefix}.`)) }))
+        .filter((block) => block.ids.length > 0),
+    [blocks, collapsedSet, folded],
+  );
+  const heads = useMemo(() => layerHeadroom(shown.map((block) => ({ prefix: block.prefix, layer: Math.min(...block.ids.map((id) => layers.get(id) ?? 0)) }))), [shown, layers]);
+  /** Top of a layer's nodes: below its header room and, past the first layer, its edge band. */
+  const nodeTopOf = (layer: number, layerTop: number) => layerTop + (layer > 0 ? BAND_H : 0) + (heads.get(layer) ?? 0);
+  const frames = useMemo(() => {
+    const inputs: Array<{ prefix: string; members: Box[] }> = [];
+    for (const block of shown) {
+      const members: Box[] = [];
+      for (const id of block.ids) {
+        const layer = layers.get(id) ?? 0;
+        const layerTop = layerTops[layer];
+        const height = heights[id];
+        if (layerTop === undefined || !height) return [];
+        const top = nodeTopOf(layer, layerTop);
+        const center = gutter + (centers.get(id) ?? 0);
+        members.push({ left: center - widthOf(id) / 2, right: center + widthOf(id) / 2, top, bottom: top + height });
+      }
+      inputs.push({ prefix: block.prefix, members });
+    }
+    return frameRects(inputs);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shown, layers, layerTops, heights, centers, heads, gutter, nodeWidth, width]);
   const running = new Set(run ? steps.filter((step) => run.steps[step.id]?.status === "running").map((step) => folded.nodeOf(step.id)) : []);
 
   return (
     <ScrollView horizontal style={{ flexGrow: 0 }} contentContainerStyle={{ minWidth: "100%", justifyContent: "center" }}>
       <View style={{ width: width + 2 * gutter, paddingHorizontal: gutter, paddingTop: 4, paddingBottom: 16 }}>
-        <BlockFrames
-          theme={theme}
-          blocks={Object.fromEntries(Object.entries(blocks).filter(([prefix]) => !collapsedSet.has(prefix)))}
-          stepIds={folded.nodes.map((node) => node.id)}
-          onToggle={(prefix) => setCollapsed(prefix, false)}
-          layers={layers}
-          layerTops={layerTops}
-          heights={heights}
-          centers={centers}
-          offset={gutter}
-          widthOf={widthOf}
-        />
+        <BlockFrames theme={theme} frames={frames} />
         <LoopLines
           theme={theme}
           groups={groups.filter((group) => !onKeys.has(group.key))}
@@ -226,6 +246,7 @@ function Dag(props: GraphProps & { steps: Step[]; terminals: boolean; available:
           centers={centers}
           offset={gutter}
           widthOf={widthOf}
+          nodeTopOf={nodeTopOf}
           laneStart={gutter + width + 6}
         />
         {layout.layers.map((row, index) => (
@@ -236,10 +257,13 @@ function Dag(props: GraphProps & { steps: Step[]; terminals: boolean; available:
               setLayerTops((current) => (current[index] === y ? current : { ...current, [index]: y }));
             }}
           >
+            {index === 0 && (heads.get(0) ?? 0) > 0 ? <View style={{ height: heads.get(0) }} /> : null}
             {index > 0 ? (
               <Band
                 theme={theme}
                 width={width}
+                extra={heads.get(index) ?? 0}
+                headers={frames.map((frame) => ({ left: frame.header.left - gutter, right: frame.header.right - gutter, top: frame.header.top - (layerTops[index] ?? 0), bottom: frame.header.bottom - (layerTops[index] ?? 0) }))}
                 edges={layout.edges.filter((edge) => layers.get(edge.from) === index - 1 && layers.get(edge.to) === index)}
                 centers={centers}
                 running={running}
@@ -310,8 +334,10 @@ function Dag(props: GraphProps & { steps: Step[]; terminals: boolean; available:
           centers={centers}
           offset={gutter}
           widthOf={widthOf}
+          nodeTopOf={nodeTopOf}
           laneStart={gutter + width + 6}
         />
+        <BlockHeaders theme={theme} frames={frames} stats={stats} titles={Object.fromEntries(Object.entries(blocks).map(([prefix, block]) => [prefix, block.title]))} onToggle={(prefix) => setCollapsed(prefix, true)} />
         {selectedGroup ? (
           <LoopList
             theme={theme}
@@ -445,8 +471,13 @@ function Band(props: {
   centers: Map<string, number>;
   running: Set<string>;
   labels: Map<string, string>;
+  /** Extra height under the edge band for the headers of the frames that start on this layer. */
+  extra: number;
+  /** Frame headers in band coordinates: edges are cut where they would cross one. */
+  headers: Box[];
 }) {
-  const { theme, edges, centers, running } = props;
+  const { theme, edges, centers, running, extra } = props;
+  const full = BAND_H + extra;
   const sources = [...new Set(edges.map((edge) => edge.from))];
   const targets = [...new Set(edges.map((edge) => edge.to))];
   const xs = [...sources, ...targets].map((id) => centers.get(id) ?? 0);
@@ -461,13 +492,16 @@ function Band(props: {
   for (const id of targets) {
     const color = running.has(id) ? hot : line;
     // Stop the line above the arrowhead.
-    segments.push({ key: `t-${id}`, left: (centers.get(id) ?? 0) - stroke / 2, top: mid, width: stroke, height: BAND_H - mid - ARROW + 4, color });
+    const x = centers.get(id) ?? 0;
+    clearOfHeaders(x, stroke, mid, full - ARROW + 4, props.headers).forEach(([a, b], index) =>
+      segments.push({ key: `t-${id}-${index}`, left: x - stroke / 2, top: a, width: stroke, height: b - a, color }),
+    );
   }
   if (xs.length > 0 && Math.max(...xs) - Math.min(...xs) > 1) {
     segments.push({ key: "bus", left: Math.min(...xs) - stroke / 2, top: mid - stroke / 2, width: Math.max(...xs) - Math.min(...xs) + stroke, height: stroke, color: line });
   }
   return (
-    <View style={{ height: BAND_H, width: props.width }} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+    <View style={{ height: full, width: props.width }} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
       {segments.map((segment) => (
         <View
           key={segment.key}
@@ -486,7 +520,7 @@ function Band(props: {
           </Text>
         ))}
       {targets.map((id) => (
-        <View key={`a-${id}`} style={{ position: "absolute", left: (centers.get(id) ?? 0) - ARROW / 2, top: BAND_H - ARROW, width: ARROW, height: ARROW }}>
+        <View key={`a-${id}`} style={{ position: "absolute", left: (centers.get(id) ?? 0) - ARROW / 2, top: full - ARROW, width: ARROW, height: ARROW }}>
           <Icon name="ChevronDown" size={ARROW} color={running.has(id) ? hot : line} />
         </View>
       ))}
@@ -601,79 +635,77 @@ function Terminal(props: {
 }
 
 /** Dashed loop-back edges, drawn behind the nodes: out of the source's right side, up a lane, into the target's right side. */
-/** A labelled frame behind the steps of each sub-playbook (nested ones inside their parent's). */
-function BlockFrames(props: {
-  theme: Theme;
-  blocks: Playbook["blocks"];
-  stepIds: string[];
-  layers: Map<string, number>;
-  layerTops: Record<number, number>;
-  heights: Record<string, number>;
-  centers: Map<string, number>;
-  offset: number;
-  widthOf(id: string): number;
-  /** Fold a sub-playbook (by prefix) into one node. */
-  onToggle(prefix: string): void;
-}) {
+/** The frame behind the steps of each expanded sub-playbook (nested ones inside their parent's). Drawing only. */
+function BlockFrames(props: { theme: Theme; frames: FrameRect[] }) {
   const { theme } = props;
-  const frames = Object.entries(props.blocks).flatMap(([prefix, block]) => {
-    const members = props.stepIds.filter((id) => id.startsWith(`${prefix}.`));
-    let left = Infinity;
-    let right = -Infinity;
-    let top = Infinity;
-    let bottom = -Infinity;
-    for (const id of members) {
-      const layer = props.layers.get(id) ?? 0;
-      const layerTop = props.layerTops[layer];
-      const height = props.heights[id];
-      if (layerTop === undefined || !height) return [];
-      const nodeTop = layerTop + (layer > 0 ? BAND_H : 0);
-      const center = props.offset + (props.centers.get(id) ?? 0);
-      left = Math.min(left, center - props.widthOf(id) / 2);
-      right = Math.max(right, center + props.widthOf(id) / 2);
-      top = Math.min(top, nodeTop);
-      bottom = Math.max(bottom, nodeTop + height);
-    }
-    if (members.length === 0) return [];
-    const depth = prefix.split(".").length - 1;
-    const pad = Math.max(4, 10 - depth * 4);
-    return [{ prefix, title: block.title, depth, left: left - pad, top: top - pad - 8, width: right - left + 2 * pad, height: bottom - top + 2 * pad + 8 }];
-  });
   return (
-    <View pointerEvents="box-none" style={{ position: "absolute", left: 0, top: 0, right: 0, bottom: 0 }}>
-      {frames
-        .sort((a, b) => a.depth - b.depth)
-        .map((frame) => (
-          <View
+    <View pointerEvents="none" style={{ position: "absolute", left: 0, top: 0, right: 0, bottom: 0 }}>
+      {props.frames.map((frame) => (
+        <View
+          key={frame.prefix}
+          style={{
+            position: "absolute",
+            left: frame.box.left,
+            top: frame.box.top,
+            width: frame.box.right - frame.box.left,
+            height: frame.box.bottom - frame.box.top,
+            borderRadius: 14,
+            borderWidth: 1,
+            borderColor: theme.colors.border,
+            backgroundColor: frame.depth % 2 === 0 ? theme.colors.surface0 : theme.colors.surface1,
+          }}
+        />
+      ))}
+    </View>
+  );
+}
+
+/**
+ * The toggle strip of each expanded frame, drawn after (above) the steps, edges and loop lines so nothing
+ * paints over it or swallows its clicks; the layout reserves its room, so no card sits under it. The whole
+ * strip is the button.
+ */
+function BlockHeaders(props: { theme: Theme; frames: FrameRect[]; stats: Record<string, BlockStats>; titles: Record<string, string>; onToggle(prefix: string): void }) {
+  const { theme } = props;
+  return (
+    <View pointerEvents="box-none" style={{ position: "absolute", left: 0, top: 0, right: 0, bottom: 0, zIndex: 10 }}>
+      {props.frames.map((frame) => {
+        const stat = props.stats[frame.prefix];
+        const title = props.titles[frame.prefix] ?? frame.prefix;
+        return (
+          <Pressable
             key={frame.prefix}
-            pointerEvents="box-none"
-            style={{
-              position: "absolute",
-              left: frame.left,
-              top: frame.top,
-              width: frame.width,
-              height: frame.height,
-              borderRadius: 14,
-              borderWidth: 1,
-              borderColor: theme.colors.border,
-              backgroundColor: frame.depth % 2 === 0 ? theme.colors.surface0 : theme.colors.surface1,
+            accessibilityRole="button"
+            accessibilityLabel={`Sub-playbook ${title}, expanded. Tap to collapse`}
+            accessibilityState={{ expanded: true }}
+            onPress={() => props.onToggle(frame.prefix)}
+            style={(state) => {
+              const hovered = (state as { hovered?: boolean }).hovered === true;
+              return {
+                position: "absolute",
+                left: frame.header.left + 1,
+                top: frame.header.top + 1,
+                width: frame.header.right - frame.header.left - 2,
+                height: HEADER_H - 1,
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 6,
+                paddingHorizontal: 10,
+                borderTopLeftRadius: 13,
+                borderTopRightRadius: 13,
+                backgroundColor: state.pressed ? theme.colors.surface2 : hovered ? theme.colors.surface1 : "transparent",
+                cursor: "pointer",
+              } as never;
             }}
           >
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={`Sub-playbook ${frame.title}, expanded. Tap to collapse`}
-              accessibilityState={{ expanded: true }}
-              hitSlop={{ top: 12, bottom: 8, left: 10, right: 10 }}
-              onPress={() => props.onToggle(frame.prefix)}
-              style={{ position: "absolute", top: 0, left: 6, right: 6, height: 18, flexDirection: "row", alignItems: "center", gap: 3 }}
-            >
-              <Icon name="ChevronDown" size={12} color={theme.colors.foregroundMuted} />
-              <Text numberOfLines={1} style={{ flex: 1, color: theme.colors.foregroundMuted, fontSize: 10, fontWeight: "600" }}>
-                {frame.title}
-              </Text>
-            </Pressable>
-          </View>
-        ))}
+            <Icon name="ChevronDown" size={18} color={theme.colors.foregroundMuted} />
+            <Text numberOfLines={1} style={{ flex: 1, color: theme.colors.foreground, fontSize: 12, fontWeight: "600" }}>
+              {title}
+            </Text>
+            {stat ? <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>{`${stat.done}/${stat.total}`}</Text> : null}
+          </Pressable>
+        );
+      })}
     </View>
   );
 }
@@ -761,6 +793,8 @@ function LoopLines(props: {
   centers: Map<string, number>;
   offset: number;
   widthOf(id: string): number;
+  nodeTopOf(layer: number, layerTop: number): number;
+  nodeTopOf(layer: number, layerTop: number): number;
   laneStart: number;
 }) {
   const { theme, on } = props;
@@ -777,7 +811,7 @@ function LoopLines(props: {
     const fromH = props.heights[group.from];
     const toH = props.heights[group.to];
     if (fromTop === undefined || toTop === undefined || !fromH || !toH) continue;
-    const top = (layer: number, layerTop: number) => layerTop + (layer > 0 ? BAND_H : 0);
+    const top = props.nodeTopOf;
     const y1 = Math.round(top(fromLayer, fromTop) + fromH * 0.6);
     const y2 = Math.round(top(toLayer, toTop) + toH * 0.4);
     const x1 = props.offset + (props.centers.get(group.from) ?? 0) + props.widthOf(group.from) / 2;
