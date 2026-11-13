@@ -55,6 +55,7 @@ import { FANOUT_TYPES } from "./fanout-events";
 import { gateListing, listAttention, type GateFilter } from "./overseer";
 import { gateChatPrompt, managerLostNotice, gateDeciderPrompt, gateDeciderSystemPrompt, gateDecisionReminder, managerAfterRestart, managerKickoff, managerTakeover, reportReminder, resumeAfterRestart, silenceReminder, singletonKickoff, stepSystemPrompt, withPreamble } from "./prompts";
 import { askHumanText, choicesOfGate, waitsForHuman } from "../shared/gates";
+import { Backoff, describeRemovalError } from "./backoff";
 import { StaleSessions } from "./stale-sessions";
 import type { RunStore } from "./store";
 import { holdsBlock, planAdmissions, slotHolders } from "../shared/slots";
@@ -541,6 +542,7 @@ export class Runtime {
 
   /** Stops timers and scripts; resolves once the run files written in flight are on disk, after which nothing is written. */
   dispose(): Promise<void> {
+    this.sessions.stop();
     if (this.eventsTimer) clearInterval(this.eventsTimer);
     this.eventsTimer = null;
     for (const timer of [...this.timers.values(), ...this.watches.values()]) clearTimeout(timer);
@@ -1184,6 +1186,7 @@ export class Runtime {
     for (const candidate of this.store.list()) {
       const wt = candidate.worktree;
       if (!wt || wt.state !== "active" || !isTerminal(candidate.status) || isActive(candidate)) continue;
+      if (!this.cleanupBackoff.ready(candidate.id)) continue;
       try {
         if (await this.runAgentsBusy(candidate)) continue;
         const keep = await this.worktreeKeepReason(candidate, wt);
@@ -1205,14 +1208,34 @@ export class Runtime {
           continue;
         }
         const removed = await this.dropWorktree(candidate.id, wt, await this.repoOf(candidate, wt), false);
+        this.cleanupBackoff.clear(candidate.id);
         await this.store.mutate(candidate.id, (run) => {
           run.worktree = { ...wt, state: "removed" };
           engine.noteEvent(run, "worktree_removed", null, `worktree ${wt.path} removed${removed.keptBranch ? `; branch ${removed.keptBranch} kept: it has commits that are not pushed` : `; branch ${wt.branch} deleted`}`, nowIso());
         });
       } catch (error) {
-        console.error(`[playbooks] could not clean up the worktree of ${candidate.id}:`, errorText(error));
+        await this.noteCleanupFailure(candidate.id, wt, error);
       }
     }
+  }
+
+  /** Waits (growing) between the tries to remove an ended run's worktree; after the last one the worktree is kept, marked "cleanup failed". */
+  private readonly cleanupBackoff = new Backoff([60_000, 300_000, 900_000]);
+
+  private async noteCleanupFailure(runId: string, wt: RunWorktree, error: unknown): Promise<void> {
+    const reason = await describeRemovalError(error);
+    const { attempt, waitMs } = this.cleanupBackoff.fail(runId);
+    if (waitMs !== null) {
+      console.error(`[playbooks] could not clean up the worktree of ${runId} (attempt ${attempt}); retrying in ${Math.round(waitMs / 60_000)} min: ${reason}`);
+      return;
+    }
+    console.error(`[playbooks] could not clean up the worktree of ${runId} after ${attempt} attempts, giving up (the worktree is kept): ${reason}`);
+    await this.store
+      .mutate(runId, (run) => {
+        run.worktree = { ...wt, state: "kept" };
+        engine.noteEvent(run, "worktree_kept", null, `cleanup failed: ${reason}; worktree ${wt.path} kept, remove it by hand`, nowIso());
+      })
+      .catch((failure) => console.error(`[playbooks] could not record the failed cleanup of ${runId}:`, errorText(failure)));
   }
 
   private async worktreeKeepReason(run: Run, wt: RunWorktree): Promise<{ reason: string; violation?: string } | null> {
@@ -3982,9 +4005,25 @@ export class Runtime {
    */
   private async reloadStaleSessions(): Promise<void> {
     const listed = await this.api().agents.list({});
+    let reloaded = 0;
+    let gone = 0;
+    let busy = 0;
+    const failed = new Map<string, number>();
     for (const { agent } of listed.entries) {
-      if (agent.archivedAt || agent.status !== "idle") continue;
-      await this.sessions.reloadIfStale(this.api(), agent.id, { known: agent.labels?.[STEP_LABEL] !== undefined || agent.labels?.[GATE_LABEL] !== undefined || this.isRunAgent(agent.id) });
+      if (agent.archivedAt) continue;
+      // A running agent is reloaded when its turn ends (onTurnEnded).
+      if (agent.status !== "idle") continue;
+      const outcome = await this.sessions.tryReload(this.api(), agent.id, { quiet: true, known: agent.labels?.[STEP_LABEL] !== undefined || agent.labels?.[GATE_LABEL] !== undefined || this.isRunAgent(agent.id) });
+      if (outcome.kind === "reloaded") reloaded++;
+      else if (outcome.kind === "gone") gone++;
+      else if (outcome.kind === "busy") busy++;
+      else if (outcome.kind === "failed") failed.set(outcome.reason, (failed.get(outcome.reason) ?? 0) + 1);
+    }
+    const stale = new Set(this.sessions.staleIds());
+    const running = listed.entries.filter(({ agent }) => !agent.archivedAt && agent.status !== "idle" && stale.has(agent.id)).length;
+    const failures = [...failed].map(([reason, count]) => `${count}× ${reason}`).join("; ");
+    if (reloaded + gone + busy + running + failed.size > 0) {
+      console.log(`[playbooks] session reload after the plugin update: ${reloaded} reloaded, ${gone} skipped because their working directory is gone, ${running + busy} deferred (mid-turn: reloaded when the turn ends, or retried), ${[...failed.values()].reduce((a, b) => a + b, 0)} failed${failures ? ` (${failures}); retrying` : ""}`);
     }
   }
 
