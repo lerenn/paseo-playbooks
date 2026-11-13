@@ -11,6 +11,12 @@ describe("runnablePlaybooks", () => {
     const singleton = pb({}, { singleton: { branch: "main" } });
     expect(runnablePlaybooks([entry("a", ok), entry("b", null, ["bad"]), entry("c", singleton), entry("d", ok, ["warn"])])).toEqual([ok]);
   });
+  it("leaves out hidden playbooks", () => {
+    const shown = pb({});
+    const hidden = pb({});
+    const hiddenEntry = { ...entry("h", hidden), hidden: true } as PlaybookEntry;
+    expect(runnablePlaybooks([hiddenEntry, { ...entry("s", shown), hidden: false } as PlaybookEntry])).toEqual([shown]);
+  });
 });
 
 describe("inputErrors", () => {
