@@ -1,4 +1,5 @@
 import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { repairRun } from "./engine";
 import path from "node:path";
 import { pluginDataDir } from "./data-dir";
 import { upcastRunNames } from "../shared/legacy-names";
@@ -63,6 +64,8 @@ export class RunStore {
       if (!name.endsWith(".json")) continue;
       try {
         const run = RunSchema.parse(upcastRunNames(JSON.parse(await readFile(path.join(this.dir, name), "utf8"))));
+        const added = repairRun(run);
+        if (added.length > 0) console.warn(`[playbooks] ${run.id}: added the missing state of ${added.length} step(s): ${added.slice(0, 5).join(", ")}${added.length > 5 ? ", ..." : ""}`);
         this.runs.set(run.id, run);
       } catch (error) {
         console.error(`[playbooks] skipping unreadable run file ${name}:`, (error as Error).message);
@@ -103,6 +106,7 @@ export class RunStore {
       const run = this.runs.get(id);
       if (!run) throw new Error(`unknown run "${id}"`);
       const working = structuredClone(run);
+      repairRun(working);
       const result = await fn(working);
       const events = takeEvents(working);
       if (events.length > 0) await this.commit(run, working, events);

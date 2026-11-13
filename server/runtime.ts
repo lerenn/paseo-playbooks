@@ -543,19 +543,40 @@ export class Runtime {
    * treat the ones that cannot as lost, wake idle managers of stalled runs, flush wake-ups.
    */
   private async reconcile(): Promise<void> {
+    // Logged before anything ticks: a step found ready now was dropped by the previous plugin process.
+    await this.logRecoveredSteps().catch((error) => console.error("[playbooks] recovery log failed:", errorText(error)));
     for (const run of this.store.list()) {
+      try {
+        await this.reconcileRun(run);
+      } catch (error) {
+        // One damaged run must not stop the others from being picked up again.
+        console.error(`[playbooks] reconcile of ${run.id} failed:`, errorText(error));
+      }
+    }
+    // Batch gates open before the restart were announced then: only their decisions are left to tell.
+    for (const run of this.store.list()) {
+      if (!run.batch || isTerminal(run.status)) continue;
+      for (const gate of run.gates) if (gate.status === "pending") this.batchGates.add(`${run.id}/${gate.id}`);
+    }
+    await this.sweepWorktrees().catch((error) => console.error("[playbooks] worktree sweep failed:", errorText(error)));
+    await this.admitQueued().catch((error) => console.error("[playbooks] admission after reconcile failed:", errorText(error)));
+    await this.tick().catch((error) => console.error("[playbooks] tick after reconcile failed:", errorText(error)));
+  }
+
+  private async reconcileRun(run: Run): Promise<void> {
+    {
       if (run.status === "boarding" || (isPipeline(run) && !isTerminal(run.status) && (run.playbook.singleton?.stages.length ?? 0) === 0)) {
         // Boarding runs and singleton runs of v0.30.0 were replaced by pipelines.
         await this.failRun(run.id, "singleton runs of v0.30.0 were replaced by pipelines; hand the job off again");
-        continue;
+        return;
       }
-      if (!isActive(run) || isPipeline(run)) continue;
+      if (!isActive(run) || isPipeline(run)) return;
       // A run with no manager (manager.mode: none) cannot lose one: the plugin resumes it below and through its tick.
       if (!isManagerless(run)) {
         const manager = await this.api().agents.ref(run.managerAgentId).refresh().catch(() => null);
         if (!manager || manager.agent.archivedAt) {
           await this.failManagerLost(run.id, "manager lost", `manager ${run.managerAgentId} ${manager ? "was archived" : "no longer exists"} before the daemon started: the plugin was not running to see who archived it`, null);
-          continue;
+          return;
         }
         if (manager.agent.status === "running") this.busyManagers.add(run.managerAgentId);
       }
@@ -595,13 +616,22 @@ export class Runtime {
       await this.wakeStalledManager(run.id);
       await this.deliver(run.id);
     }
-    // Batch gates open before the restart were announced then: only their decisions are left to tell.
+  }
+
+  /**
+   * A step the plugin starts itself (fan-out, hand-off, script) found ready and not started at plugin start: its start was
+   * dropped (a failure between the state change and the start). Logged as step_recovered; the tick that ends reconcile starts it, once (the start
+   * re-checks the step is still ready inside the run's mutation, so it is never started twice).
+   */
+  private async logRecoveredSteps(): Promise<void> {
     for (const run of this.store.list()) {
-      if (!run.batch || isTerminal(run.status)) continue;
-      for (const gate of run.gates) if (gate.status === "pending") this.batchGates.add(`${run.id}/${gate.id}`);
+      if (!isActive(run) || isPaused(run) || isPipeline(run)) continue;
+      const stuck = [...engine.readyFanouts(run), ...engine.readyHandoffs(run), ...engine.readyScripts(run)];
+      if (stuck.length === 0) continue;
+      await this.store.mutate(run.id, (current) => {
+        for (const stepId of stuck) if (current.steps[stepId]?.status === "ready") engine.noteEvent(current, "step_recovered", stepId, "ready and not started when the plugin started: starting it now", nowIso());
+      }).catch((error) => console.error(`[playbooks] could not log the recovery of ${run.id}:`, errorText(error)));
     }
-    await this.sweepWorktrees().catch((error) => console.error("[playbooks] worktree sweep failed:", errorText(error)));
-    await this.admitQueued();
   }
 
   /** Asks a step agent whose turn a daemon restart cut to carry on. Returns false if it could not be sent. */
@@ -1282,23 +1312,32 @@ export class Runtime {
     try {
       do {
         this.tickAgain = false;
-        await this.driveManagerless();
-        await this.settleGateChats();
-        await this.askGatesInChat();
-        await this.startScripts();
-        await this.driveAdmissions();
-        await this.startHandoffs();
-        await this.driveFanouts();
-        await this.runDeciders();
-        await this.noticeBatchGates();
-        await this.endBatches();
-        await this.chaseFollowUps();
-        await this.startBatches();
-        await this.cleanupEndedWorktrees();
-        await this.archiveEndedWorkspaces();
+        await this.tickPhase("driveManagerless", () => this.driveManagerless());
+        await this.tickPhase("settleGateChats", () => this.settleGateChats());
+        await this.tickPhase("askGatesInChat", () => this.askGatesInChat());
+        await this.tickPhase("startScripts", () => this.startScripts());
+        await this.tickPhase("driveAdmissions", () => this.driveAdmissions());
+        await this.tickPhase("startHandoffs", () => this.startHandoffs());
+        await this.tickPhase("driveFanouts", () => this.driveFanouts());
+        await this.tickPhase("runDeciders", () => this.runDeciders());
+        await this.tickPhase("noticeBatchGates", () => this.noticeBatchGates());
+        await this.tickPhase("endBatches", () => this.endBatches());
+        await this.tickPhase("chaseFollowUps", () => this.chaseFollowUps());
+        await this.tickPhase("startBatches", () => this.startBatches());
+        await this.tickPhase("cleanupEndedWorktrees", () => this.cleanupEndedWorktrees());
+        await this.tickPhase("archiveEndedWorkspaces", () => this.archiveEndedWorkspaces());
       } while (this.tickAgain);
     } finally {
       this.ticking = false;
+    }
+  }
+
+  /** One step of the tick: a failure is reported and the next phases still run (one damaged run must not stop every run's ready steps). */
+  private async tickPhase(name: string, fn: () => Promise<void>): Promise<void> {
+    try {
+      await fn();
+    } catch (error) {
+      console.error(`[playbooks] tick phase ${name} failed:`, errorText(error));
     }
   }
 
@@ -1543,6 +1582,12 @@ export class Runtime {
   private async driveFanouts(): Promise<void> {
     for (const listed of this.store.list()) {
       if (!isActive(listed) || isPaused(listed) || isPipeline(listed)) continue;
+      await this.driveFanoutsOf(listed).catch((error: unknown) => console.error(`[playbooks] fan-outs of ${listed.id} failed:`, errorText(error)));
+    }
+  }
+
+  private async driveFanoutsOf(listed: Run): Promise<void> {
+    {
       for (const stepId of engine.readyFanouts(listed)) {
         const begun = await this.store.mutate(listed.id, (current) => {
           if (current.steps[stepId]!.status !== "ready" || isPaused(current)) return null;
