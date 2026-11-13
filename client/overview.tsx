@@ -4,7 +4,7 @@ import { useQueries, useQueryClient } from "@tanstack/react-query";
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { Animated, Easing, Pressable, Text, View } from "react-native";
 import { archiveRunRpc, listPlaybooks, markRunSeenRpc } from "../shared/contracts";
-import { gateText } from "../shared/gates";
+import { gateText, waitsForHuman } from "../shared/gates";
 import { overviewSettings } from "../shared/overview-settings";
 import { DEFAULT_PLAYBOOK_SORT, PLAYBOOK_SORTS, sortPlaybooks, type PlaybookSort } from "../shared/sort";
 import { isActive, isPaused, isPipeline, isTerminal, type Gate, type RunSummary, type StepSummary } from "../shared/types";
@@ -159,8 +159,9 @@ function mainSteps(run: RunSummary): StepSummary[] {
   return run.playbook.steps.filter((step) => !step.afterTask && !(step.when && run.steps[step.id]?.status === "skipped"));
 }
 
+/** The open gates a human is asked for: one still with its role decider (the advisor) is not a question until it escalates. */
 function pendingGates(run: RunSummary): Gate[] {
-  return run.gates.filter((gate) => gate.status === "pending");
+  return run.gates.filter(waitsForHuman);
 }
 
 /** A run's name in lists: its first text input (the request), else its id; a batch's stage and jobs. */
@@ -1163,7 +1164,7 @@ function PastPass(props: { theme: Theme; pass: RunSummary["fanouts"][string]["pa
 
 function Lanes(props: { theme: Theme; children: FanoutChildInfo[]; compact: boolean; runs: Map<string, RunSummary>; onOpenWorkspace?: ((workspaceId: string) => void) | undefined }) {
   const [all, setAll] = useState(false);
-  const needsYou = (child: FanoutChildInfo) => (child.runId ? (props.runs.get(child.runId)?.gates.length ?? 0) > 0 : false);
+  const needsYou = (child: FanoutChildInfo) => (child.runId ? (props.runs.get(child.runId)?.gates.filter(waitsForHuman).length ?? 0) > 0 : false);
   const ordered = useMemo(
     () => props.children.map((child, index) => ({ child, index })).sort((a, b) => Number(needsYou(b.child)) - Number(needsYou(a.child)) || LANE_RANK[a.child.status] - LANE_RANK[b.child.status] || a.index - b.index),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1190,7 +1191,7 @@ function Lane(props: { theme: Theme; child: FanoutChildInfo; compact: boolean; r
   const { theme, child, run } = props;
   const state = run ? progress(run) : null;
   const color = state ? toneColor(theme, state.tone) : child.status === "not_started" || child.status === "failed" || child.status === "canceled" ? theme.colors.statusDanger : theme.colors.foregroundMuted;
-  const gates = run?.gates.length ?? 0;
+  const gates = run?.gates.filter(waitsForHuman).length ?? 0;
   const status = state ? state.status : child.error && child.status === "not_started" ? `Not started: ${child.error}` : LANE_STATUS[child.status];
   const open = run && props.onOpenWorkspace ? () => props.onOpenWorkspace!(run.workspaceId) : undefined;
   const columns = run ? mainSteps(run).length + 1 : 0;

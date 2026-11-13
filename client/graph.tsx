@@ -5,7 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { AccessibilityInfo, Animated, Pressable, Text, View } from "react-native";
 import { Button, GateActions } from "./sheet";
 import { startAfterTaskRpc } from "../shared/contracts";
-import { askChoices } from "../shared/gates";
+import { askChoices, waitsForHuman } from "../shared/gates";
 import { END, layerOf, layoutGraph, START, withTerminals } from "../shared/graph";
 import { isTerminal, type AfterTask, type Playbook, type Run, type Step } from "../shared/types";
 import { conditionText } from "../shared/labels";
@@ -148,7 +148,7 @@ function Dag(props: GraphProps & { steps: Step[]; terminals: boolean; available:
   }, [layout, width, SLOT]);
   const byId = useMemo(() => new Map(steps.map((step) => [step.id, step])), [steps]);
   /** Steps with a pending decision: their node widens to the graph's width, alone in its row, to hold the choices. */
-  const deciding = new Set(run ? run.gates.filter((gate) => gate.status === "pending").map((gate) => gate.stepId) : []);
+  const deciding = new Set(run ? run.gates.filter(waitsForHuman).map((gate) => gate.stepId) : []);
   /** Actual width of each node, so loop lines meet its edge. */
   const widthOf = (id: string): number => {
     const row = layout.layers.find((candidate) => candidate.includes(id));
@@ -764,10 +764,12 @@ function Node(props: GraphProps & { step: Step; longNeeds: string[]; nodeWidth: 
             </Text>
           ) : null}
         </Pressable>
-        {pendingGate && run ? (
+        {pendingGate && run && waitsForHuman(pendingGate) ? (
           <View style={{ paddingHorizontal: 8, paddingBottom: 8 }}>
             <GateActions theme={theme} run={run} gate={pendingGate} hostLabel={props.hostLabel} />
           </View>
+        ) : pendingGate ? (
+          <Text style={{ color: theme.colors.foregroundMuted, fontSize: 10, paddingHorizontal: 8, paddingBottom: 8 }}>Advisor deciding</Text>
         ) : null}
         {attempts.length > 1 ? (
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4, paddingHorizontal: 8, paddingBottom: 6 }}>

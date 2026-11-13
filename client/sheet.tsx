@@ -4,7 +4,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState, type ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
 import { decideGateRpc, nudgeStepRpc, restartRunRpc, retryStepRpc, scriptOutputRpc } from "../shared/contracts";
-import { askChoices, askTransitionOf, choicesOfGate, destinationOf, gateText, linkify } from "../shared/gates";
+import { askChoices, askTransitionOf, choicesOfGate, destinationOf, gateText, linkify, waitsForHuman } from "../shared/gates";
 import { conditionText } from "../shared/labels";
 import { attemptTimeoutMs, isPaused, isStepLive, restartBlocker, type Gate, type GateChoice, type Playbook, type Run, type RunSummary } from "../shared/types";
 import { SCRIPT_OUTPUT_POLL_MS, checkHeading, lastLines, scriptActivity } from "./script-output";
@@ -490,9 +490,9 @@ export function StepSheet(props: {
         ) : null}
         {pendingGate && run ? (
           <Section theme={theme} title="Decision">
-            {pendingGate.decider?.by === "role" && pendingGate.escalated === null ? (
+            {!waitsForHuman(pendingGate) ? (
               <Line theme={theme} muted>
-                Role {pendingGate.decider.role} is deciding; you can still decide first.
+                Advisor deciding: role {pendingGate.decider.role}. It reaches you only if it escalates.
               </Line>
             ) : pendingGate.chatAgentId ? (
               <Line theme={theme} muted>
@@ -503,7 +503,7 @@ export function StepSheet(props: {
                 The manager may decide this gate; you can still decide first.
               </Line>
             ) : null}
-            <GateActions theme={theme} run={run} gate={pendingGate} hostLabel={props.hostLabel} />
+            {waitsForHuman(pendingGate) ? <GateActions theme={theme} run={run} gate={pendingGate} hostLabel={props.hostLabel} /> : null}
           </Section>
         ) : step.kind === "gate" && step.gate ? (
           <Section theme={theme} title="Gate">

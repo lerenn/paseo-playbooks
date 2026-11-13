@@ -52,4 +52,17 @@ describe("overview store", () => {
     store.refresh();
     expect(calls[2]!.name).toBe("overview.needs-you");
   });
+
+  it("does not count a gate still with its role decider (advisor) until it escalates", async () => {
+    const { client, calls } = fakeClient();
+    const store = createOverviewStore(client);
+    store.subscribe(() => undefined);
+    store.watchRuns();
+    calls[0]!.resolve({ count: 0 });
+    await tick();
+    const gate = (escalated: string | null) => ({ status: "pending", decider: { by: "role", role: "gatekeeper" }, escalated });
+    calls[1]!.resolve({ runs: [{ id: "r", gates: [gate(null), gate("needs a human")] }] });
+    await tick();
+    expect(store.get().count).toBe(1);
+  });
 });
