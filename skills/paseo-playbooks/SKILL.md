@@ -1160,6 +1160,8 @@ steps that completed:
      Manager is created there; the history records the move. `create_workspace` makes a
      workspace; check out the run's branch in it first if the work lives there.
 
+`refresh_scripts` (`runId`, `reason`) makes an isolated run's script steps (`codex_check`, `ci_check`...) run the scripts as committed on the current `origin/<branch>`, instead of the copy pinned at its start: use it after a script fix landed on main. Only the `scripts/` folder is refreshed; the step definitions (inputs, declared outputs) stay pinned, so a script that needs a new input or output needs a new run. Refused for an ended run, a run without a worktree, a worktree not created from `origin/<branch>`, or when the fetch fails; refreshing twice to the same commit changes nothing. The history records the commit before and after (`scripts_refreshed`).
+
 `archive_run` (`runId`, optional `force`) archives a run that has ended, like the panel's archive button: after `cancel_run` or a finished run, once its job is settled. It hides the run from the panel and from `list_runs` (without `archived: true`); `restart_run` still reopens it. It refuses an active run, and a run whose hand-off job is still open at a pipeline stage or batch unless `force: true`; archiving twice is fine.
 
 `restart_run` refuses an active run (cancel it first), a step whose needs did not complete,

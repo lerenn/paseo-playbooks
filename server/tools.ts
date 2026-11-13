@@ -876,6 +876,22 @@ export function runTools(runtime: Runtime): AgentToolDefinition[] {
         }),
     }),
     defineAgentTool({
+      name: "refresh_scripts",
+      description:
+        "Make an isolated run's script steps (codex_check, ci_check...) run the scripts as committed on the current origin/<branch> instead of the copy pinned in its worktree at start: use it when a script fix landed on main after the run started. Only the run's scripts/ folder is refreshed; the step definitions (inputs, outputs, timeouts) stay the pinned ones, so a script that needs an input or output the pinned step does not declare still fails. Fetches origin; refused when that fails, for a run that ended, for a run without a worktree and when the worktree was not created from origin/<branch>. Idempotent: changed: false when the run already has that commit. The sha before and after is recorded in the run's history. Without runId: the run you manage, else the active run of your workspace.",
+      input: z.object({ runId: IdArg.optional(), reason: z.string().max(500).describe("Why (e.g. the script fix that landed); recorded in the run's history") }),
+      execute: ({ runId, reason }, { agent }) =>
+        guard(async () => {
+          const target = runId ? runtime.allRuns().find((run) => run.id === runId) : defaultRunToCancel(runtime.allRuns(), agent.id, agent.workspaceId);
+          if (!target) throw new UserError(`unknown run "${runId}"`);
+          const result = await runtime.refreshScripts(target.id, reason, agent.id);
+          return ok(
+            result.changed ? `Scripts of run ${target.id} refreshed from ${result.ref}: ${result.before ?? "pinned copy"} -> ${result.sha}.` : `Nothing changed: scripts of run ${target.id} already are ${result.sha}.`,
+            { runId: target.id, ...result },
+          );
+        }),
+    }),
+    defineAgentTool({
       name: "archive_run",
       description:
         "Archive a run that has ended (completed, failed or canceled), exactly like the archive button on its row in the Playbooks panel: it is hidden from the panel and from list_runs (unless archived: true); its state and agents are kept, and restart_run can still reopen it. Use it to clean up after a run is canceled or finished and its job is settled (e.g. after cancel_run, once the human no longer needs it). Refused while the run is active, running, paused or waiting at a gate (cancel_run it first), and while a job it handed to a pipeline is still open at a stage or batch, unless force: true. Archiving twice is fine. Works on any run, like cancel_run.",

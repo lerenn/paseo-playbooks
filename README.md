@@ -319,6 +319,9 @@ with that tag.
   The definition is frozen at start; `restart_run` reuses it. `validate_playbooks` shows what a new run would load
   (`results[].source`). Only a playbook that already exists, valid and isolated, in the workspace checkout can be started.
   See `docs/adrs/2026-11-10-playbooks-from-fresh-main.md`.
+  Scripts are pinned too: after a script fix lands on main, `refresh_scripts` (`runId?`, `reason`; managers and the Sidekick) makes
+  the run's script steps run the scripts of the current `origin/<branch>` (only its `scripts/` folder; the step definitions stay
+  pinned). It records the commit in the run's history. See `docs/adrs/2026-11-13-refresh-run-scripts.md`.
 - Plain Start picks the workspace's most recently used agent (the one you last sent a
   message to, skipping agents that already manage a run), because the panel cannot see
   which tab has focus. To pick a specific agent, send it a message first, or use "Start on
