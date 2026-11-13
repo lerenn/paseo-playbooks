@@ -59,7 +59,7 @@ function pipelineRun(): Run {
 }
 
 function newJob(id: string, services?: string): Job {
-  return { id, fromRunId: "r1", fromStepId: "apply", attempt: 1, label: "PR", inputs: services ? { services } : {}, status: "open", outcome: null, summary: null, outputs: {}, createdAt: T0, endedAt: null, passed: [], waiting: [], batches: [], failedRides: {}, detached: false, requeued: null, requeues: {}, followUps: [] };
+  return { id, fromRunId: "r1", fromStepId: "apply", attempt: 1, label: "PR", inputs: services ? { services } : {}, status: "open", outcome: null, summary: null, outputs: {}, createdAt: T0, endedAt: null, passed: [], waiting: [], batches: [], failedRides: {}, detached: false, requeued: null, requeues: {}, followUps: [], reopens: [] };
 }
 
 /** Runs a mutator on a copy of the pipeline and checks the reducers rebuild what it did. */

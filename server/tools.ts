@@ -908,15 +908,16 @@ export function runTools(runtime: Runtime): AgentToolDefinition[] {
     defineAgentTool({
       name: "requeue_job",
       description:
-        "Put a failed job back on its singleton pipeline, with the same id and inputs (pr_urls, ticket, services, plan...), so the pipeline's next batch carries it: no waiting, nothing is handed off again. Use it for jobs a batch failure took out (e.g. \"manager lost\" past the stage's retries): runId is the pipeline or any of its batches (get_run, list_runs); jobId is a failed job (get_run `jobs` of the pipeline). The job waits at the stages it may enter (those it has not passed) and its failed rides start again. Idempotent: a job that is already open is left as it is (changed: false). Refused for a settled or withdrawn job, a job that passed every stage (its work shipped), a job handed off by a step that waits for its result (that step was told \"failure\"; restart it), and a pipeline that has ended. Emits job.reopened and job.queued (via reopened). Open jobs on a failed batch need no call: the pipeline requeues them by itself when the batch ends. Works on any run, like cancel_run.",
+        "Put a job back on its singleton pipeline, with the same id, inputs (pr_urls, ticket, services, plan...), outputs and passed stages, so the pipeline's next batch carries it: no waiting, nothing is handed off again. Works on a FAILED job (e.g. \"manager lost\" past the stage's retries) and on a SETTLED job whose outcome is not the playbook's normal finish (e.g. a batch settled it as ejected and the cause is fixed). runId is the pipeline or any of its batches (get_run, list_runs); jobId is a failed or settled job (get_run `jobs` of the pipeline). reason is required (what was fixed). The job waits at the stages it has not passed: one that passed an earlier stage goes back at the NEXT stage's queue, not the first. Optional from_outcome is a guard: the outcome you expect the job to have (\"failed\" for a failed job); if the job is in another state now, nothing is requeued and you get an error. Its failed rides start again, its pending follow-up is cleared (kept in the job's `reopens` history with how it had ended), and the requeue is counted there; queue.max_requeues does not block it (an operator override). Idempotent without from_outcome: a job that is already open is left as it is (changed: false). Refused for a job that finished with the normal outcome or passed every stage (its work shipped), a withdrawn job, a job handed off by a step that waits for its result, and a pipeline that has ended. Emits job.reopened (with previousStatus, previousOutcome) and job.queued (via reopened). Open jobs on a failed batch need no call: the pipeline requeues them by itself when the batch ends. Works on any run, like cancel_run.",
       input: z.object({
         runId: IdArg.describe("The pipeline run, or one of its batches"),
-        jobId: z.string().describe("A failed job of the pipeline"),
-        reason: z.string().default("").describe("Why, in a sentence (history and the job.reopened event)"),
+        jobId: z.string().describe("A failed or settled job of the pipeline"),
+        reason: z.string().trim().min(1).describe("Why, in a sentence: what was fixed (history and the job.reopened event)"),
+        from_outcome: z.string().optional().describe("Guard: the outcome the job must have now (e.g. \"ejected\"; \"failed\" for a failed job)"),
       }),
-      execute: ({ runId, jobId, reason }) =>
+      execute: ({ runId, jobId, reason, from_outcome }) =>
         guard(async () => {
-          const { pipeline, job, changed } = await runtime.requeueJob(runId, jobId, reason);
+          const { pipeline, job, changed } = await runtime.requeueJob(runId, jobId, reason, from_outcome ?? null);
           const where = job.waiting.map((entry) => `"${entry.stage}"`).concat(job.batches.map((ride) => `batch ${ride.runId}`)).join(", ") || "no stage";
           return ok(
             changed ? `Job ${jobId} is open again at ${where} of pipeline ${pipeline.id}; its next batch carries it.` : `Job ${jobId} is already open (${where}); nothing changed.`,

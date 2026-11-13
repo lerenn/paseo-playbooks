@@ -20,7 +20,7 @@ type Outputs = Record<string, VarValue>;
 const upcastWait = (wait: Partial<Wait> & { stage: string; since: string }): Wait => ({ held: null, forced: false, ...structuredClone(wait) });
 const upcastJob = (value: Job): Job => {
   const named = upcastJobNames(structuredClone(value));
-  return { ...named, batches: named.batches ?? [], followUps: named.followUps ?? [], waiting: named.waiting.map(upcastWait) };
+  return { ...named, batches: named.batches ?? [], followUps: named.followUps ?? [], reopens: named.reopens ?? [], waiting: named.waiting.map(upcastWait) };
 };
 
 function job(run: Run, id: unknown): Job | undefined {
@@ -110,9 +110,11 @@ const reducers: Record<string, Reducer> = {
   },
   /** `requeue_job`: a failed job is open again and waits at `waiting`: `{ jobId, reason, waiting, failedRides, passed }`. */
   "job.reopened": (run, event) => {
-    const d = event.data as { jobId: string; reason: string; waiting: Wait[]; failedRides: Record<string, number> };
+    const d = event.data as { jobId: string; reason: string; waiting: Wait[]; failedRides: Record<string, number>; previous?: Job["reopens"][number] };
     const target = job(run, d.jobId);
     if (!target) return;
+    if (d.previous) target.reopens.push(structuredClone(d.previous));
+    target.followUps = [];
     target.status = "open";
     target.outcome = null;
     target.summary = null;
@@ -121,7 +123,8 @@ const reducers: Record<string, Reducer> = {
     target.waiting = d.waiting.map(upcastWait);
     target.failedRides = d.failedRides;
     target.requeued = null;
-    note(run, event.at, "job_reopened", null, `${d.jobId} at ${d.waiting.map((entry) => entry.stage).join(", ")}${d.reason ? ` (${d.reason.slice(0, 200)})` : ""}`);
+    const was = d.previous;
+    note(run, event.at, "job_reopened", null, `${d.jobId}${was ? ` (was ${was.status}${was.outcome ? `: ${was.outcome}` : ""})` : ""} at ${d.waiting.map((entry) => entry.stage).join(", ")}${d.reason ? ` (${d.reason.slice(0, 200)})` : ""}`);
   },
   /** A stage's admission script holds a waiting job: `{ jobId, stage, reason, checkedAt }`. */
   "job.held": (run, event) => {
@@ -314,9 +317,9 @@ export const JOB_TYPES: EventTypeDef[] = [
   },
   {
     type: "job.reopened",
-    description: "requeue_job: a failed job is open again, with its id, inputs and outputs, and waits at its stages (a job.queued, via reopened, follows for each). reason is the caller's.",
-    payload: z.object({ ...jobFields, reason: z.string().nullable() }),
-    line: (event) => jobLine(event, `was requeued${event.payload.reason ? `: ${String(event.payload.reason).slice(0, 200)}` : ""}`),
+    description: "requeue_job: a failed job, or one settled with an outcome other than the normal finish, is open again, with its id, inputs, outputs and passed stages, and waits at the stages it has not passed (a job.queued, via reopened, follows for each). reason is the caller's; previousStatus and previousOutcome say how it had ended; its pending follow-up is cleared.",
+    payload: z.object({ ...jobFields, reason: z.string().nullable(), previousStatus: z.string().nullable(), previousOutcome: z.string().nullable() }),
+    line: (event) => jobLine(event, `was requeued${event.payload.previousOutcome ? ` (was ${String(event.payload.previousOutcome)})` : ""}${event.payload.reason ? `: ${String(event.payload.reason).slice(0, 200)}` : ""}`),
   },
   {
     type: "job.followup_pending",
@@ -435,7 +438,7 @@ export function publicJobEvents(run: Run, events: readonly DomainEvent[]): Publi
       }
       case "job.reopened": {
         const waiting = d.waiting as Wait[];
-        out.push({ type: "job.reopened", payload: { ...base(String(d.jobId), null, null, null), reason: d.reason ? String(d.reason) : null } });
+        out.push({ type: "job.reopened", payload: { ...base(String(d.jobId), null, null, null), reason: d.reason ? String(d.reason) : null, previousStatus: (d.previous as { status?: string } | undefined)?.status ?? "failed", previousOutcome: (d.previous as { outcome?: string | null } | undefined)?.outcome ?? null } });
         for (const wait of waiting) out.push({ type: "job.queued", payload: { ...base(String(d.jobId), wait.stage, null, null), via: "reopened" } });
         break;
       }

@@ -681,7 +681,7 @@ describe("requeue_job: a failed job goes back on the pipeline", () => {
     expect(pipelineOf(store).jobs[0]).toMatchObject({ id, status: "open", inputs: { pr_url: "7" }, failedRides: {}, outcome: null, endedAt: null });
     expect(batchAt(store, "dev")!.jobs.map((job) => job.id)).toEqual([id]);
     // Open now: nothing changes.
-    const again = await runtime.requeueJob(pipelineOf(store).id, id, "");
+    const again = await runtime.requeueJob(pipelineOf(store).id, id, "again");
     expect(again.changed).toBe(false);
     expect(pipelineOf(store).jobs[0]!.batches).toHaveLength(1);
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -695,18 +695,18 @@ describe("requeue_job: a failed job goes back on the pipeline", () => {
     expect(verifyLog(EVENT_AREAS, pipeline, (await store.log.read(pipeline.id)).events)).toEqual([]);
   });
 
-  it("refuses a settled job, an unknown job and a run that is no pipeline", async () => {
+  it("refuses a job that finished normally, an unknown job and a run that is no pipeline", async () => {
     const { store, runtime } = await setup(FILES);
     const pr = await runtime.startPlaybook({ id: "m1", workspaceId: "ws1", cwd: "/" }, "pr", { pr_url: "1" });
     await until(() => batchAt(store, "dev") !== undefined);
     const id = pipelineOf(store).jobs[0]!.id;
     const dev = batchAt(store, "dev")!;
     await runtime.requestGate(dev.managerAgentId, dev.id, "dev", "ok?", "");
-    await runtime.settleJob(dev.managerAgentId, dev.id, id, { outcome: "rejected", summary: "no", outputs: {} });
-    await expect(runtime.requeueJob(pipelineOf(store).id, id, "")).rejects.toThrow(/is settled \(rejected\): only a failed job/);
-    await expect(runtime.requeueJob(pipelineOf(store).id, "job_nope", "")).rejects.toThrow(/has no job "job_nope"/);
-    await expect(runtime.requeueJob(pr.id, id, "")).rejects.toThrow(/not a singleton pipeline/);
-    await expect(runtime.requeueJob("run_nope", id, "")).rejects.toThrow(/unknown run/);
+    await runtime.settleJob(dev.managerAgentId, dev.id, id, { outcome: "done", summary: "yes", outputs: { report: "r" } });
+    await expect(runtime.requeueJob(pipelineOf(store).id, id, "fixed")).rejects.toThrow(/normal finish/);
+    await expect(runtime.requeueJob(pipelineOf(store).id, "job_nope", "x")).rejects.toThrow(/has no job "job_nope"/);
+    await expect(runtime.requeueJob(pr.id, id, "x")).rejects.toThrow(/not a singleton pipeline/);
+    await expect(runtime.requeueJob("run_nope", id, "x")).rejects.toThrow(/unknown run/);
   });
 });
 
@@ -803,5 +803,66 @@ steps:
     await new Promise((resolve) => setTimeout(resolve, 100));
     await s.runtime.onManagerTurnEnded(batch.managerAgentId);
     await until(() => s.archived.includes(batch.managerAgentId));
+  });
+});
+
+describe("requeue_job: a settled job goes back on the pipeline", () => {
+  const FILES = { "apply.yaml": APPLY, "pr.yaml": PR, "forget.yaml": FORGET };
+  /** The job passes dev, rides the prd batch, and that batch settles it with `outcome`. */
+  async function settleAt(store: RunStore, runtime: Runtime, outcome: string, stage = "prd") {
+    await until(() => batchAt(store, "dev") !== undefined);
+    await decide(runtime, store, "dev", "approved");
+    if (stage === "prd") await until(() => batchAt(store, "prd") !== undefined);
+    const batch = batchAt(store, stage)!;
+    const id = pipelineOf(store).jobs[0]!.id;
+    await runtime.requestGate(batch.managerAgentId, batch.id, stage, "ok?", "");
+    await runtime.settleJob(batch.managerAgentId, batch.id, id, { outcome, summary: "set aside", outputs: {} });
+    return id;
+  }
+
+  it("puts an ejected job back at the next stage, keeps its history, clears its follow-up, and survives a restart", async () => {
+    const { dir, store, runtime } = await setup(FILES);
+    await runtime.startPlaybook({ id: "m1", workspaceId: "ws1", cwd: "/" }, "forget", { pr_url: "7" });
+    const id = await settleAt(store, runtime, "rejected");
+    await until(() => pipelineOf(store).jobs[0]!.status === "settled");
+    await runtime.recordFollowUp(id, { runId: null, note: "none needed", by: "m1" }, pipelineOf(store).id);
+    expect(pipelineOf(store).jobs[0]!.followUps).toHaveLength(1);
+    await expect(runtime.requeueJob(pipelineOf(store).id, id, "fixed", "ejected")).rejects.toThrow(/not "ejected"/);
+    await expect(runtime.requeueJob(pipelineOf(store).id, id, "  ")).rejects.toThrow(/needs a reason/);
+    const result = await runtime.requeueJob(pipelineOf(store).id, id, "the cause is fixed", "rejected");
+    expect(result.changed).toBe(true);
+    const job = pipelineOf(store).jobs[0]!;
+    expect(job).toMatchObject({ status: "open", outcome: null, passed: ["dev"], inputs: { pr_url: "7" }, followUps: [] });
+    expect(job.reopens).toMatchObject([{ status: "settled", outcome: "rejected", summary: "set aside", reason: "the cause is fixed", followUps: [{ note: "none needed" }] }]);
+    // Back at the queue of prd (the next stage), not dev.
+    expect([...job.waiting.map((entry) => entry.stage), ...job.batches.map((ride) => ride.stage)]).toEqual(["prd"]);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const events = (await runtime.bus.recent({ types: ["job.*"] })).events;
+    const reopened = events.find((event) => event.type === "job.reopened")!;
+    expect(reopened.payload).toMatchObject({ jobId: id, reason: "the cause is fixed", previousStatus: "settled", previousOutcome: "rejected" });
+    expect(events.some((event) => event.type === "job.queued" && event.payload.via === "reopened" && event.payload.stage === "prd")).toBe(true);
+    const pipeline = pipelineOf(store);
+    expect(pipeline.history.some((entry) => entry.type === "job_settled")).toBe(true);
+    expect(pipeline.history.some((entry) => entry.type === "job_reopened" && /was settled: rejected/.test(entry.detail ?? ""))).toBe(true);
+    expect(verifyLog(EVENT_AREAS, pipeline, (await store.log.read(pipeline.id)).events)).toEqual([]);
+    // A restart reads the same state back.
+    const again = new RunStore(path.join(dir, "runs"));
+    await again.init();
+    expect(again.get(pipeline.id)!.jobs[0]).toMatchObject({ status: "open", passed: ["dev"], reopens: [{ outcome: "rejected", reason: "the cause is fixed" }] });
+  });
+
+  it("refuses a job that finished with the normal outcome, and a job that is queued or running", async () => {
+    const { store, runtime } = await setup(FILES);
+    await runtime.startPlaybook({ id: "m1", workspaceId: "ws1", cwd: "/" }, "forget", { pr_url: "7" });
+    await until(() => batchAt(store, "dev") !== undefined);
+    const id = pipelineOf(store).jobs[0]!.id;
+    // Running in its batch: open, so nothing changes without a guard, and the guard refuses.
+    expect((await runtime.requeueJob(pipelineOf(store).id, id, "x")).changed).toBe(false);
+    await expect(runtime.requeueJob(pipelineOf(store).id, id, "x", "rejected")).rejects.toThrow(/is open, not "rejected"/);
+    const batch = batchAt(store, "dev")!;
+    await runtime.requestGate(batch.managerAgentId, batch.id, "dev", "ok?", "");
+    await runtime.settleJob(batch.managerAgentId, batch.id, id, { outcome: "done", summary: "shipped", outputs: { report: "r" } });
+    await expect(runtime.requeueJob(pipelineOf(store).id, id, "x")).rejects.toThrow(/normal finish/);
+    expect(pipelineOf(store).jobs[0]).toMatchObject({ status: "settled", outcome: "done", reopens: [] });
   });
 });

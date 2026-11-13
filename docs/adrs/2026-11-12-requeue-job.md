@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted. Decisions 2 and 3 (failed jobs only) are superseded by `2026-11-13-requeue-settled-jobs.md`.
 
 ## Context
 
