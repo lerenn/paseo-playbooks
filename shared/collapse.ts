@@ -88,8 +88,9 @@ export function markSeen(state: CollapseState, stats: Readonly<Record<string, Bl
   return added.length === 0 ? state : { ...state, seen: [...state.seen, ...added] };
 }
 
+/** The state after the user folded (`collapsed`: true) or unfolded (false) a group by hand. */
 export function toggled(state: CollapseState, prefix: string, collapsed: boolean): CollapseState {
-  return { ...state, manual: { ...state.manual, [prefix]: !collapsed } };
+  return { ...state, manual: { ...state.manual, [prefix]: collapsed } };
 }
 
 /** Id of the single node standing for a collapsed sub-playbook; it sits inside its parents' frames. */

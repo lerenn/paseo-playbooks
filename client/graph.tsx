@@ -291,7 +291,7 @@ function Dag(props: GraphProps & { steps: Step[]; terminals: boolean; available:
                       depth={folded.prefixes.get(id)!.split(".").length - 1}
                       nodeWidth={nodeWidth}
                       longNeeds={(needsOf.get(id) ?? []).filter((need) => (layers.get(need) ?? 0) < index - 1)}
-                      onToggle={() => setCollapsed(folded.prefixes.get(id)!, true)}
+                      onToggle={() => setCollapsed(folded.prefixes.get(id)!, false)}
                       onBoxHeight={(height) => setHeights((current) => (current[id] === height ? current : { ...current, [id]: height }))}
                     />
                   ) : (
