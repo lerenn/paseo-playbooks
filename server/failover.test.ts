@@ -68,7 +68,7 @@ async function setup(errorText: string, providers = "") {
   run.steps.release!.attempts[0]!.target = "claude/claude-haiku-5-5";
   await store.create(run);
   const fake = fakePaseo(errorText);
-  const runtime = new Runtime(store);
+  const runtime = new Runtime(store, { autoStartAgents: false });
   runtimes.push(runtime);
   await runtime.attach(fake.paseo as never);
   return { store, runtime, ...fake };
@@ -90,7 +90,8 @@ describe("provider fallback", () => {
     expect(archived).toEqual(["step-1"]);
     // the new agent gets the same prompt; the manager is told, and no retry was used
     expect(sent.find((entry) => entry.agentId === "step-2")!.text).toMatch(/Ship it/);
-    expect(sent.find((entry) => entry.agentId === "m")!.text).toMatch(/restarted the attempt on codex\/gpt-5-mini/);
+    // Informational: the manager is not woken for a failover (the step history has it).
+    expect(sent.find((entry) => entry.agentId === "m")).toBeUndefined();
   });
 
   it("leaves the failure to the manager when every target is out of tokens", async () => {

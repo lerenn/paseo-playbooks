@@ -90,7 +90,7 @@ async function setup(files: Record<string, string> = { "apply.yaml": APPLY, "pr.
   const store = new RunStore(path.join(dir, "runs"));
   await store.init();
   const fake = fakePaseo(dir, pipelineDir);
-  const runtime = new Runtime(store);
+  const runtime = new Runtime(store, { autoStartAgents: false });
   runtimes.push(runtime);
   await runtime.attach(fake.paseo as never);
   return { dir, store, runtime, ...fake };

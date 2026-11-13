@@ -136,6 +136,16 @@ function kindBlock<T extends z.ZodType>(block: T) {
   });
 }
 
+/** How the Playbook Manager is involved in a step: whether the plugin starts it, whether its completion wakes the manager. */
+const RawManageSchema = z
+  .object({
+    /** Agent steps: `false` leaves the step `ready` when it becomes ready, so the manager starts it with `start_step` and a brief. Default true (the plugin starts it with an empty brief). */
+    auto_start: z.boolean().optional(),
+    /** `true` wakes the manager when the step completes normally (it is told the outcome and what follows). Default false: only failures, gates and judgment calls wake it. */
+    notify: z.boolean().optional(),
+  })
+  .strict();
+
 /** An agent step: the role and the options that only apply to its agent. */
 const RawRoleStepSchema = z
   .object({
@@ -354,6 +364,8 @@ const RawStepSchema = z.object({
       .optional(),
     /** Runs the step only when these conditions all hold (inputs, step outputs and outcomes); otherwise it is skipped. */
     when: RawConditionSchema.optional(),
+    /** How the manager is involved: start it by hand, be told of its completion. */
+    manage: RawManageSchema.optional(),
     inputs: z.union([z.array(z.string()), z.record(z.string(), z.string().nullable())]).optional(),
     outputs: z.record(z.string(), RawVarDefSchema.nullable()).optional(),
     outcomes: z.array(z.string()).min(1).optional(),
@@ -524,6 +536,8 @@ const RawDefaultsSchema = z.object({
     /** Slow-step warning: a step slower than `factor` times the mean of its last `runs` completed runs gets a warning. Defaults 10 and 2. */
     slow_warning: RawSlowWarningSchema.optional(),
     timeout: z.string().optional(),
+    /** Default `manage` of every step. */
+    manage: RawManageSchema.optional(),
     /** Defaults for agent steps, in the shape of a step's `role:` block. */
     role: z
       .object({
@@ -1709,6 +1723,12 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     if (timeoutMs !== undefined && !isGate) step.timeoutMs = timeoutMs;
     if (timeoutTemplate !== undefined && !isGate) step.timeout = timeoutTemplate;
     if (silenceMs !== undefined && !isGate && !isScript) step.silenceMs = silenceMs;
+    const autoStart = rawStep.manage?.auto_start;
+    if (autoStart !== undefined && step.kind !== "agent") err(`${where}: \`manage.auto_start\` only applies to an agent step (the plugin starts scripts, hand-offs and fan-outs itself; a gate is opened with request_gate)`);
+    const autoStartResolved = autoStart ?? (step.kind === "agent" ? defaults.manage?.auto_start : undefined);
+    if (autoStartResolved === false) step.autoStart = false;
+    const notify = rawStep.manage?.notify ?? defaults.manage?.notify;
+    if (notify === true && step.kind !== "gate") step.notify = true;
     const archiveAgents = roleStep?.archive_agents ?? defaults.role?.archive_agents;
     if (archiveAgents !== undefined && !isGate && !isScript) step.archiveAgents = archiveAgents;
     steps.push(step);

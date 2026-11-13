@@ -12,16 +12,25 @@ How to run a playbook:
 2. start_playbook creates the run in your workspace (one active run per workspace, unless the playbook
    is isolated: its runs work in private git worktrees and may share a workspace). It
    returns the ready steps and, unless you pass autoStart: false, has already started the ready agent
-   steps (as start_step would, with no brief): start only the ready steps it says were not started. Give it a name: 2 to 4 words saying what this run is about
+   steps (as start_step would, with no brief): start only the ready steps it says were not started. With
+   autoStart: false the steps ready now stay yours to start with a brief (later steps start by themselves). Give it a name: 2 to 4 words saying what this run is about
    (e.g. "login-redirect-fix"), so humans can tell runs apart in the panel.
-3. For each ready agent step, call start_step with a short brief: what matters from the
-   request and earlier results that the step prompt does not already say. The plugin
-   renders the step's prompt and inputs; do not repeat them. Start every ready step;
-   steps ready at the same time run in parallel. Script steps (\`script:\` instead of a
-   role) are not yours: the plugin runs and completes them itself, and wakes you with their
-   result and what is ready next. Never start_step, nudge_step or wait for them yourself.
-4. Then end your turn and wait. The plugin wakes you with a "[playbooks]" message when a
-   step agent finishes, or when a human decides a gate.
+3. Agent steps start by themselves: as soon as one is ready (after a predecessor, a gate, a
+   loop-back, a script, a fan-in), the plugin starts it with its rendered prompt and inputs and an
+   empty brief. Do not call start_step for it (it would be refused). Only a step the list marks
+   without "(starts by itself)" is yours to start: it opted out (\`manage: { auto_start: false }\`)
+   because it needs a brief from you. For it, call start_step with a short brief: what matters
+   from the request and earlier results that the step prompt does not already say. The plugin
+   renders the step's prompt and inputs; do not repeat them. Steps ready at the same time run in
+   parallel. Script steps (\`script:\` instead of a role) are not yours: the plugin runs and completes
+   them itself. Never start_step, nudge_step or wait for them yourself.
+4. Then end your turn and wait. You are NOT woken for every step: only when there is something to
+   decide or something went wrong: a step agent finished and reported (you decide its outcome), a
+   failure or exhausted retries, a gate, a ready step waiting for your brief, a stall (a stuck or
+   timed-out step, a lost agent, a step the plugin could not start), and the end of the run. A
+   step that completes normally and whose next step starts by itself does not wake you (the run
+   log and the panel show it), unless the step asks for it (\`manage: { notify: true }\`). Silence
+   means the run is progressing; it never means a step is waiting for you.
 5. Read the step's report: the "[playbooks]" message carries it. get_run shows each step's
    state in short; get_run with view "full" (and steps: [its id]) shows the full report and
    outputs. Decide its outcome and call complete_step. You may correct reported outputs. Check the result is real (for example
@@ -40,8 +49,8 @@ How to run a playbook:
      for such a case or when the human asks; never by default.
    - A step with \`role.completion.auto\` (get_run shows its autoComplete outcomes) has some outcomes the plugin applies
      itself: when its agent reports one, the plugin completes the step with that report, starts the agent
-     and script steps that become ready, and only adds a line to your inbox: you are not woken for it and
-     must not call complete_step for it (it is refused). Any other outcome, every failure, and any case where
+     and script steps that become ready, and does not wake you: you must not call complete_step for it
+     (it is refused). Any other outcome, every failure, and any case where
      a gate, a hand-off, a fan-out or the end of the run would come next, stays reported and wakes you as usual.
    - complete_step returns what changed (the step's new status, what is ready next, open
      gates, or the end of the run), not the whole run.
@@ -161,7 +170,7 @@ ${run.worktree ? `\n${worktreePreamble({ worktree: run.worktree, workspaceDir: r
 You are now the Playbook Manager of run ${run.id} (playbook "${run.playbook.id}"), ${how}. The run already exists: do not call start_playbook.
 Inputs:
 ${JSON.stringify(run.inputs, null, 2)}
-Ready now: ${ready.join(", ") || "none"}. Start them with start_step.`;
+Ready now: ${ready.join(", ") || "none"}. The plugin starts the agent steps by itself (those that did not opt out of auto-start); start only the ones it leaves to you, with start_step.`;
 }
 
 function describeOutputs(step: Step): string {
@@ -323,7 +332,7 @@ When the batch completes, its jobs still open pass this stage and go on to the n
 fails, they wait here for the next batch (within the stage's retries), then fail.
 ${jobs ? `Jobs on this batch:\n${jobs}` : "This batch carries no job."}
 
-Ready now: ${ready.join(", ") || "none"}. Start them with start_step.`;
+Ready now: ${ready.join(", ") || "none"}. The plugin starts the agent steps by itself; start only the ones it leaves to you (manage.auto_start: false), with start_step.`;
 }
 
 /** Sent to the agent that created a run's manager when the manager was archived and the run failed. */

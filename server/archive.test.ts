@@ -53,7 +53,7 @@ async function setup(roleExtra = "") {
   await store.init();
   await store.create(newRun({ id: "run_x", playbook, workspaceId: "ws", workspaceDir: dir, projectId: "p", branch: null, managerAgentId: "m", inputs: {}, now: new Date().toISOString() }));
   const fake = fakePaseo();
-  const runtime = new Runtime(store);
+  const runtime = new Runtime(store, { autoStartAgents: false });
   runtimes.push(runtime);
   await runtime.attach(fake.paseo as never);
   return { store, runtime, ...fake };

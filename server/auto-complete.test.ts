@@ -102,8 +102,8 @@ describe("role.completion.auto", () => {
     expect(after.steps.build!.status).toBe("running");
     expect(created).toEqual(["step-1", "step-2"]);
     expect(toManager(sent)).toEqual([]);
-    expect(after.inbox).toHaveLength(1);
-    expect(after.inbox[0]).toMatch(/qa" attempt 1 reported success[\s\S]*plugin applied it[\s\S]*do not call complete_step[\s\S]*started: build/);
+    // Quiet: the run log has it, the manager's inbox does not.
+    expect(after.inbox).toHaveLength(0);
     await runtime.watchEvents();
     await runtime.watchEvents();
     const types = (await runtime.bus.recent()).events.filter((event) => event.type === "step.completed").map((event) => [event.payload.stepId, event.payload.outcome]);
@@ -144,8 +144,9 @@ describe("role.completion.auto", () => {
     expect(after.steps.build!.status).toBe("reported");
     expect(after.steps.approve!.status).toBe("pending");
     expect(toManager(sent)).toHaveLength(1);
-    // The quiet line rode along with the real wake-up.
-    expect(toManager(sent)[0]!.text).toMatch(/qa" attempt 1 reported success[\s\S]*build" attempt 1 reported success[\s\S]*Call complete_step for "build"/);
+    // The earlier auto-applied step stayed quiet.
+    expect(toManager(sent)[0]!.text).toMatch(/build" attempt 1 reported success[\s\S]*Call complete_step for "build"/);
+    expect(toManager(sent)[0]!.text).not.toMatch(/qa" attempt 1/);
   });
 
   it("refuses complete_step on a step the plugin already applied, and applies nothing twice", async () => {

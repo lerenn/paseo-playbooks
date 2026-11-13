@@ -61,7 +61,7 @@ steps:
   const store = new RunStore(path.join(dir, "runs"));
   await store.init();
   const fake = fakePaseo(dir);
-  const runtime = new Runtime(store);
+  const runtime = new Runtime(store, { autoStartAgents: false });
   runtimes.push(runtime);
   await runtime.attach(fake.paseo as never);
   return { dir, store, runtime, ...fake };

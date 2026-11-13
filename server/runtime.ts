@@ -349,6 +349,12 @@ export class Runtime {
   private paseo: PaseoApi | null = null;
   private reconciled: Promise<void> | null = null;
   private readonly busyManagers = new Set<string>();
+  /** `run/step` whose agent is being created (the plugin's auto-start and the manager's start_step must not both create one). */
+  private readonly startingSteps = new Set<string>();
+  /** `run/step` of a ready agent step the plugin could not start by itself, with why: left to the manager. */
+  private readonly autoStartFailed = new Map<string, string>();
+  /** `run/step/attempts/loop` of a ready step the manager was already told about (once, not on every tick). */
+  private readonly toldReady = new Set<string>();
   /** Managers that handled a wake-up since they were last checked for compaction. */
   private readonly wokenManagers = new Set<string>();
   /** Managers of a run where a gate was decided since they were last checked for compaction. */
@@ -417,7 +423,7 @@ export class Runtime {
 
   constructor(
     private readonly store: RunStore,
-    private readonly options: { dataDir?: string; debounceMs?: number; pollMs?: number; wakeGapMs?: number; admissionTimeoutMs?: number } = {},
+    private readonly options: { dataDir?: string; debounceMs?: number; pollMs?: number; wakeGapMs?: number; admissionTimeoutMs?: number; /** Tests: false keeps the old manual flow (the plugin starts no ready agent step by itself). */ autoStartAgents?: boolean } = {},
   ) {
     const dir = options.dataDir ?? path.dirname(store.dir);
     this.worktreesDir = path.join(dir, "worktrees");
@@ -659,7 +665,8 @@ export class Runtime {
     if (steps.some(([, state]) => state.status === "running")) return;
     if (run.gates.some((gate) => gate.status === "pending")) return;
     const withStatus = (status: string) => steps.filter(([, state]) => state.status === status).map(([id]) => id);
-    const ready = withStatus("ready");
+    // Ready agent steps start by themselves right after this (tick); the manager is told of the ones it must start.
+    const ready = withStatus("ready").filter((id) => !engine.autoStarts(run, id) && engine.stepDef(run, id).kind !== "script" && engine.stepDef(run, id).kind !== "handoff" && engine.stepDef(run, id).kind !== "fanout");
     const reported = withStatus("reported");
     if (ready.length === 0 && reported.length === 0) return;
     await this.enqueue(runId, [managerAfterRestart(ready, reported)]);
@@ -806,6 +813,8 @@ export class Runtime {
     if (this.retiredManagers.has(agentId)) return this.archiveStepAgent(agentId);
     // A manager that ends its turn with a hand-off pending (see chaseFollowUps) is woken again, or retired once none is.
     await this.chaseFollowUps();
+    // A step left ready for it while it was mid-turn (never a silent stall).
+    for (const run of this.runsOfManager(agentId)) await this.noticeReadySteps(run.id).catch((error: unknown) => console.error("[playbooks] ready-step notice failed:", errorText(error)));
     for (const run of this.runsOfManager(agentId)) await this.deliver(run.id);
     await this.compactManager(agentId);
     // Event notices held while this agent was in its turn (unless the above started a new one).
@@ -945,11 +954,14 @@ export class Runtime {
     const result = await this.decideGate(run.id, gate.id, { decision: input.decision, comment: input.comment.trim(), by: role, via: "role", now: nowIso() });
     if (!result.alreadyDecided) {
       const current = this.store.get(run.id)!;
-      await this.enqueue(run.id, [
-        `Gate ${gate.stepId} ${input.decision} by role "${role}": "${input.comment.trim()}".`,
-        current.status === "running" ? `Ready: ${engine.readySteps(current).join(", ") || "none"}.` : `Run is ${current.status}.`,
-      ]);
-      await this.deliver(run.id);
+      // Quiet while the run goes on by itself: the decision is in the run log.
+      if (this.managerNeeded(current)) {
+        await this.enqueue(run.id, [
+          `Gate ${gate.stepId} ${input.decision} by role "${role}": "${input.comment.trim()}".`,
+          current.status === "running" ? `Ready: ${engine.readyList(current, engine.readySteps(current)) || "none"}.` : `Run is ${current.status}.`,
+        ]);
+        await this.deliver(run.id);
+      }
     }
     return `Decision "${input.decision}" recorded for gate ${gate.id}. Stop here: end your turn.`;
   }
@@ -1029,7 +1041,7 @@ export class Runtime {
     manager: { id: string; workspaceId: string | null; cwd: string },
     playbookId: string,
     inputs: Record<string, unknown>,
-    options: { playbook?: Playbook; name?: string } = {},
+    options: { playbook?: Playbook; name?: string; hold?: boolean } = {},
   ): Promise<Run> {
     if (!manager.workspaceId) throw new UserError("this agent has no workspace");
     const workspace = await this.api().workspaces.ref(manager.workspaceId).refresh();
@@ -1074,6 +1086,8 @@ export class Runtime {
         inputs,
         now: nowIso(),
       });
+      // start_playbook with autoStart: false: the manager starts the steps ready now; later ones start by themselves.
+      if (options.hold) run.held = engine.readySteps(run);
       await this.store.create(run);
     } catch (error) {
       if (worktree) await this.dropWorktree(runId, worktree, workspaceDir, true).catch(() => undefined);
@@ -1293,7 +1307,9 @@ export class Runtime {
       const admitted = await this.store.mutate(runId, (run) => engine.admitBlock(run, prefix, nowIso()));
       if (admitted.length === 0 || runId === callerRunId) continue;
       const run = this.store.get(runId)!;
-      const toStart = admitted.filter((id) => engine.stepDef(run, id).kind !== "script");
+      // Agent steps start by themselves (tick); the manager is told only of those it must start or open.
+      const mine = new Set(engine.readyForManager(run));
+      const toStart = admitted.filter((id) => mine.has(id));
       if (toStart.length === 0) continue;
       await this.enqueue(runId, [`A concurrency slot is free: ${toStart.join(", ")} ${toStart.length === 1 ? "is" : "are"} now ready. Start ${toStart.length === 1 ? "it" : "them"} with start_step.`]);
       await this.deliver(runId);
@@ -1319,6 +1335,8 @@ export class Runtime {
         await this.tickPhase("driveAdmissions", () => this.driveAdmissions());
         await this.tickPhase("startHandoffs", () => this.startHandoffs());
         await this.tickPhase("driveFanouts", () => this.driveFanouts());
+        await this.tickPhase("startReadyAgents", () => this.startReadyAgents());
+        await this.tickPhase("noticeReadySteps", () => this.noticeReadySteps());
         await this.tickPhase("runDeciders", () => this.runDeciders());
         await this.tickPhase("noticeBatchGates", () => this.noticeBatchGates());
         await this.tickPhase("endBatches", () => this.endBatches());
@@ -1330,6 +1348,70 @@ export class Runtime {
     } finally {
       this.ticking = false;
     }
+  }
+
+  /**
+   * Every ready agent step the plugin starts by itself (all but `manage.auto_start: false` and held ones) is started, with
+   * the rendered prompt and inputs and an empty brief, as start_playbook's autoStart does. Idempotent: a step is started
+   * only while it is `ready`, and never twice at once (startStep). A step that cannot start stays ready and is left to
+   * the manager (noticeReadySteps tells it, once); the plugin does not retry it in a loop.
+   */
+  private async startReadyAgents(): Promise<void> {
+    if (this.options.autoStartAgents === false) return;
+    for (const listed of this.store.list()) {
+      if (!isActive(listed) || isPaused(listed) || isPipeline(listed) || isManagerless(listed) || !listed.managerAgentId) continue;
+      for (const stepId of engine.readySteps(listed)) {
+        const run = this.store.get(listed.id)!;
+        if (!isActive(run) || isPaused(run)) break;
+        if (run.steps[stepId]?.status !== "ready" || !engine.autoStarts(run, stepId)) continue;
+        const key = `${run.id}/${stepId}`;
+        if (this.autoStartFailed.has(key) || this.startingSteps.has(key)) continue;
+        try {
+          await this.startStep(run.managerAgentId, run.id, stepId, "");
+        } catch (error) {
+          // Started by someone else meanwhile: nothing failed.
+          if (this.store.get(run.id)?.steps[stepId]?.status !== "ready" || this.startingSteps.has(key)) continue;
+          this.autoStartFailed.set(key, errorText(error));
+          console.error(`[playbooks] could not start "${stepId}" of ${run.id} by itself:`, errorText(error));
+        }
+      }
+    }
+  }
+
+  /**
+   * A quiet manager must never mean a stall: a ready step only the manager can move (an agent step that opted out of
+   * auto-start, one the plugin could not start, a gate to open) is told to it once, when it is idle. While it is
+   * mid-turn nothing is marked: its turn end checks again (onManagerTurnEnded).
+   */
+  private async noticeReadySteps(runId?: string): Promise<void> {
+    if (this.options.autoStartAgents === false) return;
+    for (const listed of runId ? [this.store.get(runId)] : this.store.list()) {
+      if (!listed || !isActive(listed) || isPaused(listed) || isPipeline(listed) || isManagerless(listed) || !listed.managerAgentId) continue;
+      for (const key of [...this.autoStartFailed.keys()]) {
+        const [rid, sid] = key.split("/");
+        if (rid === listed.id && this.store.get(rid!)?.steps[sid!]?.status !== "ready") this.autoStartFailed.delete(key);
+      }
+      const waiting = engine.readySteps(listed).filter((id) => !engine.autoStarts(listed, id) || this.autoStartFailed.has(`${listed.id}/${id}`));
+      const told = (id: string) => `${listed.id}/${id}/${listed.steps[id]!.attempts.length}/${listed.steps[id]!.loop}`;
+      const fresh = waiting.filter((id) => !this.toldReady.has(told(id)));
+      if (fresh.length === 0 || this.busyManagers.has(listed.managerAgentId) || this.retiredManagers.has(listed.managerAgentId)) continue;
+      for (const id of fresh) this.toldReady.add(told(id));
+      // A wake-up already queued carries the ready list.
+      if (listed.inbox.length > 0) continue;
+      const lines = fresh.map((id) => {
+        const step = engine.stepDef(listed, id);
+        if (step.kind === "gate") return `Gate step "${id}" is ready: open it with request_gate.`;
+        const failed = this.autoStartFailed.get(`${listed.id}/${id}`);
+        return failed ? `The plugin could not start "${id}" by itself (${failed}): start it with start_step.` : `Step "${id}" is ready and waits for your brief (manage.auto_start: false): start it with start_step.`;
+      });
+      await this.enqueue(listed.id, lines);
+      await this.deliver(listed.id);
+    }
+  }
+
+  /** Whether the manager has something to decide after a state change: the run ended, a gate is open, or a ready step only it can move. */
+  private managerNeeded(run: Run): boolean {
+    return !isActive(run) || isTerminal(run.status) || run.gates.some((gate) => gate.status === "pending") || engine.readyForManager(run).length > 0;
   }
 
   /** One step of the tick: a failure is reported and the next phases still run (one damaged run must not stop every run's ready steps). */
@@ -2387,11 +2469,14 @@ export class Runtime {
       const again = after.steps[step.id]!;
       if ((again.status === "running" || again.status === "ready") && again.attempts.length > state.attempts.length) continue;
       const ready = engine.readySteps(after);
+      // A normal completion whose next step starts by itself stays in the run log; the manager is woken for a failure, a
+      // gate, a step it must start, the end of the run, or when the step asks for it (manage.notify).
+      if (!step.notify && report.outcome !== "failure" && !(step.kind === "fanout" && report.outcome !== step.outcomes[0]) && !this.managerNeeded(after)) continue;
       await this.enqueue(runId, [
         `${kind} "${step.id}" attempt ${attempt.n} ended ${report.outcome}${step.kind === "script" ? ` after ${attempt.checks} check(s)` : step.kind === "fanout" ? ` (runs of "${step.fanout!.playbook}")` : ` (job of "${step.handoff}")`}: ${report.summary}${Object.keys(report.outputs).length ? ` Outputs: ${JSON.stringify(report.outputs)}.` : ""}`,
         "The plugin completed it; do not call complete_step for it.",
         ...effects.notes,
-        isActive(after) && ready.length > 0 ? `Ready: ${ready.join(", ")}. Start them with start_step (or request_gate for a gate).` : "",
+        isActive(after) && ready.length > 0 ? `Ready: ${engine.readyList(after, ready)}.${engine.readyForManager(after).length ? " Start the ones that do not start by themselves with start_step (or request_gate for a gate)." : ""}` : "",
         isTerminal(after.status) && !isActive(after) ? `The run is ${after.status}. Tell the human.` : "",
       ].filter(Boolean));
     }
@@ -2721,7 +2806,20 @@ export class Runtime {
     if (run.steps[stepId]!.status !== "ready") {
       throw new UserError(`step "${stepId}" is ${run.steps[stepId]!.status}, not ready (ready now: ${engine.readySteps(run).join(", ") || "none"})`);
     }
-    const role = run.playbook.roles[step.role]!;
+    // The plugin's own start and the manager's can meet: only one creates the agent.
+    const startKey = `${runId}/${stepId}`;
+    if (this.startingSteps.has(startKey)) throw new UserError(`step "${stepId}" is being started right now (the plugin starts ready agent steps by itself)`);
+    this.startingSteps.add(startKey);
+    try {
+      return await this.startStepNow(managerId, run, step, brief, model);
+    } finally {
+      this.startingSteps.delete(startKey);
+    }
+  }
+
+  private async startStepNow(managerId: string, run: Run, step: Step, brief: string, model?: ModelChoice): Promise<{ agentId: string; attempt: number; target: string; skipped?: string[] }> {
+    const stepId = step.id;
+    const role = run.playbook.roles[step.role!]!;
     // The manager's model, else the one restart_run left for this step, else the role's chain.
     const chosen = model ?? run.steps[stepId]!.nextModel ?? undefined;
     const skips: string[] = [];
@@ -2743,9 +2841,18 @@ export class Runtime {
         title: `${run.playbook.title} · ${role.title} #${attemptNo}`,
         labels: { [RUN_LABEL]: run.id, [STEP_LABEL]: stepId, "playbooks/attempt": String(attemptNo) },
       });
-    const started = await this.store.mutate(run.id, (current) =>
-      engine.startAttempt(current, stepId, { agentId: agent.id, brief, now: nowIso(), readonlySnapshot: snapshot }),
-    );
+    let started: ReturnType<typeof engine.startAttempt>;
+    try {
+      started = await this.store.mutate(run.id, (current) => {
+        const begun = engine.startAttempt(current, stepId, { agentId: agent.id, brief, now: nowIso(), readonlySnapshot: snapshot });
+        current.held = (current.held ?? []).filter((id) => id !== stepId);
+        return begun;
+      });
+    } catch (error) {
+      // The step was started by someone else meanwhile: this agent has no step.
+      await this.archiveStepAgent(agent.id).catch(() => undefined);
+      throw error;
+    }
     await this.store.mutate(run.id, (current) => {
       const attempt = engine.currentAttempt(current, stepId)!;
       attempt.target = config.provider ?? "";
@@ -2931,7 +3038,7 @@ export class Runtime {
       await this.enqueue(runId, [
         `Gate ${result.gate.stepId} ${decision.decision} by ${decision.by ?? "a human"} via panel${comment}.`,
         ...result.effects.notes,
-        run.status === "running" ? `Ready: ${engine.readySteps(run).join(", ") || "none"}.` : "",
+        run.status === "running" ? `Ready: ${engine.readyList(run, engine.readySteps(run)) || "none"}.` : "",
       ].filter(Boolean));
       await this.deliver(runId);
     }
@@ -3042,7 +3149,7 @@ export class Runtime {
       await this.enqueue(runId, [
         `A human resumed the run from the panel.`,
         run.inbox.length > 0 ? "What happened while it was paused follows." : "",
-        isTerminal(run.status) ? "" : `Ready: ${ready.join(", ") || "none"}.${ready.length ? " Start them with start_step." : ""}`,
+        isTerminal(run.status) ? "" : `Ready: ${engine.readyList(run, ready) || "none"}.${engine.readyForManager(run).length ? " Start the ones that do not start by themselves with start_step (request_gate for a gate)." : ""}`,
       ].filter(Boolean));
       // The resume note goes first, then the wake-ups held during the pause.
       await this.store.mutate(runId, (current) => {
@@ -3138,8 +3245,10 @@ export class Runtime {
     }
     if (by === run.managerAgentId) return this.store.get(runId)!;
     const who = by ? `Agent ${by} started the after-task "${taskId}" at the human's request.` : `A human started the after-task "${taskId}" from the panel.`;
-    await this.enqueue(runId, [who, ...effects.notes]);
-    await this.deliver(runId);
+    if (this.managerNeeded(this.store.get(runId)!)) {
+      await this.enqueue(runId, [who, ...effects.notes]);
+      await this.deliver(runId);
+    }
     return this.store.get(runId)!;
   }
 
@@ -3455,16 +3564,17 @@ export class Runtime {
     if (!effects) return false;
     await this.applyEffects(runId, effects);
     await this.admitQueued(runId);
-    const manager = this.store.get(runId)!.managerAgentId;
-    const { started, failed } = await this.autoStartReady(manager, runId).catch((error: unknown) => ({ started: [], failed: [{ stepId: "(run)", error: errorText(error) }] }));
-    await this.enqueue(runId, [
-      reportedLine(stepId, attempt.n, report),
-      `The plugin applied it (role.completion.auto): do not call complete_step for "${stepId}".`,
-      ...effects.notes,
-      started.length > 0 ? `The plugin started: ${started.map((entry) => entry.stepId).join(", ")}.` : "",
-      ...failed.map((entry) => `The plugin could not start "${entry.stepId}" (${entry.error}): start it with start_step.`),
-    ].filter(Boolean));
-    if (failed.length > 0) await this.deliver(runId);
+    // Quiet: the ready steps start by themselves (tick) and the report is in the run log. The manager is told only when the
+    // step asks for it (manage.notify), when it must start or open what comes next, or when the run ended.
+    const after = this.store.get(runId)!;
+    if (engine.stepDef(after, stepId).notify || this.managerNeeded(after)) {
+      await this.enqueue(runId, [
+        reportedLine(stepId, attempt.n, report),
+        `The plugin applied it (role.completion.auto): do not call complete_step for "${stepId}".`,
+        ...effects.notes,
+      ]);
+      await this.deliver(runId);
+    }
     return true;
   }
 
@@ -3610,12 +3720,10 @@ export class Runtime {
     this.armTimeout(this.store.get(runId)!, stepId);
     await this.archiveStepAgent(agentId);
     if (options.resuming) {
-      await this.enqueue(runId, [`step "${stepId}" attempt ${attempt.n}: waited for tokens; the plugin restarted the attempt on ${config.provider} with the same brief (no retry used). Nothing to do: it will report as usual.`]);
-      await this.deliver(runId);
+      // Informational (the step history records it): the manager is not woken.
       return true;
     }
-    await this.enqueue(runId, [`step "${stepId}" attempt ${attempt.n}: ${exhausted} is out of tokens; the plugin restarted the attempt on ${config.provider} with the same brief (no retry used); ${exhausted} is tried again after ${humanDuration(run.playbook.exhaustedForMs)}.${skips.length > 0 ? ` Skipped by provider usage: ${skips.join("; ")}.` : ""} Nothing to do: it will report as usual.`]);
-    await this.deliver(runId);
+    // Informational (the step history records the failover): the manager is not woken.
     return true;
   }
 

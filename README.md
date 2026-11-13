@@ -75,10 +75,15 @@ until it is idle. It saves a short decision ledger with `sidekick_handoff`. When
 `sidekick.session.restart_above_tokens` (default 300000) it is asked to hand off and is replaced by a new
 session that starts from the ledger.
 
-`start_playbook` starts the run's ready agent steps itself, as `start_step` would with no brief (same model, role and
-workspace resolution); pass `autoStart: false` to leave them ready. Script, hand-off and gate steps are not started
-this way, and `start_step` on a step already running is refused. This also holds for runs started from the panel, whose
-manager calls `start_playbook`.
+Every ready agent step starts by itself: as soon as a step becomes ready (after a predecessor, a script, a gate, a loop-back or
+a fan-in; also the steps of an after-task) the plugin starts it with its rendered prompt and inputs and an empty brief, with
+the same model, role and workspace resolution as `start_step`. `start_playbook`'s `autoStart: false` keeps the steps ready at
+the start in the manager's hands (later steps start by themselves). A step that needs a brief from the manager opts out with
+`manage: { auto_start: false }`: it stays `ready` and the manager is woken to start it with `start_step`. `start_step` on a
+step already running is refused (never started twice). The manager is woken only for what it must decide or what went wrong:
+a reported step, a failure, a gate, a step waiting for a brief, a stall, the end of the run. A step that completes normally and
+whose next step starts by itself stays in the run log; `manage: { notify: true }` wakes the manager for that step too. Both go in a step's
+`manage:` block or in `manage:` of `defaults/main.yaml`. See `docs/adrs/2026-11-13-autostart-ready-agent-steps.md`.
 
 A script step's sheet in the run graph shows whether a check is **running now** or the step is **waiting** ("next
 check in ~30 s"), the running check's output (refreshed about every 2 s) and the last five checks with their
@@ -292,7 +297,7 @@ with that tag.
   shows the model of each step and, in view `full`, the models of each attempt
   (see `docs/adrs/2026-11-11-step-model-override-failover.md`).
 - **Fan-out steps** start one run of a playbook per item of a `list` value, each in its own workspace, `max_active` at a time, and join them with per-item results (`all_completed` / `some_failed`). The Playbooks screen draws one lane per child inside the parent run. See `docs/adrs/2026-11-12-fanout-join.md` and the `batch` example.
-- `role: { name: qa, completion: { auto: [success, merged] } }` lets the plugin apply those reported outcomes itself, without waking the manager (it gets a quiet inbox line and must not call `complete_step`). Failures, other outcomes, and any case where a gate, hand-off, fan-out or the end of the run would come next still wake the manager. See `docs/adrs/2026-11-12-step-auto-completion.md` and the `release` example.
+- `role: { name: qa, completion: { auto: [success, merged] } }` lets the plugin apply those reported outcomes itself, without waking the manager (it must not call `complete_step`; the run log records it). Failures, other outcomes, and any case where a gate, hand-off, fan-out or the end of the run would come next still wake the manager. See `docs/adrs/2026-11-12-step-auto-completion.md` and the `release` example.
 - `archive_run` archives an ended run like the panel's archive button (refused while active, or while its hand-off job is still open unless `force: true`; idempotent). `list_runs` hides archived runs unless `archived: true`. See `docs/adrs/2026-11-10-archive-run.md`.
 - A step may carry a `description` (plain text, for people: why and how the step exists). It shows at the top of the step's details sheet (the (i) of a graph node) and in `get_run` and `list_playbooks` (`view: full`); it is never put in an agent's prompt.
 - `list_playbooks` returns a compact view by default in a `playbooks` array (`id`, `valid`, `errors`, and for a valid playbook its title, `hidden`, input names, step ids and after-tasks); `validate_playbooks` returns it in a `results` array (`id`, `valid`, `errors`, and for a valid playbook its title, `hidden`, `inputs`, `steps`, `after` and `source`, with `ref` and `note` when present). `view: "full"` and `playbookId` give the detail.

@@ -42,7 +42,7 @@ async function setup(playbook: string, scripts: Record<string, string>) {
   await store.init();
   const fake = fakePaseo();
   fake.workspace.workspaceDirectory = dir;
-  const runtime = new Runtime(store);
+  const runtime = new Runtime(store, { autoStartAgents: false });
   runtimes.push(runtime);
   await runtime.attach(fake.paseo as never);
   return { dir, loaded, store, runtime, ...fake };
@@ -69,6 +69,7 @@ steps:
   - id: deploy
     needs: [wait_merge]
     role: { name: implementer }
+    manage: { auto_start: false }
     inputs: [merged_sha]
 `;
 
@@ -136,6 +137,7 @@ steps:
     expect(wake).toMatch(/script step "wait_merge" attempt 1 ended success after 2 check\(s\): merged/);
     expect(wake).toMatch(/do not call complete_step/);
     expect(wake).toMatch(/Ready: deploy/);
+    expect(wake).not.toMatch(/starts by itself/);
   });
 
   it("fail on any other exit code, and retry by themselves", async () => {

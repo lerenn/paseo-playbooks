@@ -8,7 +8,7 @@ import { blockEntrySteps, blockStepIds, holdsBlock, innermostBlock } from "../sh
 import { ADMISSION_CHOICES, askChoices, askHumanText, askTransitionOf, choicesOfGate, GATE_SUMMARY_MAX, outcomeTransition } from "../shared/gates";
 import { parse as parseYaml, stringify as toYaml } from "yaml";
 import type { AfterTask, AskChoice, Attempt, AttemptAgent, FanoutChild, FanoutState, Gate, GateDecider, Job, Playbook, Run, RunDefinition, RunStep, RunWorktree, Step, Transition, VarValue, When } from "../shared/types";
-import { isActive, isAgentlessAttempt, MAX_FANOUT_PAST, isPaused, isPipeline, isStepDone, isStepLive, isTerminal, restartBlocker, runningAfterTasks } from "../shared/types";
+import { isActive, isAgentlessAttempt, isManagerless, MAX_FANOUT_PAST, isPaused, isPipeline, isStepDone, isStepLive, isTerminal, restartBlocker, runningAfterTasks } from "../shared/types";
 import { coerceValue, formatValue, type ListItem, lookup, parseDuration, parseList, renderTemplate, replaceRefs, resolveValue, singleRef, templateRefs } from "../shared/vars";
 
 export class EngineError extends Error {}
@@ -194,6 +194,7 @@ function createRun(input: NewRunInput, inputs: Record<string, VarValue>, kind: "
       input.playbook.after.map((task) => [task.id, { status: "pending", startedAt: null, endedAt: null, detail: null }]),
     ),
     inbox: [],
+    held: [],
     jobs: [],
     batch: null,
     parent: input.parent ?? null,
@@ -394,6 +395,27 @@ export function readySteps(run: Run): string[] {
   return run.playbook.steps
     .filter((step) => step.kind !== "script" && step.kind !== "handoff" && step.kind !== "fanout" && run.steps[step.id]?.status === "ready" && isStepLive(run, step.id))
     .map((step) => step.id);
+}
+
+/** Whether the plugin starts this step (an agent step) by itself when it is ready: not opted out with `manage.auto_start: false`, not held. */
+export function autoStarts(run: Run, stepId: string): boolean {
+  const step = stepDef(run, stepId);
+  if (step.kind !== "agent") return false;
+  if (isManagerless(run)) return true;
+  return step.autoStart !== false && !(run.held ?? []).includes(stepId);
+}
+
+/** Ready steps only the manager can move: agent steps that wait for a brief, and gates to open. */
+export function readyForManager(run: Run): string[] {
+  return readySteps(run).filter((id) => {
+    const step = stepDef(run, id);
+    return step.kind === "gate" || (step.kind === "agent" && !autoStarts(run, id));
+  });
+}
+
+/** `ready` ids for a note to the manager, saying which ones the plugin starts by itself. */
+export function readyList(run: Run, ids: string[]): string {
+  return ids.map((id) => (autoStarts(run, id) ? `${id} (starts by itself)` : id)).join(", ");
 }
 
 /** Ready hand-off steps, which the plugin starts on its own. */
@@ -878,7 +900,7 @@ function launchTask(run: Run, taskId: string, now: string): string[] {
 }
 
 function afterNote(run: Run, started: string[], ready: string[]): string {
-  return `After-task${started.length === 1 ? "" : "s"} started: ${started.join(", ")}. ${started.length === 1 ? "It does" : "They do"} not change the run's result (${run.status}). Ready: ${ready.join(", ") || "none"}; start ${ready.length === 1 ? "it" : "them"} like any step.`;
+  return `After-task${started.length === 1 ? "" : "s"} started: ${started.join(", ")}. ${started.length === 1 ? "It does" : "They do"} not change the run's result (${run.status}). Ready: ${readyList(run, ready) || "none"}; start ${ready.length === 1 ? "it" : "them"} like any step.`;
 }
 
 /** Starts the `auto` after-tasks of a run that just completed or failed. */
@@ -992,7 +1014,7 @@ function advance(run: Run, stepId: string, now: string, fx: Effects): void {
     else completeRun(run, now, fx);
     return;
   }
-  if (ready.length > 0) fx.notes.push(`Ready: ${ready.join(", ")}.`);
+  if (ready.length > 0) fx.notes.push(`Ready: ${readyList(run, ready)}.`);
   if (queued.length > 0) fx.notes.push(queueNote(run, queued));
 }
 
@@ -1123,7 +1145,7 @@ function performGoto(run: Run, source: string, target: string, feedback: string,
   run.steps[target]!.feedback = feedback || null;
   log(run, now, "goto", source, `${key} (loop ${run.loops[key]})`);
   const { ready, queued } = refreshReady(run, now, fx);
-  fx.notes.push(`Looping back to "${target}" (loop ${run.loops[key]}). Ready: ${ready.join(", ") || "none"}.`);
+  fx.notes.push(`Looping back to "${target}" (loop ${run.loops[key]}). Ready: ${readyList(run, ready) || "none"}.`);
   if (queued.length > 0) fx.notes.push(queueNote(run, queued));
 }
 
@@ -1282,7 +1304,7 @@ function followOutcome(run: Run, step: Step, outcome: string, summary: string, n
       if (counted <= step.retries && !state.attempts.at(-1)!.noRetry) {
         state.status = "ready";
         state.feedback = summary ? `Previous attempt failed: ${summary}` : null;
-        fx.notes.push(`"${step.id}" failed; retry ${counted}/${step.retries} allowed. Ready: ${readySteps(run).join(", ")}.`);
+        fx.notes.push(`"${step.id}" failed; retry ${counted}/${step.retries} allowed. Ready: ${readyList(run, readySteps(run))}.`);
       } else {
         state.status = "failed";
         endFlow(run, step, "failed", `step "${step.id}" failed after ${counted} attempt(s)`, now, fx);
@@ -1567,7 +1589,7 @@ export function restartRun(run: Run, stepId: string, input: { comment: string | 
   run.seenAt = null;
   log(run, now, "run_restarted", stepId, `was ${previous}${input.by ? `, by ${input.by}` : ""}${input.comment?.trim() ? `: ${input.comment.trim()}` : ""}`);
   const { ready, queued } = refreshReady(run, now, fx);
-  fx.notes.push(`The run (was ${previous}) restarted from "${stepId}". Ready: ${ready.join(", ") || "none"}.`);
+  fx.notes.push(`The run (was ${previous}) restarted from "${stepId}". Ready: ${readyList(run, ready) || "none"}.`);
   if (input.model) fx.notes.push(`"${stepId}" runs on ${input.model.target} on its next attempt (the restart's model), unless start_step passes another model.`);
   if (queued.length > 0) fx.notes.push(queueNote(run, queued));
   updateStatus(run);

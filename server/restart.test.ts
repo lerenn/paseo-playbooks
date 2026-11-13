@@ -213,7 +213,7 @@ describe("Runtime.restartRun", () => {
     if (archivedManager) run.archivedAt = now();
     await store.create(run);
     const fake = fakePaseo({ m: { archivedAt: archivedManager ? now() : null } }, gone);
-    const runtime = new Runtime(store);
+    const runtime = new Runtime(store, { autoStartAgents: false });
     runtimes.push(runtime);
     await runtime.attach(fake.paseo as never);
     return { store, runtime, ...fake };
@@ -317,7 +317,7 @@ describe("a manager archived with the agent that created it", () => {
     await store.create(run);
     const agents = { m: { archivedAt: null as string | null }, coordinator: { archivedAt: null as string | null }, [implementer]: { archivedAt: null as string | null, status: "running" } };
     const fake = fakePaseo(agents);
-    const runtime = new Runtime(store);
+    const runtime = new Runtime(store, { autoStartAgents: false });
     runtimes.push(runtime);
     await runtime.attach(fake.paseo as never);
     // Archived after the plugin started: by Paseo's cascade from the coordinator, or on its own.
@@ -392,7 +392,7 @@ describe("Runtime.startAfterTask", () => {
     cancelRun(run, "stop", now());
     await store.create(run);
     const fake = fakePaseo({ m: { archivedAt: null } });
-    const runtime = new Runtime(store);
+    const runtime = new Runtime(store, { autoStartAgents: false });
     runtimes.push(runtime);
     await runtime.attach(fake.paseo as never);
     return { store, runtime, ...fake };
