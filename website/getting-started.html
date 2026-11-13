@@ -10,7 +10,7 @@
 <body>
 <header class="site"><div class="inner">
 <a class="brand" href="index.html"><img src="favicon.png" alt="">Paseo Playbooks</a>
-<nav><a href="index.html">Home</a><a href="getting-started.html" aria-current="page">Getting started</a><a href="reference.html">Reference</a><a href="examples.html">Examples</a><a href="how-it-works.html">How it works</a><a href="https://github.com/lerenn/paseo-playbooks">GitHub</a></nav>
+<nav><a href="index.html">Home</a><a href="getting-started.html" aria-current="page">Getting started</a><a href="reference.html">Reference</a><a href="how-it-works.html">How it works</a><a href="https://github.com/lerenn/paseo-playbooks">GitHub</a></nav>
 </div></header>
 <main>
 
@@ -81,7 +81,7 @@ steps:
     gate: { question: "Approve the note, or reject it with a comment to send it back." }
     on:
       rejected: { goto: write }</code></pre>
-<p>The <a href="reference.html">reference</a> lists every field, and the <a href="examples.html">examples</a> page has a full pull-request playbook.</p>
+<p>The <a href="reference.html">reference</a> lists every field, each with an example, and <a href="https://github.com/lerenn/paseo-playbooks/tree/main/examples/.paseo/plugins/playbooks"><code>examples/</code></a> has complete playbooks.</p>
 
 <h2>3. Validate and commit</h2>
 <p>Any agent in the workspace can call the <code>validate_playbooks</code> tool. It runs the same checks as the panel and lists every error with its file and field.</p>

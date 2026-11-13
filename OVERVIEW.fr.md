@@ -76,7 +76,7 @@ steps:
 
 - [Prise en main](https://playbooks.paseo.lerenn.dev/getting-started.html) : écrire,
   valider et lancer un premier playbook.
-- [Exemples](https://playbooks.paseo.lerenn.dev/examples.html) : un workflow de pull
+- [Exemples](https://playbooks.paseo.lerenn.dev/reference.html) : un workflow de pull
   request, une livraison avec recette, un playbook qui combine les deux via une validation
   humaine, et une vérification de documentation.
 - [Skill pour agents](https://github.com/lerenn/paseo-playbooks/blob/main/skills/paseo-playbooks/SKILL.md) :

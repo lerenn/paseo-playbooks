@@ -245,3 +245,33 @@ footer.site .inner { max-width: var(--max); margin: 0 auto; padding: 1.25rem; }
 }
 
 .pre { display: inline-block; margin: 0.75rem 0 0; padding: 0.3rem 0.7rem; border-left: 3px solid var(--warning); background: var(--card, transparent); font-size: 0.9rem; color: var(--muted-foreground); }
+
+/* Docs layout with a left sidebar (reference page) */
+.doc { display: flex; align-items: flex-start; max-width: 76rem; margin: 0 auto; }
+.doc main { flex: 1; min-width: 0; margin: 0; max-width: 50rem; }
+.sidebar {
+  position: sticky; top: 3.6rem; flex: 0 0 15.5rem; align-self: flex-start;
+  max-height: calc(100vh - 3.6rem); overflow-y: auto;
+  padding: 2rem 1rem 2rem 1.25rem; border-right: 1px solid var(--border); font-size: 0.86rem;
+}
+.sidebar a { display: block; padding: 0.22rem 0.6rem; border-radius: var(--radius-md); color: var(--muted-foreground); line-height: 1.4; }
+.sidebar > nav > a { margin-top: 0.35rem; color: var(--foreground); }
+.sidebar ul { list-style: none; margin: 0 0 0.3rem; padding: 0 0 0 0.6rem; }
+.sidebar li { margin: 0; }
+.sidebar a:hover { background: var(--muted); color: var(--foreground); }
+.sidebar a.active { background: var(--secondary); color: var(--accent); }
+.doc h2, .doc h3 { scroll-margin-top: 4.5rem; }
+.doc h2:first-of-type { margin-top: 1rem; }
+@media (max-width: 52rem) {
+  .doc { display: block; }
+  .sidebar { position: static; max-height: none; border-right: 0; border-bottom: 1px solid var(--border); padding: 1rem 1.25rem; }
+}
+.see { font-size: 0.88rem; margin: -0.4rem 0 0.8rem; }
+
+details { margin: 0 0 1rem; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--card); }
+details > summary { cursor: pointer; padding: 0.5rem 0.9rem; font-size: 0.88rem; color: var(--muted-foreground); }
+details > summary:hover, details[open] > summary { color: var(--foreground); }
+details[open] > summary { border-bottom: 1px solid var(--border); }
+details > *:not(summary) { margin-left: 0.9rem; margin-right: 0.9rem; }
+details > summary + * { margin-top: 0.8rem; }
+details > :last-child { margin-bottom: 0.9rem; }

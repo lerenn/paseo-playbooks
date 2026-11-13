@@ -7,35 +7,58 @@
 <link rel="icon" href="favicon.png">
 <link rel="stylesheet" href="style.css">
 </head>
-<body>
+<body class="wide">
 <header class="site"><div class="inner">
 <a class="brand" href="index.html"><img src="favicon.png" alt="">Paseo Playbooks</a>
-<nav><a href="index.html">Home</a><a href="getting-started.html">Getting started</a><a href="reference.html" aria-current="page">Reference</a><a href="examples.html">Examples</a><a href="how-it-works.html">How it works</a><a href="https://github.com/lerenn/paseo-playbooks">GitHub</a></nav>
+<nav><a href="index.html">Home</a><a href="getting-started.html">Getting started</a><a href="reference.html" aria-current="page">Reference</a><a href="reference.html">Examples</a><a href="how-it-works.html">How it works</a><a href="https://github.com/lerenn/paseo-playbooks">GitHub</a></nav>
 </div></header>
+<div class="doc">
+<aside class="sidebar"><nav aria-label="On this page">
+<a href="#folders">Folders and layout</a>
+<a href="#defaults">defaults/main.yaml</a>
+<ul>
+<li><a href="#manager-instructions">defaults/manager.md and manager instructions</a></li>
+<li><a href="#manager-mode">Runs with no manager</a></li>
+</ul>
+<a href="#roles">Roles</a>
+<a href="#sidekick">Sidekick</a>
+<a href="#playbook">Playbook fields</a>
+<a href="#steps">Step fields</a>
+<a href="#flow">Outcomes and flow</a>
+<a href="#gates">Gates</a>
+<ul>
+<li><a href="#deciders">Who decides a gate</a></li>
+</ul>
+<a href="#loops">Loops</a>
+<a href="#variables">Variables</a>
+<ul>
+<li><a href="#step-input-source">Where a step input comes from</a></li>
+</ul>
+<a href="#templates">Prompt templates</a>
+<a href="#when">Conditional steps</a>
+<ul>
+<li><a href="#branches">Branches: if / else-if / else</a></li>
+</ul>
+<a href="#fanout">List values and fan-out steps</a>
+<a href="#singletons">Singleton playbooks and hand-offs</a>
+<ul>
+<li><a href="#admission">Admission on a stage's queue</a></li>
+<li><a href="#job-events">Job events and the event log</a></li>
+</ul>
+<a href="#subplaybooks">Sub-playbooks</a>
+<a href="#after">After-tasks</a>
+<a href="#agents">Agent settings</a>
+<a href="#modes">Agent modes</a>
+<a href="#isolation">Isolated runs</a>
+<a href="#readonly">Readonly roles and concurrency</a>
+<a href="#validation">Validation</a>
+<a href="#slow-steps">Slow steps</a>
+<a href="#pitfalls">YAML pitfall</a>
+</nav></aside>
 <main>
 
 <h1>Playbook reference</h1>
-<p class="lead">Everything the plugin reads from your repository, and the rules it checks before a playbook can run.</p>
-<div class="toc"><ul>
-<li><a href="#folders">Folders and layout</a></li>
-<li><a href="#defaults">defaults/main.yaml</a></li>
-<li><a href="#roles">Roles</a></li>
-<li><a href="#sidekick">Sidekick</a></li>
-<li><a href="#playbook">Playbook fields</a></li>
-<li><a href="#steps">Step fields</a></li>
-<li><a href="#flow">Outcomes and flow</a></li>
-<li><a href="#gates">Gates</a></li>
-<li><a href="#loops">Loops</a></li>
-<li><a href="#variables">Variables</a></li>
-<li><a href="#templates">Prompt templates</a></li>
-<li><a href="#subplaybooks">Sub-playbooks</a></li>
-<li><a href="#after">After-tasks</a></li>
-<li><a href="#agents">Agent settings</a></li>
-<li><a href="#readonly">Readonly roles and concurrency</a></li>
-<li><a href="#validation">Validation</a></li>
-<li><a href="#slow-steps">Slow steps</a></li>
-<li><a href="#pitfalls">YAML pitfall</a></li>
-</ul></div>
+<p class="lead">Everything the plugin reads from your repository, and the rules it checks before a playbook can run. Each entry ends with an example; complete playbooks are in <a href="https://github.com/lerenn/paseo-playbooks/tree/main/examples/.paseo/plugins/playbooks"><code>examples/</code></a> on GitHub.</p>
 
 <h2 id="folders">Folders and layout</h2>
 <p>The plugin reads two folders in the workspace: <code>.paseo/plugins/playbooks/</code> and <code>.paseo/playbooks/</code>. Both are loaded and merged. Each folder is self-contained: a playbook uses the <code>roles/</code> and <code>defaults/main.yaml</code> of its own folder. The same playbook id in both folders is an error on both files.</p>
@@ -48,12 +71,15 @@
     └── reviewer/
         ├── role.yaml      # title, readonly, agent
         └── instructions.md</code></pre>
+<details>
+<summary>Details</summary>
 <ul>
 <li>Every top-level <code>*.yaml</code> or <code>*.yml</code> file is a playbook. Shared settings live in subfolders, so no file name is reserved.</li>
 <li><b>Profiles</b>: <code>profiles/&lt;name&gt;/</code> in <code>.paseo/plugins/playbooks/</code> is an extra, opt-in repository with the same layout as the folder itself (the <code>default</code> repository, on unless a project turns it off). Turn profiles on per project, in the Profiles tab of the Playbooks screen or the dropdown in the Playbooks panel; they are off by default, the choice applies to every workspace of the project and is stored per user. A profile's playbook is named <code>&lt;profile&gt;:&lt;id&gt;</code> (<code>louis:deploy</code>) and uses only its own roles and sub-playbooks. A bare id shared by two repositories is ambiguous: write <code>default:deploy</code> or <code>louis:deploy</code>.</li>
 <li>Ids (playbooks, roles, steps, inputs, outputs) use lowercase letters, digits, <code>-</code> and <code>_</code>, starting with a letter.</li>
 <li>Playbooks are read from the workspace's own folder, so a branch or worktree can carry its own changes. Start stores a copy of the resolved playbook in the run, so editing files does not change runs in progress.</li>
 </ul>
+</details>
 
 <h2 id="defaults">defaults/main.yaml</h2>
 <pre><code>tiers:              # named agent settings, used as agent: { tier: cheap }
@@ -81,14 +107,46 @@ role:               # defaults for the role block of every agent step
   archive_agents: true</code></pre><table><thead><tr><th>Key</th><th>Meaning</th></tr></thead><tbody><tr><td><code>agent</code></td><td><code>provider</code>, <code>model</code>, <code>mode</code>, <code>thinking</code> for steps. See <a href="#agents">agent settings</a>.</td></tr><tr><td><code>providers</code></td><td><code>exhausted_for</code>: a duration (default <code>1h</code>) an exhausted <code>provider/model</code> is skipped before it is tried again. See <a href="#agents">agent settings</a>.</td></tr><tr><td><code>tiers</code></td><td>Named bundles of <code>provider</code>, <code>model</code>, <code>mode</code>, <code>thinking</code>, referenced by <code>agent: { tier: &lt;name&gt; }</code>. See <a href="#agents">agent settings</a>.</td></tr><tr><td><code>manager</code></td><td>Agent settings for the manager created by Start. When <code>agent.provider</code> is set, it inherits <code>agent.provider</code> and <code>agent.model</code> (not the mode). Without a model it uses Claude Opus. <code>manager.compact</code> (a playbook's own <code>manager: { compact }</code> wins) says when the plugin sends <code>/compact</code> to the manager, only when it is idle with no wake-up queued: <code>never</code>; <code>on_step</code> after it handled a wake-up (a step ended, a gate was decided, ...); <code>on_gate_decided</code> after a gate decision; <code>{ above_tokens: N }</code> (default <code>150000</code>) after either, when its context holds more than N tokens. The manager keeps its conversation; the run state stays in the plugin. <code>manager.lifecycle</code> (<code>always_on</code> or <code>none</code>) is the repository default of a playbook's <code>manager: { mode }</code>; here <code>mode</code> is the manager agent's own permission mode.</td></tr><tr><td><code>slow_warning</code></td><td><code>{ runs: 10, factor: 2 }</code>: a step that takes more than <code>factor</code> times the mean duration of its last <code>runs</code> (at least 3) completed runs of the same playbook and step gets a warning triangle on the run and on the step, with a detail such as "12m, 3.1x the usual 4m". Needs 3 completed runs; samples under 1s are ignored and a step under 10s never warns. A playbook's own <code>slow_warning</code> wins field by field.</td></tr><tr><td><code>timeout</code></td><td>Default step timeout, such as <code>30m</code> or <code>2h</code>. No timeout when absent.</td></tr><tr><td><code>role</code></td><td>Defaults for agent steps' <code>role:</code> block: <code>silence</code> (default <code>30m</code>) and <code>archive_agents</code> (default <code>true</code>). A step's own <code>role.silence</code> or <code>role.archive_agents</code> wins. See <a href="#steps">step fields</a>.</td></tr><tr><td><code>workspace</code></td><td><code>{ archive: never | on_end, keep_failed: true }</code>: with <code>on_end</code>, the plugin archives the workspace it created for a run (<code>newWorkspace</code>) when the run completes or is canceled, if every agent in it is the plugin's, none is running, no gate is open and no other run is active; otherwise it stays and the history says why. <code>keep_failed</code> (default <code>true</code>) keeps the workspace of a failed run. A playbook's own <code>workspace</code> block wins. Default <code>archive: never</code>.</td></tr><tr><td><code>isolation</code></td><td><code>none</code> (default) or <code>worktree</code>, or a block <code>{ mode, submodules: none | all | [paths], base }</code>. See <a href="#isolation">isolated runs</a>. A playbook's own <code>isolation</code> wins field by field.</td></tr></tbody></table>
 <p>An invalid <code>defaults/main.yaml</code> makes every playbook of its folder invalid.</p>
 <h3 id="manager-instructions">defaults/manager.md and manager instructions</h3>
+<p class="file">Example: manager.md</p>
+<pre><code># defaults/manager.md: for every run of this folder
+Reply to the human in French. Keep gate summaries under three lines.
+
+# a playbook adds its own
+manager:
+  prompt: Before you accept the implement step, check that its PR exists.</code></pre>
 <h3 id="manager-mode">Runs with no manager</h3>
-<p><code>manager: { mode: none }</code> (default <code>always_on</code>; also <code>manager: { lifecycle: none }</code> in <code>defaults/main.yaml</code>) runs a playbook with no manager agent. The plugin starts the ready agent steps as top-level agents of the workspace, applies every outcome a step agent reports (the YAML's <code>retries</code>, <code>on</code> and <code>goto</code> decide what follows), opens a human gate in the panel, starts the decider of a role gate (a <code>by: manager</code> gate is a human's), and stops the run in its failed state when a step fails, ends without reporting, times out, cannot start or loses its agent. The silence reminder does not exist: only a step's <code>timeout</code> stops one that never ends. <code>start_step</code>, <code>complete_step</code>, <code>nudge_step</code> and <code>request_gate</code> are refused on such a run; <code>restart_run</code> works. A human gate is shown in the panel and, when the step agent just before it is still alive (<code>role.archive_agents: false</code>, idle), also put to the human in that agent's conversation: the plugin asks it to use <code>AskUserQuestion</code> and then <code>answer_gate</code>. Answering in either place closes the gate; the other one is told it is stale. See <a href="examples.html">the unattended example</a>.</p>
+<p><code>manager: { mode: none }</code> (default <code>always_on</code>; also <code>manager: { lifecycle: none }</code> in <code>defaults/main.yaml</code>) runs a playbook with no manager agent. The plugin starts the ready agent steps as top-level agents of the workspace, applies every outcome a step agent reports (the YAML's <code>retries</code>, <code>on</code> and <code>goto</code> decide what follows), opens a human gate in the panel, starts the decider of a role gate (a <code>by: manager</code> gate is a human's), and stops the run in its failed state when a step fails, ends without reporting, times out, cannot start or loses its agent. The silence reminder does not exist: only a step's <code>timeout</code> stops one that never ends. <code>start_step</code>, <code>complete_step</code>, <code>nudge_step</code> and <code>request_gate</code> are refused on such a run; <code>restart_run</code> works. A human gate is shown in the panel and, when the step agent just before it is still alive (<code>role.archive_agents: false</code>, idle), also put to the human in that agent's conversation: the plugin asks it to use <code>AskUserQuestion</code> and then <code>answer_gate</code>. Answering in either place closes the gate; the other one is told it is stale. See <a href="reference.html">the unattended example</a>.</p>
+<details>
+<summary>Details</summary>
 <p>The Playbook Manager has no role: its protocol is fixed. <code>defaults/manager.md</code> holds repo-wide instructions for the manager of every run of its folder; an empty file makes every playbook of the folder invalid. A playbook adds its own with <code>manager: { prompt }</code>. The manager gets them after its protocol, never instead of it, as a list: the repository's first, then the playbook's, then each sub-playbook's (in steps or after-tasks, at any depth, each playbook once), labelled <code>repository:</code> or with the playbook id. They come in <code>start_playbook</code>'s result, or in the kickoff when the panel hands a run to a manager. A batch's manager gets the repository's, the singleton's and its own stage's sub-playbooks'.</p>
+</details>
+<p class="file">Example: unattended.yaml</p>
+<pre><code>title: Unattended change
+manager: { mode: none }        # the plugin drives the run
+steps:
+  - id: change
+    role: { name: implementer, prompt: "Make the change." }
+    outcomes: [done, blocked]
+    on:
+      blocked: { fail: true }
+  - id: approve
+    needs: [change]
+    gate: { question: Ship it? }   # a human decides, in the panel</code></pre>
 
 <h2 id="roles">Roles</h2>
 <p>A role is a folder <code>roles/&lt;id&gt;/</code> with two files. A playbook refers to it by its folder name, and several playbooks can share it.</p>
 <table><thead><tr><th>File / key</th><th>Meaning</th></tr></thead><tbody><tr><td><code>instructions.md</code></td><td>Required and non-empty. The system prompt of every step that uses the role. The plugin appends the step protocol: allowed outcomes, required outputs, and how to call <code>report_step_result</code>.</td></tr><tr><td><code>role.yaml</code> <code>title</code></td><td>Display name. Defaults to the id.</td></tr><tr><td><code>role.yaml</code> <code>readonly</code></td><td><code>true</code> if the role must not edit files. Default <code>false</code>. See <a href="#readonly">readonly roles</a>.</td></tr><tr><td><code>role.yaml</code> <code>agent</code></td><td>Agent settings for this role.</td></tr></tbody></table>
 
+<p class="file">Example: roles/reviewer/</p>
+<pre><code>roles/
+  reviewer/
+    instructions.md      # the system prompt: "You review code. Do not edit files."
+    role.yaml
+
+# role.yaml
+title: Reviewer
+readonly: true
+agent: { tier: cheap }</code></pre>
 <h2 id="sidekick">Sidekick</h2>
 <p>A project may have a Sidekick: a coordinator agent in a column beside the Playbooks screen, one tab per project. It is defined by a <code>sidekick/</code> folder next to the playbooks. The folder never takes a playbook id: a playbook <code>sidekick.yaml</code> and <code>sidekick/sidekick.yaml</code> coexist. Without the folder the project has no Sidekick, and its tab offers <strong>Create the Sidekick files</strong>.</p>
 <pre><code>.paseo/plugins/playbooks/sidekick/
@@ -107,11 +165,27 @@ role:               # defaults for the role block of every agent step
 <tr><td><code>runs.max_concurrent</code></td><td>At most this many runs of the project active at once (default: unlimited). Enforced by its prompt only.</td></tr>
 <tr><td><code>runs.confirm_bulk</code></td><td>Ask the human before launching more than one run in a batch (default <code>false</code>). Enforced by its prompt only.</td></tr>
 </table>
+<details>
+<summary>Details</summary>
 <p>Unknown keys are errors. <code>instructions.md</code> is added after the Sidekick's built-in rules and never replaces them; when present it must not be empty. The Sidekick runs in a hidden workspace on the project root. Its prompt forbids it to edit files or run commands itself, but its tools would allow it, so that rule is not enforced by the plugin. It sends subagents to change playbooks, and they open pull requests for you to merge. <code>validate_playbooks</code> checks both files.</p>
+</details>
 
 <h2 id="playbook">Playbook fields</h2>
 <table><thead><tr><th>Field</th><th>Meaning</th></tr></thead><tbody><tr><td><code>title</code></td><td>Display title. Defaults to the file name.</td></tr><tr><td><code>description</code></td><td>Shown in the Start form. Also returned to agents by <code>list_playbooks</code> and <code>validate_playbooks</code>.</td></tr><tr><td><code>hidden</code></td><td><code>true</code> moves the playbook to the collapsed "Hidden playbooks" section at the bottom of the Playbooks panel, for one only meant as a sub-playbook or after-task (a retro, say). It can still be started from there or by <code>start_playbook</code>, and used by other playbooks; while it has runs of its own, its card is in the main list. Default <code>false</code>.</td></tr><tr><td><code>agent</code></td><td>Agent settings for all steps of this playbook.</td></tr><tr><td><code>manager</code></td><td>A block, <code>{ prompt, compact, mode }</code>. <code>mode</code>: <code>always_on</code> (default) has a Playbook Manager agent drive the run; <code>none</code> creates no manager agent: the plugin starts the steps, applies every reported outcome, opens the gates (a human gate in the panel, a role gate with its decider) and stops the run in its failed state on a failure or a timeout; nothing is retried unless the YAML says so. <code>on_demand</code> is not supported yet. See <a href="#manager-mode">runs with no manager</a>. <code>prompt</code>: instructions added to the Playbook Manager's protocol for runs that use this playbook, itself or as a sub-playbook. See <a href="#manager-instructions">manager instructions</a>.</td></tr><tr><td><code>inputs</code></td><td>Typed variables. They make up the Start form, and <code>start_playbook</code> takes them. See <a href="#variables">variables</a>.</td></tr><tr><td><code>outputs</code></td><td>Typed run results, resolved when the run completes. <code>value</code> maps them from step outputs or playbook inputs; without it they are matched by name.</td></tr><tr><td><code>isolation</code></td><td><code>worktree</code> (or <code>{ mode: worktree, submodules, base }</code>): each run works in a private git worktree the plugin creates and deletes, and several runs may share a workspace. Default <code>none</code>. See <a href="#isolation">isolated runs</a>.</td></tr><tr><td><code>concurrency</code></td><td>Maximum active runs of this playbook in the Paseo project, across all worktrees, and also the number of runs that may be inside it as a sub-playbook (see Sub-playbooks). Unlimited when absent.</td></tr><tr><td><code>singleton</code></td><td>A block, <code>{ branch }</code> (<code>{}</code> for the defaults; absent = an ordinary playbook): the playbook takes jobs from <a href="#singletons">hand-off steps</a>, with a waiting list per key value. Replaces <code>concurrency</code> on that playbook.</td></tr><tr><td><code>steps</code></td><td>At least one step.</td></tr><tr><td><code>after</code></td><td>Tasks run once the run has ended, without changing its result. See <a href="#after">after-tasks</a>.</td></tr></tbody></table>
 
+<p class="file">Example: pr.yaml</p>
+<pre><code>title: Pull request
+description: Investigate a request, implement it, open a PR.
+manager: { prompt: Check that the PR targets the base branch. }
+isolation: worktree
+concurrency: 2
+inputs:
+  request: { type: string, required: true }
+outputs:
+  pr_url: { type: string }
+steps:
+  - id: implement
+    role: { name: implementer, prompt: "{{ inputs.request }}" }</code></pre>
 <h2 id="steps">Step fields</h2>
 <p>A step is an agent step (<code>role</code>), a human gate (<code>gate</code>), a script step (<code>script</code>), a sub-playbook (<code>playbook</code>) a hand-off to a singleton playbook (<code>handoff</code>), a branch (<code>branch</code>) or a fan-out of one run per list item (<code>fanout</code>, see <a href="#fanout">fan-out steps</a>), exactly one of them. The kind's key holds a block with the options of that kind; the other fields sit on the step. The order of steps in the file does not matter.</p>
 <pre><code>- id: review
@@ -126,6 +200,8 @@ role:               # defaults for the role block of every agent step
 <p>Each block refuses keys it does not know. The plain-string forms (<code>role: reviewer</code>, <code>gate: "Ship it?"</code>) and the old flat fields (<code>prompt</code>, <code>silence</code>, <code>archive_agents</code>, <code>agent</code>, <code>choices</code>, <code>poll</code> on the step) are invalid; the error says what to write instead, for example <code>role: write `role: { name: reviewer }`</code>.</p>
 
 <h2 id="flow">Outcomes and flow</h2>
+<details>
+<summary>Details</summary>
 <ul>
 <li>The step agent reports an outcome with <code>report_step_result</code>. The manager then decides the final outcome with <code>complete_step</code>, and may correct the outputs.</li>
 <li>One rule for agent steps and gates: the first listed outcome (a gate's first choice) completes the step by default. Steps whose <code>needs</code> are now all completed become ready.</li>
@@ -134,6 +210,17 @@ role:               # defaults for the role block of every agent step
 <li><code>end</code> ends the playbook it is written in: the run at top level, the block when the playbook is nested (see <a href="#subplaybooks">sub-playbooks</a>), the task inside an <a href="#after">after-task</a>. The run completes when every step has completed (or was skipped), or on a top-level <code>end</code>; its outputs are then resolved. <code>fail</code> fails the run at once.</li>
 <li>A timeout interrupts the step agent's turn. Retries apply only after the manager completes the step with the <code>failure</code> outcome.</li>
 </ul>
+</details>
+<p class="file">Example: pr.yaml</p>
+<pre><code>- id: babysit
+  needs: [review]
+  role: { name: babysitter, prompt: "Get {{ inputs.pr_url }} green." }
+  outcomes: [ready, changes_requested, abandoned]   # the first one completes the step
+  retries: 1                       # on failure
+  on:
+    changes_requested: { goto: implement, max_loops: 3 }
+    abandoned: { end: true }       # ends the playbook it is written in
+    ready: { complete: true }</code></pre>
 
 <h2 id="gates">Gates</h2>
 <p>A gate becomes ready like any step. The manager opens it with <code>request_gate</code>: a one-sentence summary shown on the gate, and details (your <code>gate.question</code>, then the manager's notes) collapsed under it. Its buttons come from <code>gate.choices</code>, in order: each key is an outcome, with a <code>label</code>, <code>comment: none | optional | required</code> and <code>color: primary | neutral | success | warning | danger</code> (Paseo theme colours; by default the first choice is primary and the others neutral). Without <code>choices</code>, a gate offers <code>approved</code> (Approve) and <code>rejected</code> (Reject, optional comment, colour <code>danger</code>). The first choice completes the gate by default. A gate that declares <code>choices</code> needs an <code>on</code> entry for every other choice; only the default Reject fails the run without one. Each button shows where it leads (→ End, → End Release inside a block, → Implement, → Fail run). A choice that takes a comment opens a text box with Send; the comment goes to the manager and, on a <code>goto</code>, to the target as feedback. Decisions come from the panel, or by chat through the manager's <code>resume</code> tool. The first decision wins.</p>
@@ -157,6 +244,8 @@ on:
 <table><thead><tr><th><code>by</code></th><th>Who decides</th></tr></thead><tbody><tr><td><code>human</code></td><td>Default. The manager asks the human in chat and relays the answer with <code>resume</code>, or the human decides in the panel.</td></tr><tr><td><code>manager</code></td><td>The manager may decide alone with <code>resume</code> and <code>byManager: true</code>, giving its reason as comment (shown as "by the manager"), or ask a human as for a human gate.</td></tr><tr><td><code>role</code></td><td>When the gate opens, the plugin starts an agent with <code>role</code> (it must be <code>readonly</code>). It gets the gate, its choices, the run's inputs and the steps' summaries and outputs, and calls <code>report_gate_decision</code> with a choice or <code>escalate</code>, and its reason. If it escalates, ends without deciding (after one reminder) or is archived, the gate goes to a human with its reason in the details. Until then the gate does not count as waiting for you.</td></tr></tbody></table>
 
 <h2 id="loops">Loops</h2>
+<details>
+<summary>Details</summary>
 <ul>
 <li><code>goto</code> must point to the step itself or to a step it needs, directly or not. Loops are the only backward edges.</li>
 <li>A <code>goto</code> resets the target and every step downstream of it to pending, clears their outputs, and interrupts any of their agents still running. The target becomes ready again.</li>
@@ -165,22 +254,55 @@ on:
 <li><code>choices</code> on an <code>ask</code> gives its gate several buttons, each going to its own step: <code>blocked: { ask: "QA is blocked.", choices: { answered: {}, fix: { goto: fix }, skip: { comment: none } } }</code>. Each choice takes <code>goto</code> (default: the ask's <code>goto</code>, else the step itself), <code>max_loops</code> (default: the ask's), <code>label</code>, <code>color</code> and <code>comment</code> (<code>none</code>, <code>optional</code> or <code>required</code>, the default). The target gets <code>The human answered "&lt;id&gt;": &lt;comment&gt;</code> as feedback. Without <code>choices</code> the gate has a single "Send answer" button (<code>answered</code>) and the target gets the answer alone.</li><li>An <code>ask</code> choice with <code>outcome</code> ends the asking step with that outcome instead, without running it again: the outcome's <code>on</code> entry applies (<code>complete</code>, <code>end</code>, <code>fail</code> or <code>goto</code>, not <code>ask</code>), and <code>goto</code> and <code>max_loops</code> do not apply. Its <code>outputs</code> set the step's outputs over those of the last report, as templates over <code>{{ gate.comment }}</code>, <code>{{ gate.choice }}</code>, <code>{{ report.summary }}</code>, <code>{{ report.outputs.&lt;output&gt; }}</code> and <code>{{ inputs.&lt;input&gt; }}</code>; a missing output refuses the decision. Example: <code>continue: { outcome: success, comment: optional, outputs: { accepted_unverified: "{{ gate.comment }}" } }</code>.</li>
 <li><code>max_loops</code> counts how many times that edge fired. At the limit the plugin opens a "loop limit" gate: approve allows one more loop, reject fails the run. Inside a block, the count restarts from 0 each time a <code>goto</code> from outside re-enters the block, so an outer loop over items gives every item its own <code>max_loops</code>; the outer <code>goto</code>'s own count keeps going, and <code>{{ loop }}</code> is not reset.</li>
 </ul>
+</details>
+<p class="file">Example: pr.yaml</p>
+<pre><code>- id: qa
+  needs: [implement]
+  role: { name: qa, prompt: "Test the change." }
+  outcomes: [success, failed, needs_input]
+  on:
+    failed: { goto: implement, max_loops: 3 }   # a loop-limit gate opens at the 4th
+    needs_input: { ask: "QA needs your input.", goto: implement }</code></pre>
 
 <h2 id="variables">Variables</h2>
 <table><thead><tr><th>Key</th><th>Meaning</th></tr></thead><tbody><tr><td><code>type</code></td><td><code>string</code> (default), <code>number</code>, <code>boolean</code>, <code>enum</code> or <code>list</code> (a JSON array, see <a href="#fanout">List values</a>). There is no object type; a list's items may be flat objects.</td></tr><tr><td><code>values</code></td><td>Allowed values, for <code>enum</code> only (required there).</td></tr><tr><td><code>required</code></td><td>Playbook inputs: the run cannot start without a value.</td></tr><tr><td><code>default</code></td><td>Value used when none is given.</td></tr><tr><td><code>description</code></td><td>Shown in the Start form and to agents.</td></tr></tbody></table>
 <p>Numbers and booleans sent as text (<code>"42"</code>, <code>"true"</code>) are accepted. A report that misses a declared output or has the wrong type is refused, with the reason, so the agent fixes it in the same turn. The one exception is a <code>failure</code> report, which skips output validation, so a failed step may leave its outputs empty.</p>
-<h3>Where a step input comes from</h3>
+<p class="file">Example: pr.yaml</p>
+<pre><code>inputs:
+  request: { type: string, required: true }
+  env: { type: enum, values: [dev, stg, prd], default: dev }
+  dry_run: { type: boolean, default: false }
+  targets: { type: list }          # a JSON array of strings
+outputs:
+  pr_number: { type: number, value: "{{ steps.implement.outputs.pr_number }}" }</code></pre>
+<h3 id="step-input-source">Where a step input comes from</h3>
+<p>Playbook outputs without <code>value</code> are matched the same way, from any step with a same-named, type-compatible output. Any type can feed a <code>string</code>. The detail sheet shows where each value came from, for example <code>pr_url ← implement.pr_url (auto)</code>.</p>
+<details>
+<summary>Details</summary>
 <ol>
 <li>An explicit source wins: <code>"{{ playbook.inputs.x }}"</code> or <code>"{{ steps.&lt;id&gt;.outputs.y }}"</code>, where the step must be one this step needs, directly or not.</li>
 <li>Otherwise the input takes the output with the same name from a step it needs, directly or not.</li>
 <li>Failing that, it takes the playbook input with the same name.</li>
 <li>If several earlier steps output that name, or nothing matches, the playbook is invalid until you map the input explicitly. Nothing is chosen silently.</li>
 </ol>
-<p>Playbook outputs without <code>value</code> are matched the same way, from any step with a same-named, type-compatible output. Any type can feed a <code>string</code>. The detail sheet shows where each value came from, for example <code>pr_url ← implement.pr_url (auto)</code>.</p>
+</details>
+<p class="file">Example: pr.yaml</p>
+<pre><code>- id: babysit
+  needs: [review, local_qa]
+  inputs:
+    pr_url: ~                                       # matched by name from implement
+    review: "{{ steps.review.outputs.findings }}"   # explicit
+    base: "{{ playbook.inputs.base_branch }}"       # explicit, from the playbook</code></pre>
 
 <h2 id="templates">Prompt templates</h2>
 <p>Templates use plain <code>{{ path }}</code> substitution, with no conditionals or loops. A step prompt may use only <code>{{ inputs.&lt;name&gt; }}</code> (a declared input; the <code>inputs:</code> map uses the other forms, <code>{{ playbook.inputs.x }}</code> and <code>{{ steps.&lt;id&gt;.outputs.y }}</code>), <code>{{ run.id }}</code>, <code>{{ worktree }}</code> (the run's worktree when it is isolated, else the workspace directory; also usable in a role's <code>instructions.md</code>), <code>{{ run.jobs }}</code> (a singleton batch's open jobs, as YAML) and <code>{{ attempt }}</code> (retries) and <code>{{ loop }}</code> (how many times a <code>goto</code> sent the run back through this step; 0 on the first pass); steps of an <a href="#after">after-task</a> may also use <code>{{ run.status }}</code> and <code>{{ run.failure }}</code>. Missing or empty values render as <code>(none)</code>. If a prompt has no placeholders, the plugin lists the step's inputs after it. The manager's brief and any loop feedback are appended to the prompt.</p>
 
+<p class="file">Example: pr.yaml</p>
+<pre><code>role:
+  name: implementer
+  prompt: |
+    Request: {{ inputs.request }}
+    Work in {{ worktree }}. Attempt {{ attempt }}, loop {{ loop }}.</code></pre>
 <h2 id="when">Conditional steps</h2>
 <p><code>when</code> runs a step only for some values of the run's inputs (inside a sub-playbook, of the block's inputs): <code>when: { env: prd }</code>, or a list, <code>when: { env: [stg, prd] }</code>. Values are checked against the input's type; there is no expression language. A step whose condition does not hold is <em>skipped</em> as soon as it would be ready, and counts as done for the steps that need it. Its outputs are unset, so a later step may read them only if it has the same <code>when</code>. A <code>when</code> on a playbook step applies to every step of the block.</p>
 <p><code>when: { loop: "&gt;=2" }</code> tests the step's own loop count instead of an input: a number (equals), a comparison (<code>"&gt;=2"</code>, <code>"&lt;3"</code>, <code>"==1"</code>) or a list (any holds). An input named <code>loop</code> wins over it, and it does not apply to a playbook step.</p>
@@ -194,7 +316,6 @@ on:
 
 <h3 id="branches">Branches: if / else-if / else</h3>
 <p><code>when</code> also tests what earlier steps found: <code>steps.&lt;id&gt;.outputs.&lt;name&gt;</code> or <code>steps.&lt;id&gt;.outcome</code> (the step must come before it through <code>needs</code>). A test is a value, a list (any of), or <code>{ empty: true }</code> / <code>{ empty: false }</code>; all tests of one <code>when</code> must hold.</p>
-<p>A <code>branch</code> step lists cases in order. The plugin takes the first case whose <code>if</code> holds (the last has no <code>if</code>: the required <code>else</code>) and completes the step with that case's name as its outcome. Steps of a case test it in <code>when</code>; the others are skipped, and a skipped step counts as done, so a later step that needs all of them is the join. The validator refuses a missing or misplaced else, an unreachable case, duplicate names, and unknown steps, outputs, outcomes or values; a branch does not apply to after-tasks or singleton stages. A case may end the run with <code>end: true</code> or <code>end: &lt;outcome&gt;</code>. A gate <code>question</code> and an <code>ask</code> text may read <code>{{ playbook.inputs.&lt;name&gt; }}</code> and <code>{{ steps.&lt;id&gt;.outputs.&lt;name&gt; }}</code> of earlier steps.</p>
 <pre><code>steps:
   - id: route
     needs: [approve]
@@ -212,10 +333,13 @@ on:
     gate: { question: Merge and apply by hand? }
   - id: done
     needs: [trains, by_hand]               # the join</code></pre>
+<details>
+<summary>Details</summary>
+<p>A <code>branch</code> step lists cases in order. The plugin takes the first case whose <code>if</code> holds (the last has no <code>if</code>: the required <code>else</code>) and completes the step with that case's name as its outcome. Steps of a case test it in <code>when</code>; the others are skipped, and a skipped step counts as done, so a later step that needs all of them is the join. The validator refuses a missing or misplaced else, an unreachable case, duplicate names, and unknown steps, outputs, outcomes or values; a branch does not apply to after-tasks or singleton stages. A case may end the run with <code>end: true</code> or <code>end: &lt;outcome&gt;</code>. A gate <code>question</code> and an <code>ask</code> text may read <code>{{ playbook.inputs.&lt;name&gt; }}</code> and <code>{{ steps.&lt;id&gt;.outputs.&lt;name&gt; }}</code> of earlier steps.</p>
+</details>
 
 <h2 id="fanout">List values and fan-out steps</h2>
 <p>A variable of type <code>list</code> is a JSON array of strings, numbers, booleans or flat objects (at most 200 items, 32,000 characters), stored and rendered as JSON text: <code>{{ steps.x.outputs.items }}</code> shows it anywhere, a gate question included. A script reports one as an array in its last line's <code>outputs</code>.</p>
-<p>A <strong>fan-out step</strong> starts one run of a playbook of the same folder per item, each in its own new workspace with its own manager, at most <code>max_active</code> at once, and completes when all have ended.</p>
 <pre><code>- id: spawn
   needs: [list]
   inputs: { items: "{{ steps.list.outputs.items }}" }
@@ -228,7 +352,12 @@ on:
     max_active: 3
     cancel_children: true
   on: { some_failed: complete }</code></pre>
+<details>
+<summary>Details</summary>
+<p>A <strong>fan-out step</strong> starts one run of a playbook of the same folder per item, each in its own new workspace with its own manager, at most <code>max_active</code> at once, and completes when all have ended.</p>
 <p>Outcomes: <code>all_completed</code>, <code>some_failed</code> (any child failed, was canceled or not started; fails the run unless <code>on</code> routes it) and <code>failure</code>. A failing child never stops its siblings. Outputs: <code>results</code> (list of <code>{key, runId, outcome}</code>), <code>total</code>, <code>started</code>, <code>completed</code>, <code>failed</code>, <code>canceled</code>, <code>not_started</code>, <code>any_failed</code>. A child is never started twice for one key, restarts included. Canceling or failing the parent (or resetting the step) cancels the active children unless <code>cancel_children: false</code>. The run view draws one lane per child, with earlier passes of a loop kept.</p>
+</details>
+
 <h2 id="singletons">Singleton playbooks and hand-offs</h2>
 <p>A <strong>singleton playbook</strong> is a pipeline that takes work (<em>jobs</em>) from other runs: one long-lived run per project, in one shared workspace. Its top-level steps are <strong>stages</strong>, ordered by <code>needs</code>; jobs move through them. Its inputs, outputs and outcomes are each job's.</p>
 <pre><code>title: Release trains
@@ -253,6 +382,13 @@ steps:
     playbook: { name: train_prd }
     queue: { mode: merge }
     retries: 3                        # failed batches a job may be retried here</code></pre>
+<pre><code>  - id: release
+    needs: [approve]
+    handoff: { name: release_trains }
+    inputs: { pr_url: ~ }
+    timeout: 5m                       # only to hand the job over</code></pre>
+<details>
+<summary>Details</summary>
 <ul>
 <li><strong>Stages.</strong> Each has a waiting list and runs one batch at a time. A batch is an ordinary run of the stage's steps, with its own Playbook Manager in the shared workspace; the stage's previous manager is archived when the next batch leaves. Stages run in parallel.</li>
 <li><strong><code>queue: { mode }</code>.</strong> <code>fifo</code> (default) takes the oldest waiting job alone; <code>merge</code> takes every waiting job (a merge queue).</li>
@@ -263,14 +399,10 @@ steps:
 <li>Every role must be <code>readonly</code> (batches share one checkout). No <code>concurrency</code>, no <code>after</code>; a singleton is never a sub-playbook or an after-task. When no batch runs, its workspace is fast-forwarded to <code>branch</code> and its playbook read again.</li>
 </ul>
 <p>A <strong>hand-off step</strong> gives a job, and with it the task, to a singleton. It is not a sub-step: once the pipeline has taken the job the step is done and the run goes on (typically it ends there):</p>
-<pre><code>  - id: release
-    needs: [approve]
-    handoff: { name: release_trains }
-    inputs: { pr_url: ~ }
-    timeout: 5m                       # only to hand the job over</code></pre>
 <p>A hand-off has no outputs and no <code>on</code>: the run does not wait for the other playbook and receives nothing back (<code>outputs</code>, <code>on</code> and the old <code>handoff.wait</code> are refused with an error saying so, and reading <code>steps.&lt;id&gt;.outputs.*</code> from it is refused). The plugin starts and completes it with the singleton's first outcome, or <code>failure</code> if the job cannot be handed over. The job then belongs to the pipeline: it survives the run completing, failing, being canceled or reset, and how it ends is recorded on the pipeline only. The run keeps the trace: the hand-off's attempt records the target and the job id, shown on the step in the panel. A hand-off that leads back to its own playbook is refused.</p>
 <p>To rework an ejected job, the batch's manager calls <code>start_playbook</code> with <code>newWorkspace: true</code>: the new run gets its own workspace and Playbook Manager.</p>
 <p>The panel and the Playbooks screen show a singleton's stages (waiting list and current batch) and its batches; a hand-off step shows where its job is.</p>
+</details>
 
 <h3 id="admission">Admission on a stage's queue</h3>
 <p>A job's precondition (QA passed, a dependency deployed, a ticket state) may fail while the others are fine. A stage's queue can run a script that decides, per waiting job, who may join its next batch. No batch, manager, agent or tokens are involved: the plugin runs the script itself, like a script step.</p>
@@ -284,6 +416,8 @@ steps:
         poll: 10m                         # required: the safety net
         wake_on:                          # optional, as for script steps
           - { types: [job.advanced, job.settled], filter: { playbook: qa_pipeline, stage: smoke } }</code></pre>
+<details>
+<summary>Details</summary>
 <ul>
 <li><strong>When it runs.</strong> While jobs wait at the stage: at the first look (and after a daemon restart: the check reruns, so it must be idempotent), when a new job joins this queue (always on, not written in <code>wake_on</code>), on a <code>wake_on</code> event, every <code>poll</code>, and when a human chooses "Check again". One check per stage at a time; events during one cause one more after it; at least 5 s apart; its own <code>job.held</code>, <code>job.admitted</code> and <code>job.escalated</code> never wake it. A queue with no waiting job costs no check; a check over 5 minutes is killed and fails. It is allowed on the first stage too.</li>
 <li><strong>Where.</strong> In the pipeline's workspace (the shared checkout of its batches), from the folder's <code>scripts/</code>. A missing workspace or script fails the check visibly.</li>
@@ -293,9 +427,22 @@ steps:
 <li><strong>Escalation.</strong> <code>escalate</code> holds the job and opens a human ask on the pipeline run (kind <code>admission</code>, with <code>jobId</code>; in "Needs you", <code>list_gates</code> and <code>get_run</code>): <em>Check again</em> (<code>retry</code>), <em>Withdraw the job</em> (<code>withdraw</code>: it leaves, its hand-off ends <code>failure</code>) or <em>Admit anyway</em> (<code>admit</code>: it joins and the script no longer holds it). One ask per job at a time.</li>
 <li><strong>Events and view.</strong> <code>job.held</code> (only when the reason changes), <code>job.admitted</code> (<code>via: script | human</code>) and <code>job.escalated</code>. <code>get_run</code> lists each held job's reason; the panel's stage shows a "Held" badge and the reason, since when it waits, the last check, the next check countdown and the alert of a failed check.</li>
 </ul>
+</details>
+
 <h3 id="job-events">Job events and the event log</h3>
 <p>A pipeline announces its jobs on the event bus (<code>subscribe_events</code>, <code>list_events</code>): <code>job.queued</code> (waits at a stage: handed off, or unlocked by a passed stage; one event per stage, <code>via</code> says which), <code>job.joined</code>, <code>job.advanced</code> (passed a stage; <code>nextStages</code> where it waits now), <code>job.requeued</code> (back at its stage: <code>cause</code> <code>batch_failed</code> with <code>rides</code>, <code>retries</code>, or <code>outcome</code> with <code>outcome</code>, <code>reason</code>, <code>blocker</code>, <code>requeues</code>), <code>job.reopened</code> (<code>requeue_job</code> put a failed job back; a <code>job.queued</code> with <code>via: reopened</code> follows), <code>job.followup_pending</code> (a batch ended while a detached job it settled with an outcome has no follow-up recorded) and <code>job.followup</code> (<code>record_followup</code>, or <code>start_playbook</code> with <code>forJob</code>, recorded one: <code>followUpRunId</code>, <code>note</code>), <code>job.settled</code> (left with an <code>outcome</code>), <code>job.failed</code> and <code>job.withdrawn</code> (<code>reason</code>), and, for a stage with <code>queue.admit</code>, <code>job.held</code> (<code>reason</code>), <code>job.admitted</code> (<code>via</code>, <code>reason</code>) and <code>job.escalated</code> (<code>reason</code>, <code>gateId</code>). Every payload has <code>runId</code> (the pipeline), <code>playbook</code> (the singleton's id), <code>jobId</code>, <code>label</code>, <code>stage</code>, <code>batchRunId</code> and <code>outcome</code>; a filter such as <code>{ playbook: release_trains, stage: stg }</code> matches by equality, on any pipeline.</p>
+<details>
+<summary>Details</summary>
 <p>The pipeline and its batches also keep an append-only log, <code>&lt;run id&gt;.events.jsonl</code>, next to the run file. The run file stays the source of truth; the log is checked against it. User config (<code>config.yaml</code> in the plugin data folder, read at start): <code>event_core: { log: true, parity: warn }</code>; <code>log: false</code> writes no log and checks nothing, <code>parity: off</code> only skips the check.</p>
+</details>
+<p class="file">Example: subscribe_events</p>
+<pre><code># subscribe_events arguments
+{ "types": ["job.advanced", "job.settled"],
+  "filter": { "playbook": "release_trains", "stage": "stg" },
+  "delivery": "idle" }
+
+# config.yaml in the plugin data folder
+event_core: { log: true, parity: warn }</code></pre>
 
 <h2 id="subplaybooks">Sub-playbooks</h2>
 <p>A step with <code>playbook: { name: &lt;id&gt; }</code> runs another playbook of the same folder in place, as a building block. The loader expands it: its steps become <code>pr.investigate</code>, <code>pr.implement</code>… in the same run, under the same manager, and the panel draws a labelled frame around them.</p>
@@ -310,6 +457,8 @@ steps:
   - id: release
     needs: [approve]
     playbook: { name: release }  # gets pr_url from the pr block's outputs</code></pre>
+<details>
+<summary>Details</summary>
 <ul>
 <li>The block's first steps take its <code>needs</code>; steps that need the block wait for its last steps.</li>
 <li>Its inputs are the sub-playbook's inputs, auto-matched by name or mapped in <code>inputs</code>; unmatched ones use their default. Its outputs are the sub-playbook's outputs, usable by name or as <code>{{ steps.pr.outputs.pr_url }}</code>.</li>
@@ -320,6 +469,7 @@ steps:
 <li>The sub-playbook's <code>concurrency</code> applies to the block. Its slots are shared by every run in the project, including top-level runs of that playbook. A run takes a slot when the block's first steps become ready and keeps it until all the block's steps complete or are skipped (also while a gate inside waits) or the run ends. Until then those steps are <code>queued</code> ("waiting for a free slot" in the panel) and the manager is woken when they are ready. A <code>goto</code> that restarts the block's first steps releases the slot and queues again.</li>
 </ul>
 <p>Sub-playbooks are the only way to combine playbooks: one run and one graph, so a gate or a loop can sit between two playbooks. There is no chaining from one run to another.</p>
+</details>
 
 <h2 id="after">After-tasks</h2>
 <p><code>after:</code> lists tasks that run once the run has ended, whatever its outcome: a retro that reflects on the run, a notification. Each task is an agent step (<code>role</code> with its <code>prompt</code>), a gate, or a sub-playbook (<code>playbook: { name: &lt;id&gt; }</code>), with a <code>trigger</code>.</p>
@@ -333,6 +483,8 @@ steps:
     trigger: manual      # default: auto
     inputs:
       status: "{{ run.status }}"</code></pre>
+<details>
+<summary>Details</summary>
 <ul>
 <li>They belong to the same run: same run file, same manager, drawn below End in the panel graph, each in its own frame.</li>
 <li>They never change the run's status, which is fixed when the main graph ends. Inside an after-task, <code>end</code> completes the task (it ends the playbook it is written in); <code>fail</code>, exhausted retries or a rejected gate fail the task only. In a sub-playbook used as an after-task, a nested block's <code>end</code> still ends only that block.</li>
@@ -343,18 +495,39 @@ steps:
 <li>While after-tasks run, the run is "wrapping up": its dot pulses in its final colour, it stays active in its workspace, and Cancel cancels the after-tasks without changing the run's status. Archiving the worktree or losing the manager does the same.</li>
 <li>The "both may edit files" rule applies between after-tasks, not between an after-task and a main step.</li>
 </ul>
+</details>
 
 <h2 id="agents">Agent settings</h2>
 <p><code>provider</code>, <code>model</code>, <code>mode</code> and <code>thinking</code> merge field by field. Precedence: step (<code>role.agent</code>) &gt; role &gt; playbook &gt; <code>defaults/main.yaml</code> &gt; the manager's own provider and model. With no model at all, Claude steps use Claude Opus.</p>
+<details>
+<summary>Details</summary>
 <p>A <em>tier</em> (<code>tiers:</code> in <code>defaults/main.yaml</code>) names a set of these fields. Any <code>agent</code> block (the defaults' <code>agent</code> and <code>manager</code>, a playbook, a role's <code>role.yaml</code>, a step's <code>role.agent</code>, a role decider's <code>decider.agent</code>) can write <code>agent: { tier: cheap }</code>: the tier's fields come first, the block's own fields override them, then the layers merge as above. An unknown tier is an error. Switching from Claude to Codex is one edit of the tiers.</p>
 <p>A tier may be a list of targets, each with <code>provider</code>, <code>model</code>, <code>mode</code>, <code>thinking</code>: the first is the primary, the rest are fallbacks. When a step agent's turn fails because its provider is out of tokens (quota, rate or usage limit, no credits), the plugin restarts the same attempt on the next entry with the same brief, without using a <code>retry</code>, records the exhausted <code>provider/model</code> in <code>run.exhausted</code> (<code>{ target, at }</code>) and skips it for <code>providers.exhausted_for</code> (default <code>1h</code>; limits reset, so it is tried again after that, and very short values re-probe a failing provider), logs a <code>provider_exhausted</code> line and tells the manager (who is told when it is tried again). When every entry is exhausted the failure goes to the manager as usual, unless <code>providers.on_exhausted</code> is <code>wait</code>: the step then stays running, shown as "Waiting for tokens until HH:MM", and the plugin restarts the same attempt (no <code>retry</code> used) once a provider is due again, waiting again if it is still out, until <code>providers.max_wait</code> (default: no limit) is spent and the failure goes to the manager. A multi-entry tier cannot be combined with inline <code>provider</code>, <code>model</code>, <code>mode</code> or <code>thinking</code> on the same block: define another tier. On <code>manager</code> it only picks the first entry when a manager is created.</p>
 <p><code>providers.fallback</code>, a list of <code>provider/model</code>, is added to every step agent's chain after its tier's own entries, so a role with a single model moves on too; a fallback keeps the role's <code>mode</code> and <code>thinking</code> only on the same provider. Out of tokens is detected on a failed turn and on a turn that ends on the provider's short notice ("You've hit your weekly limit · resets Nov 16, 2pm"). The manager can also choose a model for one attempt: <code>start_step</code>, <code>nudge_step</code> and <code>restart_run</code> take <code>model</code> (<code>provider/model</code>, checked against the provider's models) and <code>thinking</code>; with <code>nudge_step</code> a new agent on that model takes over the same attempt, without using a <code>retry</code>. <code>get_run</code> shows each step's <code>model</code>, and per attempt its agents and models in view <code>full</code>.</p>
+</details>
+<p class="file">Example: defaults/main.yaml</p>
+<pre><code># defaults/main.yaml
+tiers:
+  cheap:                         # a list: the second is a fallback
+    - { provider: claude, model: claude-haiku-5-5 }
+    - { provider: codex, model: gpt-5-mini }
+  worker: { provider: claude, model: claude-opus-5-5, thinking: high }
+providers: { exhausted_for: 1h }
+agent: { tier: cheap }
+
+# a step that needs more
+role: { name: implementer, agent: { tier: worker, mode: bypassPermissions } }</code></pre>
 
 <h2 id="modes">Agent modes</h2>
 <p>A playbook may use any agent mode, <code>bypassPermissions</code> included: steps that run shell commands then work without asking. Playbooks come from the repository, so any branch can ship one; only start playbooks from repositories you trust. An unset mode uses the provider's default.</p>
 
+<p class="file">Example: defaults/main.yaml</p>
+<pre><code>agent:
+  mode: bypassPermissions      # steps run shell commands without asking</code></pre>
 <h2 id="isolation">Isolated runs</h2>
 <p>By default a run works in its workspace's checkout, so a workspace holds one active run. With <code>isolation: worktree</code> (a playbook field, or a default in <code>defaults/main.yaml</code>) the plugin creates a git worktree for each run under <code>$PASEO_HOME/plugin-data/lerenn/paseo-playbooks/worktrees/&lt;runId&gt;</code>, on a new branch <code>playbooks/&lt;playbook&gt;-&lt;id&gt;</code> off a freshly fetched <code>origin/&lt;base&gt;</code> (<code>base</code> defaults to the project's default branch). When the run ends, the worktree is removed, except when the run failed and <code>workspace.keep_failed</code> is true (the default), which keeps it for inspection. It is also kept when it has uncommitted changes or when the isolation guard fired, and a branch with commits on no remote is always kept; see Cleanup below.</p>
+<details>
+<summary>Details</summary>
 <ul>
 <li><strong>Agents are told, not moved.</strong> Paseo pins an agent's directory to its workspace, so the run stays visible and busy in the original workspace. Every manager and step agent gets a preamble: the worktree's absolute path, run every command from it (<code>cd &lt;path&gt; &amp;&amp; ...</code> or <code>git -C &lt;path&gt;</code>; the shell resets between commands), use absolute paths for Read, Edit and Write, never edit the workspace checkout. Role prompts with relative paths keep working; <code>{{ worktree }}</code> gives the path where a prompt needs it.</li>
 <li><strong>Guard.</strong> When each step ends, and when the run ends, the plugin compares the workspace checkout's <code>HEAD</code> and <code>git status</code> with their state at run start. A change fails the step (<code>isolation guard</code>, naming the changed paths). The readonly check of a <code>readonly</code> role covers the worktree.</li>
@@ -363,15 +536,34 @@ steps:
 <li><strong>Gitlink guard.</strong> When each step ends, the plugin checks the run's branch against its base: if it deletes a submodule entry (mode 160000), the step fails, naming the paths. <code>isolation: { allow_gitlink_removal: true }</code> turns the check off (default <code>false</code>). Agents are also told never to run <code>git add -A</code>, <code>git add .</code> or <code>git commit -a</code>.</li>
 <li><strong>Concurrency.</strong> Isolated runs share a workspace. A run without isolation still needs it to itself, and is refused while an isolated run is active there, and the other way round. Singletons and release batches are never isolated.</li>
 </ul>
+</details>
+<p class="file">Example: pr.yaml</p>
+<pre><code>isolation:
+  mode: worktree
+  submodules: none            # or all, or [paths]
+  base: main                  # default: the project's default branch
+# shorthand: isolation: worktree</code></pre>
 
 <h2 id="readonly">Readonly roles and concurrency</h2>
+<details>
+<summary>Details</summary>
 <ul>
 <li>Before a <code>readonly</code> step starts, the plugin records the checkout's <code>HEAD</code> and <code>git status --porcelain</code>, including untracked files. When the step ends it compares them. Any change fails the attempt with "readonly role modified the checkout". Build output in ignored files does not count.</li>
 <li>Steps share the run's worktree. Two steps that can run at the same time (neither needs the other) must not both be able to edit files: make one role <code>readonly</code> or order them with <code>needs</code>.</li>
 </ul>
+</details>
+<p class="file">Example: roles + steps</p>
+<pre><code># roles/reviewer/role.yaml
+readonly: true
+
+# review and local_qa run together: only one of them may edit files
+- { id: review, needs: [implement], role: { name: reviewer, prompt: "Review." } }
+- { id: local_qa, needs: [implement], role: { name: local_qa, prompt: "Test." } }</code></pre>
 
 <h2 id="validation">Validation</h2>
 <p>The Playbooks panel and the <code>validate_playbooks</code> tool report, per file:</p>
+<details>
+<summary>Details</summary>
 <ul>
 <li>YAML syntax errors and values of the wrong type (unknown keys are ignored, except inside a step's <code>role</code>, <code>gate</code>, <code>script</code> or <code>playbook</code> block)</li>
 <li>duplicate step ids, reserved ids, invalid names</li>
@@ -386,14 +578,35 @@ steps:
 <li>a <code>next</code> key (chaining was removed; use a sub-playbook step)</li>
 <li>the same playbook id in both folders</li>
 </ul>
+</details>
+<p class="file">Example: validate_playbooks</p>
+<pre><code>steps:
+  - id: a
+    needs: [b]      # invalid: cycle in needs
+    gate: Ship it?  # invalid: a kind written as a plain string
+  - id: b
+    needs: [a]
+    role: { name: ghost }   # invalid: roles/ghost/ is missing</code></pre>
 
 <h2 id="slow-steps">Slow steps</h2>
 <p>A step that takes more than <code>factor</code> times the mean duration of its last <code>runs</code> completed runs (<code>slow_warning</code>, defaults 2 and 10, at least 3 samples) is flagged in the panel with a yellow triangle. Agents see the same rule on the server's whole run history: <code>get_run</code> gives a slow step <code>slow: { elapsedMs, baselineMs, factor, ratio, samples, running }</code> and the run <code>slowSteps</code>; <code>list_runs</code> rows have <code>slowSteps</code>, and <code>list_runs { slow: true }</code> lists only the runs with a step that is slow right now. <code>subscribe_events</code> type <code>step.slow</code> (<code>stepId</code>, <code>elapsedMs</code>, <code>baselineMs</code>, <code>factor</code>, <code>ratio</code>, <code>samples</code>) fires once when a running step first goes past the threshold, checked every 30 seconds.</p>
+<p class="file">Example: slow_warning</p>
+<pre><code># defaults/main.yaml (a playbook's own slow_warning wins field by field)
+slow_warning: { runs: 10, factor: 2 }
+
+# subscribe_events arguments
+{ "types": ["step.slow"] }</code></pre>
 <h2 id="pitfalls">YAML pitfall</h2>
 <p>Inside a flow mapping (<code>{ ... }</code>), a comma ends the value. Quote text that contains a comma, or use block style:</p>
 <pre><code>outputs:
   changes: { type: string, description: "What you changed, per file" }</code></pre>
 </main>
+</div>
 <footer class="site"><div class="inner">Paseo Playbooks is a plugin for <a href="https://paseo.sh">Paseo</a>. Source on <a href="https://github.com/lerenn/paseo-playbooks">GitHub</a>.</div></footer>
+<script>
+(function(){var l=[].slice.call(document.querySelectorAll('.sidebar a')),m={};l.forEach(function(a){m[a.hash.slice(1)]=a});
+var o=new IntersectionObserver(function(e){e.forEach(function(x){if(x.isIntersecting){l.forEach(function(a){a.classList.remove('active')});var a=m[x.target.id];a.classList.add('active');a.scrollIntoView({block:'nearest'})}})},{rootMargin:'-70px 0px -75% 0px'});
+document.querySelectorAll('main h2[id],main h3[id]').forEach(function(h){o.observe(h)})})();
+</script>
 </body>
 </html>

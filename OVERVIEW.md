@@ -65,7 +65,7 @@ steps:
 
 - [Getting started](https://playbooks.paseo.lerenn.dev/getting-started.html): write,
   validate and run a first playbook.
-- [Examples](https://playbooks.paseo.lerenn.dev/examples.html): a pull-request workflow, a
+- [Examples](https://playbooks.paseo.lerenn.dev/reference.html): a pull-request workflow, a
   release with QA, a capability combining both through a gate, and a docs check.
 - [Agent skill](https://github.com/lerenn/paseo-playbooks/blob/main/skills/paseo-playbooks/SKILL.md):
   teaches your agents to write playbooks.
