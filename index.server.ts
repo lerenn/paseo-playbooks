@@ -21,6 +21,7 @@ import {
   listProjectProfilesRpc,
   setProfileRpc,
   listRuns,
+  stepDetailRpc,
   listWorkspaceAgents,
   markRunSeenRpc,
   scriptOutputRpc,
@@ -37,6 +38,7 @@ import {
   startRun,
 } from "./shared/contracts";
 import { summarizeRun } from "./shared/types";
+import { leanRun, stepDetail } from "./shared/lean";
 import { readEventCoreConfig, setProjectProfile } from "./server/config";
 import { hasPlaybooks, loadPlaybooks, projectProfiles } from "./server/loader";
 import { GATE_LABEL, Runtime, STEP_LABEL, UserError } from "./server/runtime";
@@ -156,7 +158,12 @@ export default function contribute(server: PluginServerContext) {
     if (!workspace) throw new UserError("workspace not found");
     return { files: await createStarter(workspace.workspaceDirectory ?? workspace.projectRootPath) };
   });
-  handle(listRuns, async ({ workspaceId }) => ({ runs: store.list().filter((run) => run.workspaceId === workspaceId && !run.archivedAt) }));
+  // Lean: the heavy text is fetched per step (stepDetailRpc) when the sheet opens. The agents' list_runs / get_run tools are unchanged.
+  handle(listRuns, async ({ workspaceId }) => ({ runs: store.list().filter((run) => run.workspaceId === workspaceId && !run.archivedAt).map(leanRun) }));
+  handle(stepDetailRpc, async ({ runId, stepId }) => {
+    const run = store.get(runId);
+    return run ? stepDetail(run, stepId) : null;
+  });
   handle(archiveRunRpc, async ({ runId }) => ({ archivedAt: await runtime.archiveRun(runId) }));
   handle(startRun, (input) => runtime.startFromPanel(input));
   /** The workspaces among these whose directory has playbooks. */

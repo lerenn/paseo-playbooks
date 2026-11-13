@@ -1,7 +1,7 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 import { AnalyticsSchema } from "./analytics";
-import { AdmissionStatusSchema, PlaybookEntrySchema, ProfileInfoSchema, RunSchema, RunSummarySchema, ScriptOutputSchema, VarValueSchema } from "./types";
+import { AdmissionStatusSchema, PlaybookEntrySchema, ProfileInfoSchema, RoleSchema, RunSchema, StepSchema, RunSummarySchema, ScriptOutputSchema, VarValueSchema } from "./types";
 
 export const listPlaybooks = defineRpc({
   name: "playbooks.list",
@@ -60,6 +60,13 @@ export const listRuns = defineRpc({
   name: "runs.list",
   input: z.object({ workspaceId: z.string() }),
   output: z.object({ runs: z.array(RunSchema) }),
+});
+
+/** The full text of one step the lean list left out (ADR 2026-11-13-lean-list-runs): attempt prompts, reports, inputs and last messages, the step's prompt and its role's instructions. The step sheet fetches it when it opens. */
+export const stepDetailRpc = defineRpc({
+  name: "runs.step-detail",
+  input: z.object({ runId: z.string(), stepId: z.string() }),
+  output: z.object({ state: RunSchema.shape.steps.valueType, step: StepSchema, role: RoleSchema.nullable() }).nullable(),
 });
 
 /** The live output of a script step: what its running check printed so far and the last checks. The step sheet polls it. */

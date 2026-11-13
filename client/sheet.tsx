@@ -1,10 +1,11 @@
 import { useRpc } from "@getpaseo/plugin/client";
 import { Icon, Markdown, Modal, TextInput, useToast } from "@getpaseo/plugin/client/ui";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState, type ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
-import { decideGateRpc, nudgeStepRpc, restartRunRpc, retryStepRpc, scriptOutputRpc } from "../shared/contracts";
+import { decideGateRpc, nudgeStepRpc, restartRunRpc, retryStepRpc, scriptOutputRpc, stepDetailRpc } from "../shared/contracts";
 import { askChoices, askTransitionOf, choicesOfGate, destinationOf, gateText, linkify, waitsForHuman } from "../shared/gates";
+import { withDetail } from "../shared/lean";
 import { runningFor } from "../shared/elapsed";
 import { useNow } from "./now";
 import { conditionText } from "../shared/labels";
@@ -337,9 +338,20 @@ export function StepSheet(props: {
   onOpenAgent(agentId: string): void;
 }) {
   const { theme, playbook, run, stepId } = props;
-  const step = playbook.steps.find((candidate) => candidate.id === stepId)!;
-  const role = step.role ? playbook.roles[step.role] : undefined;
-  const state = run?.steps[stepId];
+  // The list is lean (ADR 2026-11-13-lean-list-runs): what it lacks (attempt prompts and reports, the step's prompt, the role's instructions) comes with the sheet. Until then the sheet shows what the list has.
+  const fetchDetail = useRpc(stepDetailRpc);
+  const detail = useQuery({
+    queryKey: ["playbooks", "step-detail", run?.id, stepId, run?.seq],
+    queryFn: () => fetchDetail({ runId: run!.id, stepId }),
+    enabled: !!run,
+    placeholderData: keepPreviousData,
+  }).data;
+  const leanStep = playbook.steps.find((candidate) => candidate.id === stepId)!;
+  const step = detail?.step ? { ...leanStep, prompt: detail.step.prompt } : leanStep;
+  const leanRole = step.role ? playbook.roles[step.role] : undefined;
+  const role = leanRole && detail?.role ? { ...leanRole, instructions: detail.role.instructions } : leanRole;
+  const leanState = run?.steps[stepId];
+  const state = leanState ? withDetail(leanState, detail?.state) : leanState;
   const now = useNow();
   const attempts = state?.attempts ?? [];
   const latest = attempts.at(-1);
@@ -609,7 +621,7 @@ export function StepSheet(props: {
             <RestartRun theme={theme} run={run!} stepId={stepId} hostLabel={props.hostLabel} onDone={props.onClose} />
           </Section>
         ) : null}
-        {role ? (
+        {role?.instructions ? (
           <Section theme={theme} title={`Role instructions${role.readonly ? " · readonly" : ""}`}>
             <Markdown>{role.instructions}</Markdown>
           </Section>
