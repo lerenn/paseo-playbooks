@@ -254,6 +254,9 @@ with that tag.
 - After a daemon restart, recovery starts at the plugin's first event (the app connecting, an
   agent opening a session), not when the daemon starts. A step's timeout keeps counting while
   the daemon is down.
+- Live step timer: a running step shows `running for 45s` (`<1s`, `45s`, `12m`, `1h05m`) in its graph card and in its
+  details sheet, for the current attempt, ticking every second from one shared clock (`client/now.tsx`). A step
+  waiting on a pending gate shows none, and it disappears once the step is over.
 - Slow-step warning: a step that takes more than `factor` (default 2) times the mean duration of its last `runs`
   (default 10, at least 3) completed runs of the same playbook and step gets a yellow triangle in the run's row on the
   Playbooks screen and on the step in the panel, with e.g. "12m, 3.1x the usual 4m". It needs 3 completed runs, ignores samples under 1s (steps that did not really run) and never warns under 10s;

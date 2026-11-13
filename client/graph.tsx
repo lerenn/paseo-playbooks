@@ -10,7 +10,9 @@ import { END, layerOf, layoutGraph, START, withTerminals } from "../shared/graph
 import { isTerminal, type AfterTask, type Playbook, type Run, type Step } from "../shared/types";
 import { activeStep, assignLanes, badgeText, groupLoops, loopText, relatedLoops, visibleAttempts, type LoopEdge, type LoopGroup } from "./loops";
 import { conditionText } from "../shared/labels";
+import { runningFor } from "../shared/elapsed";
 import { slowDetail, type SlowInfo } from "../shared/slow";
+import { useNow } from "./now";
 import { agentBackground, gateBackground, stepTitle, nodeColor, nodeIcon, nodeStateLabel, STEP_KINDS, type NodeState, type Theme } from "./theme";
 
 /** Nodes grow with the panel between these widths; below the minimum the graph scrolls sideways. */
@@ -771,6 +773,9 @@ function Node(props: GraphProps & { step: Step; longNeeds: string[]; nodeWidth: 
   // A hand-off's job once handed off (its run does not follow it any further).
   const jobLine = isFanout && state?.fanout ? engineText(state.fanout) : isHandoff ? (latest?.job ? `Handed off to ${step.handoff} (${latest.job.jobId})` : nodeState === "running" ? latest?.lastMessage ?? null : null) : latest?.waiting && nodeState === "running" ? `Waiting for tokens until ${new Date(latest.waiting.until).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : null;
   const stateLabel = nodeStateLabel(nodeState);
+  // The current attempt's elapsed time while it runs; a gate waiting on a human is not running.
+  const now = useNow();
+  const elapsed = (nodeState === "running" || nodeState === "needs_permission") && !pendingGate ? runningFor(latest?.startedAt, now) : null;
   const onPress = () => (latestAgent ? props.onOpenAgent(latestAgent) : props.onOpenSheet(step.id));
   const isHighlighted = highlighted === step.id || props.loopTarget;
   const [expanded, setExpanded] = useState(false);
@@ -833,6 +838,11 @@ function Node(props: GraphProps & { step: Step; longNeeds: string[]; nodeWidth: 
           {stateLabel ? (
             <Text numberOfLines={1} style={{ color, fontSize: 10 }}>
               {stateLabel}
+            </Text>
+          ) : null}
+          {elapsed ? (
+            <Text numberOfLines={1} accessibilityLabel={`Running for ${elapsed}`} style={{ color: theme.colors.foregroundMuted, fontSize: 10 }}>
+              {`running for ${elapsed}`}
             </Text>
           ) : null}
           {props.slow?.[step.id] ? (

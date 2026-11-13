@@ -8,6 +8,7 @@ import { archiveRunRpc, cancelRunRpc, createExampleRpc, listPlaybooks, listRuns,
 import { isActive, isPaused, isPipeline, isTerminal, type Playbook, type PlaybookEntry, type Run } from "../shared/types";
 import { slowView } from "../shared/slow";
 import { useSlowSteps } from "./slow";
+import { NowProvider } from "./now";
 import { useAgentEvents } from "./events";
 import { Graph, useReduceMotion } from "./graph";
 import { PreReleaseFlag } from "./pre-release";
@@ -265,7 +266,9 @@ function PlaybookCard(props: {
   const title = pipeline?.playbook.title ?? playbook?.title ?? card.entry?.title ?? card.id;
   const errors = card.entry?.errors ?? [];
 
+  const anyRunning = !!run && Object.values(run.steps).some((step) => step.status === "running");
   return (
+    <NowProvider active={anyRunning}>
     <View style={{ zIndex: props.zIndex, borderRadius: 12, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface1, padding: CARD_PAD, gap: 8 }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 6, zIndex: 20 }}>
         <Pressable
@@ -414,6 +417,7 @@ function PlaybookCard(props: {
         />
       ) : null}
     </View>
+    </NowProvider>
   );
 }
 
