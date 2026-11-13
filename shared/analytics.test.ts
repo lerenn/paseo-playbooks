@@ -95,4 +95,25 @@ describe("analyze", () => {
       expect(analyze([r], { since: "2026-11-12T12:00:00Z", now, timeZone: "UTC" }).daily!.byModel.days).toEqual(["2026-11-12", "2026-11-13"]);
     });
   });
+
+  it("counts the manager in the step, role and model views, on the run's creation day", () => {
+    const a = run("r1", [usage(100, 10)]);
+    a.playbook.manager = { provider: "claude", model: "opus" };
+    const b = run("r2", []);
+    b.managerUsage = usage(50, 50);
+    const result = analyze([a, b], { now: new Date("2026-11-11T12:00:00Z"), timeZone: "UTC" });
+    expect(result.byRole.find((row) => row.key === "(manager)")).toMatchObject({ runs: 2, usage: { inputTokens: 55 } });
+    expect(result.byStep.find((row) => row.key === "pb/(manager)")).toMatchObject({ runs: 2, wastedAttempts: 0 });
+    expect(result.byModel.find((row) => row.key === "claude/opus")!.usage.inputTokens).toBe(5);
+    expect(result.byModel.find((row) => row.key === "default")!.usage.inputTokens).toBe(50);
+    const seriesOf = (chart: { series: Array<{ key: string; total: number }> }, key: string) => chart.series.find((row) => row.key === key)?.total;
+    expect(seriesOf(result.daily!.byRole, "(manager)")).toBe(110);
+    expect(seriesOf(result.daily!.byStep, "pb/(manager)")).toBe(110);
+    expect(seriesOf(result.daily!.byPlaybook, "pb")).toBe(110); // the test attempts carry no timestamp, so only the managers are on a day
+    // by-playbook still counts it
+    expect(result.byPlaybook[0]!.usage.inputTokens).toBe(155);
+    const old = run("r4", []);
+    old.usageDeltas = false;
+    expect(analyze([old]).byRole.find((row) => row.key === "(manager)")).toBeUndefined();
+  });
 });

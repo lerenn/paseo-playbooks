@@ -222,6 +222,16 @@ export function analyze(runs: Run[], options: AnalyticsOptions = {}): Analytics 
     const runDay = dayKey(run.createdAt, tz);
     if (managerUsage) {
       daily.byPlaybook.add(playbook, runDay, tokensOf(managerUsage));
+      // The manager is its own row in each view: a "(manager)" step of its playbook, the "(manager)" role, and its model.
+      const managerModel = [run.playbook.manager?.provider, run.playbook.manager?.model].filter(Boolean).join("/") || "default";
+      const stepKey = `${playbook}/(manager)`;
+      const tokens = tokensOf(managerUsage);
+      daily.byStep.add(stepKey, runDay, tokens);
+      daily.byRole.add("(manager)", runDay, tokens);
+      daily.byModel.add(managerModel, runDay, tokens);
+      byStep.add(stepKey, `role (manager), model ${managerModel}`, run.id, managerUsage, false);
+      byRole.add("(manager)", null, run.id, managerUsage, false);
+      byModel.add(managerModel, null, run.id, managerUsage, false);
       note(runDay);
     }
     manager = plus(manager, managerUsage);
