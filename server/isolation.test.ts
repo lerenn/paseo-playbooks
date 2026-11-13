@@ -339,7 +339,7 @@ async function runtimeSetup(opts: { gitlink?: boolean; extraFiles?: Record<strin
   };
   const store = new RunStore(path.join(ws.base, "data", "runs"));
   await store.init();
-  const runtime = new Runtime(store, { pollMs: 3_600_000 });
+  const runtime = new Runtime(store, { autoStartAgents: false, pollMs: 3_600_000 });
   runtimes.push(runtime);
   await runtime.attach(paseo as never);
   return { ...ws, store, runtime, sent, created, running };

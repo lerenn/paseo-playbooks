@@ -61,7 +61,7 @@ async function setup(options: { debounceMs?: number } = {}, existing?: { dir: st
   const store = new RunStore(path.join(dir, "data", "runs"));
   await store.init();
   const fake = fakePaseo(dir);
-  const runtime = new Runtime(store, { debounceMs: options.debounceMs ?? 0, pollMs: 3_600_000 });
+  const runtime = new Runtime(store, { autoStartAgents: false, debounceMs: options.debounceMs ?? 0, pollMs: 3_600_000 });
   runtimes.push(runtime);
   await runtime.attach(fake.paseo as never);
   return { dir, store, runtime, ...fake };

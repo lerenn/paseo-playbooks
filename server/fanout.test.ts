@@ -101,7 +101,7 @@ async function setup(files: Record<string, string> = { "parent.yaml": parent(SPA
   await store.init();
   const fake = fakePaseo(dir);
   const boot = async () => {
-    const runtime = new Runtime(store, { pollMs });
+    const runtime = new Runtime(store, { autoStartAgents: false, pollMs });
     runtimes.push(runtime);
     await runtime.attach(fake.paseo as never);
     return runtime;

@@ -381,6 +381,28 @@ steps:
     const errorsOf = async (files: Record<string, string>, id = "pb") =>
       (await loadPlaybooks(await workspace(files))).entries.find((entry) => entry.id === id)!.errors;
 
+    describe("manage", () => {
+      const load = async (files: Record<string, string>) => (await loadPlaybooks(await workspace(files))).entries.find((entry) => entry.id === "pb")!;
+      it("reads auto_start and notify on a step", async () => {
+        const entry = await load({ "pb.yaml": "steps:\n  - { id: a, role: { name: reviewer }, manage: { auto_start: false, notify: true } }\n  - { id: b, needs: [a], role: { name: reviewer } }\n" });
+        expect(entry.errors).toEqual([]);
+        expect(entry.playbook!.steps[0]).toMatchObject({ autoStart: false, notify: true });
+        expect(entry.playbook!.steps[1]!.autoStart).toBeUndefined();
+        expect(entry.playbook!.steps[1]!.notify).toBeUndefined();
+      });
+      it("takes the defaults' manage, which a step overrides", async () => {
+        const entry = await load({ "defaults/main.yaml": "manage: { auto_start: false, notify: true }\n", "pb.yaml": "steps:\n  - { id: a, role: { name: reviewer } }\n  - { id: b, needs: [a], role: { name: reviewer }, manage: { auto_start: true, notify: false } }\n" });
+        expect(entry.errors).toEqual([]);
+        expect(entry.playbook!.steps[0]).toMatchObject({ autoStart: false, notify: true });
+        expect(entry.playbook!.steps[1]!.autoStart).toBeUndefined();
+        expect(entry.playbook!.steps[1]!.notify).toBeUndefined();
+      });
+      it("refuses auto_start on a gate and an unknown key, and a flat field", async () => {
+        expect((await load({ "pb.yaml": "steps:\n  - { id: g, gate: { question: Ok? }, manage: { auto_start: false } }\n" })).errors.join("\n")).toMatch(/manage.auto_start. only applies to an agent step/);
+        expect((await load({ "pb.yaml": "steps:\n  - { id: a, role: { name: reviewer }, manage: { auto: false } }\n" })).errors.length).toBeGreaterThan(0);
+      });
+    });
+
     describe("role.completion.auto", () => {
       const step = (extra: string) => `
 steps:

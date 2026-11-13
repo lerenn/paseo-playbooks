@@ -79,7 +79,7 @@ async function setup(options: { agent?: string; defaults?: string; lastText?: st
   }
   await store.create(run);
   const fake = fakePaseo(options.lastText ?? WEEKLY);
-  const runtime = new Runtime(store);
+  const runtime = new Runtime(store, { autoStartAgents: false });
   runtimes.push(runtime);
   await runtime.attach(fake.paseo as never);
   return { store, runtime, ...fake };

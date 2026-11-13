@@ -235,6 +235,10 @@ export const StepSchema = z.object({
   silenceMs: z.number().int().min(0).optional(),
   /** Agent steps: archive the step's agents once it completes, and each attempt's once the next starts. Unset = true. */
   archiveAgents: z.boolean().optional(),
+  /** Agent steps: `false` (`manage.auto_start: false`) keeps the step `ready` until the manager starts it with a brief. Unset = the plugin starts it. */
+  autoStart: z.boolean().optional(),
+  /** `true` (`manage.notify`): the step's normal completion wakes the manager. Unset = only failures, gates and judgment calls do. */
+  notify: z.boolean().optional(),
   /** Agent steps: outcomes the plugin applies itself when the agent reports them (`role.completion.auto`). Unset = the manager applies every outcome. */
   autoComplete: z.array(z.string()).optional(),
   /** Resolved agent settings (step > role > playbook > defaults). Provider/model may stay unset. */
@@ -877,6 +881,8 @@ export const RunSchema = z.object({
   /** State of each after-task, by id. Runs created before after-tasks have none. */
   after: z.record(z.string(), RunAfterTaskSchema).default({}),
   inbox: z.array(z.string()),
+  /** Ready agent steps the plugin must not start by itself (`start_playbook` with `autoStart: false`): the manager starts them. Dropped once started. */
+  held: z.array(z.string()).default([]),
   /** Set on a run a fan-out step started: the parent run, its step and the item's key. */
   parent: z.object({ runId: z.string(), stepId: z.string(), key: z.string() }).nullable().default(null),
   /** A pipeline: every job handed to it. A batch: copies of the jobs it carries (its work). */

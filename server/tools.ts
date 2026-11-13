@@ -254,7 +254,7 @@ export function afterText(run: Run): string {
   const waiting = run.gates.some(waitsForHuman);
   return ` After-tasks running: ${running.join(", ")} (their result does not change the run, which stays ${run.status}). ${
     waiting ? "A gate is waiting for a human decision. " : ""
-  }Ready: ${ready.join(", ") || "none"}.${gates.length ? ` Gate(s) to open with request_gate: ${gates.join(", ")}.` : ""}`;
+  }Ready: ${engine.readyList(run, ready) || "none"}.${gates.length ? ` Gate(s) to open with request_gate: ${gates.join(", ")}.` : ""}`;
 }
 
 /** A step's conditions as the agent tools show them: operand → values, or `{ empty }`. */
@@ -450,7 +450,7 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
               started,
             );
           }
-          const run = await runtime.startPlaybook(agent, playbook, inputs, { name });
+          const run = await runtime.startPlaybook(agent, playbook, inputs, { name, hold: !autoStart });
           if (run.playbook.singleton) {
             return ok(
               `"${playbook}" is a singleton: its pipeline is run ${run.id}, in its own workspace. Hand-off steps give it jobs; each stage's batches get their own Playbook Manager there. You do not manage it.`,
@@ -519,7 +519,7 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
                   ? `Run ${run.id} canceled.${afterText(run)}`
                   : run.status === "waiting_gate"
                   ? `A gate is waiting for a human decision. End your turn.`
-                  : `Ready: ${ready.join(", ") || (queued.length ? "none" : "none (waiting for running steps)")}.${queued.length ? ` Queued for a free concurrency slot of another run: ${queued.join(", ")}; end your turn, you are woken when they are ready.` : ""}${gates.length ? ` Gate(s) to open with request_gate: ${gates.join(", ")}.` : ""}`;
+                  : `Ready: ${engine.readyList(run, ready) || (queued.length ? "none" : "none (waiting for running steps)")}.${queued.length ? ` Queued for a free concurrency slot of another run: ${queued.join(", ")}; end your turn, you are woken when they are ready.` : ""}${gates.length ? ` Gate(s) to open with request_gate: ${gates.join(", ")}.` : ""}`;
           const paused = isPaused(run) ? " The run is paused by a human: do not start steps; end your turn, you are woken on resume." : "";
           return ok(text + paused, runChange(run, stepId));
         }),
@@ -574,7 +574,7 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
           });
           const run = (await runtime.ownedRun(agent.id, runId))!;
           const prefix = result.alreadyDecided ? `Already decided: ${result.gate.status} via ${result.gate.decidedVia}.` : `Recorded ${decision}.`;
-          return ok(`${prefix} Run is ${run.status}.${afterText(run)} Ready: ${engine.readySteps(run).join(", ") || "none"}.${engine.queuedSteps(run).length ? ` Queued for a free concurrency slot: ${engine.queuedSteps(run).join(", ")}.` : ""}`, runChange(run, result.gate.stepId));
+          return ok(`${prefix} Run is ${run.status}.${afterText(run)} Ready: ${engine.readyList(run, engine.readySteps(run)) || "none"}.${engine.queuedSteps(run).length ? ` Queued for a free concurrency slot: ${engine.queuedSteps(run).join(", ")}.` : ""}`, runChange(run, result.gate.stepId));
         }),
     }),
     defineAgentTool({
@@ -902,7 +902,7 @@ export function runTools(runtime: Runtime): AgentToolDefinition[] {
           const run = await runtime.startAfterTask(runId, taskId, agent.id);
           if (run.managerAgentId === agent.id) {
             return ok(
-              `After-task "${taskId}" of run ${run.id} started. Start its ready steps (${engine.readySteps(run).join(", ") || "none"}) with start_step (or request_gate for a gate). For a retro brief, get_run with view "full" gives the whole run.`,
+              `After-task "${taskId}" of run ${run.id} started. Its ready steps: ${engine.readyList(run, engine.readySteps(run)) || "none"}; start only those not marked "starts by itself" with start_step (or request_gate for a gate). For a retro brief, get_run with view "full" gives the whole run.`,
               runChange(run),
             );
           }
@@ -939,7 +939,7 @@ export function runTools(runtime: Runtime): AgentToolDefinition[] {
           const next = run.managerAgentId === ""
             ? "The run has no manager (manager.mode: none): the plugin starts the ready steps itself."
             : isManager
-            ? `You manage it${newManager ? " now (get_run with view \"full\" shows the completed steps' reports and outputs)" : ""}: start the ready steps (${engine.readySteps(run).join(", ") || "none"}) with start_step.`
+            ? `You manage it${newManager ? " now (get_run with view \"full\" shows the completed steps' reports and outputs)" : ""}: ready: ${engine.readyList(run, engine.readySteps(run)) || "none"}; the plugin starts agent steps by itself, start only the others with start_step.`
             : newManager
               ? `Its previous manager was archived: a new Playbook Manager (agent ${run.managerAgentId}) took it over and starts the ready steps.`
               : `Its manager (agent ${run.managerAgentId}) was woken and starts the ready steps.`;
