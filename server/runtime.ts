@@ -35,7 +35,7 @@ import { isQuotaError, isQuotaMessage } from "./quota";
 import { UsageCache, usageBlock, type UsageBlock, type UsageSnapshot } from "./usage";
 import * as engine from "./engine";
 import { ADMISSION_TIMEOUT_MS, admissionInput, readAdmission } from "./admission";
-import { checkoutSnapshot, currentRef, defaultBranch, exportPaths, fastForward, freshRef, freshRefInfo, git as gitOutput, removedGitlinks, snapshotDiff } from "./git";
+import { checkoutSnapshot, currentRef, defaultBranch, exportPaths, fastForward, freshRef, freshRefInfo, git as gitOutput, removedGitlinks, snapshotDiff, checkoutViolationSince } from "./git";
 import { workspaceTitle } from "../shared/workspace-name";
 import { createWorktree, diskUsedFraction, dirtyPaths, purgeScratch, linkedSubmodules, listWorktreeDirs, pruneWorktrees, unpushedCommits, removeWorktree, repoOfWorktree, worktreeBranch, worktreePath } from "./worktree";
 import { chooseDefinition, definitionMismatch, isAdoptable, readAtRef, shortReason, workspaceWarning } from "./fresh";
@@ -1585,7 +1585,7 @@ export class Runtime {
   private async worktreeKeepReason(run: Run, wt: RunWorktree, expired = false): Promise<{ reason: string; violation?: string; keptFor?: "failed"; purgeScratch?: boolean } | null> {
     if (run.status === "failed" && run.playbook.workspace.keepFailed && !expired) return { reason: `the run failed and workspace.keep_failed is true (removed ${Math.round((this.options.failedRetentionMs ?? FAILED_RETENTION_MS) / 3_600_000)}h after the failure, or earlier when the disk is under pressure)`, keptFor: "failed" };
     if (wt.workspaceSnapshot) {
-      const violation = snapshotDiff(wt.workspaceSnapshot, await checkoutSnapshot(run.workspaceDir));
+      const violation = await checkoutViolationSince(run.workspaceDir, wt.workspaceSnapshot);
       if (violation) return { reason: "the original workspace checkout changed during the run", violation };
     }
     if (existsSync(wt.path)) {
@@ -4273,7 +4273,7 @@ export class Runtime {
     }
     const baseline = run.worktree?.workspaceSnapshot;
     if (baseline) {
-      const detail = snapshotDiff(baseline, await checkoutSnapshot(run.workspaceDir));
+      const detail = await checkoutViolationSince(run.workspaceDir, baseline);
       if (detail) return { kind: "isolation", detail };
     }
     const wt = run.worktree;

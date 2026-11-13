@@ -48,6 +48,36 @@ export function snapshotDiff(before: string, after: string | null): string | nul
   return parts.length > 0 ? parts.join("; ") : null;
 }
 
+/**
+ * Like `snapshotDiff`, for the original workspace checkout of an isolated run: a HEAD that only
+ * fast-forwarded (the baseline commit is an ancestor of the current one) is not a violation, as the
+ * checkout is synced to origin outside the run. A rewind, a switch to another line of history or any
+ * change to the working tree still is.
+ */
+export async function checkoutViolationSince(cwd: string, baseline: string): Promise<string | null> {
+  const after = await checkoutSnapshot(cwd);
+  const detail = snapshotDiff(baseline, after);
+  if (detail === null || after === null) return detail;
+  const headBefore = baseline.split("\n")[0] ?? "";
+  const headAfter = after.split("\n")[0] ?? "";
+  if (headBefore !== headAfter && (await isAncestor(cwd, headBefore, headAfter))) {
+    // Same working tree state, HEAD only moved forward.
+    const statusBefore = baseline.split("\n").slice(1).join("\n");
+    const statusAfter = after.split("\n").slice(1).join("\n");
+    return snapshotDiff(`x\n${statusBefore}`, `x\n${statusAfter}`);
+  }
+  return detail;
+}
+
+async function isAncestor(cwd: string, ancestor: string, descendant: string): Promise<boolean> {
+  try {
+    await git(cwd, ["merge-base", "--is-ancestor", ancestor, descendant]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Current branch name, or the commit when detached. */
 export async function currentRef(cwd: string): Promise<string | null> {
   try {

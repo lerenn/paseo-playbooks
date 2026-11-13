@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
-import { freshRef } from "./git";
+import { checkoutSnapshot, checkoutViolationSince, freshRef } from "./git";
 
 const run = promisify(execFile);
 const temps: string[] = [];
@@ -42,5 +42,24 @@ describe("freshRef", () => {
 
   it("keep the branch itself without an origin", async () => {
     expect(await freshRef(await repo(), "main")).toBe("main");
+  });
+});
+
+describe("checkoutViolationSince", () => {
+  it("accepts a fast-forward of HEAD, flags a rewind and a changed file", async () => {
+    const dir = await repo();
+    const base = await git(dir, "rev-parse", "HEAD");
+    const baseline = (await checkoutSnapshot(dir))!;
+    expect(await checkoutViolationSince(dir, baseline)).toBeNull();
+    await writeFile(path.join(dir, "b"), "2");
+    await git(dir, "add", "b");
+    await git(dir, "commit", "-qm", "two");
+    expect(await checkoutViolationSince(dir, baseline)).toBeNull();
+    const forward = (await checkoutSnapshot(dir))!;
+    await git(dir, "reset", "-q", "--hard", base);
+    expect(await checkoutViolationSince(dir, forward)).toMatch(/HEAD moved/);
+    await git(dir, "reset", "-q", "--hard", "HEAD@{1}");
+    await writeFile(path.join(dir, "c"), "3");
+    expect(await checkoutViolationSince(dir, baseline)).toMatch(/changed files: c/);
   });
 });
