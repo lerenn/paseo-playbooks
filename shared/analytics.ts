@@ -42,6 +42,15 @@ export type AgentUsage = z.infer<typeof AgentUsageSchema>;
 export const AgentRowSchema = AgentUsageSchema.omit({ last: true });
 export type AgentRow = z.infer<typeof AgentRowSchema>;
 
+/** Tokens (input + output, no cache) per local day for the groups of one breakdown. */
+export const DailySeriesSchema = z.object({
+  /** Local calendar days (YYYY-MM-DD), oldest first, empty days included. */
+  days: z.array(z.string()),
+  /** The biggest groups by total, then "Other" (`other: true`) for the rest. `tokens[i]` is for `days[i]`. */
+  series: z.array(z.object({ key: z.string(), other: z.boolean(), total: z.number(), tokens: z.array(z.number()) })),
+});
+export type DailySeries = z.infer<typeof DailySeriesSchema>;
+
 export const AnalyticsSchema = z.object({
   /** Only runs created at or after this ISO time; null = all runs on disk. */
   since: z.string().nullable(),
@@ -59,6 +68,11 @@ export const AnalyticsSchema = z.object({
   overhead: z.object({ manager: UsageSchema, deciders: UsageSchema }),
   /** The agents that spent the most (by tokens), whatever they are; unknown for agents before this was recorded. */
   topAgents: z.array(AgentRowSchema).default([]),
+  /** The same breakdowns by day (see `dailySeries`); absent from servers older than the daily graphs. */
+  daily: z
+    .object({ byPlaybook: DailySeriesSchema, byStep: DailySeriesSchema, byRole: DailySeriesSchema, byModel: DailySeriesSchema })
+    .nullable()
+    .default(null),
 });
 export type Analytics = z.infer<typeof AnalyticsSchema>;
 
@@ -77,6 +91,51 @@ function plus(a: Usage, b: Usage | null | undefined): Usage {
     outputTokens: a.outputTokens + b.outputTokens,
     contextPeak: Math.max(a.contextPeak, b.contextPeak),
   };
+}
+
+/** The local calendar day (YYYY-MM-DD) of an instant in an IANA time zone; UTC when the zone is unknown. */
+export function dayKey(iso: string, timeZone?: string | null): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  try {
+    return new Intl.DateTimeFormat("en-CA", { timeZone: timeZone || "UTC", year: "numeric", month: "2-digit", day: "2-digit" }).format(date);
+  } catch {
+    return date.toISOString().slice(0, 10);
+  }
+}
+
+/** Calendar arithmetic on a YYYY-MM-DD key (no time zone, so no daylight-saving gaps). */
+export function addDays(day: string, delta: number): string {
+  const [y, m, d] = day.split("-").map(Number) as [number, number, number];
+  return new Date(Date.UTC(y, m - 1, d + delta)).toISOString().slice(0, 10);
+}
+
+/** Tokens per group and day, from which `dailySeries` builds one chart. */
+class Daily {
+  private readonly map = new Map<string, Map<string, number>>();
+  add(key: string, day: string, tokens: number): void {
+    if (!day || tokens <= 0) return;
+    let days = this.map.get(key);
+    if (!days) this.map.set(key, (days = new Map()));
+    days.set(day, (days.get(day) ?? 0) + tokens);
+  }
+  /** `days` oldest first; usage outside them is dropped. The `top` biggest groups stay, the rest fold into "Other". */
+  series(days: string[], top: number): DailySeries {
+    const rows = [...this.map.entries()]
+      .map(([key, byDay]) => {
+        const tokens = days.map((day) => byDay.get(day) ?? 0);
+        return { key, other: false, total: tokens.reduce((a, b) => a + b, 0), tokens };
+      })
+      .filter((row) => row.total > 0)
+      .sort((a, b) => b.total - a.total || a.key.localeCompare(b.key));
+    const kept = rows.slice(0, top);
+    const rest = rows.slice(top);
+    if (rest.length > 0) {
+      const tokens = days.map((_, i) => rest.reduce((sum, row) => sum + row.tokens[i]!, 0));
+      kept.push({ key: "Other", other: true, total: tokens.reduce((a, b) => a + b, 0), tokens });
+    }
+    return { days, series: kept };
+  }
 }
 
 interface Group {
@@ -120,7 +179,16 @@ export interface AnalyticsOptions {
   limit?: number;
   /** The per-agent ledger (see server/usage-ledger.ts); the top consumers are drawn from it. */
   agents?: AgentUsage[];
+  /** IANA time zone whose midnight ends a day in the daily series (default UTC). */
+  timeZone?: string | null;
+  /** The instant "today" is taken from (default now). */
+  now?: Date;
+  /** Groups drawn per daily chart before the rest fold into "Other" (default 5). */
+  topSeries?: number;
 }
+
+/** Longest span of an all-time daily chart. */
+const ALL_TIME_DAYS = 90;
 
 /** Sums the usage recorded in the runs, by playbook, step, role and model. Pure: the caller picks the runs. */
 export function analyze(runs: Run[], options: AnalyticsOptions = {}): Analytics {
@@ -138,16 +206,33 @@ export function analyze(runs: Run[], options: AnalyticsOptions = {}): Analytics 
   let deciders = zero();
   let withoutUsage = 0;
   let invalidManager = 0;
+  const tz = options.timeZone ?? null;
+  const daily = { byPlaybook: new Daily(), byStep: new Daily(), byRole: new Daily(), byModel: new Daily() };
+  let firstDay = "";
+  const note = (day: string) => {
+    if (day && (!firstDay || day < firstDay)) firstDay = day;
+  };
 
   for (const run of picked) {
     let any = false;
     const playbook = run.playbook.id;
     const managerUsage = run.usageDeltas ? run.managerUsage : null;
     if (!run.usageDeltas && run.managerUsage) invalidManager += 1;
+    // The manager's usage has no timestamp of its own: it counts on the day the run started.
+    const runDay = dayKey(run.createdAt, tz);
+    if (managerUsage) {
+      daily.byPlaybook.add(playbook, runDay, tokensOf(managerUsage));
+      note(runDay);
+    }
     manager = plus(manager, managerUsage);
     total = plus(total, managerUsage);
     if (managerUsage) any = true;
     for (const gate of run.gates) {
+      if (gate.usage) {
+        const day = dayKey(gate.decidedAt ?? gate.requestedAt, tz);
+        daily.byPlaybook.add(playbook, day, tokensOf(gate.usage));
+        note(day);
+      }
       deciders = plus(deciders, gate.usage);
       total = plus(total, gate.usage);
       if (gate.usage) any = true;
@@ -162,6 +247,13 @@ export function analyze(runs: Run[], options: AnalyticsOptions = {}): Analytics 
         const last = index === attempts.length - 1;
         const wasted = !last || (attempt.turnEnd !== null && attempt.turnEnd !== "completed");
         const model = attempt.target || [step.agent.provider, step.agent.model].filter(Boolean).join("/") || "default";
+        const day = dayKey(attempt.endedAt ?? attempt.startedAt, tz);
+        const tokens = tokensOf(attempt.usage);
+        daily.byPlaybook.add(playbook, day, tokens);
+        daily.byStep.add(`${playbook}/${step.id}`, day, tokens);
+        daily.byRole.add(step.role ?? "(no role)", day, tokens);
+        daily.byModel.add(model, day, tokens);
+        note(day);
         total = plus(total, attempt.usage);
         runUsage = plus(runUsage, attempt.usage);
         byStep.add(`${playbook}/${step.id}`, `role ${step.role ?? "none"}, model ${model}`, run.id, attempt.usage, wasted);
@@ -172,6 +264,14 @@ export function analyze(runs: Run[], options: AnalyticsOptions = {}): Analytics 
     if (!any) withoutUsage += 1;
     byPlaybook.add(playbook, null, run.id, runUsage, false);
   }
+  const today = dayKey((options.now ?? new Date()).toISOString(), tz);
+  // The day `since` falls on (a partial day) through today; all time starts at the first usage, at most 90 days back.
+  let first = since ? dayKey(since, tz) : addDays(today, -(ALL_TIME_DAYS - 1));
+  if (!since && firstDay > first) first = firstDay;
+  if (first >= today) first = addDays(today, -1);
+  const dayList: string[] = [];
+  for (let day = first; day <= today; day = addDays(day, 1)) dayList.push(day);
+  const top = options.topSeries ?? 5;
   const pickedIds = new Set(picked.map((run) => run.id));
   const filtered = Boolean(options.playbook || options.projectId);
   const topAgents = (options.agents ?? [])
@@ -191,5 +291,11 @@ export function analyze(runs: Run[], options: AnalyticsOptions = {}): Analytics 
     byModel: byModel.rows(limit),
     overhead: { manager, deciders },
     topAgents,
+    daily: {
+      byPlaybook: daily.byPlaybook.series(dayList, top),
+      byStep: daily.byStep.series(dayList, top),
+      byRole: daily.byRole.series(dayList, top),
+      byModel: daily.byModel.series(dayList, top),
+    },
   };
 }

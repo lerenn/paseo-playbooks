@@ -184,7 +184,7 @@ export default function contribute(server: PluginServerContext) {
       .map((run) => run.workspaceId);
     return { withPlaybooks, waiting: [...new Set(waiting)] };
   });
-  handle(analyticsStateRpc, async ({ days, playbook, projectId }) => runtime.analytics({ days, playbook, projectId }));
+  handle(analyticsStateRpc, async ({ days, playbook, projectId, timeZone }) => runtime.analytics({ days, playbook, projectId, timeZone }));
   handle(overviewStateRpc, async () => ({ runs: store.list().filter((run) => !run.archivedAt).map(summarizeRun) }));
   handle(admissionStatusRpc, async ({ runId }) => {
     const stages = runtime.admissionStatus(runId);

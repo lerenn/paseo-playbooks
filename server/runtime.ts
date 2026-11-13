@@ -3971,9 +3971,9 @@ export class Runtime {
   }
 
   /** Where the tokens went (see shared/analytics.ts), over the runs on disk. */
-  async analytics(options: { days?: number | undefined; playbook?: string | undefined; projectId?: string | undefined; limit?: number | undefined } = {}): Promise<Analytics> {
+  async analytics(options: { days?: number | undefined; playbook?: string | undefined; projectId?: string | undefined; timeZone?: string | undefined; limit?: number | undefined } = {}): Promise<Analytics> {
     const since = options.days ? new Date(Date.now() - options.days * 86_400_000).toISOString() : null;
-    return analyze(this.store.list(), { since, playbook: options.playbook ?? null, projectId: options.projectId ?? null, agents: await this.usageLedger.list(), ...(options.limit ? { limit: options.limit } : {}) });
+    return analyze(this.store.list(), { since, playbook: options.playbook ?? null, projectId: options.projectId ?? null, agents: await this.usageLedger.list(), timeZone: options.timeZone ?? null, ...(options.limit ? { limit: options.limit } : {}) });
   }
 
   /**
