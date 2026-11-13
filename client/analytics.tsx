@@ -4,6 +4,7 @@ import { Pressable, Text, View } from "react-native";
 import { tokensOf, type AgentRow, type Analytics, type DailySeries, type UsageRow } from "../shared/analytics";
 import { analyticsStateRpc } from "../shared/contracts";
 import type { Usage } from "../shared/types";
+import { axisTicks, compactNumber, isDarkColor, labelIndexes, niceAxis, seriesColor, shortDate } from "./analytics-chart";
 import type { Theme } from "./theme";
 
 const RANGES: Array<{ label: string; days: number | undefined }> = [
@@ -13,11 +14,7 @@ const RANGES: Array<{ label: string; days: number | undefined }> = [
   { label: "All time", days: undefined },
 ];
 
-export function compactNumber(value: number): string {
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1)}M`;
-  if (value >= 1_000) return `${(value / 1_000).toFixed(value >= 10_000 ? 0 : 1)}k`;
-  return String(Math.round(value));
-}
+export { compactNumber };
 
 function localTimeZone(): string | undefined {
   try {
@@ -27,73 +24,155 @@ function localTimeZone(): string | undefined {
   }
 }
 
-const SERIES_COLORS = ["#4C78A8", "#F58518", "#54A24B", "#B279A2", "#E4B73D"];
+const PLOT_HEIGHT = 120;
+const AXIS_WIDTH = 34;
 
-/** Tokens per day of one breakdown: stacked bars, one colour per group (the biggest ones; the rest are "Other"). Tap a day for exact values. */
-function DailyChart(props: { theme: Theme; title: string; chart: DailySeries | undefined }) {
-  const { theme, chart } = props;
+/** The colour each group of a breakdown has in its chart, so the table rows can wear the same one. */
+function colorsOf(theme: Theme, chart: DailySeries | undefined): Map<string, string> {
+  const dark = isDarkColor(theme.colors.surface1);
+  const map = new Map<string, string>();
+  chart?.series.forEach((row, index) => map.set(row.key, row.other ? theme.colors.foregroundMuted : seriesColor(index, dark)));
+  return map;
+}
+
+/** Tokens per day of one breakdown: stacked bars, one colour per group (the biggest ones; the rest are "Other"). Tap a day for exact values, a legend entry to isolate a group. */
+function DailyChart(props: { theme: Theme; chart: DailySeries; colors: Map<string, string> }) {
+  const { theme, chart, colors } = props;
   const [picked, setPicked] = useState<number | null>(null);
-  if (!chart || chart.series.length === 0) return null;
-  const colorOf = (index: number, other: boolean) => (other ? theme.colors.foregroundMuted : SERIES_COLORS[index % SERIES_COLORS.length]!);
-  const totals = chart.days.map((_, i) => chart.series.reduce((sum, row) => sum + row.tokens[i]!, 0));
-  const peak = Math.max(...totals, 1);
-  const lastWithData = totals.reduce((found, value, i) => (value > 0 ? i : found), chart.days.length - 1);
-  const shown = picked !== null && picked < chart.days.length ? picked : lastWithData;
-  const height = 96;
+  const [isolated, setIsolated] = useState<string | null>(null);
   const muted = theme.colors.foregroundMuted;
+  const surface = theme.colors.surface1;
+  const visible = chart.series.filter((row) => isolated === null || row.key === isolated);
+  const totals = chart.days.map((_, i) => visible.reduce((sum, row) => sum + row.tokens[i]!, 0));
+  const peak = Math.max(...totals, 0);
+  if (chart.series.length === 0) return null;
+  if (peak === 0 && isolated === null) {
+    return <Text style={{ color: muted, fontSize: 12, padding: 12 }}>No usage per day to chart in this range.</Text>;
+  }
+  const top = niceAxis(peak).top;
+  const ticks = axisTicks(peak);
+  const count = chart.days.length;
+  const pick = picked !== null && picked < count ? picked : null;
+  const many = count > 45;
+  const tipOnRight = pick !== null && pick < count / 2;
   return (
-    <View style={{ gap: 8 }}>
-      <Text accessibilityRole="header" style={{ color: theme.colors.foreground, fontSize: 15, fontWeight: "700" }}>
-        {props.title}
-      </Text>
-      <View style={{ gap: 8, borderRadius: 10, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface1, padding: 12 }}>
-        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 12 }}>
-          {chart.series.map((row, index) => (
-            <View key={row.key} style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
-              <View style={{ width: 9, height: 9, borderRadius: 2, backgroundColor: colorOf(index, row.other) }} />
-              <Text style={{ color: theme.colors.foreground, fontSize: 11 }}>
-                {row.key} · {compactNumber(row.total)}
-              </Text>
-            </View>
+    <View style={{ gap: 8, padding: 12 }}>
+      <View style={{ height: PLOT_HEIGHT, flexDirection: "row" }}>
+        <View style={{ width: AXIS_WIDTH }}>
+          {ticks.map((tick) => (
+            <Text key={tick} style={{ position: "absolute", right: 6, bottom: (tick / top) * (PLOT_HEIGHT - 8) - 6, color: muted, fontSize: 10 }}>
+              {compactNumber(tick)}
+            </Text>
           ))}
         </View>
-        <View style={{ flexDirection: "row", alignItems: "flex-end", height, gap: chart.days.length > 45 ? 1 : 2 }}>
-          {chart.days.map((day, i) => (
-            <Pressable
-              key={day}
-              accessibilityRole="button"
-              accessibilityLabel={`${day}: ${totals[i]!.toLocaleString()} tokens`}
-              onPress={() => setPicked(i)}
-              style={{ flex: 1, height, justifyContent: "flex-end", borderRadius: 2, backgroundColor: i === shown ? theme.colors.surface2 : "transparent" }}
+        <View style={{ flex: 1 }}>
+          {ticks.map((tick) => (
+            <View
+              key={tick}
+              style={{ position: "absolute", left: 0, right: 0, bottom: (tick / top) * (PLOT_HEIGHT - 8), height: 1, backgroundColor: theme.colors.border, opacity: tick === 0 ? 1 : 0.5 }}
+            />
+          ))}
+          <View style={{ position: "absolute", left: 0, right: 0, top: 0, bottom: 0, flexDirection: "row", alignItems: "flex-end" }}>
+            {chart.days.map((day, i) => {
+              const barHeight = totals[i]! > 0 ? Math.max(3, Math.round((totals[i]! / top) * (PLOT_HEIGHT - 8))) : 0;
+              const lastSeries = visible.reduce((found, row, index) => (row.tokens[i]! > 0 ? index : found), -1);
+              return (
+                <Pressable
+                  key={day}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${day}: ${totals[i]!.toLocaleString()} tokens`}
+                  onPress={() => setPicked(pick === i ? null : i)}
+                  style={{ flex: 1, height: PLOT_HEIGHT, justifyContent: "flex-end", alignItems: "center", paddingHorizontal: many ? 0.5 : 2 }}
+                >
+                  <View
+                    style={{
+                      width: "100%",
+                      maxWidth: 28,
+                      height: barHeight || 2,
+                      justifyContent: "flex-end",
+                      opacity: pick === null || pick === i ? 1 : 0.4,
+                      borderTopLeftRadius: many ? 1 : 3,
+                      borderTopRightRadius: many ? 1 : 3,
+                      overflow: "hidden",
+                      backgroundColor: barHeight ? undefined : theme.colors.border,
+                      flexDirection: "column-reverse",
+                    }}
+                  >
+                    {visible.map((row, index) =>
+                      row.tokens[i]! > 0 ? (
+                        <View
+                          key={row.key}
+                          style={{ flex: row.tokens[i]!, backgroundColor: colors.get(row.key), borderTopWidth: index > 0 && index <= lastSeries ? 1 : 0, borderTopColor: surface }}
+                        />
+                      ) : null,
+                    )}
+                  </View>
+                </Pressable>
+              );
+            })}
+          </View>
+          {pick !== null ? (
+            <View
+              pointerEvents="none"
+              style={{
+                position: "absolute",
+                top: 0,
+                ...(tipOnRight ? { right: 0 } : { left: 0 }),
+                maxWidth: "70%",
+                gap: 1,
+                borderRadius: 8,
+                borderWidth: 1,
+                borderColor: theme.colors.border,
+                backgroundColor: theme.colors.surface2,
+                paddingHorizontal: 8,
+                paddingVertical: 5,
+              }}
             >
-              <View style={{ height: totals[i]! > 0 ? Math.max(2, Math.round((totals[i]! / peak) * (height - 4))) : 0, flexDirection: "column-reverse", overflow: "hidden", borderRadius: 2 }}>
-                {chart.series.map((row, index) =>
-                  row.tokens[i]! > 0 ? <View key={row.key} style={{ flex: row.tokens[i]!, backgroundColor: colorOf(index, row.other) }} /> : null,
-                )}
-              </View>
-            </Pressable>
-          ))}
-        </View>
-        <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
-          <Text style={{ color: muted, fontSize: 11 }}>{chart.days[0]}</Text>
-          <Text style={{ color: muted, fontSize: 11 }}>peak {peak.toLocaleString()} tokens/day</Text>
-          <Text style={{ color: muted, fontSize: 11 }}>{chart.days.at(-1)}</Text>
-        </View>
-        <View style={{ gap: 2 }}>
-          <Text style={{ color: theme.colors.foreground, fontSize: 12, fontWeight: "600" }}>
-            {chart.days[shown]} · {totals[shown]!.toLocaleString()} tokens
-          </Text>
-          {chart.series
-            .map((row, index) => ({ row, index }))
-            .filter(({ row }) => row.tokens[shown]! > 0)
-            .map(({ row, index }) => (
-              <Text key={row.key} style={{ color: muted, fontSize: 11 }}>
-                <Text style={{ color: colorOf(index, row.other) }}>■ </Text>
-                {row.key}: {row.tokens[shown]!.toLocaleString()}
+              <Text style={{ color: theme.colors.foreground, fontSize: 11, fontWeight: "600" }}>
+                {shortDate(chart.days[pick]!)} · {totals[pick]!.toLocaleString()} tokens
               </Text>
-            ))}
-          {totals[shown] === 0 ? <Text style={{ color: muted, fontSize: 11 }}>No usage that day.</Text> : null}
+              {visible
+                .filter((row) => row.tokens[pick]! > 0)
+                .map((row) => (
+                  <View key={row.key} style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
+                    <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: colors.get(row.key) }} />
+                    <Text numberOfLines={1} style={{ flexShrink: 1, color: theme.colors.foreground, fontSize: 10 }}>
+                      {row.key}: {row.tokens[pick]!.toLocaleString()}
+                    </Text>
+                  </View>
+                ))}
+              {totals[pick] === 0 ? <Text style={{ color: muted, fontSize: 10 }}>No usage that day.</Text> : null}
+            </View>
+          ) : null}
         </View>
+      </View>
+      <View style={{ flexDirection: "row", justifyContent: "space-between", marginLeft: AXIS_WIDTH }}>
+        {labelIndexes(count).map((i) => (
+          <Text key={i} style={{ color: muted, fontSize: 10 }}>
+            {shortDate(chart.days[i]!)}
+          </Text>
+        ))}
+      </View>
+      <View style={{ flexDirection: "row", flexWrap: "wrap", columnGap: 6, rowGap: 4 }}>
+        {chart.series.map((row) => {
+          const on = isolated === null || isolated === row.key;
+          return (
+            <Pressable
+              key={row.key}
+              accessibilityRole="button"
+              accessibilityState={{ selected: isolated === row.key }}
+              accessibilityLabel={`${isolated === row.key ? "Show all" : "Only"} ${row.key}`}
+              onPress={() => setIsolated(isolated === row.key ? null : row.key)}
+              style={{ flexDirection: "row", alignItems: "center", gap: 5, maxWidth: "100%", borderRadius: 10, paddingHorizontal: 6, paddingVertical: 2, opacity: on ? 1 : 0.45, backgroundColor: isolated === row.key ? theme.colors.surface2 : "transparent" }}
+            >
+              <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: colors.get(row.key) }} />
+              <Text numberOfLines={1} style={{ flexShrink: 1, color: theme.colors.foreground, fontSize: 11 }}>
+                {row.key}
+              </Text>
+              <Text style={{ color: muted, fontSize: 11 }}>{compactNumber(row.total)}</Text>
+            </Pressable>
+          );
+        })}
       </View>
     </View>
   );
@@ -137,14 +216,10 @@ export function AnalyticsView(props: { theme: Theme }) {
               No usage recorded in this range yet. It is recorded as agents finish turns, so runs from before this feature show nothing.
             </Text>
           ) : null}
-          <Table theme={theme} title="By playbook" rows={data.byPlaybook} />
-          <DailyChart theme={theme} title="By playbook per day" chart={data.daily?.byPlaybook} />
-          <Table theme={theme} title="By step" rows={data.byStep} showWaste />
-          <DailyChart theme={theme} title="By step per day" chart={data.daily?.byStep} />
-          <Table theme={theme} title="By role" rows={data.byRole} showWaste />
-          <DailyChart theme={theme} title="By role per day" chart={data.daily?.byRole} />
-          <Table theme={theme} title="By model" rows={data.byModel} showWaste />
-          <DailyChart theme={theme} title="By model per day" chart={data.daily?.byModel} />
+          <Breakdown theme={theme} title="By playbook" rows={data.byPlaybook} chart={data.daily?.byPlaybook} />
+          <Breakdown theme={theme} title="By step" rows={data.byStep} chart={data.daily?.byStep} showWaste />
+          <Breakdown theme={theme} title="By role" rows={data.byRole} chart={data.daily?.byRole} showWaste />
+          <Breakdown theme={theme} title="By model" rows={data.byModel} chart={data.daily?.byModel} showWaste />
           <TopAgents theme={theme} rows={data.topAgents} />
         </>
       ) : null}
@@ -202,9 +277,11 @@ function Summary(props: { theme: Theme; data: Analytics }) {
   );
 }
 
-function Table(props: { theme: Theme; title: string; rows: UsageRow[]; showWaste?: boolean }) {
-  const { theme, rows } = props;
+/** One breakdown: its title, the per-day chart, then the table rows, all in one card with separators. */
+function Breakdown(props: { theme: Theme; title: string; rows: UsageRow[]; chart: DailySeries | undefined; showWaste?: boolean }) {
+  const { theme, rows, chart } = props;
   if (rows.length === 0) return null;
+  const colors = colorsOf(theme, chart);
   const top = Math.max(...rows.map((row) => tokensOf(row.usage)), 1);
   return (
     <View style={{ gap: 8 }}>
@@ -212,23 +289,30 @@ function Table(props: { theme: Theme; title: string; rows: UsageRow[]; showWaste
         {props.title}
       </Text>
       <View style={{ borderRadius: 10, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface1, overflow: "hidden" }}>
-        {rows.map((row, index) => (
-          <View key={row.key} style={{ gap: 4, padding: 10, borderTopWidth: index === 0 ? 0 : 1, borderTopColor: theme.colors.border }}>
-            <View style={{ flexDirection: "row", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
-              <Text style={{ flex: 1, minWidth: 140, color: theme.colors.foreground, fontSize: 13 }}>{row.key}</Text>
-              <Text style={{ color: theme.colors.foreground, fontSize: 13, fontWeight: "600" }}>{compactNumber(tokensOf(row.usage))}</Text>
-              <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>
-                {props.showWaste ? `${row.attempts} attempts` : `${row.runs} runs`}
-                {props.showWaste && row.wastedAttempts > 0 ? ` · ${row.wastedAttempts} wasted (${compactNumber(row.wastedTokens)})` : ""}
-                {row.usage.contextPeak > 0 ? ` · ctx ${compactNumber(row.usage.contextPeak)}` : ""}
-              </Text>
+        {chart ? <DailyChart theme={theme} chart={chart} colors={colors} /> : null}
+        {rows.map((row, index) => {
+          const color = colors.get(row.key) ?? theme.colors.foregroundMuted;
+          return (
+            <View key={row.key} style={{ gap: 4, padding: 10, borderTopWidth: index === 0 && !chart ? 0 : 1, borderTopColor: theme.colors.border }}>
+              <View style={{ flexDirection: "row", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
+                <View style={{ flex: 1, minWidth: 140, flexDirection: "row", alignItems: "center", gap: 6 }}>
+                  {chart ? <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: color }} /> : null}
+                  <Text style={{ flexShrink: 1, color: theme.colors.foreground, fontSize: 13 }}>{row.key}</Text>
+                </View>
+                <Text style={{ color: theme.colors.foreground, fontSize: 13, fontWeight: "600" }}>{compactNumber(tokensOf(row.usage))}</Text>
+                <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>
+                  {props.showWaste ? `${row.attempts} attempts` : `${row.runs} runs`}
+                  {props.showWaste && row.wastedAttempts > 0 ? ` · ${row.wastedAttempts} wasted (${compactNumber(row.wastedTokens)})` : ""}
+                  {row.usage.contextPeak > 0 ? ` · ctx ${compactNumber(row.usage.contextPeak)}` : ""}
+                </Text>
+              </View>
+              <View style={{ height: 4, borderRadius: 2, backgroundColor: theme.colors.surface2 }}>
+                <View style={{ height: 4, borderRadius: 2, width: `${Math.max(2, Math.round((tokensOf(row.usage) / top) * 100))}%`, backgroundColor: chart ? color : theme.colors.accent }} />
+              </View>
+              {row.detail ? <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>{row.detail}</Text> : null}
             </View>
-            <View style={{ height: 4, borderRadius: 2, backgroundColor: theme.colors.surface2 }}>
-              <View style={{ height: 4, borderRadius: 2, width: `${Math.max(2, Math.round((tokensOf(row.usage) / top) * 100))}%`, backgroundColor: theme.colors.accent }} />
-            </View>
-            {row.detail ? <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>{row.detail}</Text> : null}
-          </View>
-        ))}
+          );
+        })}
       </View>
     </View>
   );
