@@ -380,6 +380,10 @@ export const PlaybookSchema = z.object({
   maxWaitMs: z.number().nullable().default(null),
   /** `provider/model` targets every step agent falls back to, after its own chain (`providers.fallback`). */
   fallback: z.array(z.string()).default([]),
+  /** Whether a target whose provider's usage is at the threshold is skipped before it is used (`providers.usage.check`). */
+  usageCheck: z.boolean().default(true),
+  /** The percentage of a usage window at which a target is skipped (`providers.usage.threshold`). */
+  usageThreshold: z.number().default(100),
   /** Whether the plugin archives the workspace it created for a run once the run ends. */
   workspace: z
     .object({ archive: z.enum(["never", "on_end"]), keepFailed: z.boolean() })

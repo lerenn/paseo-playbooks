@@ -9,6 +9,7 @@ tiers:
 providers:
   exhausted_for: 1h            # an exhausted provider/model is skipped this long, then tried again (default 1h)
   fallback: [claude/claude-opus-5-5]  # every step falls back to these, after its tier's own entries
+  usage: { check: true, threshold: 100 }  # skip a provider whose reported usage is full before starting on it (defaults shown)
 agent:
   tier: worker
   mode: bypassPermissions      # steps run unattended (shell commands included)

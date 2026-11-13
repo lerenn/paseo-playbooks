@@ -482,7 +482,7 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
         guard(async () => {
           const started = await runtime.startStep(agent.id, runId, stepId, brief, modelChoice(model, thinking));
           return ok(
-            `Step "${stepId}" attempt ${started.attempt} started on ${started.target} (agent ${started.agentId}). End your turn; you will be woken when it finishes.`,
+            `Step "${stepId}" attempt ${started.attempt} started on ${started.target} (agent ${started.agentId}).${started.skipped?.length ? ` Skipped by provider usage: ${started.skipped.join("; ")}.` : ""} End your turn; you will be woken when it finishes.`,
             started,
           );
         }),

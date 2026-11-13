@@ -31,6 +31,7 @@ import {
 } from "../shared/types";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "./defaults";
 import { isQuotaError, isQuotaMessage } from "./quota";
+import { UsageCache, usageBlock, type UsageBlock, type UsageSnapshot } from "./usage";
 import * as engine from "./engine";
 import { ADMISSION_TIMEOUT_MS, admissionInput, readAdmission } from "./admission";
 import { checkoutSnapshot, currentRef, defaultBranch, fastForward, freshRef, removedGitlinks, snapshotDiff } from "./git";
@@ -491,6 +492,34 @@ export class Runtime {
       (this.eventsTimer as unknown as { unref?: () => void }).unref?.();
     }
     return this.reconciled;
+  }
+
+  /** Provider usage of the host (`providers.listUsage`): shared by every run, read at most once at a time and reused for a short while. */
+  private readonly usage = new UsageCache(async () => (await this.api().providers.listUsage()) as unknown as UsageSnapshot);
+  /** Usage skips already written to a run's log (`run|target|window|reset`), so a skip is logged once. */
+  private readonly usageLogged = new Set<string>();
+
+  /** The targets (`provider/model`) whose provider's usage is at the playbook's threshold now, with the window that blocks them. Empty when `providers.usage.check` is off or usage cannot be read. */
+  private async usageBlocks(playbook: Pick<Playbook, "usageCheck" | "usageThreshold">, targets: Array<{ provider: string; model?: string | undefined }>): Promise<Map<string, UsageBlock>> {
+    const blocks = new Map<string, UsageBlock>();
+    if (!playbook.usageCheck || targets.length === 0) return blocks;
+    const snapshot = await this.usage.read();
+    for (const { provider, model } of targets) {
+      const block = usageBlock(snapshot, provider, model, playbook.usageThreshold);
+      if (block) blocks.set(`${provider}/${model}`, block);
+    }
+    return blocks;
+  }
+
+  /** Writes a `provider_usage_skip` line for a target skipped by usage (once per target and window reset) and returns the text for the manager. */
+  private async noteUsageSkip(run: Run, stepId: string | null, target: string, block: UsageBlock): Promise<string> {
+    const text = `${target} skipped: ${block.window} at ${Math.round(block.usedPct)}% of its limit${block.resetsAt ? `, resets ${new Date(block.resetsAt).toLocaleString()}` : ""}`;
+    const key = `${run.id}|${target}|${block.window}|${block.resetsAt}`;
+    if (!this.usageLogged.has(key)) {
+      this.usageLogged.add(key);
+      await this.store.mutate(run.id, (current) => engine.noteEvent(current, "provider_usage_skip", stepId, text, nowIso())).catch(() => undefined);
+    }
+    return text;
   }
 
   private api(): PaseoApi {
@@ -1806,7 +1835,7 @@ export class Runtime {
     if (jobs.length === 0) return;
     const playbook = engine.stagePlaybook(pipeline.playbook, stageId);
     const manager = await this.api().workspaces.ref(pipeline.workspaceId).agents.create({
-      config: this.managerConfig(playbook, engine.activeExhausted(pipeline)),
+      config: this.managerConfig(playbook, await this.managerSkips(playbook, engine.activeExhausted(pipeline))),
       title: `Playbook Manager · ${playbook.title}`,
       labels: { [MANAGER_LABEL]: "true" },
     });
@@ -2621,8 +2650,8 @@ export class Runtime {
    * here (the plugin runs the first two itself; a gate is opened with request_gate). A step that cannot start is
    * reported, not thrown: the run stays usable and the manager starts it with start_step.
    */
-  async autoStartReady(managerId: string, runId: string): Promise<{ started: Array<{ stepId: string; agentId: string; attempt: number; target: string }>; failed: Array<{ stepId: string; error: string }> }> {
-    const started: Array<{ stepId: string; agentId: string; attempt: number; target: string }> = [];
+  async autoStartReady(managerId: string, runId: string): Promise<{ started: Array<{ stepId: string; agentId: string; attempt: number; target: string; skipped?: string[] }>; failed: Array<{ stepId: string; error: string }> }> {
+    const started: Array<{ stepId: string; agentId: string; attempt: number; target: string; skipped?: string[] }> = [];
     const failed: Array<{ stepId: string; error: string }> = [];
     const run = managerId === "" ? this.store.get(runId)! : this.ownedRun(managerId, runId);
     for (const stepId of engine.readySteps(run)) {
@@ -2636,7 +2665,7 @@ export class Runtime {
     return { started, failed };
   }
 
-  async startStep(managerId: string, runId: string, stepId: string, brief: string, model?: ModelChoice): Promise<{ agentId: string; attempt: number; target: string }> {
+  async startStep(managerId: string, runId: string, stepId: string, brief: string, model?: ModelChoice): Promise<{ agentId: string; attempt: number; target: string; skipped?: string[] }> {
     // managerId "": the plugin itself, for a run with no manager (manager.mode: none); its step agents are top-level agents of the workspace.
     let run = managerId === "" ? this.store.get(runId)! : this.ownedRun(managerId, runId);
     const step = engine.stepDef(run, stepId);
@@ -2650,7 +2679,8 @@ export class Runtime {
     const role = run.playbook.roles[step.role]!;
     // The manager's model, else the one restart_run left for this step, else the role's chain.
     const chosen = model ?? run.steps[stepId]!.nextModel ?? undefined;
-    const config = await this.stepAgentConfig(run, step, isManagerless(run) ? MANAGERLESS_STEP_TOOL_NAMES : STEP_TOOL_NAMES, chosen ? await this.checkModel(chosen) : undefined);
+    const skips: string[] = [];
+    const config = await this.stepAgentConfig(run, step, isManagerless(run) ? MANAGERLESS_STEP_TOOL_NAMES : STEP_TOOL_NAMES, chosen ? await this.checkModel(chosen) : undefined, skips);
     if (run.worktree && (run.worktree.state !== "active" || !existsSync(run.worktree.path))) {
       // An after-task or a late step of an ended run: its worktree was deleted or kept; work needs it back.
       const worktree = await this.ensureWorktree(run, run.workspaceDir);
@@ -2681,7 +2711,7 @@ export class Runtime {
     this.armTimeout(this.store.get(run.id)!, stepId);
     // The previous attempt's agent is done: the step's history keeps its outcome.
     if (previous && step.archiveAgents !== false) await this.archiveStepAgent(previous.agentId);
-    return { agentId: agent.id, attempt: started.attempt.n, target: config.provider ?? "" };
+    return { agentId: agent.id, attempt: started.attempt.n, target: config.provider ?? "", ...(skips.length > 0 ? { skipped: skips } : {}) };
   }
 
   /** The targets of a step's chain (primary first) with their resolved provider and model. */
@@ -2735,11 +2765,20 @@ export class Runtime {
     return { target: `${provider}/${found.id}`, ...(choice.thinking ? { thinking: choice.thinking } : {}) };
   }
 
-  private async stepAgentConfig(run: Run, step: Pick<Step, "id" | "agent">, tools = STEP_TOOL_NAMES, override?: ModelChoice) {
+  private async stepAgentConfig(run: Run, step: Pick<Step, "id" | "agent">, tools = STEP_TOOL_NAMES, override?: ModelChoice, notes?: string[]) {
     const skipped = engine.activeExhausted(run);
-    // The first target not out of tokens (or whose delay has passed); if all are, the primary (the failure goes to the manager as before).
+    // The first target not out of tokens (or whose delay has passed) and whose provider's usage is below the threshold; if none is, the primary (it fails over, waits or fails to the manager as before).
     const candidates = await this.stepCandidates(run, step);
-    let chosen = candidates.find((candidate) => candidate.model && !skipped.includes(`${candidate.provider}/${candidate.model}`)) ?? candidates[0]!;
+    const blocks = override ? new Map<string, UsageBlock>() : await this.usageBlocks(run.playbook, candidates);
+    let chosen = candidates.find((candidate) => candidate.model && !skipped.includes(`${candidate.provider}/${candidate.model}`) && !blocks.has(`${candidate.provider}/${candidate.model}`)) ?? candidates[0]!;
+    // Only the targets passed over on the way to the chosen one are reported.
+    for (const candidate of candidates.slice(0, Math.max(0, candidates.indexOf(chosen)))) {
+      const block = blocks.get(`${candidate.provider}/${candidate.model}`);
+      if (block) {
+        const text = await this.noteUsageSkip(run, step.id, `${candidate.provider}/${candidate.model}`, block);
+        notes?.push(text);
+      }
+    }
     if (override) {
       // The manager's model: the step's mode and thinking carry over only on the same provider.
       const [provider, id] = splitTarget(override.target);
@@ -3175,7 +3214,7 @@ export class Runtime {
     return this.api()
       .workspaces.ref(workspaceId)
       .agents.create({
-        config: this.managerConfig(playbook),
+        config: this.managerConfig(playbook, await this.managerSkips(playbook)),
         title: `Playbook Manager · ${playbook.title}`,
         labels: { [MANAGER_LABEL]: "true" },
       })
@@ -3453,15 +3492,33 @@ export class Runtime {
     const probe = structuredClone(run);
     if (!options.resuming) engine.markTarget(probe, exhausted, nowIso());
     let config: AgentConfig;
+    const skips: string[] = [];
     try {
-      config = await this.stepAgentConfig(probe, step);
+      config = await this.stepAgentConfig(probe, step, STEP_TOOL_NAMES, undefined, skips);
     } catch {
       config = { provider: exhausted };
     }
-    if (engine.activeExhausted(probe).includes(config.provider ?? exhausted)) {
+    // Every target of the chain is out: marked exhausted by a failure, or at the usage threshold.
+    let chain: string[] = [];
+    let blocks = new Map<string, UsageBlock>();
+    try {
+      const candidates = await this.stepCandidates(probe, step);
+      chain = candidates.map((candidate) => `${candidate.provider}/${candidate.model}`);
+      blocks = await this.usageBlocks(probe.playbook, candidates);
+    } catch {
+      // The chain stays unknown: the check below falls back to the exhausted marks alone.
+    }
+    const marked = engine.activeExhausted(probe);
+    if (marked.includes(config.provider ?? exhausted) || (chain.length > 0 && chain.every((target) => marked.includes(target) || blocks.has(target)))) {
       if (run.playbook.onExhausted === "wait" && options.canWait !== false) {
-        const chain = (await this.stepCandidates(probe, step)).map((candidate) => `${candidate.provider}/${candidate.model}`);
-        const resetAt = engine.exhaustedUntil(probe, chain);
+        // A target is back at its provider's reset time when usage names one, else at the end of its `exhausted_for`.
+        const backs = chain
+          .map((target) => {
+            const reset = blocks.get(target)?.resetsAt;
+            return reset ? Date.parse(reset) : engine.exhaustedUntil(probe, [target]);
+          })
+          .filter((time): time is number => time !== null && Number.isFinite(time));
+        const resetAt = backs.length > 0 ? Math.min(...backs) : null;
         const first = !attempt.waiting;
         const waiting = await this.store.mutate(runId, (current) => {
           if (!options.resuming) engine.markTarget(current, exhausted, nowIso());
@@ -3512,7 +3569,7 @@ export class Runtime {
       await this.deliver(runId);
       return true;
     }
-    await this.enqueue(runId, [`step "${stepId}" attempt ${attempt.n}: ${exhausted} is out of tokens; the plugin restarted the attempt on ${config.provider} with the same brief (no retry used); ${exhausted} is tried again after ${humanDuration(run.playbook.exhaustedForMs)}. Nothing to do: it will report as usual.`]);
+    await this.enqueue(runId, [`step "${stepId}" attempt ${attempt.n}: ${exhausted} is out of tokens; the plugin restarted the attempt on ${config.provider} with the same brief (no retry used); ${exhausted} is tried again after ${humanDuration(run.playbook.exhaustedForMs)}.${skips.length > 0 ? ` Skipped by provider usage: ${skips.join("; ")}.` : ""} Nothing to do: it will report as usual.`]);
     await this.deliver(runId);
     return true;
   }
@@ -3919,13 +3976,24 @@ export class Runtime {
   }
 
   /** Agent config of a new Playbook Manager for this playbook. */
-  private managerConfig(playbook: Playbook, exhausted: string[] = []): AgentConfig {
-    // A multi-entry tier: the first target not out of tokens at creation (the manager never switches mid-run).
+  /** The manager's targets (its tier, primary first) with their resolved provider and model. */
+  private managerTargets(playbook: Playbook) {
     const targets: AgentSettings[] = [playbook.manager, ...(playbook.manager.fallback ?? [])];
-    const resolved = targets.map((target) => {
+    return targets.map((target) => {
       const provider = target.provider ?? DEFAULT_PROVIDER;
       return { target, provider, model: target.model ?? (provider === DEFAULT_PROVIDER ? DEFAULT_MODEL : undefined) };
     });
+  }
+
+  /** `exhausted` plus the manager targets whose provider's usage is at the threshold: what a new manager skips. */
+  private async managerSkips(playbook: Playbook, exhausted: string[] = []): Promise<string[]> {
+    const blocks = await this.usageBlocks(playbook, this.managerTargets(playbook));
+    return [...exhausted, ...blocks.keys()];
+  }
+
+  private managerConfig(playbook: Playbook, exhausted: string[] = []): AgentConfig {
+    // A multi-entry tier: the first target not out of tokens (nor at the usage threshold) at creation (the manager never switches mid-run).
+    const resolved = this.managerTargets(playbook);
     const { target, provider, model } = resolved.find((candidate) => candidate.model && !exhausted.includes(`${candidate.provider}/${candidate.model}`)) ?? resolved[0]!;
     if (!model) throw new UserError(`no model for the manager on provider "${provider}"; set manager.model in defaults/main.yaml`);
     const config: AgentConfig = { provider: `${provider}/${model}` };
@@ -4017,7 +4085,7 @@ export class Runtime {
       const runId = `run_${shortId()}`;
       this.addReservation(workspace.id, { runId, branch: null, playbook, inputs: resolved.inputs });
       const manager = await this.api().workspaces.ref(workspace.id).agents.create({
-        config: this.managerConfig(playbook),
+        config: this.managerConfig(playbook, await this.managerSkips(playbook)),
         title: `Playbook Manager · ${playbook.title}`,
         labels: { [MANAGER_LABEL]: "true" },
         prompt: managerKickoff(playbook, resolved.inputs, input.autoStart !== false),
@@ -4273,7 +4341,7 @@ export class Runtime {
       }
     }
     const manager = await created.agents.create({
-      config: this.managerConfig(playbook),
+      config: this.managerConfig(playbook, await this.managerSkips(playbook)),
       title: `Playbook Manager · ${playbook.title}`,
       labels: { [MANAGER_LABEL]: "true" },
       prompt: managerKickoff(playbook, inputs),
