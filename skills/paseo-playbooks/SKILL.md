@@ -473,8 +473,10 @@ workspace** with its own Playbook Manager, keeps at most `max_active` going, and
   timeout: 8h
 ```
 
-- A manager that wants more runs in its own workspace: give its playbook `isolation: worktree`, and `start_playbook` with its
-  `workspaceId` and no `newWorkspace` (the refusal "this workspace has an active run without isolation" is that rule).
+- A manager that wants more runs in its own workspace: give its playbook `isolation: worktree`, and `start_playbook` it with
+  no `newWorkspace` (or `false`): an isolated run starts in the caller's workspace (or `workspaceId`), a playbook without
+  isolation always in a new one (`newWorkspace: false` is refused for it). `newWorkspace: true` forces a new workspace.
+  A Sidekick always gets a new workspace unless it passes `workspaceId` of an existing one.
 - Per-item templates may use `{{ item }}`, `{{ item.<field> }}`, `{{ index }}` and `{{ inputs.<name> }}`. A reference that
   is not set makes that item `not_started` with the reason (never "(none)"). Keys must be unique (else the step fails).
 - A child run is never started twice for one key: the plugin records each child (key, run id) in the step before creating
@@ -575,7 +577,7 @@ steps:
 - **Hand-off pending (detached jobs that ended):** a handed-off job that a batch settles with an outcome
   other than the first (`ejected`, `no_deploy`...) is told to nobody: only the batch's manager can start what follows (the
   playbook's instructions say what, e.g. a rework run). Each such job needs a **follow-up recorded**: `start_playbook` with
-  `forJob: "<jobId>"` (the run always starts in a new workspace) records the run it starts; `record_followup { runId, jobId,
+  `forJob: "<jobId>"` (works whether the run starts in a new workspace or, isolated, in yours) records the run it starts; `record_followup { runId, jobId,
   followUpRunId?, note? }` (any agent; `runId` is the pipeline or a batch) records a run started otherwise, or, without
   `followUpRunId`, "none needed" with a `note`. Until then the plugin keeps the batch's manager open (a next batch of the
   stage does not retire it) and wakes it with the list, up to 3 times, each time it ends its turn; the run itself still

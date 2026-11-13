@@ -374,7 +374,7 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
     defineAgentTool({
       name: "start_playbook",
       description:
-        "Create a run of a playbook. It ALWAYS starts in a NEW workspace (a new branch off the current one, or off workspaceId's) with its own Playbook Manager: you do not manage it, you follow it through your event subscription and list_runs. It never joins your workspace or an existing one, whatever the caller (a Sidekick needs no workspace of its own: without workspaceId the new workspace branches off the project's root). Returns the run id and the workspace. The only exception: a Playbook Manager the plugin created for a run, which creates that run in its own reserved workspace by calling this with no workspace arguments. One active run per workspace, unless the playbook has `isolation: worktree`.",
+        "Create a run of a playbook with its own Playbook Manager: you do not manage it, you follow it through your event subscription and list_runs. Where it starts depends on the playbook. A playbook with `isolation: { mode: worktree }` starts IN YOUR WORKSPACE (or in workspaceId) in the run's private worktree, so several runs share the workspace and show in its Playbook panel; pass newWorkspace: true to force a new workspace instead. Any other playbook ALWAYS starts in a NEW workspace (a new branch off the current one, or off workspaceId's), never joining yours or an existing one; newWorkspace: false is refused for it. A Sidekick (no workspace of its own) always gets a new workspace, unless it passes workspaceId of an existing workspace for an isolated playbook. Returns the run id and the workspace. The only other exception: a Playbook Manager the plugin created for a run, which creates that run in its own reserved workspace by calling this with no workspace arguments.",
       input: z.object({
         playbook: z.string().describe("Playbook id (its file name without .yaml)"),
         inputs: z.record(z.string(), VarValueSchema).default({}).describe("Playbook inputs by name"),
@@ -385,11 +385,11 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
         newWorkspace: z
           .boolean()
           .optional()
-          .describe("Always true in effect: the run gets a new workspace and its own Playbook Manager, which you do not manage. false is refused (the run never starts in your workspace or an existing one), except for a Playbook Manager the plugin created for this run, which omits it"),
+          .describe("true: force a new workspace. false: start in your workspace (or workspaceId), accepted only for a playbook with `isolation: { mode: worktree }`. Omitted: your workspace for an isolated playbook, a new workspace for any other (and always for a Sidekick without workspaceId). A Playbook Manager the plugin created for this run omits it"),
         workspaceId: z
           .string()
           .optional()
-          .describe("A workspace of this project (list_workspaces) the NEW workspace is branched off, instead of yours; the run never starts in it. Optional: a Sidekick may omit it (the new workspace branches off the project's root)"),
+          .describe("A workspace of this project (list_workspaces) instead of yours: the run starts in it for an isolated playbook (unless newWorkspace: true), otherwise the NEW workspace is branched off it. Optional: a Sidekick may omit it (the new workspace branches off the project's root; an isolated run in an existing workspace needs it)"),
         workspaceName: z
           .string()
           .max(200)
@@ -398,7 +398,7 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
         forJob: z
           .string()
           .optional()
-          .describe("A batch manager starting the follow-up (rework) of a detached job it settled with an outcome (ejected...): its job id. The plugin records the run you start as that job's follow-up (record_followup, get_run `jobs[].followUps`) so the batch is not left with a hand-off pending. Always satisfied: runs start in a new workspace"),
+          .describe("A batch manager starting the follow-up (rework) of a detached job it settled with an outcome (ejected...): its job id. The plugin records the run you start as that job's follow-up (record_followup, get_run `jobs[].followUps`) so the batch is not left with a hand-off pending. Works whether the run starts in a workspace of its own or in yours (isolated playbook)"),
         autoStart: z
           .boolean()
           .default(true)
@@ -407,15 +407,30 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
       execute: ({ playbook, inputs, name, newWorkspace: requested, workspaceId, autoStart, workspaceName, forJob }, { agent }) =>
         guard(async () => {
           const sidekick = await runtime.isSidekick(agent.id);
-          // Always a new workspace. The one exception: a Playbook Manager the plugin created for a reserved workspace creates its run there.
-          const reserved = !sidekick && !workspaceId && runtime.hasReservation(agent.workspaceId);
-          if (requested === false && !reserved) throw new UserError("start_playbook always starts the run in a NEW workspace: it never joins yours or an existing one. Omit newWorkspace (or pass true); workspaceId only names the workspace the new one is branched off");
-          const newWorkspace = requested ?? !reserved;
+          // New workspace by default. Exceptions: a Playbook Manager the plugin created for a reserved workspace creates its run there;
+          // an isolated playbook (isolation.mode: worktree) starts in the caller's workspace (workspaceId), unless newWorkspace: true.
+          // A Sidekick has no workspace to start in: only an explicit workspaceId.
+          const reserved = !sidekick && !workspaceId && runtime.hasReservationFor(agent.workspaceId, playbook, inputs);
+          const target = workspaceId ?? (sidekick ? null : agent.workspaceId);
+          const inPlace = !reserved && requested !== true && target !== null && (await runtime.isIsolatedPlaybook(target, playbook));
+          if (requested === false && !reserved && !inPlace)
+            throw new UserError(
+              `newWorkspace: false is refused: only a playbook with \`isolation: { mode: worktree }\` starts in ${sidekick ? "an existing workspace (pass workspaceId)" : "your workspace"}. This run starts in a NEW workspace: omit newWorkspace (or pass true); workspaceId then only names the workspace the new one is branched off`,
+            );
+          const newWorkspace = reserved ? (requested ?? false) : !inPlace;
           if (forJob) {
-            if (!newWorkspace) throw new UserError("forJob records the run you start as the job's follow-up: it starts in a new workspace, not as your own run");
+            if (!newWorkspace && !inPlace) throw new UserError("forJob records the run you start as the job's follow-up: it starts in a new workspace, not as your own run");
             runtime.checkFollowUp(forJob);
           }
-          if (workspaceName?.trim() && !newWorkspace) throw new UserError("workspaceName names the new workspace: it does not apply to a run in your reserved workspace");
+          if (workspaceName?.trim() && !newWorkspace) throw new UserError("workspaceName names a new workspace: it does not apply to a run that starts in an existing one (your reserved workspace, or an isolated run in yours)");
+          if (inPlace) {
+            const started = await runtime.startPlaybookInWorkspace(agent, { playbook, inputs, workspaceId: target!, newWorkspace: false, autoStart });
+            if (forJob) await runtime.recordFollowUp(forJob, { runId: started.runId, note: null, by: agent.id });
+            return ok(
+              `Run ${started.runId} of "${playbook}" is starting in workspace ${started.workspaceId}, in its own private worktree (isolation: worktree), with ${started.managerAgentId ? `its own Playbook Manager (${started.managerAgentId})` : "no Playbook Manager (manager.mode: none): the plugin drives it"}. It shows in that workspace's Playbook panel next to its other runs. You do not manage it: the plugin tells you how it goes through your event subscription (list_runs shows it).`,
+              started,
+            );
+          }
           if (workspaceId || sidekick) {
             const started = await runtime.startPlaybookInWorkspace(agent, { playbook, inputs, workspaceId, newWorkspace: true, autoStart, workspaceName });
             if (forJob) await runtime.recordFollowUp(forJob, { runId: started.runId, note: null, by: agent.id });

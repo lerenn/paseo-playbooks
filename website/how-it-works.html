@@ -52,7 +52,7 @@
 <h3 id="tools-manager">Manager</h3>
 <table><thead><tr><th>Tool</th><th>What it does</th></tr></thead><tbody>
 <tr><td><code>list_playbooks</code></td><td>Lists the workspace's playbooks and explains the manager protocol.</td></tr>
-<tr><td><code>start_playbook</code></td><td>Creates a run in a new workspace with its own manager (also available to a Sidekick). The caller does not manage it.</td></tr>
+<tr><td><code>start_playbook</code></td><td>Creates a run with its own manager (also available to a Sidekick): in a new workspace, or, for a playbook with <code>isolation: { mode: worktree }</code>, in the caller's workspace (or <code>workspaceId</code>) next to its other runs, unless <code>newWorkspace: true</code>. A Sidekick always gets a new workspace unless it names a <code>workspaceId</code>. The caller does not manage it.</td></tr>
 <tr><td><code>start_step</code></td><td>Starts a ready step as a subagent with the manager's brief.</td></tr>
 <tr><td><code>complete_step</code></td><td>Records a step's outcome and applies the transition.</td></tr>
 <tr><td><code>nudge_step</code></td><td>Sends a follow-up to a step's agent, or moves it to another model.</td></tr>
