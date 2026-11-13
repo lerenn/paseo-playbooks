@@ -1,8 +1,8 @@
 import type { Playbook, PlaybookEntry } from "../shared/types";
 
-/** The playbooks the Run Playbook form offers: valid ones that start in a workspace (a singleton runs as its own pipeline). */
+/** The playbooks the Run Playbook form offers: valid ones that start in a workspace (a singleton runs as its own pipeline), without the hidden ones (those are sub-playbooks or after-tasks; the panel's "Hidden playbooks" section still starts them). */
 export function runnablePlaybooks(entries: readonly PlaybookEntry[]): Playbook[] {
-  return entries.flatMap((entry) => (entry.playbook && entry.errors.length === 0 && !entry.playbook.singleton ? [entry.playbook] : []));
+  return entries.flatMap((entry) => (entry.playbook && entry.errors.length === 0 && !entry.playbook.singleton && !entry.hidden ? [entry.playbook] : []));
 }
 
 /** What is wrong with the form's input values, by input name: a required input left empty, a number that is not one. */

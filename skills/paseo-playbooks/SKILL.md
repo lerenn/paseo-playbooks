@@ -201,7 +201,7 @@ concurrency: 1                             # optional: max active runs (or held 
 manager: { prompt: Check the PR exists before accepting implement., compact: on_step, mode: always_on }  # optional: prompt is added to the manager's instructions; compact overrides the default; mode: none = no manager agent, the plugin drives the run (see "Runs with no manager")
 workspace: { archive: on_end }             # optional: overrides defaults/main.yaml's workspace block
 isolation: { mode: worktree, submodules: none }  # optional: each run works in its own git worktree (see "Isolated runs"); the string form `isolation: worktree` also works
-hidden: false                              # optional: true moves it to the panel's collapsed "Hidden playbooks" section (for one meant as a sub-playbook or after-task; it can still be started from there or by start_playbook)
+hidden: false                              # optional: true moves it to the panel's collapsed "Hidden playbooks" section (for one meant as a sub-playbook or after-task; also left out of the Run Playbook form; it can still be started from the panel section or by start_playbook)
 
 inputs:                                    # the Start form; the manager fills them from chat
   request: { type: string, required: true, description: What to change }
