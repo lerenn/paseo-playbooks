@@ -15,9 +15,9 @@ invisible and the views did not add up.
 - The manager's usage (the run's `managerUsage`, summed per-turn deltas) is counted in every
   breakdown, as its own row, in the tables and in the per-day charts:
   - by playbook: unchanged, it was already folded into the playbook's row;
-  - by step: a `<playbook>/(manager)` row per playbook (a step of the playbook, so the playbook's
+  - by step: a `<playbook>/Playbook Manager` row per playbook (a step of the playbook, so the playbook's
     manager can be compared with its steps);
-  - by role: one `(manager)` row (parentheses so it never collides with a role of that name);
+  - by role: one `Playbook Manager` row (rows carry a `manager` flag and clients identify them by label plus flag, so a role or step a playbook named alike never merges with it);
   - by model: under the manager's `provider/model` from the playbook's `manager` settings, `default`
     when it sets neither.
 - A manager's usage has no timestamp, so it counts on the day its run was created, in the charts, as in
@@ -34,3 +34,8 @@ invisible and the views did not add up.
   show different totals than before in those views by exactly the manager's usage.
 - The model is the playbook's configured manager model, not one chosen by a fallback, which the run
   does not record for managers.
+
+## Note
+
+The label was first `(manager)`, parentheses being the guard against clashes. It is now `Playbook Manager`; the guard is the `manager` flag on rows and chart series, and the label is display only.
+The manager rows also wear a muted gear icon (table rows, legend, tapped-day box), decided by the `manager` flag, never by the label.

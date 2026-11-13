@@ -1,7 +1,8 @@
 import { useRpc } from "@getpaseo/plugin/client";
+import { Icon } from "@getpaseo/plugin/client/ui";
 import { useEffect, useState } from "react";
 import { Pressable, Text, View } from "react-native";
-import { tokensOf, type AgentRow, type Analytics, type DailySeries, type UsageRow } from "../shared/analytics";
+import { rowId, tokensOf, type AgentRow, type Analytics, type DailySeries, type UsageRow } from "../shared/analytics";
 import { analyticsStateRpc } from "../shared/contracts";
 import type { Usage } from "../shared/types";
 import { axisTicks, compactNumber, isDarkColor, labelIndexes, niceAxis, seriesColor, shortDate } from "./analytics-chart";
@@ -27,11 +28,21 @@ function localTimeZone(): string | undefined {
 const PLOT_HEIGHT = 120;
 const AXIS_WIDTH = 34;
 
+/** A muted gear before the name of the plugin's own manager rows; none for a role or step an author named alike. */
+function ManagerMark(props: { theme: Theme; row: { manager?: boolean }; size?: number }) {
+  if (!props.row.manager) return null;
+  return (
+    <View accessible accessibilityLabel="Run manager agent, added by the plugin">
+      <Icon name="Settings" size={props.size ?? 12} color={props.theme.colors.foregroundMuted} />
+    </View>
+  );
+}
+
 /** The colour each group of a breakdown has in its chart, so the table rows can wear the same one. */
 function colorsOf(theme: Theme, chart: DailySeries | undefined): Map<string, string> {
   const dark = isDarkColor(theme.colors.surface1);
   const map = new Map<string, string>();
-  chart?.series.forEach((row, index) => map.set(row.key, row.other ? theme.colors.foregroundMuted : seriesColor(index, dark)));
+  chart?.series.forEach((row, index) => map.set(rowId(row), row.other ? theme.colors.foregroundMuted : seriesColor(index, dark)));
   return map;
 }
 
@@ -42,7 +53,7 @@ function DailyChart(props: { theme: Theme; chart: DailySeries; colors: Map<strin
   const [isolated, setIsolated] = useState<string | null>(null);
   const muted = theme.colors.foregroundMuted;
   const surface = theme.colors.surface1;
-  const visible = chart.series.filter((row) => isolated === null || row.key === isolated);
+  const visible = chart.series.filter((row) => isolated === null || rowId(row) === isolated);
   const totals = chart.days.map((_, i) => visible.reduce((sum, row) => sum + row.tokens[i]!, 0));
   const peak = Math.max(...totals, 0);
   if (chart.series.length === 0) return null;
@@ -102,7 +113,7 @@ function DailyChart(props: { theme: Theme; chart: DailySeries; colors: Map<strin
                       row.tokens[i]! > 0 ? (
                         <View
                           key={row.key}
-                          style={{ flex: row.tokens[i]!, backgroundColor: colors.get(row.key), borderTopWidth: index > 0 && index <= lastSeries ? 1 : 0, borderTopColor: surface }}
+                          style={{ flex: row.tokens[i]!, backgroundColor: colors.get(rowId(row)), borderTopWidth: index > 0 && index <= lastSeries ? 1 : 0, borderTopColor: surface }}
                         />
                       ) : null,
                     )}
@@ -134,8 +145,9 @@ function DailyChart(props: { theme: Theme; chart: DailySeries; colors: Map<strin
               {visible
                 .filter((row) => row.tokens[pick]! > 0)
                 .map((row) => (
-                  <View key={row.key} style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
-                    <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: colors.get(row.key) }} />
+                  <View key={rowId(row)} style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
+                    <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: colors.get(rowId(row)) }} />
+                    <ManagerMark theme={theme} row={row} size={10} />
                     <Text numberOfLines={1} style={{ flexShrink: 1, color: theme.colors.foreground, fontSize: 10 }}>
                       {row.key}: {row.tokens[pick]!.toLocaleString()}
                     </Text>
@@ -155,17 +167,18 @@ function DailyChart(props: { theme: Theme; chart: DailySeries; colors: Map<strin
       </View>
       <View style={{ flexDirection: "row", flexWrap: "wrap", columnGap: 6, rowGap: 4 }}>
         {chart.series.map((row) => {
-          const on = isolated === null || isolated === row.key;
+          const on = isolated === null || isolated === rowId(row);
           return (
             <Pressable
-              key={row.key}
+              key={rowId(row)}
               accessibilityRole="button"
-              accessibilityState={{ selected: isolated === row.key }}
-              accessibilityLabel={`${isolated === row.key ? "Show all" : "Only"} ${row.key}`}
-              onPress={() => setIsolated(isolated === row.key ? null : row.key)}
-              style={{ flexDirection: "row", alignItems: "center", gap: 5, maxWidth: "100%", borderRadius: 10, paddingHorizontal: 6, paddingVertical: 2, opacity: on ? 1 : 0.45, backgroundColor: isolated === row.key ? theme.colors.surface2 : "transparent" }}
+              accessibilityState={{ selected: isolated === rowId(row) }}
+              accessibilityLabel={`${isolated === rowId(row) ? "Show all" : "Only"} ${row.key}`}
+              onPress={() => setIsolated(isolated === rowId(row) ? null : rowId(row))}
+              style={{ flexDirection: "row", alignItems: "center", gap: 5, maxWidth: "100%", borderRadius: 10, paddingHorizontal: 6, paddingVertical: 2, opacity: on ? 1 : 0.45, backgroundColor: isolated === rowId(row) ? theme.colors.surface2 : "transparent" }}
             >
-              <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: colors.get(row.key) }} />
+              <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: colors.get(rowId(row)) }} />
+              <ManagerMark theme={theme} row={row} size={11} />
               <Text numberOfLines={1} style={{ flexShrink: 1, color: theme.colors.foreground, fontSize: 11 }}>
                 {row.key}
               </Text>
@@ -291,12 +304,13 @@ function Breakdown(props: { theme: Theme; title: string; rows: UsageRow[]; chart
       <View style={{ borderRadius: 10, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface1, overflow: "hidden" }}>
         {chart ? <DailyChart theme={theme} chart={chart} colors={colors} /> : null}
         {rows.map((row, index) => {
-          const color = colors.get(row.key) ?? theme.colors.foregroundMuted;
+          const color = colors.get(rowId(row)) ?? theme.colors.foregroundMuted;
           return (
-            <View key={row.key} style={{ gap: 4, padding: 10, borderTopWidth: index === 0 && !chart ? 0 : 1, borderTopColor: theme.colors.border }}>
+            <View key={rowId(row)} style={{ gap: 4, padding: 10, borderTopWidth: index === 0 && !chart ? 0 : 1, borderTopColor: theme.colors.border }}>
               <View style={{ flexDirection: "row", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
                 <View style={{ flex: 1, minWidth: 140, flexDirection: "row", alignItems: "center", gap: 6 }}>
                   {chart ? <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: color }} /> : null}
+                  <ManagerMark theme={theme} row={row} />
                   <Text style={{ flexShrink: 1, color: theme.colors.foreground, fontSize: 13 }}>{row.key}</Text>
                 </View>
                 <Text style={{ color: theme.colors.foreground, fontSize: 13, fontWeight: "600" }}>{compactNumber(tokensOf(row.usage))}</Text>

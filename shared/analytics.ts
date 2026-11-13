@@ -3,7 +3,10 @@ import { type Run, type Usage, UsageSchema, isAgentlessAttempt } from "./types";
 
 /** One row of a breakdown: what a group of agents spent, and how much of it was thrown away. */
 export const UsageRowSchema = z.object({
+  /** The name shown. Not unique alone: a manager row shares it with a role or step of the same name, so identify a row by `rowId`. */
   key: z.string(),
+  /** True for the run managers' row, whatever its label: a role or step a playbook named like it is another row. */
+  manager: z.boolean().default(false),
   /** Context for the key (a step's playbook, role and model). */
   detail: z.string().nullable(),
   runs: z.number().int(),
@@ -42,12 +45,20 @@ export type AgentUsage = z.infer<typeof AgentUsageSchema>;
 export const AgentRowSchema = AgentUsageSchema.omit({ last: true });
 export type AgentRow = z.infer<typeof AgentRowSchema>;
 
+/** The label of the run managers' rows (by role; by step it follows the playbook and a slash). */
+export const MANAGER_LABEL = "Playbook Manager";
+
+/** The identity of a row or series: the label, apart for the manager's, which no author-named group can share. */
+export function rowId(row: { key: string; manager?: boolean }): string {
+  return row.manager ? `\u0000${row.key}` : row.key;
+}
+
 /** Tokens (input + output, no cache) per local day for the groups of one breakdown. */
 export const DailySeriesSchema = z.object({
   /** Local calendar days (YYYY-MM-DD), oldest first, empty days included. */
   days: z.array(z.string()),
   /** The biggest groups by total, then "Other" (`other: true`) for the rest. `tokens[i]` is for `days[i]`. */
-  series: z.array(z.object({ key: z.string(), other: z.boolean(), total: z.number(), tokens: z.array(z.number()) })),
+  series: z.array(z.object({ key: z.string(), manager: z.boolean().default(false), other: z.boolean(), total: z.number(), tokens: z.array(z.number()) })),
 });
 export type DailySeries = z.infer<typeof DailySeriesSchema>;
 
@@ -113,18 +124,21 @@ export function addDays(day: string, delta: number): string {
 /** Tokens per group and day, from which `dailySeries` builds one chart. */
 class Daily {
   private readonly map = new Map<string, Map<string, number>>();
-  add(key: string, day: string, tokens: number): void {
+  add(key: string, day: string, tokens: number, manager = false): void {
     if (!day || tokens <= 0) return;
-    let days = this.map.get(key);
-    if (!days) this.map.set(key, (days = new Map()));
+    const id = rowId({ key, manager });
+    let days = this.map.get(id);
+    if (!days) this.map.set(id, (days = new Map()));
     days.set(day, (days.get(day) ?? 0) + tokens);
   }
   /** `days` oldest first; usage outside them is dropped. The `top` biggest groups stay, the rest fold into "Other". */
   series(days: string[], top: number): DailySeries {
     const rows = [...this.map.entries()]
-      .map(([key, byDay]) => {
+      .map(([id, byDay]) => {
+        const manager = id.startsWith("\u0000");
+        const key = manager ? id.slice(1) : id;
         const tokens = days.map((day) => byDay.get(day) ?? 0);
-        return { key, other: false, total: tokens.reduce((a, b) => a + b, 0), tokens };
+        return { key, manager, other: false, total: tokens.reduce((a, b) => a + b, 0), tokens };
       })
       .filter((row) => row.total > 0)
       .sort((a, b) => b.total - a.total || a.key.localeCompare(b.key));
@@ -132,7 +146,7 @@ class Daily {
     const rest = rows.slice(top);
     if (rest.length > 0) {
       const tokens = days.map((_, i) => rest.reduce((sum, row) => sum + row.tokens[i]!, 0));
-      kept.push({ key: "Other", other: true, total: tokens.reduce((a, b) => a + b, 0), tokens });
+      kept.push({ key: "Other", manager: false, other: true, total: tokens.reduce((a, b) => a + b, 0), tokens });
     }
     return { days, series: kept };
   }
@@ -149,9 +163,10 @@ interface Group {
 
 class Groups {
   private readonly map = new Map<string, Group>();
-  add(key: string, detail: string | null, runId: string, usage: Usage, wasted: boolean): void {
-    let group = this.map.get(key);
-    if (!group) this.map.set(key, (group = { detail, runs: new Set(), attempts: 0, wasted: 0, usage: zero(), wastedTokens: 0 }));
+  add(key: string, detail: string | null, runId: string, usage: Usage, wasted: boolean, manager = false): void {
+    const id = rowId({ key, manager });
+    let group = this.map.get(id);
+    if (!group) this.map.set(id, (group = { detail, runs: new Set(), attempts: 0, wasted: 0, usage: zero(), wastedTokens: 0 }));
     group.runs.add(runId);
     group.attempts += 1;
     group.usage = plus(group.usage, usage);
@@ -162,7 +177,7 @@ class Groups {
   }
   rows(limit: number): UsageRow[] {
     return [...this.map.entries()]
-      .map(([key, g]) => ({ key, detail: g.detail, runs: g.runs.size, attempts: g.attempts, wastedAttempts: g.wasted, usage: g.usage, wastedTokens: g.wastedTokens }))
+      .map(([id, g]) => ({ key: id.startsWith("\u0000") ? id.slice(1) : id, manager: id.startsWith("\u0000"), detail: g.detail, runs: g.runs.size, attempts: g.attempts, wastedAttempts: g.wasted, usage: g.usage, wastedTokens: g.wastedTokens }))
       .sort((a, b) => tokensOf(b.usage) - tokensOf(a.usage))
       .slice(0, limit);
   }
@@ -222,15 +237,15 @@ export function analyze(runs: Run[], options: AnalyticsOptions = {}): Analytics 
     const runDay = dayKey(run.createdAt, tz);
     if (managerUsage) {
       daily.byPlaybook.add(playbook, runDay, tokensOf(managerUsage));
-      // The manager is its own row in each view: a "(manager)" step of its playbook, the "(manager)" role, and its model.
+      // The manager is its own row in each view: a manager step of its playbook, the manager role, and its model (flagged `manager`, so a step or role a playbook named alike stays apart).
       const managerModel = [run.playbook.manager?.provider, run.playbook.manager?.model].filter(Boolean).join("/") || "default";
-      const stepKey = `${playbook}/(manager)`;
+      const stepKey = `${playbook}/${MANAGER_LABEL}`;
       const tokens = tokensOf(managerUsage);
-      daily.byStep.add(stepKey, runDay, tokens);
-      daily.byRole.add("(manager)", runDay, tokens);
+      daily.byStep.add(stepKey, runDay, tokens, true);
+      daily.byRole.add(MANAGER_LABEL, runDay, tokens, true);
       daily.byModel.add(managerModel, runDay, tokens);
-      byStep.add(stepKey, `role (manager), model ${managerModel}`, run.id, managerUsage, false);
-      byRole.add("(manager)", null, run.id, managerUsage, false);
+      byStep.add(stepKey, `role ${MANAGER_LABEL}, model ${managerModel}`, run.id, managerUsage, false, true);
+      byRole.add(MANAGER_LABEL, null, run.id, managerUsage, false, true);
       byModel.add(managerModel, null, run.id, managerUsage, false);
       note(runDay);
     }
