@@ -8,7 +8,7 @@ import { startAfterTaskRpc } from "../shared/contracts";
 import { askChoices, waitsForHuman } from "../shared/gates";
 import { END, layerOf, layoutGraph, START, withTerminals } from "../shared/graph";
 import { isTerminal, type AfterTask, type Playbook, type Run, type Step } from "../shared/types";
-import { assignLanes, groupLoops, loopText, type LoopEdge, type LoopGroup } from "./loops";
+import { badgeText, groupLoops, loopText, visibleAttempts, type LoopEdge, type LoopGroup } from "./loops";
 import { conditionText } from "../shared/labels";
 import { slowDetail, type SlowInfo } from "../shared/slow";
 import { agentBackground, gateBackground, stepTitle, nodeColor, nodeIcon, nodeStateLabel, STEP_KINDS, type NodeState, type Theme } from "./theme";
@@ -21,11 +21,8 @@ const BAND_H = 32;
 /** Edge thickness and arrowhead size, in px. */
 const EDGE_STROKE = 2;
 const ARROW = 14;
-/** Loop-back lanes on the right of the graph: spacing between lanes, dash and gap lengths. */
+/** The one back-edge lane on the right of the graph (drawn only for the selected loop badge). */
 const LANE_GAP = 14;
-const DASH = 5;
-const DASH_GAP = 4;
-const LABEL_H = 13;
 
 /** For steps that can also loop back: the outcomes that continue forward, shown on the forward edge. */
 function forwardLabels(steps: readonly Step[]): Map<string, string> {
@@ -118,17 +115,16 @@ function Dag(props: GraphProps & { steps: Step[]; terminals: boolean; available:
   const loops = useMemo(() => loopEdges(steps, run), [steps, run]);
   const forward = useMemo(() => forwardLabels(steps), [steps]);
   const groups = useMemo(() => groupLoops(loops), [loops]);
-  const { lanes, count: laneCount } = useMemo(() => assignLanes(groups, (id) => layers.get(id) ?? 0), [groups, layers]);
-  /** The step whose loop-backs are shown in full (tapped on a line label or on a node's info button). */
-  const [selected, setSelected] = useState<string | null>(null);
-  const selectedGroups = groups.filter((group) => group.from === selected);
+  /** The loop badge tapped (its group key): only that back-edge is drawn, its target outlined, its outcomes listed. */
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const selectedGroup = groups.find((group) => group.key === selectedKey) ?? null;
   // An after-task's own frame already holds its sub-playbook: no second frame for it.
   const blocks = useMemo(
     () => Object.fromEntries(Object.entries(playbook.blocks).filter(([prefix]) => !playbook.after.some((task) => task.id === prefix))),
     [playbook],
   );
-  /** Room on each side for the loop lanes (both sides, so the graph stays centred). */
-  const gutter = laneCount > 0 ? 6 + laneCount * LANE_GAP : 0;
+  /** Room on each side for the one back-edge lane (both sides, so the graph stays centred). */
+  const gutter = groups.length > 0 ? 6 + LANE_GAP : 0;
   const columns = Math.max(1, ...layout.layers.map((row) => row.length));
   const nodeWidth = Math.max(NODE_MIN, Math.min(NODE_MAX, Math.floor((available - 2 * gutter) / columns) - GAP));
   const SLOT = nodeWidth + GAP;
@@ -170,10 +166,7 @@ function Dag(props: GraphProps & { steps: Step[]; terminals: boolean; available:
         />
         <LoopLines
           theme={theme}
-          groups={groups}
-          lanes={lanes}
-          selected={selected}
-          onSelect={(from) => setSelected((current) => (current === from ? null : from))}
+          group={selectedGroup}
           layers={layers}
           layerTops={layerTops}
           heights={heights}
@@ -181,7 +174,6 @@ function Dag(props: GraphProps & { steps: Step[]; terminals: boolean; available:
           offset={gutter}
           widthOf={widthOf}
           laneStart={gutter + width + 6}
-          highlighted={props.highlighted}
         />
         {layout.layers.map((row, index) => (
           <View
@@ -220,7 +212,11 @@ function Dag(props: GraphProps & { steps: Step[]; terminals: boolean; available:
                     longNeeds={byId.get(id)!.needs.filter((need) => (layers.get(need) ?? 0) < index - 1)}
                     nodeWidth={widthOf(id)}
                     loops={loops.filter((loop) => loop.from === id)}
-                    onInfo={() => setSelected(id)}
+                    loopGroups={groups.filter((group) => group.from === id)}
+                    titleOf={(target) => (byId.get(target) ? stepTitle(byId.get(target)!) : target)}
+                    selectedLoop={selectedKey}
+                    loopTarget={selectedGroup?.to === id}
+                    onToggleLoop={(key) => setSelectedKey((current) => (current === key ? null : key))}
                     onBoxHeight={(height) => setHeights((current) => (current[id] === height ? current : { ...current, [id]: height }))}
                     {...props}
                   />
@@ -230,38 +226,34 @@ function Dag(props: GraphProps & { steps: Step[]; terminals: boolean; available:
             </View>
           </View>
         ))}
-        {selectedGroups.length > 0 ? <LoopList theme={theme} from={selected!} groups={selectedGroups} onClose={() => setSelected(null)} /> : null}
+        {selectedGroup ? <LoopList theme={theme} group={selectedGroup} onClose={() => setSelectedKey(null)} /> : null}
       </View>
     </ScrollView>
   );
 }
 
-/** Every loop-back outcome of the selected step with its running counter, grouped by target. */
-function LoopList(props: { theme: Theme; from: string; groups: LoopGroup[]; onClose(): void }) {
-  const { theme } = props;
+/** Every outcome of the selected loop badge with its running counter. */
+function LoopList(props: { theme: Theme; group: LoopGroup; onClose(): void }) {
+  const { theme, group } = props;
   return (
     <View style={{ marginTop: 8, borderRadius: 8, borderWidth: 1, borderColor: theme.colors.accent, backgroundColor: theme.colors.surface1, padding: 8, gap: 4 }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-        <Text style={{ flex: 1, color: theme.colors.foreground, fontSize: 12, fontWeight: "600" }}>Loops from {props.from}</Text>
+        <Text style={{ flex: 1, color: theme.colors.foreground, fontSize: 12, fontWeight: "600" }}>
+          Loops from {group.from} back to {group.to}
+        </Text>
         <Pressable accessibilityRole="button" accessibilityLabel="Hide loops" hitSlop={8} onPress={props.onClose}>
           <Icon name="X" size={14} color={theme.colors.foregroundMuted} />
         </Pressable>
       </View>
-      {props.groups.map((group) => (
-        <View key={group.key}>
-          <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>back to {group.to}</Text>
-          {group.edges.map((edge) => (
-            <Text key={edge.outcome} style={{ color: theme.colors.foreground, fontSize: 11, paddingLeft: 8 }}>
-              {loopText(edge)}
-            </Text>
-          ))}
-        </View>
+      {group.edges.map((edge) => (
+        <Text key={edge.outcome} style={{ color: theme.colors.foreground, fontSize: 11, paddingLeft: 8 }}>
+          {loopText(edge)}
+        </Text>
       ))}
     </View>
   );
 }
 
-/** Below End: what runs once the run has ended. It never changes the run's result. */
 function AfterTasks(props: GraphProps & { available: number }) {
   const { playbook, theme } = props;
   const rule = <View style={{ flex: 1, height: 1, backgroundColor: theme.colors.border }} />;
@@ -580,12 +572,10 @@ function BlockFrames(props: {
   );
 }
 
+/** The selected loop's back-edge only: out of the source's right side, up the lane, into the target's right side. */
 function LoopLines(props: {
   theme: Theme;
-  groups: LoopGroup[];
-  lanes: Map<string, number>;
-  selected: string | null;
-  onSelect(from: string): void;
+  group: LoopGroup | null;
   layers: Map<string, number>;
   layerTops: Record<number, number>;
   heights: Record<string, number>;
@@ -593,121 +583,39 @@ function LoopLines(props: {
   offset: number;
   widthOf(id: string): number;
   laneStart: number;
-  highlighted: string | null;
 }) {
-  const { theme } = props;
-  const segments: Array<{ key: string; x: number; y: number; length: number; vertical: boolean; color: string; solid: boolean; opacity: number }> = [];
-  const arrows: Array<{ key: string; x: number; y: number; color: string; opacity: number }> = [];
-  const labels: Array<{ key: string; from: string; x: number; y: number; span: number; text: string; color: string; opacity: number; a11y: string }> = [];
-  // The selected step's loops are drawn last (on top); the others fade while one is selected.
-  const ordered = [...props.groups].sort((a, b) => Number(a.from === props.selected) - Number(b.from === props.selected));
-  ordered.forEach((group) => {
-    const fromLayer = props.layers.get(group.from) ?? 0;
-    const toLayer = props.layers.get(group.to) ?? 0;
-    const fromTop = props.layerTops[fromLayer];
-    const toTop = props.layerTops[toLayer];
-    const fromH = props.heights[group.from];
-    const toH = props.heights[group.to];
-    if (fromTop === undefined || toTop === undefined || !fromH || !toH) return;
-    const top = (layer: number, layerTop: number) => layerTop + (layer > 0 ? BAND_H : 0);
-    const y1 = Math.round(top(fromLayer, fromTop) + fromH * 0.6);
-    const y2 = Math.round(top(toLayer, toTop) + toH * 0.4);
-    const x1 = props.offset + (props.centers.get(group.from) ?? 0) + props.widthOf(group.from) / 2;
-    const x2 = props.offset + (props.centers.get(group.to) ?? 0) + props.widthOf(group.to) / 2;
-    const lane = props.laneStart + (props.lanes.get(group.key) ?? 0) * LANE_GAP;
-    const isSelected = group.from === props.selected;
-    const faded = props.selected !== null && !isSelected;
-    const color = isSelected || props.highlighted === group.to ? theme.colors.accent : group.exhausted ? theme.colors.border : theme.colors.foregroundMuted;
-    const opacity = faded ? 0.3 : 1;
-    const key = group.key;
-    segments.push({ key: `${key}-out`, x: x1, y: y1, length: lane - x1, vertical: false, color, solid: isSelected, opacity });
-    segments.push({ key: `${key}-up`, x: lane, y: Math.min(y1, y2), length: Math.abs(y1 - y2) + EDGE_STROKE, vertical: true, color, solid: isSelected, opacity });
-    segments.push({ key: `${key}-in`, x: x2 + ARROW / 2, y: y2, length: lane - x2 - ARROW / 2, vertical: false, color, solid: isSelected, opacity });
-    arrows.push({ key, x: x2, y: y2, color, opacity });
-    labels.push({
-      key,
-      from: group.from,
-      x: lane,
-      y: (y1 + y2) / 2,
-      span: Math.max(40, Math.abs(y1 - y2) - 16),
-      text: group.label,
-      color: color === theme.colors.border ? theme.colors.foregroundMuted : color,
-      opacity,
-      a11y: `Loops from ${group.from} back to ${group.to}: ${group.edges.map(loopText).join(", ")}`,
-    });
-  });
+  const { theme, group } = props;
+  if (!group) return null;
+  const fromLayer = props.layers.get(group.from) ?? 0;
+  const toLayer = props.layers.get(group.to) ?? 0;
+  const fromTop = props.layerTops[fromLayer];
+  const toTop = props.layerTops[toLayer];
+  const fromH = props.heights[group.from];
+  const toH = props.heights[group.to];
+  if (fromTop === undefined || toTop === undefined || !fromH || !toH) return null;
+  const top = (layer: number, layerTop: number) => layerTop + (layer > 0 ? BAND_H : 0);
+  const y1 = Math.round(top(fromLayer, fromTop) + fromH * 0.6);
+  const y2 = Math.round(top(toLayer, toTop) + toH * 0.4);
+  const x1 = props.offset + (props.centers.get(group.from) ?? 0) + props.widthOf(group.from) / 2;
+  const x2 = props.offset + (props.centers.get(group.to) ?? 0) + props.widthOf(group.to) / 2;
+  const lane = props.laneStart;
+  const color = theme.colors.accent;
+  const bar = (key: string, x: number, y: number, w: number, h: number) => (
+    <View key={key} style={{ position: "absolute", left: x, top: y, width: w, height: h, backgroundColor: color }} />
+  );
   return (
-    <View pointerEvents="box-none" style={{ position: "absolute", left: 0, top: 0, right: 0, bottom: 0 }}>
-      <View pointerEvents="none" style={{ position: "absolute", left: 0, top: 0, right: 0, bottom: 0 }} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
-        {segments.map((segment) =>
-          segment.solid ? (
-            <View
-              key={segment.key}
-              style={{
-                position: "absolute",
-                left: segment.vertical ? segment.x - EDGE_STROKE / 2 : segment.x,
-                top: segment.vertical ? segment.y : segment.y - EDGE_STROKE / 2,
-                width: segment.vertical ? EDGE_STROKE : segment.length,
-                height: segment.vertical ? segment.length : EDGE_STROKE,
-                backgroundColor: segment.color,
-              }}
-            />
-          ) : (
-            Array.from({ length: Math.max(1, Math.ceil(segment.length / (DASH + DASH_GAP))) }, (_, dash) => {
-              const start = dash * (DASH + DASH_GAP);
-              const size = Math.min(DASH, segment.length - start);
-              if (size <= 0) return null;
-              return (
-                <View
-                  key={`${segment.key}-${dash}`}
-                  style={{
-                    position: "absolute",
-                    left: segment.vertical ? segment.x - EDGE_STROKE / 2 : segment.x + start,
-                    top: segment.vertical ? segment.y + start : segment.y - EDGE_STROKE / 2,
-                    width: segment.vertical ? EDGE_STROKE : size,
-                    height: segment.vertical ? size : EDGE_STROKE,
-                    backgroundColor: segment.color,
-                    opacity: segment.opacity,
-                  }}
-                />
-              );
-            })
-          ),
-        )}
-        {arrows.map((arrow) => (
-          <View key={`a-${arrow.key}`} style={{ position: "absolute", left: arrow.x - 2, top: arrow.y - ARROW / 2, width: ARROW, height: ARROW, opacity: arrow.opacity }}>
-            <Icon name="ChevronLeft" size={ARROW} color={arrow.color} />
-          </View>
-        ))}
+    <View pointerEvents="none" style={{ position: "absolute", left: 0, top: 0, right: 0, bottom: 0 }} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+      {bar("out", x1, y1 - EDGE_STROKE / 2, lane - x1, EDGE_STROKE)}
+      {bar("up", lane - EDGE_STROKE / 2, Math.min(y1, y2), EDGE_STROKE, Math.abs(y1 - y2) + EDGE_STROKE)}
+      {bar("in", x2 + ARROW / 2, y2 - EDGE_STROKE / 2, lane - x2 - ARROW / 2, EDGE_STROKE)}
+      <View style={{ position: "absolute", left: x2 - 2, top: y2 - ARROW / 2, width: ARROW, height: ARROW }}>
+        <Icon name="ChevronLeft" size={ARROW} color={color} />
       </View>
-      {labels.map((label) => (
-        // Written along the lane, bottom to top; tapping it shows every outcome of the step with its counter.
-        <View
-          key={`l-${label.key}`}
-          pointerEvents="box-none"
-          style={{
-            position: "absolute",
-            left: label.x - label.span / 2,
-            top: label.y - LABEL_H / 2,
-            width: label.span,
-            height: LABEL_H,
-            alignItems: "center",
-            justifyContent: "center",
-            transform: [{ rotate: "-90deg" }],
-          }}
-        >
-          <Pressable accessibilityRole="button" accessibilityLabel={label.a11y} hitSlop={8} onPress={() => props.onSelect(label.from)} style={{ maxWidth: "100%" }}>
-            <Text numberOfLines={1} style={{ color: label.color, opacity: label.opacity, fontSize: 10, lineHeight: LABEL_H, paddingHorizontal: 3, backgroundColor: theme.colors.surface1 }}>
-              {label.text}
-            </Text>
-          </Pressable>
-        </View>
-      ))}
     </View>
   );
 }
 
-function Node(props: GraphProps & { step: Step; longNeeds: string[]; nodeWidth: number; loops: LoopEdge[]; onInfo(): void; onBoxHeight(height: number): void }) {
+function Node(props: GraphProps & { step: Step; longNeeds: string[]; nodeWidth: number; loops: LoopEdge[]; loopGroups: LoopGroup[]; titleOf(id: string): string; selectedLoop: string | null; loopTarget: boolean; onToggleLoop(key: string): void; onBoxHeight(height: number): void }) {
   const { step, run, theme, playbook, highlighted } = props;
   const state = run?.steps[step.id];
   const attempts = state?.attempts ?? [];
@@ -760,7 +668,9 @@ function Node(props: GraphProps & { step: Step; longNeeds: string[]; nodeWidth: 
   const jobLine = isFanout && state?.fanout ? engineText(state.fanout) : isHandoff ? (latest?.job ? `Handed off to ${step.handoff} (${latest.job.jobId})` : nodeState === "running" ? latest?.lastMessage ?? null : null) : latest?.waiting && nodeState === "running" ? `Waiting for tokens until ${new Date(latest.waiting.until).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : null;
   const stateLabel = nodeStateLabel(nodeState);
   const onPress = () => (latestAgent ? props.onOpenAgent(latestAgent) : props.onOpenSheet(step.id));
-  const isHighlighted = highlighted === step.id;
+  const isHighlighted = highlighted === step.id || props.loopTarget;
+  const [expanded, setExpanded] = useState(false);
+  const { shown, hidden } = visibleAttempts(attempts, expanded);
 
   return (
     <View style={{ width: props.nodeWidth }}>
@@ -791,10 +701,7 @@ function Node(props: GraphProps & { step: Step; longNeeds: string[]; nodeWidth: 
               accessibilityRole="button"
               accessibilityLabel={`Details for ${step.id}`}
               hitSlop={8}
-              onPress={() => {
-                props.onInfo();
-                props.onOpenSheet(step.id);
-              }}
+              onPress={() => props.onOpenSheet(step.id)}
             >
               <Icon name="Info" size={13} color={theme.colors.foregroundMuted} />
             </Pressable>
@@ -834,7 +741,17 @@ function Node(props: GraphProps & { step: Step; longNeeds: string[]; nodeWidth: 
         ) : null}
         {attempts.length > 1 ? (
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4, paddingHorizontal: 8, paddingBottom: 6 }}>
-            {attempts.map((attempt) => (
+            {hidden > 0 || expanded ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={expanded ? `Collapse the attempts of ${step.id}` : `Show all ${attempts.length} attempts of ${step.id}`}
+                onPress={() => setExpanded((current) => !current)}
+                style={{ borderRadius: 6, paddingHorizontal: 5, paddingVertical: 1, borderWidth: 1, borderColor: theme.colors.border }}
+              >
+                <Text style={{ color: theme.colors.foregroundMuted, fontSize: 10 }}>{expanded ? "Collapse" : `${attempts.length} attempts · +${hidden} earlier`}</Text>
+              </Pressable>
+            ) : null}
+            {shown.map((attempt) => (
               <Pressable
                 key={attempt.n}
                 accessibilityRole="button"
@@ -843,6 +760,25 @@ function Node(props: GraphProps & { step: Step; longNeeds: string[]; nodeWidth: 
                 style={{ borderRadius: 6, paddingHorizontal: 5, paddingVertical: 1, backgroundColor: theme.colors.surface2 }}
               >
                 <Text style={{ color: theme.colors.foreground, fontSize: 10 }}>#{attempt.n}</Text>
+              </Pressable>
+            ))}
+          </View>
+        ) : null}
+        {props.loopGroups.length > 0 ? (
+          <View style={{ gap: 4, paddingHorizontal: 8, paddingBottom: 6 }}>
+            {props.loopGroups.map((group) => (
+              <Pressable
+                key={group.key}
+                accessibilityRole="button"
+                accessibilityState={{ selected: props.selectedLoop === group.key }}
+                accessibilityLabel={`Loops back to ${group.to}: ${group.edges.map(loopText).join(", ")}`}
+                hitSlop={4}
+                onPress={() => props.onToggleLoop(group.key)}
+                style={{ borderRadius: 6, paddingHorizontal: 6, paddingVertical: 3, borderWidth: 1, borderColor: props.selectedLoop === group.key ? theme.colors.accent : theme.colors.border }}
+              >
+                <Text numberOfLines={1} style={{ color: group.exhausted ? theme.colors.foregroundMuted : theme.colors.foreground, fontSize: 10 }}>
+                  {badgeText(group, props.titleOf(group.to))}
+                </Text>
               </Pressable>
             ))}
           </View>

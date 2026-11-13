@@ -43,24 +43,19 @@ export function groupLoops(loops: readonly LoopEdge[]): LoopGroup[] {
   return [...groups.values()];
 }
 
-/**
- * A lane (0, 1, ...) for each group, on the right of the graph. Groups whose spans of layers do
- * not overlap share a lane, so there are few lanes however many loops a playbook has.
- */
-export function assignLanes(groups: readonly LoopGroup[], layerOf: (id: string) => number): { lanes: Map<string, number>; count: number } {
-  const taken: Array<Array<[number, number]>> = [];
-  const lanes = new Map<string, number>();
-  const spans = groups
-    .map((group) => ({ key: group.key, lo: Math.min(layerOf(group.from), layerOf(group.to)), hi: Math.max(layerOf(group.from), layerOf(group.to)) }))
-    .sort((a, b) => b.hi - b.lo - (a.hi - a.lo) || a.lo - b.lo);
-  for (const span of spans) {
-    let lane = taken.findIndex((used) => used.every(([lo, hi]) => span.hi < lo || span.lo > hi));
-    if (lane < 0) {
-      lane = taken.length;
-      taken.push([]);
-    }
-    taken[lane]!.push([span.lo, span.hi]);
-    lanes.set(span.key, lane);
-  }
-  return { lanes, count: taken.length };
+/** The badge on a looping step: "↩ Target · 2 outcomes · 80 taken" (one outcome: its name and n/max). */
+export function badgeText(group: LoopGroup, targetTitle: string): string {
+  const [only] = group.edges;
+  const middle = group.edges.length === 1 && only ? loopText(only) : `${group.edges.length} outcomes`;
+  return `↩ ${targetTitle} · ${middle}${group.edges.length > 1 && group.taken > 0 ? ` · ${group.taken} taken` : ""}`;
+}
+
+/** More attempts than this collapse to the last few plus a summary chip. */
+export const COLLAPSE_ABOVE = 6;
+export const KEEP_LAST = 4;
+
+/** The attempts to show as chips: all of them, or (many attempts, not expanded) only the latest few. */
+export function visibleAttempts<T>(attempts: readonly T[], expanded: boolean): { shown: T[]; hidden: number } {
+  if (expanded || attempts.length <= COLLAPSE_ABOVE) return { shown: [...attempts], hidden: 0 };
+  return { shown: attempts.slice(-KEEP_LAST), hidden: attempts.length - KEEP_LAST };
 }

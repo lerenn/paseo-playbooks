@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Superseded by 2026-11-13-graph-loop-badges.md (for the default view: no back-edge lines are drawn until a badge is selected)
 
 ## Context
 
