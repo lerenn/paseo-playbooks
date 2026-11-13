@@ -5,6 +5,8 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
 import { decideGateRpc, nudgeStepRpc, restartRunRpc, retryStepRpc, scriptOutputRpc } from "../shared/contracts";
 import { askChoices, askTransitionOf, choicesOfGate, destinationOf, gateText, linkify, waitsForHuman } from "../shared/gates";
+import { runningFor } from "../shared/elapsed";
+import { useNow } from "./now";
 import { conditionText } from "../shared/labels";
 import { attemptTimeoutMs, isPaused, isStepLive, restartBlocker, type Gate, type GateChoice, type Playbook, type Run, type RunSummary } from "../shared/types";
 import { SCRIPT_OUTPUT_POLL_MS, checkHeading, lastLines, scriptActivity } from "./script-output";
@@ -338,6 +340,7 @@ export function StepSheet(props: {
   const step = playbook.steps.find((candidate) => candidate.id === stepId)!;
   const role = step.role ? playbook.roles[step.role] : undefined;
   const state = run?.steps[stepId];
+  const now = useNow();
   const attempts = state?.attempts ?? [];
   const latest = attempts.at(-1);
   const pendingGate = run?.gates.find((gate) => gate.stepId === stepId && gate.status === "pending");
@@ -369,7 +372,7 @@ export function StepSheet(props: {
             {step.description}
           </Text>
         ) : null}
-        {state ? <Line theme={theme}>Status: {state.status}{latest ? ` · attempt ${latest.n}` : ""}{latest?.waiting && state.status === "running" ? ` · waiting for tokens until ${new Date(latest.waiting.until).toLocaleString()}` : ""}</Line> : null}
+        {state ? <Line theme={theme}>Status: {state.status}{latest ? ` · attempt ${latest.n}` : ""}{latest?.waiting && state.status === "running" ? ` · waiting for tokens until ${new Date(latest.waiting.until).toLocaleString()}` : ""}{state.status === "running" && !pendingGate ? ` · running for ${runningFor(latest?.startedAt, now) ?? "—"}` : ""}</Line> : null}
         {step.kind === "agent" ? (
           <Section theme={theme} title="Agent">
             <Line theme={theme} muted>
