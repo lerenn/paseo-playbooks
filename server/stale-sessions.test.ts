@@ -20,7 +20,7 @@ function fakePaseo(agents: Record<string, Snapshot>, reloaded: string[]) {
   return {
     agents: {
       ref: (id: string) => ({
-        refresh: async () => (agents[id] ? { agent: { archivedAt: null, pendingPermissions: [], cwd: "/nowhere", ...agents[id] } } : null),
+        refresh: async () => (agents[id] ? { agent: { archivedAt: null, pendingPermissions: [], cwd: tmpdir(), ...agents[id] } } : null),
         reload: async () => {
           reloaded.push(id);
           return null;
@@ -80,18 +80,57 @@ describe("reloading stale sessions", () => {
     expect(await after.reloadIfStale(paseo, "running")).toBe(true);
   });
 
-  it("does not retry an agent whose reload failed", async () => {
+  it("retries a failed reload with a backoff, then gives up", async () => {
+    const before = new StaleSessions(path.join(await tmp(), "s.json"), () => undefined);
+    await before.noteOpened("a");
+    await before.flush();
+    const logs: string[] = [];
+    const after = new StaleSessions(path.join(temps[0]!, "s.json"), (m) => logs.push(m), [5, 5]);
+    let calls = 0;
+    let failing = true;
+    const paseo = {
+      agents: { ref: () => ({ refresh: async () => ({ agent: { status: "idle", archivedAt: null, pendingPermissions: [], cwd: tmpdir() } }), reload: async () => { calls++; if (failing) throw new Error("boom"); } }) },
+    } as never;
+    expect(await after.tryReload(paseo, "a")).toEqual({ kind: "failed", reason: "boom" });
+    // Within the wait: not tried again by a caller.
+    expect((await after.tryReload(paseo, "a")).kind).toBe("busy");
+    expect(calls).toBe(1);
+    // The scheduled retries run by themselves, then stop.
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(calls).toBe(3);
+    expect(logs.join("\n")).toMatch(/could not reload.*boom.*retrying/);
+    expect(logs.join("\n")).toMatch(/giving up after 3 attempts/);
+    after.stop();
+  });
+
+  it("a retry that works reloads the agent once", async () => {
+    const file = path.join(await tmp(), "s.json");
+    const before = new StaleSessions(file, () => undefined);
+    await before.noteOpened("a");
+    await before.flush();
+    const after = new StaleSessions(file, () => undefined, [5]);
+    let calls = 0;
+    const paseo = {
+      agents: { ref: () => ({ refresh: async () => ({ agent: { status: "idle", archivedAt: null, pendingPermissions: [], cwd: tmpdir() } }), reload: async () => { if (++calls === 1) throw new Error("starting"); } }) },
+    } as never;
+    expect((await after.tryReload(paseo, "a")).kind).toBe("failed");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(calls).toBe(2);
+    expect(await after.reloadIfStale(paseo, "a")).toBe(false);
+    expect(calls).toBe(2);
+    after.stop();
+  });
+
+  it("skips an agent whose working directory is gone, quietly and for good", async () => {
     const { before, after, logs } = await twoGenerations();
     await before.noteOpened("a");
     await before.flush();
-    let calls = 0;
-    const paseo = {
-      agents: { ref: () => ({ refresh: async () => ({ agent: { status: "idle", archivedAt: null, pendingPermissions: [], cwd: "/nowhere" } }), reload: async () => { calls++; throw new Error("boom"); } }) },
-    } as never;
-    expect(await after.reloadIfStale(paseo, "a")).toBe(false);
-    expect(await after.reloadIfStale(paseo, "a")).toBe(false);
-    expect(calls).toBe(1);
-    expect(logs.join("\n")).toMatch(/could not reload.*boom/);
+    const reloaded: string[] = [];
+    const paseo = fakePaseo({ a: { status: "idle", cwd: path.join(await tmp(), "removed-worktree") } }, reloaded);
+    expect(await after.tryReload(paseo, "a")).toEqual({ kind: "gone" });
+    expect(await after.tryReload(paseo, "a")).toEqual({ kind: "current" });
+    expect(reloaded).toEqual([]);
+    expect(logs).toEqual([]);
   });
 
   it("is switched off by reload_stale_sessions: false in the workspace's defaults", async () => {
