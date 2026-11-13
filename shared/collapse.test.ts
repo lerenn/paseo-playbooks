@@ -58,10 +58,17 @@ describe("isCollapsed", () => {
     expect(markSeen(state, { pr: busy })).toBe(state);
   });
   it("lets a manual choice win both ways, also over a later start", () => {
-    const folded = toggled(EMPTY_COLLAPSE, "pr", false);
+    const folded = toggled(EMPTY_COLLAPSE, "pr", true);
     expect(isCollapsed("pr", busy, folded, true)).toBe(true);
-    const opened = toggled(EMPTY_COLLAPSE, "pr", true);
+    const opened = toggled(EMPTY_COLLAPSE, "pr", false);
     expect(isCollapsed("pr", idle, opened, true)).toBe(false);
+  });
+  it("collapses an open group from its header and reopens it from its node", () => {
+    const open = markSeen(EMPTY_COLLAPSE, { pr: busy });
+    expect(isCollapsed("pr", busy, open, true)).toBe(false);
+    const folded = toggled(open, "pr", true);
+    expect(isCollapsed("pr", busy, folded, true)).toBe(true);
+    expect(isCollapsed("pr", busy, toggled(folded, "pr", false), true)).toBe(false);
   });
   it("has its own state for each nested group", () => {
     const inner = blockStats("pr.deep", ids, at({ "pr.deep.lint": "running" }));
