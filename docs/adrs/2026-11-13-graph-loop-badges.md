@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted. Supersedes the always-drawn back-edge lines of `2026-11-13-graph-backlinks.md`.
+Accepted. Supersedes the always-drawn back-edge lines of `2026-11-13-graph-backlinks.md`. The "no line by default" part is superseded by `2026-11-13-graph-grey-loop-lines.md`.
 
 ## Context
 
@@ -19,7 +19,7 @@ one chip per attempt, which pushed nodes far apart.
 - More than 6 attempts collapse to the last 4 chips plus a summary chip ("44 attempts · +40
   earlier"); tapping it expands every attempt, and "Collapse" folds them again. The latest attempt
   is always visible and nothing auto-collapses.
-- The lane assignment (`assignLanes`) is removed; the pure grouping helpers stay in `client/loops.ts`.
+- (Lane assignment was removed here and restored by the grey-loop-lines ADR.)
 
 ## Consequences
 
