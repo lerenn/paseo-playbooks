@@ -19,6 +19,9 @@ siblings of that key or of the feature's parent.
 singleton: { isolation_level: …, branch: main, parallel: false }
 script: { run: wait_ci.sh, poll: 30s }
 
+# yes: a feature of a feature nests (a work pool under a fan-out)
+fanout: { playbook: job, items: "{{ inputs.items }}", pool: { refill: { playbook: unlocked_jobs, inputs: { done: "{{ pool.done }}" } } } }
+
 # no
 singleton: true
 singleton_branch: main
@@ -39,6 +42,11 @@ poll: 30s
 
 Before adding a flat field, check whether it belongs to a feature that already has a block, or
 to one that should get a block. If you still think it should be flat, say why in the ADR.
+
+A block that hands work to a playbook the author writes (a fan-out's `pool.refill`) also states the **author contract**
+in the skill and refuses at load time what breaks it: the playbook is missing, recursive or a singleton, it lacks the
+declared list output, a required input is unmapped, no input receives the values it needs (`pool.*`), a value is
+unbounded (`max_refills` has a default and a maximum). See `docs/adrs/2026-11-13-open-fanout-pool.md`.
 
 ## Where it goes
 

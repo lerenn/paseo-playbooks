@@ -64,7 +64,7 @@
 
 <h3 id="tools-any">Any agent except step and gate agents</h3>
 <table><thead><tr><th>Tool</th><th>What it does</th></tr></thead><tbody>
-<tr><td><code>get_run</code>, <code>list_runs</code>, <code>list_gates</code></td><td>Read runs (steps, reports, outputs, failures, restart points) and every open gate across runs. Read-only.</td></tr>
+<tr><td><code>get_run</code>, <code>list_runs</code>, <code>list_gates</code></td><td>Read runs (steps, reports, outputs, failures, restart points) and every open gate across runs. Read-only. On a fan-out step with a <code>pool</code>, <code>get_run</code> also returns <code>pool</code>: refills, last refill time, items added, status and each refill pass (finished keys given, keys added, output). Passes are announced as <code>fanout.refill</code> events.</td></tr>
 <tr><td><code>get_analytics</code></td><td>Where the tokens went, by playbook, step, role and model.</td></tr>
 <tr><td><code>read_agent_conversation</code></td><td>Reads any agent's conversation as text, newest entries first.</td></tr>
 <tr><td><code>validate_playbooks</code></td><td>Runs the panel's checks on the workspace's playbooks.</td></tr>
