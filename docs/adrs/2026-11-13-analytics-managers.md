@@ -38,3 +38,4 @@ invisible and the views did not add up.
 ## Note
 
 The label was first `(manager)`, parentheses being the guard against clashes. It is now `Playbook Manager`; the guard is the `manager` flag on rows and chart series, and the label is display only.
+The manager rows also wear a muted gear icon (table rows, legend, tapped-day box), decided by the `manager` flag, never by the label.

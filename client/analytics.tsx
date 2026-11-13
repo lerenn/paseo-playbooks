@@ -1,4 +1,5 @@
 import { useRpc } from "@getpaseo/plugin/client";
+import { Icon } from "@getpaseo/plugin/client/ui";
 import { useEffect, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { rowId, tokensOf, type AgentRow, type Analytics, type DailySeries, type UsageRow } from "../shared/analytics";
@@ -26,6 +27,16 @@ function localTimeZone(): string | undefined {
 
 const PLOT_HEIGHT = 120;
 const AXIS_WIDTH = 34;
+
+/** A muted gear before the name of the plugin's own manager rows; none for a role or step an author named alike. */
+function ManagerMark(props: { theme: Theme; row: { manager?: boolean }; size?: number }) {
+  if (!props.row.manager) return null;
+  return (
+    <View accessible accessibilityLabel="Run manager agent, added by the plugin">
+      <Icon name="Settings" size={props.size ?? 12} color={props.theme.colors.foregroundMuted} />
+    </View>
+  );
+}
 
 /** The colour each group of a breakdown has in its chart, so the table rows can wear the same one. */
 function colorsOf(theme: Theme, chart: DailySeries | undefined): Map<string, string> {
@@ -136,6 +147,7 @@ function DailyChart(props: { theme: Theme; chart: DailySeries; colors: Map<strin
                 .map((row) => (
                   <View key={rowId(row)} style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
                     <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: colors.get(rowId(row)) }} />
+                    <ManagerMark theme={theme} row={row} size={10} />
                     <Text numberOfLines={1} style={{ flexShrink: 1, color: theme.colors.foreground, fontSize: 10 }}>
                       {row.key}: {row.tokens[pick]!.toLocaleString()}
                     </Text>
@@ -166,6 +178,7 @@ function DailyChart(props: { theme: Theme; chart: DailySeries; colors: Map<strin
               style={{ flexDirection: "row", alignItems: "center", gap: 5, maxWidth: "100%", borderRadius: 10, paddingHorizontal: 6, paddingVertical: 2, opacity: on ? 1 : 0.45, backgroundColor: isolated === rowId(row) ? theme.colors.surface2 : "transparent" }}
             >
               <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: colors.get(rowId(row)) }} />
+              <ManagerMark theme={theme} row={row} size={11} />
               <Text numberOfLines={1} style={{ flexShrink: 1, color: theme.colors.foreground, fontSize: 11 }}>
                 {row.key}
               </Text>
@@ -297,6 +310,7 @@ function Breakdown(props: { theme: Theme; title: string; rows: UsageRow[]; chart
               <View style={{ flexDirection: "row", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
                 <View style={{ flex: 1, minWidth: 140, flexDirection: "row", alignItems: "center", gap: 6 }}>
                   {chart ? <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: color }} /> : null}
+                  <ManagerMark theme={theme} row={row} />
                   <Text style={{ flexShrink: 1, color: theme.colors.foreground, fontSize: 13 }}>{row.key}</Text>
                 </View>
                 <Text style={{ color: theme.colors.foreground, fontSize: 13, fontWeight: "600" }}>{compactNumber(tokensOf(row.usage))}</Text>
