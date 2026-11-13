@@ -263,6 +263,29 @@ const RawFanoutStepSchema = z
     max_active: z.number().int().positive().max(50).default(1),
     /** Cancel the active child runs when the parent run is canceled or fails, or the step is reset. Default true. */
     cancel_children: z.boolean().default(true),
+    /** Work pool: the fan-out stays open and refills as children finish. Default: a batch (the join waits for every child, then the step ends). */
+    pool: z
+      .object({
+        /** The refill pass: a run of a playbook of the folder, started whenever children have finished, that lists the items to add. */
+        refill: z
+          .object({
+            /** The pass's playbook (not this one, not a singleton). It must be safe to run many times and use the finished keys. */
+            playbook: z.string().min(1),
+            /** The pass playbook's inputs. Templates over `pool.done`, `pool.failed`, `pool.active`, `pool.pending`, `pool.known` (JSON lists of keys), `pool.refill` and `inputs.<name>`. At least one must read a `pool.` value. */
+            inputs: z.record(z.string(), RawScalarSchema.transform(String)).optional(),
+            /** The pass playbook's output holding the list of items (same shape as `items`). Default `items`. */
+            items_output: z.string().min(1).default("items"),
+            /** Which finished children trigger a pass: `completed` (default) or `ended` (also failed and canceled). */
+            after: z.enum(["completed", "ended"]).default("completed"),
+            /** At most this many passes. Default 20, at most 500. */
+            max_refills: z.number().int().positive().max(500).default(20),
+            /** A pass starts once the oldest unhandled child ending, and the previous pass, are this old. Default: none. */
+            debounce: z.string().optional(),
+          })
+          .strict(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -295,6 +318,12 @@ const RawBranchStepSchema = z
 
 /** A fan-out step's outcomes: every item completed, or at least one did not (failed, canceled or never started); `failure` is the step itself failing (bad list, timeout). */
 const FANOUT_OUTCOMES = ["all_completed", "some_failed", "failure"];
+/** A work pool adds one: refilling stopped (a pass failed, or `max_refills` was reached) and the running children then ended. */
+const POOL_OUTCOMES = [...FANOUT_OUTCOMES, "refill_stopped"];
+const POOL_OUTPUTS: Record<string, VarDef> = { refills: { type: "number" }, added: { type: "number" } };
+/** A pool step with no `timeout` is bounded anyway. */
+const POOL_DEFAULT_TIMEOUT_MS = 12 * 60 * 60 * 1000;
+const POOL_VALUES = ["done", "failed", "active", "pending", "known", "refill"];
 /** What a fan-out step reports when it joins; later steps read them as `steps.<id>.outputs.<name>`. */
 const FANOUT_OUTPUTS: Record<string, VarDef> = {
   results: { type: "list" },
@@ -1492,9 +1521,47 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
           if (def.required && def.default === undefined && !(name in mapped)) err(`${where}: fanout.inputs.${name}: playbook "${targetId}" requires input "${name}"; map it, e.g. ${name}: "{{ item }}"`);
         }
       }
+      let pool: NonNullable<Step["fanout"]>["pool"];
+      const refill = fan.pool?.refill;
+      if (refill) {
+        const poolId = refill.playbook;
+        let passTarget: Playbook | null = null;
+        if (poolId === id || stack.includes(poolId)) {
+          err(`${where}: fanout.pool.refill.playbook: "${poolId}" leads back to this playbook (${[...stack, id, poolId].join(" → ")}); a refill pass must not start its own playbook`);
+        } else if (!folder.ids.has(poolId)) {
+          err(`${where}: fanout.pool.refill.playbook: playbook "${poolId}" not found in ${folder.relDir}/`);
+        } else {
+          const loaded = await folder.load(poolId, [...stack, id]);
+          passTarget = loaded.entry.playbook;
+          if (!passTarget) err(`${where}: fanout.pool.refill.playbook: playbook "${poolId}" is invalid: ${loaded.entry.errors[0] ?? "see that file"}`);
+          else if (passTarget.singleton) {
+            err(`${where}: fanout.pool.refill.playbook: playbook "${poolId}" is a singleton: its runs only come from hand-offs`);
+            passTarget = null;
+          }
+        }
+        const passInputs = refill.inputs ?? {};
+        if (passTarget) {
+          for (const name of Object.keys(passInputs)) {
+            if (!passTarget.inputs[name]) err(`${where}: fanout.pool.refill.inputs.${name}: playbook "${poolId}" has no input "${name}" (it has: ${Object.keys(passTarget.inputs).join(", ") || "none"})`);
+          }
+          for (const [name, def] of Object.entries(passTarget.inputs)) {
+            if (def.required && def.default === undefined && !(name in passInputs)) err(`${where}: fanout.pool.refill.inputs.${name}: playbook "${poolId}" requires input "${name}"; map it, e.g. ${name}: "{{ pool.done }}"`);
+          }
+          const out = passTarget.outputs[refill.items_output];
+          if (!out) err(`${where}: fanout.pool.refill.items_output: playbook "${poolId}" has no output "${refill.items_output}" (it has: ${Object.keys(passTarget.outputs).join(", ") || "none"}); the pass must output the list of items`);
+          else if (out.type !== undefined && out.type !== "list" && out.type !== "string") err(`${where}: fanout.pool.refill.items_output: output "${refill.items_output}" is ${out.type}, not a list`);
+        }
+        if (!Object.values(passInputs).some((template) => templateRefs(template).some((ref) => ref.startsWith("pool.")))) {
+          err(`${where}: fanout.pool.refill.inputs: no input receives the finished keys; map one, e.g. done: "{{ pool.done }}" (values: ${POOL_VALUES.map((value) => `pool.${value}`).join(", ")}). A pass that does not know what is done would list the same items every time`);
+        }
+        const debounceMs = refill.debounce === undefined ? 0 : parseDuration(refill.debounce);
+        if (debounceMs === null) err(`${where}: fanout.pool.refill.debounce: expected a duration such as 30s or 5m`);
+        pool = { playbook: qualifyId(folder.repo, poolId), inputs: passInputs, itemsOutput: refill.items_output, after: refill.after, maxRefills: refill.max_refills, debounceMs: debounceMs ?? 0 };
+      }
+      const outcomeNames = pool ? POOL_OUTCOMES : FANOUT_OUTCOMES;
       const on: Record<string, Transition> = {};
       for (const [outcome, transition] of Object.entries(rawStep.on ?? {})) {
-        if (!FANOUT_OUTCOMES.includes(outcome)) err(`${where}: on.${outcome}: not an outcome of a fan-out step (${FANOUT_OUTCOMES.join(", ")})`);
+        if (!outcomeNames.includes(outcome)) err(`${where}: on.${outcome}: not an outcome of a fan-out step (${outcomeNames.join(", ")}${pool ? "" : "; `refill_stopped` needs `fanout.pool`"})`);
         if (typeof transition === "string") on[outcome] = { kind: transition };
         else if ("ask" in transition) err(`${where}: on.${outcome}: \`ask\` does not apply to a fan-out step`);
         else if ("end" in transition) on[outcome] = endTransition(`${where}: on.${outcome}`, transition.end);
@@ -1512,8 +1579,8 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
         needs: rawStep.needs,
         prompt: "",
         inputs: {},
-        outputs: FANOUT_OUTPUTS,
-        outcomes: FANOUT_OUTCOMES,
+        outputs: pool ? { ...FANOUT_OUTPUTS, ...POOL_OUTPUTS } : FANOUT_OUTPUTS,
+        outcomes: pool ? POOL_OUTCOMES : FANOUT_OUTCOMES,
         retries: rawStep.retries,
         agent: {},
         on,
@@ -1526,8 +1593,9 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
           ...(fan.workspace_name !== undefined ? { workspaceName: fan.workspace_name } : {}),
           maxActive: fan.max_active,
           cancelChildren: fan.cancel_children,
+          ...(pool ? { pool } : {}),
         },
-        ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+        ...((timeoutMs ?? (pool && timeoutTemplate === undefined ? POOL_DEFAULT_TIMEOUT_MS : undefined)) !== undefined ? { timeoutMs: timeoutMs ?? POOL_DEFAULT_TIMEOUT_MS } : {}),
         ...(timeoutTemplate !== undefined ? { timeout: timeoutTemplate } : {}),
         ...(rawStep.title !== undefined ? { title: rawStep.title } : {}),
         ...(rawStep.description !== undefined ? { description: rawStep.description } : {}),
@@ -2226,6 +2294,16 @@ function checkFanoutRefs(step: Step, err: (message: string) => void): void {
   for (const [name, template] of Object.entries(fan.inputs)) check(`fanout.inputs.${name}`, template, true);
   if (fan.key !== undefined) check("fanout.key", fan.key, true);
   if (fan.workspaceName !== undefined) check("fanout.workspace_name", fan.workspaceName, true);
+  for (const [name, template] of Object.entries(fan.pool?.inputs ?? {})) {
+    for (const ref of templateRefs(template)) {
+      const input = /^inputs\.([A-Za-z_][\w-]*)$/.exec(ref)?.[1];
+      if (input !== undefined) {
+        if (!(input in step.inputs)) err(`${where}: fanout.pool.refill.inputs.${name} uses "{{ ${ref} }}" but the step declares no such input (declare it under \`inputs\`)`);
+      } else if (!POOL_VALUES.some((value) => ref === `pool.${value}`)) {
+        err(`${where}: fanout.pool.refill.inputs.${name} uses "{{ ${ref} }}"; it may use ${POOL_VALUES.map((value) => `pool.${value}`).join(", ")} and inputs.<name>`);
+      }
+    }
+  }
 }
 
 /** Wires a playbook step: its inputs are the sub-playbook's inputs, by name or mapped explicitly. */

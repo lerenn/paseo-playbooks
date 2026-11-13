@@ -211,6 +211,23 @@ export const StepSchema = z.object({
       maxActive: z.number().int().positive(),
       /** Cancel the still-active child runs when the parent run is canceled or fails, or the step is reset. */
       cancelChildren: z.boolean(),
+      /** Work pool: the fan-out stays open and a refill pass adds items as children finish (ADR 2026-11-13-open-fanout-pool). Unset = a batch. */
+      pool: z
+        .object({
+          /** The playbook (qualified id) a refill pass runs; its `itemsOutput` is a list of items like `items`. */
+          playbook: z.string(),
+          /** The pass playbook's inputs, by name (templates over `pool.*` and `inputs.<name>`). */
+          inputs: z.record(z.string(), z.string()),
+          /** The pass playbook's output holding the list of items. */
+          itemsOutput: z.string(),
+          /** Which child endings trigger a pass: `completed` (successes only) or `ended` (also failed and canceled). */
+          after: z.enum(["completed", "ended"]),
+          /** At most this many passes. */
+          maxRefills: z.number().int().positive(),
+          /** A pass starts once the oldest unhandled child ending is this old (0 = at once). */
+          debounceMs: z.number().int().min(0),
+        })
+        .optional(),
     })
     .optional(),
   /** On a batch of a singleton pipeline: the plugin settles its jobs from this output when the step completes. `effects`: per outcome, what happens to the job (an outcome not listed ends it). */
@@ -642,6 +659,46 @@ export const FanoutChildSchema = z.object({
 });
 export type FanoutChild = z.infer<typeof FanoutChildSchema>;
 
+/** One refill pass of a work pool: a run of the pool's playbook that lists items, given the keys of the items finished so far. */
+export const PoolPassSchema = z.object({
+  n: z.number().int().positive(),
+  /** The pass run's id (chosen before it is created). */
+  runId: z.string().nullable().default(null),
+  workspaceId: z.string().nullable().default(null),
+  /** starting: its run is being created; running; completed: its items were applied; failed / canceled: it gave no usable list; lost: its start was cut by a daemon restart (it is run again). */
+  status: z.enum(["starting", "running", "completed", "failed", "canceled", "lost"]),
+  startedAt: z.string(),
+  endedAt: z.string().nullable().default(null),
+  error: z.string().nullable().default(null),
+  /** Keys of the items done when the pass started: what it was given as `pool.done` and `pool.failed`. */
+  keys: z.array(z.string()).default([]),
+  /** Keys of the children this pass added. */
+  added: z.array(z.string()).default([]),
+  /** Items of the pass's list that were already in the fan-out (ignored). */
+  skipped: z.number().int().default(0),
+  /** What the pass decided: its items output as it gave it (cut short). */
+  output: z.string().nullable().default(null),
+});
+export type PoolPass = z.infer<typeof PoolPassSchema>;
+
+export const MAX_POOL_PASSES = 50;
+
+export const PoolStateSchema = z.object({
+  /** Passes started (not counting lost ones): what `max_refills` bounds. */
+  refills: z.number().int().min(0).default(0),
+  lastRefillAt: z.string().nullable().default(null),
+  /** Children added by passes. */
+  added: z.number().int().min(0).default(0),
+  /** Keys of ending children already accounted for by a completed pass. */
+  handled: z.array(z.string()).default([]),
+  /** open: refilling as children end; stopped: a pass failed or `max_refills` was reached, no more passes (running children go on). */
+  status: z.enum(["open", "stopped"]).default("open"),
+  stopReason: z.string().nullable().default(null),
+  /** The latest passes (oldest first, the last MAX_POOL_PASSES kept). */
+  passes: z.array(PoolPassSchema).default([]),
+});
+export type PoolState = z.infer<typeof PoolStateSchema>;
+
 export const FanoutStateSchema = z.object({
   /** The attempt these children belong to. */
   attempt: z.number().int().positive(),
@@ -649,6 +706,8 @@ export const FanoutStateSchema = z.object({
   loop: z.number().int().min(0).default(0),
   startedAt: z.string().default(""),
   children: z.array(FanoutChildSchema),
+  /** Work pool steps: the refill passes' state. Null for a batch. */
+  pool: PoolStateSchema.nullable().default(null),
 });
 export type FanoutState = z.infer<typeof FanoutStateSchema>;
 
@@ -946,6 +1005,14 @@ export const FanoutChildSummarySchema = z.object({
   /** Earlier runs of the item, oldest first. */
   previous: z.array(FanoutPreviousSchema.pick({ runId: true, status: true, reason: true })).default([]),
 });
+/** A work pool's progress as the Playbooks screen draws it: counters, status and the latest refill passes. */
+export const PoolSummarySchema = z.object({
+  refills: z.number().int(),
+  lastRefillAt: z.string().nullable(),
+  added: z.number().int(),
+  status: PoolStateSchema.shape.status,
+  passes: z.array(PoolPassSchema.pick({ n: true, runId: true, status: true, startedAt: true, endedAt: true, error: true, output: true }).extend({ added: z.array(z.string()), keys: z.number().int() })),
+});
 export const FanoutPassSummarySchema = z.object({ loop: z.number().int(), children: z.array(FanoutChildSummarySchema) });
 /** Earlier passes the summary carries per fan-out step. */
 export const SUMMARY_FANOUT_PASSES = 5;
@@ -981,7 +1048,7 @@ export const RunSummarySchema = z.object({
   /** Set on a run a fan-out step started: its parent run, step and the item's key. */
   parent: RunSchema.shape.parent.default(null),
   /** Fan-out steps that started: the current pass's children, and the last passes before it (oldest first), by step id. */
-  fanouts: z.record(z.string(), z.object({ loop: z.number().int(), children: z.array(FanoutChildSummarySchema), past: z.array(FanoutPassSummarySchema) })).default({}),
+  fanouts: z.record(z.string(), z.object({ loop: z.number().int(), children: z.array(FanoutChildSummarySchema), pool: PoolSummarySchema.nullable().default(null), past: z.array(FanoutPassSummarySchema) })).default({}),
 });
 export type RunSummary = z.infer<typeof RunSummarySchema>;
 
@@ -1034,10 +1101,22 @@ export function summarizeRun(run: Run): RunSummary {
     fanouts: Object.fromEntries(
       Object.entries(run.steps).flatMap(([stepId, step]) =>
         step.fanout && step.status !== "pending" && step.status !== "ready"
-          ? [[stepId, { loop: step.fanout.loop, children: summarizeChildren(step.fanout), past: step.fanoutPast.slice(-SUMMARY_FANOUT_PASSES).map((pass) => ({ loop: pass.loop, children: summarizeChildren(pass) })) }]]
+          ? [[stepId, { loop: step.fanout.loop, children: summarizeChildren(step.fanout), pool: summarizePool(step.fanout), past: step.fanoutPast.slice(-SUMMARY_FANOUT_PASSES).map((pass) => ({ loop: pass.loop, children: summarizeChildren(pass) })) }]]
           : [],
       ),
     ),
+  };
+}
+
+export function summarizePool(state: FanoutState): z.infer<typeof PoolSummarySchema> | null {
+  const pool = state.pool;
+  if (!pool) return null;
+  return {
+    refills: pool.refills,
+    lastRefillAt: pool.lastRefillAt,
+    added: pool.added,
+    status: pool.status,
+    passes: pool.passes.slice(-SUMMARY_FANOUT_PASSES).map((pass) => ({ n: pass.n, runId: pass.runId, status: pass.status, startedAt: pass.startedAt, endedAt: pass.endedAt, error: pass.error, output: pass.output, added: pass.added, keys: pass.keys.length })),
   };
 }
 

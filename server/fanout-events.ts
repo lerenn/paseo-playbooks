@@ -21,4 +21,27 @@ export const FANOUT_TYPES: EventTypeDef[] = [
       return `Fan-out "${p.stepId}" of run ${p.runId}: item "${p.key}" now runs as ${p.newRunId}, replacing ${p.replacedRunId} (restart ${p.restarts})${p.reason ? `: ${p.reason.slice(0, 200)}` : ""}. get_run on ${p.runId} lists the chain.`;
     },
   },
+  {
+    type: "fanout.refill",
+    description:
+      "A work pool's refill pass (a fan-out step with `pool`): phase started when the pass begins (doneKeys: the finished items it is given), ended when its items were applied or it failed. `added` are the keys of the children this pass created, which answers why a child appeared; items already present are ignored. runId is the parent run.",
+    payload: z.object({
+      runId: z.string(),
+      stepId: z.string(),
+      n: z.number(),
+      phase: z.enum(["started", "ended"]),
+      status: z.enum(["running", "completed", "failed", "canceled", "lost"]),
+      passRunId: z.string().nullable(),
+      doneKeys: z.array(z.string()),
+      added: z.array(z.string()),
+      skipped: z.number(),
+      error: z.string().nullable(),
+    }),
+    line: (event) => {
+      const p = event.payload as { runId: string; stepId: string; n: number; phase: "started" | "ended"; status: string; added: string[]; skipped: number; error: string | null; doneKeys: string[] };
+      return p.phase === "started"
+        ? `Fan-out "${p.stepId}" of run ${p.runId}: refill #${p.n} started (${p.doneKeys.length} item(s) done so far).`
+        : `Fan-out "${p.stepId}" of run ${p.runId}: refill #${p.n} ${p.status}${p.error ? ` (${p.error.slice(0, 200)})` : ""}: ${p.added.length} added${p.added.length ? ` (${p.added.slice(0, 20).join(", ")})` : ""}${p.skipped ? `, ${p.skipped} already present` : ""}.`;
+    },
+  },
 ];

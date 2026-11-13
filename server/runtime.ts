@@ -7,7 +7,7 @@ import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 /** The daemon API handed to plugin handlers (typed via the SDK, so the build needs no @getpaseo/client). */
 type PaseoApi = PluginHandlerContext["paseo"];
 import type { AdmissionStatus, ScriptOutput } from "../shared/types";
-import type { AgentSettings, AgentTarget, Attempt, FanoutChild as FanoutChildState, Gate, Job, Playbook, Run, RunWorktree, Step, VarValue } from "../shared/types";
+import type { AgentSettings, AgentTarget, Attempt, FanoutChild as FanoutChildState, PoolPass as PoolPassState, Gate, Job, Playbook, Run, RunWorktree, Step, VarValue } from "../shared/types";
 import { addUsage } from "../shared/types";
 import { UsageLedger } from "./usage-ledger";
 import { analyze, type Analytics } from "../shared/analytics";
@@ -385,6 +385,8 @@ export class Runtime {
   /** Runs started from the panel for a busy agent: agent id → run id, delivered when its turn ends. */
   private readonly pendingHandoffs = new Map<string, string>();
   /** Script steps in flight, by attempt id: the running check, or the timer of the next one. */
+  /** Refill pass runs being created right now in this process (their reservation may not exist yet). */
+  private readonly startingPasses = new Set<string>();
   private readonly scripts = new Map<string, { child: ChildProcess | null; next: ReturnType<typeof setTimeout> | null }>();
   /** What a script attempt's checks printed, by attempt id: the running check's live tail and the last few checks. In memory only; dropped when the attempt stops. */
   private readonly scriptLive = new Map<string, ScriptLive>();
@@ -1702,6 +1704,7 @@ export class Runtime {
       if (!live(current)) return;
       engine.syncFanout(current, stepId, { now: nowIso(), nowMs: Date.now(), runOf: (id) => this.store.get(id), reserved: (id) => this.isReservedRun(id), startTimeoutMs: FANOUT_START_TIMEOUT_MS });
     });
+    if (engine.stepDef(this.store.get(runId)!, stepId).fanout!.pool) await this.advancePool(runId, stepId, live);
     const run = this.store.get(runId);
     if (!live(run)) return;
     const step = engine.stepDef(run!, stepId);
@@ -1749,8 +1752,74 @@ export class Runtime {
       }
     }
     const after = this.store.get(runId)!;
-    if (live(after) && engine.fanoutJoined(after.steps[stepId]!.fanout!)) {
+    if (live(after) && engine.fanoutJoined(after.steps[stepId]!.fanout!, step.fanout!.pool)) {
       await this.finishFanout(runId, stepId, attemptId, engine.fanoutResult(after.steps[stepId]!.fanout!));
+    }
+  }
+
+  /**
+   * A work pool's refill: follows the pass in flight (applying its items in one state change when its run completed), and starts
+   * the next pass when one is due. At most one pass exists at a time; children that end meanwhile make the follow-up pass due once.
+   */
+  private async advancePool(runId: string, stepId: string, live: (run: Run | undefined) => boolean): Promise<void> {
+    const config = engine.stepDef(this.store.get(runId)!, stepId).fanout!.pool!;
+    const emit = async (n: number) => {
+      const pass = this.store.get(runId)?.steps[stepId]?.fanout?.pool?.passes.find((candidate) => candidate.n === n);
+      if (!pass || pass.status === "starting" || pass.status === "running") return;
+      await this.bus
+        .emit("fanout.refill", { runId, stepId, n, phase: "ended", status: pass.status, passRunId: pass.runId, doneKeys: pass.keys, added: pass.added, skipped: pass.skipped, error: pass.error }, { runId, source: "fanout" })
+        .catch((error: unknown) => console.error("[playbooks] could not emit fanout.refill:", errorText(error)));
+    };
+    const flying = this.store.get(runId)?.steps[stepId]?.fanout && engine.poolPassInFlight(this.store.get(runId)!.steps[stepId]!.fanout!);
+    if (flying) {
+      await this.store.mutate(runId, (current) => {
+        if (!live(current)) return;
+        const synced = engine.syncPass(current, stepId, { now: nowIso(), nowMs: Date.now(), runOf: (id) => this.store.get(id), reserved: (id) => this.isReservedRun(id) || this.startingPasses.has(id), startTimeoutMs: FANOUT_START_TIMEOUT_MS });
+        if (synced) engine.applyPass(current, stepId, config, synced.completed, nowIso());
+      });
+      await emit(flying.n);
+    }
+    const due = await this.store.mutate(runId, (current) => {
+      if (!live(current) || isPaused(current)) return null;
+      const state = current.steps[stepId]!.fanout!;
+      if (engine.poolCheckLimit(current, stepId, config, nowIso())) return null;
+      if (!engine.poolPassDue(state, config, Date.now())) return null;
+      const pass = engine.beginPass(current, stepId, config, { runId: `run_${shortId()}`, now: nowIso() });
+      const inputs = engine.poolPassInputs(current, stepId, config, pass.n);
+      return { pass: { ...pass }, inputs };
+    });
+    if (!due) return;
+    const { pass, inputs } = due;
+    const settle = (change: (target: PoolPassState) => void, event = false) =>
+      this.store.mutate(runId, (current) => {
+        const target = current.steps[stepId]?.fanout?.pool?.passes.find((candidate) => candidate.n === pass.n);
+        if (target) change(target);
+      }).then(() => (event ? emit(pass.n) : undefined));
+    const fail = (error: string) => this.store.mutate(runId, (current) => engine.endPass(current, stepId, "failed", error, nowIso())).then(() => emit(pass.n));
+    if (!inputs.ok) return fail(inputs.error);
+    this.startingPasses.add(pass.runId!);
+    try {
+      const started = await this.startFromPanel({
+        workspaceId: this.store.get(runId)!.workspaceId,
+        playbook: config.playbook,
+        inputs: inputs.inputs,
+        force: false,
+        workspaceName: `Refill #${pass.n}`,
+        child: { runId: pass.runId!, parent: { runId, stepId, key: `refill:${pass.n}` } },
+      });
+      if (started.status === "duplicate") return fail(`${started.message} Not started again.`);
+      await settle((target) => {
+        target.workspaceId = started.workspaceId;
+      });
+      await this.bus
+        .emit("fanout.refill", { runId, stepId, n: pass.n, phase: "started", status: "running", passRunId: pass.runId, doneKeys: pass.keys, added: [], skipped: 0, error: null }, { runId, source: "fanout" })
+        .catch((error: unknown) => console.error("[playbooks] could not emit fanout.refill:", errorText(error)));
+    } catch (error) {
+      // The pass playbook's `concurrency` is full: the pass waits and does not count.
+      if (error instanceof ConcurrencyError) await this.store.mutate(runId, (current) => engine.abandonPass(current, stepId, pass.n));
+      else await fail(errorText(error));
+    } finally {
+      this.startingPasses.delete(pass.runId!);
     }
   }
 
@@ -1774,7 +1843,18 @@ export class Runtime {
   private async cancelFanoutChildren(runId: string, attemptId: string, reason: string): Promise<void> {
     const run = this.store.get(runId);
     const step = run?.playbook.steps.find((candidate) => candidate.fanout && run.steps[candidate.id]?.attempts.at(-1)?.agentId === attemptId);
-    if (!run || !step?.fanout?.cancelChildren) return;
+    if (!run || !step?.fanout) return;
+    const flying = run.steps[step.id]!.fanout?.pool && engine.poolPassInFlight(run.steps[step.id]!.fanout!);
+    if (flying) {
+      for (const [workspaceId, list] of this.reservations) {
+        const rest = list.filter((reservation) => reservation.runId !== flying.runId);
+        if (rest.length !== list.length) rest.length > 0 ? this.reservations.set(workspaceId, rest) : this.reservations.delete(workspaceId);
+      }
+      const passRun = flying.runId ? this.store.get(flying.runId) : undefined;
+      if (passRun && !isTerminal(passRun.status)) await this.cancelRun(passRun.id, `its parent run's fan-out step "${step.id}" stopped: ${reason}`, "because its parent run's fan-out stopped").catch((error: unknown) => console.error(`[playbooks] could not cancel refill run ${passRun.id}:`, errorText(error)));
+      await this.store.mutate(runId, (current) => engine.endPass(current, step.id, "canceled", reason, nowIso()));
+    }
+    if (!step.fanout.cancelChildren) return;
     const children = run.steps[step.id]!.fanout?.children.filter((child) => !engine.isChildDone(child)) ?? [];
     const outcomes = new Map<string, "canceled" | "not_started">();
     for (const child of children) {

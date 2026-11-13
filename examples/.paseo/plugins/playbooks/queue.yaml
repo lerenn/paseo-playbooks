@@ -1,0 +1,26 @@
+title: Work queue
+description: Works through jobs in parallel, adding each job as soon as the jobs it waits for are done, without waiting for the whole batch.
+steps:
+  - id: first
+    script: { run: first_jobs.sh }
+    outputs:
+      items: { type: list, description: "Jobs that wait for nothing: [{id, title}]" }
+  - id: work
+    needs: [first]
+    inputs: { items: "{{ steps.first.outputs.items }}" }
+    fanout:
+      playbook: batch_item
+      items: "{{ inputs.items }}"
+      key: "{{ item.id }}"
+      inputs: { item_id: "{{ item.id }}", title: "{{ item.title }}" }
+      workspace_name: "Job: {{ item.id }}"
+      max_active: 3
+      pool:
+        refill:
+          playbook: queue_refill                 # a run of it each time jobs have finished
+          inputs: { done: "{{ pool.done }}" }    # the keys of the jobs finished so far
+          after: completed                       # a failed job unlocks nothing
+          max_refills: 20
+          debounce: 10s
+    on: { some_failed: complete, refill_stopped: complete }
+    timeout: 8h

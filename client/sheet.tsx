@@ -414,8 +414,24 @@ export function StepSheet(props: {
             <Line theme={theme} muted>
               One run of "{step.fanout.playbook}" per item, each in its own workspace · at most {step.fanout.maxActive} at once
               {step.fanout.cancelChildren ? " · canceled with this run" : " · kept running if this run ends"}
+              {step.fanout.pool ? ` · work pool: refilled by "${step.fanout.pool.playbook}" when children finish (at most ${step.fanout.pool.maxRefills} refills)` : ""}
               {timeoutText}
             </Line>
+            {state?.fanout?.pool ? (
+              <>
+                <Line theme={theme}>
+                  Refills {state.fanout.pool.refills} · {state.fanout.pool.added} item(s) added · {state.fanout.pool.status === "stopped" ? `stopped: ${state.fanout.pool.stopReason ?? ""}` : "open"}
+                </Line>
+                {state.fanout.pool.passes.map((pass) => (
+                  <Line key={pass.n} theme={theme} muted>
+                    Refill #{pass.n} · {pass.status}
+                    {pass.runId ? ` · ${pass.runId}` : ""} · given {pass.keys.length} done key(s)
+                    {pass.status === "completed" ? ` · added ${pass.added.length ? pass.added.join(", ") : "nothing"}${pass.skipped ? ` (${pass.skipped} already present)` : ""}` : ""}
+                    {pass.error ? ` · ${pass.error}` : ""}
+                  </Line>
+                ))}
+              </>
+            ) : null}
             {state?.fanout ? (
               <>
                 <Line theme={theme}>

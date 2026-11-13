@@ -1102,9 +1102,36 @@ function fanoutCounts(children: FanoutChildInfo[]) {
   return { started: children.filter((child) => child.runId !== null).length, running: count("starting", "running"), waiting: count("pending"), done: count("completed"), failed: count("failed", "canceled", "not_started") };
 }
 
-function countsText(children: FanoutChildInfo[]): string {
+function countsText(children: FanoutChildInfo[], pool?: RunSummary["fanouts"][string]["pool"]): string {
   const counts = fanoutCounts(children);
+  if (pool) {
+    // A work pool grows: "started of total" would keep moving, so the counts are by state.
+    return [`${counts.running} running`, `${counts.done} done`, counts.waiting ? `${counts.waiting} queued` : "", counts.failed ? `${counts.failed} failed` : "", `refills ${pool.refills}`, pool.status === "stopped" ? "refilling stopped" : ""].filter(Boolean).join(" · ");
+  }
   return [`${counts.started}/${children.length} started`, counts.running ? `${counts.running} running` : "", counts.waiting ? `${counts.waiting} waiting` : "", `${counts.done} done`, counts.failed ? `${counts.failed} failed` : ""].filter(Boolean).join(" · ");
+}
+
+/** The refill passes of a work pool, oldest first and never removed: what each was given and which items it added. */
+function RefillEntries(props: { theme: Theme; pool: NonNullable<RunSummary["fanouts"][string]["pool"]> }) {
+  const { theme, pool } = props;
+  const [open, setOpen] = useState(false);
+  if (pool.passes.length === 0) return null;
+  return (
+    <View style={{ gap: 4 }}>
+      <Pressable accessibilityRole="button" accessibilityState={{ expanded: open }} onPress={() => setOpen(!open)} style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+        <Icon name={open ? "ChevronDown" : "ChevronRight"} size={13} color={theme.colors.foregroundMuted} />
+        <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>Refills ({pool.refills}) · {pool.added} item(s) added</Text>
+      </Pressable>
+      {open
+        ? pool.passes.map((pass) => (
+            <Text key={pass.n} style={{ color: theme.colors.foregroundMuted, fontSize: 11, paddingLeft: 19 }}>
+              Refill #{pass.n} · {pass.status === "completed" ? `${pass.added.length ? `added ${pass.added.slice(0, 6).join(", ")}${pass.added.length > 6 ? ` +${pass.added.length - 6}` : ""}` : "added nothing"}` : pass.status}
+              {pass.error ? ` · ${pass.error.slice(0, 120)}` : ""}
+            </Text>
+          ))
+        : null}
+    </View>
+  );
 }
 
 /**
@@ -1128,12 +1155,13 @@ function FanoutLanes(props: {
   const title = stepTitleOf(props.run.playbook, props.stepId);
   return (
     <View style={{ gap: 6, paddingLeft: 12, borderLeftWidth: 2, borderLeftColor: theme.colors.border }}>
-      <Pressable accessibilityRole="button" accessibilityState={{ expanded: open }} accessibilityLabel={`${title}, pass ${fanout.loop + 1}: ${countsText(fanout.children)}`} onPress={() => setOpen(!open)} style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+      <Pressable accessibilityRole="button" accessibilityState={{ expanded: open }} accessibilityLabel={`${title}, pass ${fanout.loop + 1}: ${countsText(fanout.children, fanout.pool)}`} onPress={() => setOpen(!open)} style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
         <Icon name={open ? "ChevronDown" : "ChevronRight"} size={13} color={theme.colors.foregroundMuted} />
         <Text numberOfLines={2} style={{ flex: 1, color: theme.colors.foreground, fontSize: 12, fontWeight: "600" }}>
-          {title} <Text style={{ color: theme.colors.foregroundMuted, fontWeight: "400" }}>· pass {fanout.loop + 1} · {countsText(fanout.children)}</Text>
+          {title} <Text style={{ color: theme.colors.foregroundMuted, fontWeight: "400" }}>· pass {fanout.loop + 1} · {countsText(fanout.children, fanout.pool)}</Text>
         </Text>
       </Pressable>
+      {open && fanout.pool ? <RefillEntries theme={theme} pool={fanout.pool} /> : null}
       {open ? <Lanes theme={theme} children={fanout.children} compact={props.compact} runs={props.runs} onOpenWorkspace={props.onOpenWorkspace} /> : null}
       {open && fanout.past.length > 0 ? (
         <View style={{ gap: 6 }}>

@@ -330,6 +330,26 @@ on:
 <summary>Details</summary>
 <p>A <strong>fan-out step</strong> starts one run of a playbook of the same folder per item, each in its own new workspace with its own manager, at most <code>max_active</code> at once, and completes when all have ended.</p>
 <p>Outcomes: <code>all_completed</code>, <code>some_failed</code> (any child failed, was canceled or not started; fails the run unless <code>on</code> routes it) and <code>failure</code>. A failing child never stops its siblings. Outputs: <code>results</code> (list of <code>{key, runId, outcome}</code>), <code>total</code>, <code>started</code>, <code>completed</code>, <code>failed</code>, <code>canceled</code>, <code>not_started</code>, <code>any_failed</code>. A child is never started twice for one key, restarts included. Canceling or failing the parent (or resetting the step) cancels the active children unless <code>cancel_children: false</code>. The run view draws one lane per child, with earlier passes of a loop kept.</p>
+<p><strong>Work pools.</strong> A batch fan-out loops back only after every child ended. Add <code>pool</code> and it stays open: each time children finish, a <em>refill pass</em> (a run of a playbook of the folder that lists the items ready now, given the finished keys) adds the items not yet present as new children, queued while <code>max_active</code> is full. One pass runs at a time; endings during a pass make one follow-up pass. The step ends when nothing runs or waits and the last pass added nothing; <code>max_refills</code> (default 20) and the step <code>timeout</code> bound it. A failing pass stops refilling (running children go on) and the step ends with <code>refill_stopped</code>. The pass must be safe to run many times and must use the finished keys.</p>
+<pre><code>- id: work
+  needs: [first]
+  inputs: { items: "{{ steps.first.outputs.items }}" }
+  fanout:
+    playbook: job
+    items: "{{ inputs.items }}"
+    key: "{{ item.id }}"
+    inputs: { item_id: "{{ item.id }}" }
+    max_active: 3
+    pool:
+      refill:
+        playbook: unlocked_jobs
+        inputs: { done: "{{ pool.done }}" }   # also pool.failed, pool.active, pool.pending, pool.known, pool.refill
+        items_output: items                   # default
+        after: completed                      # or ended
+        max_refills: 20
+        debounce: 10s
+  on: { some_failed: complete, refill_stopped: complete }
+  timeout: 8h</code></pre>
 <p><strong>Replaced children.</strong> When a child's manager cancels its run and starts a new run of the same playbook for the same item, it links them with <code>replace_child { runId, newRunId, reason }</code> or <code>start_playbook</code> with <code>replaces</code> (and <code>replaceReason</code>). The item stays running under the new run (same key, same slot), the earlier run moves to its chain (<code>previous</code>: run, status, reason) and is no failure of the item, and the fan-out ends when the last run of the chain does. Replacing a still-active run cancels it. <code>restart_run</code> of a child needs no call. Refused: a run that is not a child of a running fan-out step (an ended fan-out is not reopened), another playbook, a run already attached to another item. <code>get_run</code> lists <code>children[].previous</code>, the lane shows <em>restarted ×N</em>, and the event is <code>fanout.child_replaced</code>.</p>
 </details>
 

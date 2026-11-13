@@ -7,8 +7,8 @@ import { record } from "./event-core";
 import { blockEntrySteps, blockStepIds, holdsBlock, innermostBlock } from "../shared/slots";
 import { ADMISSION_CHOICES, askChoices, askHumanText, askTransitionOf, choicesOfGate, GATE_SUMMARY_MAX, outcomeTransition } from "../shared/gates";
 import { parse as parseYaml, stringify as toYaml } from "yaml";
-import type { AfterTask, AskChoice, Attempt, AttemptAgent, FanoutChild, FanoutState, Gate, GateDecider, Job, Playbook, Run, RunDefinition, RunStep, RunWorktree, Step, Transition, VarValue, When } from "../shared/types";
-import { isActive, isAgentlessAttempt, isManagerless, MAX_FANOUT_PAST, isPaused, isPipeline, isStepDone, isStepLive, isTerminal, restartBlocker, runningAfterTasks } from "../shared/types";
+import type { PoolPass, AfterTask, AskChoice, Attempt, AttemptAgent, FanoutChild, FanoutState, Gate, GateDecider, Job, Playbook, Run, RunDefinition, RunStep, RunWorktree, Step, Transition, VarValue, When } from "../shared/types";
+import { isActive, isAgentlessAttempt, isManagerless, MAX_FANOUT_PAST, MAX_POOL_PASSES, isPaused, isPipeline, isStepDone, isStepLive, isTerminal, restartBlocker, runningAfterTasks } from "../shared/types";
 import { coerceValue, formatValue, type ListItem, lookup, parseDuration, parseList, renderTemplate, replaceRefs, resolveValue, singleRef, templateRefs } from "../shared/vars";
 
 export class EngineError extends Error {}
@@ -2329,6 +2329,42 @@ function renderForItem(template: string, context: ItemContext): { ok: true; valu
 }
 
 /**
+ * One item to a child: its stable key (checked against `seen`, which it extends), and the rendered inputs and workspace name. An item
+ * whose templates do not render becomes a `not_started` child with the reason; a bad or clashing key is an `error`.
+ */
+function buildChild(config: NonNullable<Step["fanout"]>, values: Record<string, VarValue | undefined>, item: ListItem, index: number, now: string, seen: Map<string, number>): { child: FanoutChild } | { error: string } {
+  const context: ItemContext = { inputs: values, item, index };
+  const keyed = config.key !== undefined ? renderForItem(config.key, context) : typeof item === "object" ? { ok: false as const, error: `item ${index} is an object: set \`fanout.key\` (e.g. "{{ item.id }}") so each item has a stable key` } : { ok: true as const, value: item };
+  if (!keyed.ok) return { error: keyed.error };
+  const key = String(keyed.value).trim().slice(0, MAX_KEY);
+  if (key === "") return { error: `item ${index} has an empty key` };
+  const clash = seen.get(key);
+  if (clash !== undefined) return { error: `items ${clash} and ${index} have the same key "${key}": a key must identify one item` };
+  seen.set(key, index);
+  const child: FanoutChild = { key, index, item: JSON.stringify(item), inputs: {}, workspaceName: "", status: "pending", runId: null, workspaceId: null, error: null, startedAt: null, endedAt: null, outputs: {}, previous: [] };
+  const failChild = (error: string) => {
+    child.status = "not_started";
+    child.error = error;
+    child.endedAt = now;
+  };
+  for (const [name, template] of Object.entries(config.inputs)) {
+    const rendered = renderForItem(template, context);
+    if (!rendered.ok) {
+      failChild(`input "${name}": ${rendered.error}`);
+      break;
+    }
+    child.inputs[name] = rendered.value;
+  }
+  if (child.status === "pending" && config.workspaceName !== undefined) {
+    const rendered = renderForItem(config.workspaceName, context);
+    if (rendered.ok) child.workspaceName = String(rendered.value);
+    else failChild(`workspace_name: ${rendered.error}`);
+  }
+  return { child };
+}
+
+
+/**
  * Starts a ready fan-out step: records its attempt and evaluates the list, giving each item a stable key and its
  * child's inputs. An item whose templates do not render becomes a `not_started` child with the reason; a list that
  * is not a list, or whose keys clash, is the step's failure (`error`), and the attempt is left running for the
@@ -2346,7 +2382,7 @@ export function startFanout(run: Run, stepId: string, input: { agentId: string; 
     state.fanoutPast = state.fanoutPast.slice(-MAX_FANOUT_PAST);
   }
   const fail = (error: string): { error: string } => {
-    state.fanout = { attempt: attempt.n, loop: state.loop, startedAt: input.now, children: [] };
+    state.fanout = { attempt: attempt.n, loop: state.loop, startedAt: input.now, children: [], pool: null };
     return { error };
   };
   const raw = resolveValue(config.items, { inputs: values });
@@ -2356,36 +2392,12 @@ export function startFanout(run: Run, stepId: string, input: { agentId: string; 
   const children: FanoutChild[] = [];
   const seen = new Map<string, number>();
   for (const [index, item] of list.items.entries()) {
-    const context: ItemContext = { inputs: values, item, index };
-    const keyed = config.key !== undefined ? renderForItem(config.key, context) : typeof item === "object" ? { ok: false as const, error: `item ${index} is an object: set \`fanout.key\` (e.g. "{{ item.id }}") so each item has a stable key` } : { ok: true as const, value: item };
-    if (!keyed.ok) return fail(keyed.error);
-    const key = String(keyed.value).trim().slice(0, MAX_KEY);
-    if (key === "") return fail(`item ${index} has an empty key`);
-    const clash = seen.get(key);
-    if (clash !== undefined) return fail(`items ${clash} and ${index} have the same key "${key}": a key must identify one item`);
-    seen.set(key, index);
-    const child: FanoutChild = { key, index, item: JSON.stringify(item), inputs: {}, workspaceName: "", status: "pending", runId: null, workspaceId: null, error: null, startedAt: null, endedAt: null, outputs: {}, previous: [] };
-    const failChild = (error: string) => {
-      child.status = "not_started";
-      child.error = error;
-      child.endedAt = input.now;
-    };
-    for (const [name, template] of Object.entries(config.inputs)) {
-      const rendered = renderForItem(template, context);
-      if (!rendered.ok) {
-        failChild(`input "${name}": ${rendered.error}`);
-        break;
-      }
-      child.inputs[name] = rendered.value;
-    }
-    if (child.status === "pending" && config.workspaceName !== undefined) {
-      const rendered = renderForItem(config.workspaceName, context);
-      if (rendered.ok) child.workspaceName = String(rendered.value);
-      else failChild(`workspace_name: ${rendered.error}`);
-    }
+    const built = buildChild(config, values, item, index, input.now, seen);
+    if ("error" in built) return fail(built.error);
+    const child = built.child;
     children.push(child);
   }
-  state.fanout = { attempt: attempt.n, loop: state.loop, startedAt: input.now, children };
+  state.fanout = { attempt: attempt.n, loop: state.loop, startedAt: input.now, children, pool: config.pool ? { refills: 0, lastRefillAt: null, added: 0, handled: [], status: "open", stopReason: null, passes: [] } : null };
   log(run, input.now, "fanout_started", stepId, `${children.length} item(s), at most ${config.maxActive} active`);
   return { error: null };
 }
@@ -2416,6 +2428,7 @@ export function syncFanout(
       if (reopened && !isTerminal(reopened.status)) {
         child.previous.push({ runId: child.runId, status: child.status, reason: child.error ?? "its run was restarted", endedAt: child.endedAt, replacedAt: input.now, by: null });
         Object.assign(child, { status: "running", error: null, endedAt: null, outputs: {} });
+        if (state.pool) state.pool.handled = state.pool.handled.filter((key) => key !== child.key);
         changed = true;
         log(run, input.now, "fanout_child_replaced", stepId, `${child.key}: run ${child.runId} restarted in place`);
         continue;
@@ -2471,7 +2484,211 @@ export function replaceFanoutChild(
   if (!child?.runId) throw new EngineError(`item "${key}" has no run to replace`);
   child.previous.push({ runId: child.runId, status: input.oldStatus, reason: input.reason, endedAt: input.oldEndedAt, replacedAt: input.now, by: input.by });
   Object.assign(child, { status: "starting", runId: input.newRunId, workspaceId: null, error: null, startedAt: input.now, endedAt: null, outputs: {} });
+  const pool = run.steps[stepId]!.fanout!.pool;
+  if (pool) pool.handled = pool.handled.filter((handled) => handled !== key);
   log(run, input.now, "fanout_child_replaced", stepId, `${key}: ${child.previous.at(-1)!.runId} → ${input.newRunId}${input.reason ? ` (${input.reason.slice(0, 200)})` : ""}`);
+}
+
+// ---------------------------------------------------------------- work pools (refill passes)
+
+type PoolConfig = NonNullable<NonNullable<Step["fanout"]>["pool"]>;
+
+/** The pass that is being created or runs now (at most one). */
+export function poolPassInFlight(state: FanoutState): PoolPass | undefined {
+  return state.pool?.passes.find((pass) => pass.status === "starting" || pass.status === "running");
+}
+
+/** Children whose ending no completed pass has accounted for yet and that the pool's `after` counts: what makes a pass due. */
+export function poolTriggers(state: FanoutState, config: PoolConfig): FanoutChild[] {
+  const handled = new Set(state.pool?.handled ?? []);
+  return state.children.filter((child) => !handled.has(child.key) && (child.status === "completed" || (config.after === "ended" && (child.status === "failed" || child.status === "canceled"))));
+}
+
+/** The keys of every item that is done (completed, failed, canceled or never started). */
+export function poolDoneKeys(state: FanoutState): string[] {
+  return state.children.filter(isChildDone).map((child) => child.key);
+}
+
+/** Whether a pass should start now: none runs, the pool is open, a trigger is unhandled, the cap allows and the debounce has passed. */
+export function poolPassDue(state: FanoutState, config: PoolConfig, nowMs: number): boolean {
+  const pool = state.pool;
+  if (!pool || pool.status !== "open" || poolPassInFlight(state)) return false;
+  const triggers = poolTriggers(state, config);
+  if (triggers.length === 0) return false;
+  if (pool.refills >= config.maxRefills) return false;
+  const oldest = Math.min(...triggers.map((child) => (child.endedAt ? Date.parse(child.endedAt) : nowMs)));
+  const lastEnd = pool.passes.findLast((pass) => pass.endedAt)?.endedAt;
+  const since = Math.max(oldest, lastEnd ? Date.parse(lastEnd) : 0);
+  return nowMs - since >= config.debounceMs;
+}
+
+/** Stops the pool when the cap is reached with endings still unhandled. Returns whether it changed. */
+export function poolCheckLimit(run: Run, stepId: string, config: PoolConfig, now: string): boolean {
+  const state = run.steps[stepId]?.fanout;
+  const pool = state?.pool;
+  if (!state || !pool || pool.status !== "open" || poolPassInFlight(state)) return false;
+  if (pool.refills >= config.maxRefills && poolTriggers(state, config).length > 0) {
+    pool.status = "stopped";
+    pool.stopReason = `max_refills (${config.maxRefills}) reached while children were still finishing`;
+    log(run, now, "fanout_refill_stopped", stepId, pool.stopReason);
+    return true;
+  }
+  return false;
+}
+
+/** Records a new pass as `starting` with the keys of the items finished now (what it is told with `pool.done` and `pool.failed`). The run is created after, by the caller. */
+export function beginPass(run: Run, stepId: string, config: PoolConfig, input: { runId: string; now: string }): PoolPass {
+  void config;
+  const state = run.steps[stepId]!.fanout!;
+  const pool = state.pool!;
+  const pass: PoolPass = {
+    n: (pool.passes.at(-1)?.n ?? 0) + 1,
+    runId: input.runId,
+    workspaceId: null,
+    status: "starting",
+    startedAt: input.now,
+    endedAt: null,
+    error: null,
+    keys: poolDoneKeys(state),
+    added: [],
+    skipped: 0,
+    output: null,
+  };
+  pool.refills += 1;
+  pool.lastRefillAt = input.now;
+  pool.passes.push(pass);
+  pool.passes = pool.passes.slice(-MAX_POOL_PASSES);
+  log(run, input.now, "fanout_refill_started", stepId, `refill #${pass.n}: ${pass.keys.length} item(s) done so far, ${state.children.length - pass.keys.length} not yet`);
+  return pass;
+}
+
+/** The values a pass's `inputs` templates read: `pool.done`, `pool.failed`, `pool.active`, `pool.pending`, `pool.known` (JSON arrays of keys) and `pool.refill` (its number). */
+export function poolContext(state: FanoutState, n: number): Record<string, string> {
+  const keys = (select: (child: FanoutChild) => boolean) => JSON.stringify(state.children.filter(select).map((child) => child.key));
+  return {
+    done: keys((child) => child.status === "completed"),
+    failed: keys((child) => child.status === "failed" || child.status === "canceled" || child.status === "not_started"),
+    active: keys((child) => child.status === "starting" || child.status === "running"),
+    pending: keys((child) => child.status === "pending"),
+    known: keys(() => true),
+    refill: String(n),
+  };
+}
+
+/** The inputs of a pass's run: the pool's `inputs` templates over `pool.*` and the step's declared `inputs.<name>`. An unset reference is an error. */
+export function poolPassInputs(run: Run, stepId: string, config: PoolConfig, n: number): { ok: true; inputs: Record<string, VarValue> } | { ok: false; error: string } {
+  const step = stepDef(run, stepId);
+  const values = Object.fromEntries(Object.entries(stepInputs(run, step)).map(([name, entry]) => [name, entry.value]));
+  const context = { inputs: values, pool: poolContext(run.steps[stepId]!.fanout!, n) } as unknown as Record<string, unknown>;
+  const inputs: Record<string, VarValue> = {};
+  for (const [name, template] of Object.entries(config.inputs)) {
+    const missing = templateRefs(template).find((ref) => {
+      const value = lookup(context, ref);
+      return value === undefined || value === null;
+    });
+    if (missing !== undefined) return { ok: false, error: `pool.inputs.${name}: "{{ ${missing} }}" is not set` };
+    inputs[name] = renderTemplate(template, context);
+  }
+  return { ok: true, inputs };
+}
+
+/** Takes a pass back when its run could not be created now (the pass playbook's concurrency is full): it does not count. */
+export function abandonPass(run: Run, stepId: string, n: number): void {
+  const pool = run.steps[stepId]?.fanout?.pool;
+  if (!pool) return;
+  const index = pool.passes.findIndex((pass) => pass.n === n && pass.status === "starting");
+  if (index < 0) return;
+  pool.passes.splice(index, 1);
+  pool.refills = Math.max(0, pool.refills - 1);
+  pool.lastRefillAt = pool.passes.at(-1)?.startedAt ?? null;
+}
+
+/** Ends the in-flight pass without items: `failed`/`canceled` stop the pool (running children go on); `lost` is run again. */
+export function endPass(run: Run, stepId: string, status: "failed" | "canceled" | "lost", error: string, now: string): void {
+  const state = run.steps[stepId]?.fanout;
+  const pool = state?.pool;
+  const pass = state && poolPassInFlight(state);
+  if (!pool || !pass) return;
+  pass.status = status;
+  pass.error = error;
+  pass.endedAt = now;
+  if (status === "lost") pool.refills = Math.max(0, pool.refills - 1);
+  else {
+    pool.status = "stopped";
+    pool.stopReason = `refill #${pass.n} ${status}: ${error}`.slice(0, 300);
+  }
+  log(run, now, "fanout_refill_ended", stepId, `refill #${pass.n} ${status}: ${error}`.slice(0, 300));
+}
+
+/** Lets the in-flight pass follow its run: `starting` becomes `running` once the run exists; a missing run is `lost` (or `failed` once it ran). Returns the run's outputs when it completed. */
+export function syncPass(
+  run: Run,
+  stepId: string,
+  input: { now: string; nowMs: number; runOf: (runId: string) => Run | undefined; reserved: (runId: string) => boolean; startTimeoutMs: number },
+): { completed: Record<string, VarValue> } | null {
+  const state = run.steps[stepId]?.fanout;
+  const pass = state && poolPassInFlight(state);
+  if (!pass) return null;
+  const passRun = pass.runId ? input.runOf(pass.runId) : undefined;
+  if (passRun) {
+    if (passRun.status === "completed") return { completed: { ...(passRun.outputs ?? {}) } };
+    if (passRun.status === "failed") endPass(run, stepId, "failed", passRun.failure ?? "its run failed", input.now);
+    else if (passRun.status === "canceled") endPass(run, stepId, "canceled", passRun.failure ?? "its run was canceled", input.now);
+    else pass.status = "running";
+    return null;
+  }
+  if (pass.status === "running") endPass(run, stepId, "failed", "its run no longer exists", input.now);
+  else if (!pass.runId || !input.reserved(pass.runId)) endPass(run, stepId, "lost", "the pass run was not created (the daemon restarted while it started); it runs again", input.now);
+  else if (input.nowMs - Date.parse(pass.startedAt) > input.startTimeoutMs) endPass(run, stepId, "failed", `its Playbook Manager did not create the run within ${Math.round(input.startTimeoutMs / 60000)} min`, input.now);
+  return null;
+}
+
+/**
+ * Applies a completed pass: its items output is diffed by key against the children, and those not in the fan-out yet are added as
+ * `pending` children (started under `max_active` as slots free up). Items already present are ignored, so a pass is safe to repeat.
+ * A list that is not usable, or whose keys clash, fails the pass (and stops the pool). Returns the keys added.
+ */
+export function applyPass(run: Run, stepId: string, config: PoolConfig, outputs: Record<string, VarValue>, now: string): string[] {
+  const step = stepDef(run, stepId);
+  const state = run.steps[stepId]!.fanout!;
+  const pool = state.pool!;
+  const pass = poolPassInFlight(state)!;
+  const raw = outputs[config.itemsOutput];
+  const fail = (error: string) => {
+    endPass(run, stepId, "failed", error, now);
+    return [] as string[];
+  };
+  if (raw === undefined || raw === "") return fail(`its output "${config.itemsOutput}" is not set`);
+  const list = parseList(raw);
+  if (!list.ok) return fail(`its output "${config.itemsOutput}" is not a usable list: ${list.error}`);
+  pass.output = list.text.slice(0, 2000);
+  const values = Object.fromEntries(Object.entries(stepInputs(run, step)).map(([name, entry]) => [name, entry.value]));
+  const known = new Set(state.children.map((child) => child.key));
+  const seen = new Map<string, number>();
+  const fresh: FanoutChild[] = [];
+  let skipped = 0;
+  let nextIndex = state.children.reduce((max, child) => Math.max(max, child.index + 1), 0);
+  for (const [index, item] of list.items.entries()) {
+    const built = buildChild(step.fanout!, values, item, nextIndex, now, seen);
+    if ("error" in built) return fail(built.error);
+    if (known.has(built.child.key)) {
+      skipped += 1;
+      continue;
+    }
+    built.child.index = nextIndex++;
+    fresh.push(built.child);
+  }
+  // One state change: the children and the pass's record of them, so a crash leaves neither without the other.
+  state.children.push(...fresh);
+  pass.status = "completed";
+  pass.endedAt = now;
+  pass.added = fresh.map((child) => child.key);
+  pass.skipped = skipped;
+  pool.added += fresh.length;
+  const stillDone = new Set(state.children.filter(isChildDone).map((child) => child.key));
+  pool.handled = [...new Set([...pool.handled, ...pass.keys.filter((key) => stillDone.has(key))])];
+  log(run, now, "fanout_refill_ended", stepId, `refill #${pass.n} completed: ${fresh.length} added${fresh.length ? ` (${pass.added.slice(0, 20).join(", ")})` : ""}${skipped ? `, ${skipped} already present` : ""}`);
+  return pass.added;
 }
 
 export interface FanoutCounts {
@@ -2514,9 +2731,12 @@ export function fanoutSummaryText(state: FanoutState): string {
   return `${done} of ${counts.total} done${parts.length ? `: ${parts.join(", ")}` : ""}`;
 }
 
-/** Whether every child has ended (an empty list is joined at once). */
-export function fanoutJoined(state: FanoutState): boolean {
-  return state.children.every(isChildDone);
+/** Whether the fan-out is over: every child has ended and, for a work pool, no pass runs and none is due (an empty list is joined at once). */
+export function fanoutJoined(state: FanoutState, config?: NonNullable<Step["fanout"]>["pool"]): boolean {
+  if (!state.children.every(isChildDone)) return false;
+  if (!state.pool || !config) return true;
+  if (poolPassInFlight(state)) return false;
+  return state.pool.status === "stopped" || poolTriggers(state, config).length === 0;
 }
 
 /** The join's result: the outcome (`all_completed`, or `some_failed` when any item did not complete), a summary and the outputs. */
@@ -2535,10 +2755,12 @@ export function fanoutResult(state: FanoutState): { outcome: string; summary: st
   let note = "";
   if (!results.ok) results = parseList(state.children.map((child) => entry(child, false)));
   if (!results.ok) note = " (the results list is too long to keep: read the child runs)";
+  const stopped = state.pool?.status === "stopped";
   return {
-    outcome: anyFailed ? "some_failed" : "all_completed",
-    summary: fanoutSummaryText(state) + note,
+    outcome: stopped ? "refill_stopped" : anyFailed ? "some_failed" : "all_completed",
+    summary: fanoutSummaryText(state) + (state.pool ? `, ${state.pool.refills} refill(s), ${state.pool.added} added${stopped ? `; refilling stopped: ${state.pool.stopReason}` : ""}` : "") + note,
     outputs: {
+      ...(state.pool ? { refills: state.pool.refills, added: state.pool.added } : {}),
       results: results.ok ? results.text : "[]",
       total: counts.total,
       started: counts.started,

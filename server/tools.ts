@@ -224,7 +224,7 @@ export function runFull(run: Run, only?: string[], slow: Record<string, SlowInfo
             ...(step.kind === "script" ? { script: step.script, checks: attempt?.checks ?? 0, nextCheckAt: attempt?.nextCheckAt ?? null } : {}),
             ...(step.kind === "branch" ? { chosen: state.branch } : {}),
             ...(step.kind === "fanout" && state.fanout && state.status !== "pending" && state.status !== "ready"
-              ? { fanout: { playbook: step.fanout!.playbook, loop: state.fanout.loop, ...engine.fanoutCounts(state.fanout), children: state.fanout.children.map((child) => ({ key: child.key, status: child.status, runId: child.runId, ...(child.error ? { error: child.error } : {}), ...(child.previous.length ? { previous: child.previous.map((entry) => ({ runId: entry.runId, status: entry.status, reason: entry.reason })) } : {}) })), passes: state.fanoutPast.length } }
+              ? { fanout: { playbook: step.fanout!.playbook, loop: state.fanout.loop, ...engine.fanoutCounts(state.fanout), ...(state.fanout.pool ? { pool: { refills: state.fanout.pool.refills, lastRefillAt: state.fanout.pool.lastRefillAt, added: state.fanout.pool.added, status: state.fanout.pool.status, ...(state.fanout.pool.stopReason ? { stopReason: state.fanout.pool.stopReason } : {}), passes: state.fanout.pool.passes.map((pass) => ({ n: pass.n, status: pass.status, runId: pass.runId, startedAt: pass.startedAt, endedAt: pass.endedAt, doneKeys: pass.keys, added: pass.added, skipped: pass.skipped, output: pass.output, error: pass.error })) } } : {}), children: state.fanout.children.map((child) => ({ key: child.key, status: child.status, runId: child.runId, ...(child.error ? { error: child.error } : {}), ...(child.previous.length ? { previous: child.previous.map((entry) => ({ runId: entry.runId, status: entry.status, reason: entry.reason })) } : {}) })), passes: state.fanoutPast.length } }
               : {}),
             ...(state.status === "skipped" ? { skipped: run.history.findLast((event) => event.type === "step_skipped" && event.stepId === id)?.detail ?? null } : {}),
             report: attempt?.report ?? null,
@@ -294,7 +294,7 @@ function describeEntry(entry: PlaybookEntry) {
       gate: step.gate ?? null,
       ...(step.kind === "script" ? { script: step.script, poll: step.pollMs ? `${step.pollMs / 1000}s` : null } : {}),
       ...(step.kind === "handoff" ? { handoff: step.handoff } : {}),
-      ...(step.fanout ? { fanout: { playbook: step.fanout.playbook, maxActive: step.fanout.maxActive, cancelChildren: step.fanout.cancelChildren } } : {}),
+      ...(step.fanout ? { fanout: { playbook: step.fanout.playbook, maxActive: step.fanout.maxActive, cancelChildren: step.fanout.cancelChildren, ...(step.fanout.pool ? { pool: { refill: { playbook: step.fanout.pool.playbook, itemsOutput: step.fanout.pool.itemsOutput, after: step.fanout.pool.after, maxRefills: step.fanout.pool.maxRefills, debounceMs: step.fanout.pool.debounceMs } } } : {}) } } : {}),
       ...(step.when ? { when: whenView(step.when) } : {}),
       ...(step.branch ? { branch: step.branch.cases.map((candidate) => (candidate.when ? { case: candidate.name, if: whenView(candidate.when) } : { case: candidate.name, else: true })) } : {}),
       afterTask: step.afterTask ?? null,

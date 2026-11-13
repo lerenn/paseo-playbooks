@@ -409,7 +409,7 @@ describe("fan-out runs", () => {
 describe("fan-out engine", () => {
   it("summarizes counts and picks pending children under the cap", () => {
     const child = (key: string, status: engine.FanoutChildStatus) => ({ key, index: 0, item: "1", inputs: {}, workspaceName: "", status, runId: null, workspaceId: null, error: null, startedAt: null, endedAt: null, outputs: {}, previous: [] });
-    const state = { attempt: 1, loop: 0, startedAt: "", children: [child("a", "running"), child("b", "pending"), child("c", "pending"), child("d", "failed")] };
+    const state = { attempt: 1, loop: 0, startedAt: "", children: [child("a", "running"), child("b", "pending"), child("c", "pending"), child("d", "failed")], pool: null };
     expect(engine.childrenToStart(state, 2).map((entry) => entry.key)).toEqual(["b"]);
     expect(engine.fanoutSummaryText(state)).toBe("1 of 4 done: 1 failed, 1 running, 2 waiting");
     expect(engine.fanoutJoined(state)).toBe(false);

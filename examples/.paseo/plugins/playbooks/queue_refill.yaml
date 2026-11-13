@@ -1,0 +1,13 @@
+title: Work queue refill
+description: Lists the jobs that can start now, given the keys of the jobs already done. The Work queue runs it each time jobs finish.
+hidden: true
+inputs:
+  done: { type: string, description: "JSON list of the keys of the finished jobs" }
+outputs:
+  items: { type: list, value: "{{ steps.unlocked.outputs.items }}" }
+steps:
+  - id: unlocked
+    inputs: [done]
+    script: { run: unlocked_jobs.sh }
+    outputs:
+      items: { type: list, description: "Jobs whose prerequisites are done: [{id, title}]" }

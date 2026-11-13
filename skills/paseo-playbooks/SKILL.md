@@ -530,6 +530,81 @@ workspace** with its own Playbook Manager, keeps at most `max_active` going, and
 - The plugin does the waiting (no agent, no tokens). Each child has its own manager: set `manager:` on the child playbook
   to make it cheap.
 
+#### Work pools: a fan-out that refills while it runs
+
+A batch fan-out only goes round again after **every** child ended, so an item unlocked by an early finisher waits for the
+slowest sibling. Add `pool` and the fan-out stays open: each time children finish, the plugin runs a **refill pass**, and
+the items it lists that are not in the fan-out yet become new children of the same step (queued while `max_active` is
+full). The step ends when no child runs or waits and the last pass added nothing. Without `pool` nothing changes.
+
+```yaml
+- id: work
+  needs: [first]
+  inputs: { items: "{{ steps.first.outputs.items }}" }       # the first batch, as for any fan-out
+  fanout:
+    playbook: job                                             # the child, as for any fan-out
+    items: "{{ inputs.items }}"
+    key: "{{ item.id }}"                                      # required for a pool when items are objects
+    inputs: { item_id: "{{ item.id }}" }
+    max_active: 3
+    pool:
+      refill:
+        playbook: unlocked_jobs                               # a playbook of the folder: not this one, not a singleton
+        inputs: { done: "{{ pool.done }}" }                   # at least one input must read a pool.* value
+        items_output: items                                   # the pass playbook's list output (default items)
+        after: completed                                      # completed (default): a success triggers a pass; ended: also failed/canceled
+        max_refills: 20                                       # default 20, at most 500
+        debounce: 10s                                         # optional: wait this long after the oldest unhandled ending
+  on: { some_failed: complete, refill_stopped: complete }
+  timeout: 8h                                                 # a pool with no timeout gets 12h
+```
+
+`unlocked_jobs` is an ordinary playbook (see `examples/.paseo/plugins/playbooks/queue*.yaml`): an input `done`, an output
+`items` of type `list`, and steps (a script, an agent: any) that read the input and produce the list.
+
+**The refill contract (the author's side).** A pass is a run of the pass playbook, started in a new workspace, and it is
+run many times in one fan-out. So:
+
+- it must be **safe to run many times** and must use the finished keys it is given: a pass that ignores them lists the
+  same items every time (the plugin refuses a pool where no pass input reads `pool.*`);
+- it outputs the items that can run **now** in the same shape as `items` (a list of scalars, or objects with the field
+  `fanout.key` reads). Listing items already in the fan-out is harmless: items are diffed by key, those already present
+  (running, done, failed, queued) are ignored, and a pass whose items are all present adds nothing;
+- keys must be unique inside one pass's list (a clash fails the pass).
+
+**Pass inputs** (templates over `pool.*` and the step's declared `inputs.<name>`): `pool.done` (JSON list of the keys of
+children that completed), `pool.failed` (failed, canceled, not started), `pool.active` (starting or running),
+`pool.pending` (queued), `pool.known` (every key), `pool.refill` (the pass's number). Lists are JSON text; a list input is
+at most 200 items: declare the input `type: string` for more.
+
+**Mechanics.**
+
+- A pass is due when a child has ended (`after: completed`: completed; `ended`: also failed and canceled; a child being
+  replaced by `replace_child` has not ended) that no completed pass accounted for, `debounce` has passed since that ending
+  and the previous pass, and fewer than `max_refills` passes started. **One pass runs at a time**: endings while a pass runs
+  make exactly one follow-up pass due (coalescing). Children run on while a pass runs; passes never block or reset them.
+- When the pass run completes, its items are applied in **one state change**: new children and the pass's record are
+  written together, so a crash never leaves a child without the pass that added it (or a key twice). Children start under
+  `max_active` as before; the pass's own run does not use a slot.
+- **End**: no child active or queued, no pass running, no ending left for a pass. `max_refills` reached with endings still
+  unhandled stops refilling. An empty first list completes at once (no pass).
+- **Failure.** A pass that fails, is canceled, outputs nothing usable or has clashing keys **stops refilling** (running
+  children are never killed): the step waits for them, then ends with the outcome `refill_stopped` (a pool step's extra
+  outcome; it fails the run unless `on` routes it, like `some_failed`). The pass's own steps follow the usual step rules
+  (retries, gates, timeouts) inside the pass run. The step's `timeout` bounds the whole pool and cancels children and passes.
+- **Outputs** gain `refills` and `added` (numbers) next to the fixed ones. `results` lists every child, added ones included.
+- **Visible.** The lane header reads `3 running · 4 done · 2 queued · refills 3` and the refill passes list under it
+  (`Refill #2 · added parse, index` or `added nothing`), appended and never removed; the step sheet shows what each pass was
+  given and what it added. `get_run`: the fan-out has `pool: { refills, lastRefillAt, added, status, passes[] }` with each
+  pass's number, status, `doneKeys`, `added`, `skipped` and `output`. Run log `fanout_refill_started/ended/stopped`; event
+  `fanout.refill` (phase `started`/`ended`, with `added` keys: why a child appeared).
+- **Restart and cancel.** The pass is a run in its own workspace: after a daemon restart the plugin follows it. A pass whose
+  creation the restart cut becomes `lost` and runs again (it does not count against `max_refills`; safe because of the key
+  diff). Canceling or failing the parent, or the step's `timeout`, cancels the running pass too. A paused run starts no new
+  pass or child; running ones go on.
+- Relation to loops: `on: { more: { goto: … } }` after a batch fan-out still works unchanged. A pool replaces "wait for the
+  whole batch, then loop back" for these playbooks: the refill steps live in the pass playbook and run while children run.
+
 ### Singleton playbooks and hand-off steps
 
 A **singleton playbook** is a pipeline that takes work (**jobs**) from other runs: one
@@ -969,7 +1044,9 @@ error.
 - `queue.admit` only on a singleton's stage: `script` names an executable of `scripts/`, `poll` is required, `wake_on` follows the script rules (`admit` is not a flat field of the step)
 - a `fanout` names a playbook of the same folder that is valid, not a singleton and not this one (directly or through
   another fan-out, hand-off or sub-playbook), maps every required input of it, reads a declared step input in `items`, and
-  uses only `item`, `item.<field>`, `index` and `inputs.<name>` in its per-item templates
+  uses only `item`, `item.<field>`, `index` and `inputs.<name>` in its per-item templates; a `fanout.pool.refill` names
+  such a playbook too, whose output `items_output` is a list, maps its required inputs, has at least one input that reads a
+  `pool.*` value (the finished keys) and uses only `pool.*` and `inputs.<name>`
 - a `handoff` names a singleton playbook of the same folder, and does not lead back to its
   own playbook; a singleton is never a sub-playbook or an after-task, its steps never wire a
   job's input, its roles are all `readonly`, and its stages do not `goto` each other;

@@ -915,5 +915,7 @@ function Node(props: GraphProps & { step: Step; longNeeds: string[]; nodeWidth: 
 function engineText(state: NonNullable<Run["steps"][string]["fanout"]>): string {
   const done = state.children.filter((child) => ["completed", "failed", "canceled", "not_started"].includes(child.status)).length;
   const running = state.children.filter((child) => child.status === "running" || child.status === "starting").length;
+  const queued = state.children.filter((child) => child.status === "pending").length;
+  if (state.pool) return `${running} running · ${done} done${queued ? ` · ${queued} queued` : ""} · refills ${state.pool.refills}`;
   return `${done} of ${state.children.length} done${running ? `, ${running} running` : ""}`;
 }
