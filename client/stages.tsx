@@ -85,6 +85,9 @@ function WaitingJob(props: { theme: Theme; job: StageRun["jobs"][number]; stage:
         {job.requeued && job.requeued.stage === props.stage ? (
           <Text style={{ color: theme.colors.foregroundMuted, fontSize: 10, fontWeight: "600", borderRadius: 4, borderWidth: 1, borderColor: theme.colors.foregroundMuted, paddingHorizontal: 4 }}>Requeued</Text>
         ) : null}
+        {job.reopens.length > 0 ? (
+          <Text style={{ color: theme.colors.foregroundMuted, fontSize: 10, fontWeight: "600", borderRadius: 4, borderWidth: 1, borderColor: theme.colors.foregroundMuted, paddingHorizontal: 4 }}>{job.reopens.length > 1 ? `Requeued by hand ×${job.reopens.length}` : "Requeued by hand"}</Text>
+        ) : null}
         {props.asked ? <Text style={{ color: theme.colors.accent, fontSize: 10, fontWeight: "600" }}>Needs you</Text> : null}
       </View>
       {job.requeued && job.requeued.stage === props.stage ? (

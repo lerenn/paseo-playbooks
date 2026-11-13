@@ -46,7 +46,7 @@ beforeAll(async () => {
 /** A pipeline and a batch run as v0.90 wrote them to disk. */
 function oldRunFiles(): { pipeline: Record<string, unknown>; batch: Record<string, unknown> } {
   const base = engine.newPipelineRun({ id: "pipe", playbook: apply, workspaceId: "ws", workspaceDir: "/w", projectId: "p", branch: "main", now: T0 });
-  const job = { id: "j1", fromRunId: "r1", fromStepId: "s", attempt: 1, label: "PR", inputs: {}, status: "open", outcome: null, summary: null, outputs: {}, createdAt: T0, endedAt: null, passed: ["qa"], waiting: [{ station: "prd", since: T0 }], riding: [{ station: "dev", runId: "t1", since: T0 }], failedRides: {}, detached: false, requeued: null, requeues: {}, followUps: [] };
+  const job = { id: "j1", fromRunId: "r1", fromStepId: "s", attempt: 1, label: "PR", inputs: {}, status: "open", outcome: null, summary: null, outputs: {}, createdAt: T0, endedAt: null, passed: ["qa"], waiting: [{ station: "prd", since: T0 }], riding: [{ station: "dev", runId: "t1", since: T0 }], failedRides: {}, detached: false, requeued: null, requeues: {}, followUps: [], reopens: [] };
   const { stages, ...singleton } = base.playbook.singleton!;
   const pipeline = { ...JSON.parse(JSON.stringify(base)), jobs: [job], playbook: { ...JSON.parse(JSON.stringify(base.playbook)), singleton: { ...singleton, stations: stages } } };
   const batch = { ...JSON.parse(JSON.stringify(base)), id: "t1", jobs: [], train: { pipelineId: "pipe", playbook: "apply", station: "dev" } };

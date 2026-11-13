@@ -2209,24 +2209,33 @@ export function withdrawJob(pipeline: Run, jobId: string, reason: string, now: s
 }
 
 /**
- * `requeue_job`: a failed job goes back to waiting at the stages it may enter, keeping its id, its inputs, its outputs and the
- * stages it passed; its failed rides start again. Only a detached job (the pipeline owns it): a job whose hand-off step is
- * still waiting was already told "failure", and that step decides what happens next. Open already: nothing changes
- * (`changed: false`). Settled, withdrawn, shipped (every stage passed) or not detached: refused, saying why.
+ * `requeue_job`: a failed job, or one settled with an outcome that is not the singleton's first (the normal finish), goes back
+ * to waiting at the stages it may enter, keeping its id, inputs, outputs and the stages it passed (so it re-enters at the NEXT
+ * stage's queue); its failed rides start again and its pending follow-up is cleared (kept in `reopens`). Only a detached job (the
+ * pipeline owns it). `fromOutcome` guards the caller's expectation (`failed` for a failed job). A manual requeue is recorded in
+ * `reopens` and is not blocked by `queue.max_requeues`. Open already: nothing changes (`changed: false`). Running/queued with
+ * a guard, shipped (first outcome or every stage passed), withdrawn, or not detached: refused, saying why.
  */
-export function reopenJob(pipeline: Run, jobId: string, reason: string, now: string): { job: Job; changed: boolean } {
+export function reopenJob(pipeline: Run, jobId: string, reason: string, now: string, fromOutcome: string | null = null): { job: Job; changed: boolean } {
   if (!isPipeline(pipeline) || isTerminal(pipeline.status)) throw new EngineError(`run ${pipeline.id} is not an active pipeline`);
+  if (!reason.trim()) throw new EngineError("requeue_job needs a reason (a sentence: what was fixed)");
   const job = pipeline.jobs.find((candidate) => candidate.id === jobId);
-  if (!job) throw new EngineError(`pipeline ${pipeline.id} has no job "${jobId}" (its jobs: ${pipeline.jobs.filter((candidate) => candidate.status === "failed").map((candidate) => candidate.id).join(", ") || "none failed"})`);
+  if (!job) throw new EngineError(`pipeline ${pipeline.id} has no job "${jobId}" (its jobs: ${pipeline.jobs.filter((candidate) => candidate.status === "failed" || candidate.status === "settled").map((candidate) => candidate.id).join(", ") || "none ended"})`);
+  const now_ = job.status === "failed" ? "failed" : job.status === "settled" ? job.outcome : job.status;
+  if (fromOutcome !== null && fromOutcome !== now_) throw new EngineError(`job ${jobId} is ${job.status}${job.outcome ? ` (${job.outcome})` : ""}, not "${fromOutcome}": nothing was requeued`);
   if (job.status === "open") return { job, changed: false };
-  if (job.status !== "failed") throw new EngineError(`job ${jobId} is ${job.status}${job.outcome ? ` (${job.outcome})` : ""}: only a failed job can be requeued; hand its work off again for a new job`);
-  if (!job.detached) throw new EngineError(`job ${jobId} was handed off by a step that waits for its result (it was told "failure" and decides what happens next): restart that step, or hand the work off again`);
+  if (job.status === "withdrawn") throw new EngineError(`job ${jobId} is withdrawn (its hand-off was canceled): hand its work off again for a new job`);
+  if (job.status === "settled" && (job.outcome === null || job.outcome === pipeline.playbook.outcomes[0])) throw new EngineError(`job ${jobId} finished with "${job.outcome ?? "no outcome"}" (the normal finish): its work shipped, do not run it again`);
+  if (!job.detached) throw new EngineError(`job ${jobId} was handed off by a step that waits for its result (it was told "${job.status === "failed" ? "failure" : job.outcome}" and decides what happens next): restart that step, or hand the work off again`);
   const stages = stagesOf(pipeline);
   if (stages.length > 0 && stages.every((stage) => job.passed.includes(stage.id))) throw new EngineError(`job ${jobId} passed every stage: its work shipped, do not run it again`);
   const probe: Job = { ...structuredClone(job), batches: [], waiting: [] };
   queueNext(pipeline, probe, now);
   // No stage may take it (the playbook changed): nothing is touched.
   if (probe.waiting.length === 0) throw new EngineError(`job ${jobId} has no stage to wait at (stages: ${stages.map((stage) => stage.id).join(", ") || "none"}; passed: ${job.passed.join(", ") || "none"})`);
+  const previous = { status: job.status as "failed" | "settled", outcome: job.outcome, summary: job.summary, reason, followUps: structuredClone(job.followUps), at: now };
+  job.reopens.push(previous);
+  job.followUps = [];
   job.status = "open";
   job.outcome = null;
   job.summary = null;
@@ -2235,8 +2244,8 @@ export function reopenJob(pipeline: Run, jobId: string, reason: string, now: str
   job.waiting = probe.waiting;
   job.failedRides = {};
   job.requeued = null;
-  record(pipeline, "job.reopened", { jobId, reason, waiting: job.waiting, failedRides: job.failedRides, passed: job.passed }, now);
-  log(pipeline, now, "job_reopened", null, `${jobId} at ${job.waiting.map((entry) => entry.stage).join(", ")}${reason ? ` (${reason.slice(0, 200)})` : ""}`);
+  record(pipeline, "job.reopened", { jobId, reason, waiting: job.waiting, failedRides: job.failedRides, passed: job.passed, previous }, now);
+  log(pipeline, now, "job_reopened", null, `${jobId} (was ${previous.status}${previous.outcome ? `: ${previous.outcome}` : ""}) at ${job.waiting.map((entry) => entry.stage).join(", ")} (${reason.slice(0, 200)})`);
   return { job, changed: true };
 }
 

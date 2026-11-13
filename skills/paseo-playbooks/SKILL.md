@@ -678,12 +678,15 @@ steps:
   `PLAYBOOK_JOBS`; without `admit` the next batch may take it at once (the plugin never polls anything). Events:
   `job.requeued` with `cause: outcome` (`outcome`, `reason`, `blocker`, `requeues`).
 - **Requeueing:** a batch that fails (a lost manager, a rejected gate) puts its jobs back at the stage by itself while the
-  stage's `retries` allow; past them the jobs are `failed`. `requeue_job { runId, jobId, reason? }` (any agent except
-  step and gate agents; `runId` is the pipeline or one of its batches) puts a **failed** job back: same id, inputs and
-  outputs, it waits at the stages it has not passed and its failed rides start again, so the next batch carries it. Only
-  a handed-off (detached) job: its run is not involved (a step of an older plugin version that was waiting was told "failure" and decides itself). Idempotent
-  (an open job is left alone, `changed: false`); refused for a settled or withdrawn job, a job that passed every stage and
-  an ended pipeline. Events: `job.reopened`, then `job.queued` (`via: reopened`).
+  stage's `retries` allow; past them the jobs are `failed`. `requeue_job { runId, jobId, reason, from_outcome? }` (any agent except
+  step and gate agents; `runId` is the pipeline or one of its batches) puts a **failed** job, or one **settled with an outcome
+  other than the first** (e.g. `ejected`, once its cause is fixed), back: same id, inputs and outputs, it waits at the stages it
+  has not passed (a job that passed an earlier stage goes back at the NEXT stage's queue), its failed rides start again and
+  its pending follow-up clears. `reason` is required. `from_outcome` guards what you expect (`failed`, or the outcome): another state
+  now = an error, nothing requeued. The earlier end stays in the history and in the job's `reopens`; `queue.max_requeues` does
+  not block a manual requeue (it is only counted in `reopens`). Only a handed-off (detached) job. Idempotent without the guard
+  (an open job is left alone, `changed: false`); refused for a job that finished with the first outcome or passed every stage, a withdrawn
+  job and an ended pipeline. Events: `job.reopened`, then `job.queued` (`via: reopened`).
 - **Hand-off pending (detached jobs that ended):** a handed-off job that a batch settles with an outcome
   other than the first (`ejected`, `no_deploy`...) is told to nobody: only the batch's manager can start what follows (the
   playbook's instructions say what, e.g. a rework run). Each such job needs a **follow-up recorded**: `start_playbook` with

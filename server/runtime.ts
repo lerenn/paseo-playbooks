@@ -2048,6 +2048,7 @@ export class Runtime {
       requeued: null,
       requeues: {},
       followUps: [],
+      reopens: [],
     };
     await this.store.mutate(pipeline.id, (current) => engine.addJob(current, job, nowIso()));
     await this.store.mutate(run.id, (current) => {
@@ -2376,17 +2377,17 @@ export class Runtime {
   }
 
   /**
-   * requeue_job: a failed, detached job of a pipeline waits again at its stages, with the same id. `runId` is the pipeline,
+   * requeue_job: a failed or non-success settled, detached job of a pipeline waits again at its stages, with the same id. `runId` is the pipeline,
    * or one of its batches. Idempotent: an open job is left as it is. Any agent may call it (like cancel_run).
    */
-  async requeueJob(runId: string, jobId: string, reason: string): Promise<{ pipeline: Run; job: Job; changed: boolean }> {
+  async requeueJob(runId: string, jobId: string, reason: string, fromOutcome: string | null = null): Promise<{ pipeline: Run; job: Job; changed: boolean }> {
     const given = this.store.get(runId);
     if (!given) throw new UserError(`unknown run "${runId}"`);
     const pipeline = given.batch ? this.store.get(given.batch.pipelineId) : given;
     if (!pipeline) throw new UserError(`the pipeline of batch ${given.id} no longer exists`);
     if (!isPipeline(pipeline)) throw new UserError(`run ${pipeline.id} is not a singleton pipeline: it carries no jobs`);
     try {
-      const result = await this.store.mutate(pipeline.id, (current) => engine.reopenJob(current, jobId, reason, nowIso()));
+      const result = await this.store.mutate(pipeline.id, (current) => engine.reopenJob(current, jobId, reason, nowIso(), fromOutcome));
       if (result.changed) await this.tick();
       return { pipeline: this.store.get(pipeline.id)!, ...result };
     } catch (error) {

@@ -853,6 +853,13 @@ export const JobSchema = z.object({
    * (ADR 2026-11-12-pending-follow-ups).
    */
   followUps: z.array(z.object({ runId: z.string().nullable(), note: z.string().nullable(), by: z.string().nullable(), at: z.string() })).default([]),
+  /**
+   * Pipelines: every time `requeue_job` put the job back (ADR 2026-11-13-requeue-settled-jobs), with how it had ended, the caller's
+   * reason and the follow-ups recorded before. Append-only; its length is the manual requeue count (not charged to `queue.max_requeues`).
+   */
+  reopens: z
+    .array(z.object({ status: z.enum(["failed", "settled"]), outcome: z.string().nullable(), summary: z.string().nullable(), reason: z.string(), followUps: z.array(z.object({ runId: z.string().nullable(), note: z.string().nullable(), by: z.string().nullable(), at: z.string() })).default([]), at: z.string() }))
+    .default([]),
 });
 export type Job = z.infer<typeof JobSchema>;
 
@@ -1048,7 +1055,7 @@ export const RunSummarySchema = z.object({
   /** After-tasks' statuses. */
   after: z.record(z.string(), z.object({ status: AfterTaskStatusSchema })),
   /** Jobs without their inputs and outputs: what the stages and the job counts show. */
-  jobs: z.array(JobSchema.pick({ id: true, label: true, status: true, waiting: true, requeued: true, detached: true, outcome: true, followUps: true })),
+  jobs: z.array(JobSchema.pick({ id: true, label: true, status: true, waiting: true, requeued: true, detached: true, outcome: true, followUps: true, reopens: true })),
   batch: RunSchema.shape.batch,
   /** Set on a run a fan-out step started: its parent run, step and the item's key. */
   parent: RunSchema.shape.parent.default(null),
@@ -1100,7 +1107,7 @@ export function summarizeRun(run: Run): RunSummary {
     steps: Object.fromEntries(Object.entries(run.steps).map(([stepId, step]) => [stepId, { status: step.status, ...stepTiming(step) }])),
     gates: run.gates.filter((gate) => gate.status === "pending"),
     after: Object.fromEntries(Object.entries(run.after).map(([taskId, task]) => [taskId, { status: task.status }])),
-    jobs: run.jobs.map(({ id, label, status, waiting, requeued, detached, outcome, followUps }) => ({ id, label, status, waiting, requeued, detached, outcome, followUps })),
+    jobs: run.jobs.map(({ id, label, status, waiting, requeued, detached, outcome, followUps, reopens }) => ({ id, label, status, waiting, requeued, detached, outcome, followUps, reopens })),
     batch: run.batch,
     parent: run.parent,
     fanouts: Object.fromEntries(
