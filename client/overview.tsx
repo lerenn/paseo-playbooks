@@ -1206,10 +1206,13 @@ function Lane(props: { theme: Theme; child: FanoutChildInfo; compact: boolean; r
       <Text style={{ color: theme.colors.statusWarning, fontSize: 11, fontWeight: "600" }}>Needs you</Text>
     </View>
   ) : null;
+  const [history, setHistory] = useState(false);
+  const restarts = child.previous.length;
   return (
+    <View style={{ gap: 2 }}>
     <Pressable
       accessibilityRole={open ? "button" : undefined}
-      accessibilityLabel={`${child.key}: ${status}${gates > 0 ? ", needs you" : ""}`}
+      accessibilityLabel={`${child.key}: ${status}${restarts > 0 ? `, restarted ${restarts} time${restarts === 1 ? "" : "s"}` : ""}${gates > 0 ? ", needs you" : ""}`}
       accessibilityHint={open ? "Opens the child run's workspace" : undefined}
       disabled={!open}
       onPress={open}
@@ -1224,6 +1227,22 @@ function Lane(props: { theme: Theme; child: FanoutChildInfo; compact: boolean; r
       <Text numberOfLines={1} style={{ color: theme.colors.foregroundMuted, fontSize: 11, width: props.compact ? undefined : 190 }}>{status}</Text>
       {props.compact ? null : marker}
     </Pressable>
+    {restarts > 0 ? (
+      <View style={{ gap: 2, paddingLeft: props.compact ? 0 : 156 }}>
+        <Pressable accessibilityRole="button" accessibilityState={{ expanded: history }} accessibilityLabel={`${child.key}: earlier runs (${restarts})`} onPress={() => setHistory(!history)}>
+          <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>restarted ×{restarts} {history ? "▾" : "▸"}</Text>
+        </Pressable>
+        {history
+          ? child.previous.map((entry, index) => (
+              <Text key={`${entry.runId}-${index}`} style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>
+                {entry.runId} · {entry.status.replace("_", " ")}
+                {entry.reason ? ` · ${entry.reason}` : ""}
+              </Text>
+            ))
+          : null}
+      </View>
+    ) : null}
+    </View>
   );
 }
 

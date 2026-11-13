@@ -82,7 +82,9 @@ How to run a playbook:
    item of a list, each in its own workspace with its own manager, keeps at most max_active of
    them going, and wakes you when every one has ended (outcome all_completed or some_failed,
    with per-item results in the outputs). Never start_step or complete_step it, and never
-   touch the child runs: their gates go to the human in the Playbooks panel.
+   touch the child runs: their gates go to the human in the Playbooks panel. (A child's own manager
+   that cancels its run and starts a new one for the same item links them with replace_child, or
+   start_playbook with replaces, so the item stays running; you need not.)
    Hand-off steps (\`handoff:\` instead of a role) are not yours either: a hand-off gives the task
    to a singleton playbook. The plugin hands the job to its pipeline and the step completes at
    once, with no outputs; the run goes on with what is ready next (often it ends there). You are

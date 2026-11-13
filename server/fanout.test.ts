@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { parseList, renderTemplate } from "../shared/vars";
-import { summarizeRun } from "../shared/types";
+import { FanoutChildSchema, summarizeRun } from "../shared/types";
 import * as engine from "./engine";
 import { loadPlaybooks } from "./loader";
 import { Runtime } from "./runtime";
@@ -408,10 +408,134 @@ describe("fan-out runs", () => {
 
 describe("fan-out engine", () => {
   it("summarizes counts and picks pending children under the cap", () => {
-    const child = (key: string, status: engine.FanoutChildStatus) => ({ key, index: 0, item: "1", inputs: {}, workspaceName: "", status, runId: null, workspaceId: null, error: null, startedAt: null, endedAt: null, outputs: {} });
+    const child = (key: string, status: engine.FanoutChildStatus) => ({ key, index: 0, item: "1", inputs: {}, workspaceName: "", status, runId: null, workspaceId: null, error: null, startedAt: null, endedAt: null, outputs: {}, previous: [] });
     const state = { attempt: 1, loop: 0, startedAt: "", children: [child("a", "running"), child("b", "pending"), child("c", "pending"), child("d", "failed")] };
     expect(engine.childrenToStart(state, 2).map((entry) => entry.key)).toEqual(["b"]);
     expect(engine.fanoutSummaryText(state)).toBe("1 of 4 done: 1 failed, 1 running, 2 waiting");
     expect(engine.fanoutJoined(state)).toBe(false);
+  });
+});
+
+describe("replaced fan-out children", () => {
+  /** A fan-out of a, b, c (max_active 2) with a and b started, as the stuck-ticket scenario begins. */
+  async function started() {
+    const ctx = await setup();
+    const run = await startParent(ctx);
+    await until(() => ctx.created.length === 2);
+    const [a, b] = [await createChild(ctx, 1, "a"), await createChild(ctx, 2, "b")];
+    await until(() => stepOf(ctx, run.id).fanout!.children.filter((child) => child.status === "running").length === 2);
+    return { ctx, run, a, b };
+  }
+  /** The child's manager starts a new run of the same playbook for the same item, on its own (no reservation). */
+  const restart = (ctx: Ctx, n: number, item: string) => ctx.runtime.startPlaybook({ id: `mgr${n}`, workspaceId: `wt${n}`, cwd: ctx.dir }, "child", { item, base: "fixed" });
+  const item = (ctx: Ctx, runId: string, key: string) => stepOf(ctx, runId).fanout!.children.find((child) => child.key === key)!;
+
+  it("keeps the item running under the replacement of a canceled child, and joins only when the last of the chain ends", async () => {
+    const { ctx, run, a, b } = await started();
+    await ctx.runtime.cancelRun(a.id, "Restarting on the fixed playbook", `by agent mgr1`);
+    await until(() => item(ctx, run.id, "a").status === "canceled");
+    const a2 = await restart(ctx, 9, "a");
+    const linked = await ctx.runtime.replaceChild({ runId: a.id, newRunId: a2.id, reason: "Restarting on the fixed playbook", by: "mgr1", cancelBy: null });
+    expect(linked).toMatchObject({ parentRunId: run.id, key: "a", previous: [a.id], changed: true });
+    expect(ctx.store.get(a2.id)!.parent).toEqual({ runId: run.id, stepId: "spawn", key: "a" });
+    await until(() => item(ctx, run.id, "a").status === "running");
+    expect(item(ctx, run.id, "a")).toMatchObject({ runId: a2.id, previous: [{ runId: a.id, status: "canceled", reason: "Restarting on the fixed playbook" }] });
+    // The canceled run is not a failure of the item: b and the last item end, a2 is still running, so the fan-out waits.
+    await end(ctx, b.id, "completed", { result: "rb" });
+    await until(() => ctx.created.length === 3);
+    const c = await createChild(ctx, 3, "c");
+    await end(ctx, c.id, "completed", { result: "rc" });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(stepOf(ctx, run.id).status).toBe("running");
+    await end(ctx, a2.id, "completed", { result: "ra" });
+    await until(() => stepOf(ctx, run.id).status === "completed");
+    const state = stepOf(ctx, run.id);
+    expect(state.attempts.at(-1)!.outcome).toBe("all_completed");
+    expect(state.outputs).toMatchObject({ total: 3, completed: 3, canceled: 0, any_failed: false });
+    expect(parseList(state.outputs.results as string)).toMatchObject({ ok: true });
+    expect(JSON.parse(state.outputs.results as string)[0]).toMatchObject({ key: "a", runId: a2.id, outcome: "completed", restarts: 1, previous_runs: a.id });
+    const types = ctx.store.get(run.id)!.history.map((entry) => entry.type);
+    expect(types).toContain("fanout_child_replaced");
+  });
+
+  it("cancels a replaced child that is still running, takes its slot (no double slot) and keeps list order", async () => {
+    const { ctx, run, a, b } = await started();
+    const a2 = await restart(ctx, 9, "a");
+    // `a` is still running: replacing it cancels it. The parent counts one active item for `a`, so `c` keeps waiting for a slot.
+    await ctx.runtime.replaceChild({ runId: a.id, newRunId: a2.id, reason: null, by: "mgr9", cancelBy: null });
+    expect(ctx.store.get(a.id)!.status).toBe("canceled");
+    await until(() => item(ctx, run.id, "a").status === "running");
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(engine.activeChildren(stepOf(ctx, run.id).fanout!).map((child) => child.key)).toEqual(["a", "b"]);
+    expect(ctx.created).toHaveLength(2);
+    expect(item(ctx, run.id, "c").status).toBe("pending");
+    // When one ends the next pending item starts, as before.
+    await end(ctx, b.id, "completed", { result: "rb" });
+    await until(() => ctx.created.length === 3);
+  });
+
+  it("follows a double replacement chain, and is idempotent", async () => {
+    const { ctx, run, a } = await started();
+    const a2 = await restart(ctx, 9, "a");
+    const first = await ctx.runtime.replaceChild({ runId: a.id, newRunId: a2.id, reason: "one", by: null, cancelBy: null });
+    expect(first.changed).toBe(true);
+    // Same call again: nothing changes.
+    expect(await ctx.runtime.replaceChild({ runId: a.id, newRunId: a2.id, reason: "one", by: null, cancelBy: null })).toMatchObject({ changed: false });
+    const a3 = await restart(ctx, 10, "a");
+    // Replacing the first run again is refused: it was replaced; the current run is named.
+    await expect(ctx.runtime.replaceChild({ runId: a.id, newRunId: a3.id, reason: null, by: null, cancelBy: null })).rejects.toThrow(new RegExp(`already replaced.*${a2.id}`));
+    await ctx.runtime.replaceChild({ runId: a2.id, newRunId: a3.id, reason: "two", by: null, cancelBy: null });
+    expect(item(ctx, run.id, "a")).toMatchObject({ runId: a3.id });
+    expect(item(ctx, run.id, "a").previous.map((entry) => entry.runId)).toEqual([a.id, a2.id]);
+    expect(engine.fanoutCounts(stepOf(ctx, run.id).fanout!).total).toBe(3);
+    // The summary the panel draws carries the chain.
+    expect(summarizeRun(ctx.store.get(run.id)!).fanouts.spawn!.children[0]).toMatchObject({ key: "a", runId: a3.id, previous: [{ runId: a.id, status: "canceled" }, { runId: a2.id, status: "canceled", reason: "two" }] });
+  });
+
+  it("refuses a run that is not a fan-out child, another playbook, an unknown run, a run of another item, and an ended fan-out", async () => {
+    const { ctx, run, a, b } = await started();
+    const a2 = await restart(ctx, 9, "a");
+    const replace = (runId: string, newRunId: string) => ctx.runtime.replaceChild({ runId, newRunId, reason: null, by: null, cancelBy: null });
+    await expect(replace("run_nope", a2.id)).rejects.toThrow(/unknown run "run_nope"/);
+    await expect(replace(run.id, a2.id)).rejects.toThrow(/not a child of a fan-out step/);
+    await expect(replace(a.id, "run_nope")).rejects.toThrow(/unknown run "run_nope"/);
+    await expect(replace(a.id, a.id)).rejects.toThrow(/cannot replace itself/);
+    const parentPlaybook = (await loadPlaybooks(ctx.dir)).entries.find((entry) => entry.id === "parent")!.playbook!;
+    const other = await ctx.runtime.startPlaybook({ id: "mgr8", workspaceId: "wt8", cwd: ctx.dir }, "parent", {}, { playbook: parentPlaybook });
+    await expect(replace(a.id, other.id)).rejects.toThrow(/"parent".*runs "child"/);
+    expect(item(ctx, run.id, "a").runId).toBe(a.id);
+    // A run that already belongs to item b cannot take over a.
+    await expect(replace(a.id, b.id)).rejects.toThrow(/already belongs to fan-out item "b"/);
+    await ctx.runtime.cancelRun(other.id, "not needed", null);
+    // Ended fan-out: not reopened.
+    await end(ctx, a.id, "failed");
+    await end(ctx, b.id, "failed");
+    await until(() => ctx.created.length === 3);
+    const c = await createChild(ctx, 3, "c");
+    await end(ctx, c.id, "failed");
+    await until(() => stepOf(ctx, run.id).status === "completed");
+    await expect(replace(a.id, a2.id)).rejects.toThrow(/no longer running.*not reopened/);
+    expect(() => ctx.runtime.checkReplacement(a.id, "child")).toThrow(/no longer running/);
+  });
+
+  it("keeps the item key when restart_run reopens the run of an item that had ended", async () => {
+    const { ctx, run, a, b } = await started();
+    await end(ctx, a.id, "failed");
+    await until(() => item(ctx, run.id, "a").status === "failed");
+    // restart_run reopens the same run: the item follows it again instead of staying failed.
+    await ctx.store.mutate(a.id, (current) => {
+      current.status = "running";
+      current.failure = null;
+    });
+    await until(() => item(ctx, run.id, "a").status === "running");
+    expect(item(ctx, run.id, "a")).toMatchObject({ runId: a.id, previous: [{ runId: a.id, status: "failed", reason: "boom" }] });
+    await end(ctx, b.id, "completed", { result: "rb" });
+    await until(() => ctx.created.length === 3);
+    expect(stepOf(ctx, run.id).status).toBe("running");
+  });
+
+  it("reads children saved before the chain existed", () => {
+    const saved = { key: "a", index: 0, item: "1", status: "completed", runId: "run_x" };
+    expect(FanoutChildSchema.parse(saved).previous).toEqual([]);
   });
 });
