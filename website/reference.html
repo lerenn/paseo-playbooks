@@ -15,36 +15,31 @@
 <div class="doc">
 <aside class="sidebar"><nav aria-label="On this page">
 <a href="#folders">Folders and layout</a>
-<a href="#defaults">defaults/main.yaml</a>
-<ul>
+<details class="grp"><summary><a href="#defaults">defaults/main.yaml</a></summary><ul>
 <li><a href="#manager-instructions">defaults/manager.md and manager instructions</a></li>
 <li><a href="#manager-mode">Runs with no manager</a></li>
-</ul>
+</ul></details>
 <a href="#roles">Roles</a>
 <a href="#sidekick">Sidekick</a>
 <a href="#playbook">Playbook fields</a>
 <a href="#steps">Step fields</a>
 <a href="#flow">Outcomes and flow</a>
-<a href="#gates">Gates</a>
-<ul>
+<details class="grp"><summary><a href="#gates">Gates</a></summary><ul>
 <li><a href="#deciders">Who decides a gate</a></li>
-</ul>
+</ul></details>
 <a href="#loops">Loops</a>
-<a href="#variables">Variables</a>
-<ul>
+<details class="grp"><summary><a href="#variables">Variables</a></summary><ul>
 <li><a href="#step-input-source">Where a step input comes from</a></li>
-</ul>
+</ul></details>
 <a href="#templates">Prompt templates</a>
-<a href="#when">Conditional steps</a>
-<ul>
+<details class="grp"><summary><a href="#when">Conditional steps</a></summary><ul>
 <li><a href="#branches">Branches: if / else-if / else</a></li>
-</ul>
+</ul></details>
 <a href="#fanout">List values and fan-out steps</a>
-<a href="#singletons">Singleton playbooks and hand-offs</a>
-<ul>
+<details class="grp"><summary><a href="#singletons">Singleton playbooks and hand-offs</a></summary><ul>
 <li><a href="#admission">Admission on a stage's queue</a></li>
 <li><a href="#job-events">Job events and the event log</a></li>
-</ul>
+</ul></details>
 <a href="#subplaybooks">Sub-playbooks</a>
 <a href="#after">After-tasks</a>
 <a href="#agents">Agent settings</a>
@@ -605,7 +600,7 @@ slow_warning: { runs: 10, factor: 2 }
 <footer class="site"><div class="inner">Paseo Playbooks is a plugin for <a href="https://paseo.sh">Paseo</a>. Source on <a href="https://github.com/lerenn/paseo-playbooks">GitHub</a>.</div></footer>
 <script>
 (function(){var l=[].slice.call(document.querySelectorAll('.sidebar a')),m={};l.forEach(function(a){m[a.hash.slice(1)]=a});
-var o=new IntersectionObserver(function(e){e.forEach(function(x){if(x.isIntersecting){l.forEach(function(a){a.classList.remove('active')});var a=m[x.target.id];a.classList.add('active');a.scrollIntoView({block:'nearest'})}})},{rootMargin:'-70px 0px -75% 0px'});
+var o=new IntersectionObserver(function(e){e.forEach(function(x){if(x.isIntersecting){l.forEach(function(a){a.classList.remove('active')});var a=m[x.target.id];a.classList.add('active');var d=a.closest('details.grp');if(d)d.open=true;a.scrollIntoView({block:'nearest'})}})},{rootMargin:'-70px 0px -75% 0px'});
 document.querySelectorAll('main h2[id],main h3[id]').forEach(function(h){o.observe(h)})})();
 </script>
 </body>
