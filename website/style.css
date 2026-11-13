@@ -285,3 +285,4 @@ details > :last-child { margin-bottom: 0.9rem; }
 .sidebar details.grp > ul { margin: 0 0 0.3rem; }
 .sidebar details.grp > *:not(summary) { margin-left: 0; margin-right: 0; }
 .sidebar details.grp[open] > summary { border-bottom: 0; }
+header.site nav a.gh { display: inline-flex; align-items: center; }
