@@ -162,6 +162,40 @@ steps:
     expect(sent[0]!.text).toMatch(/The run is failed/);
   });
 
+  it("allow failure without declaring it: retried, then the run fails, waking the manager once", async () => {
+    const playbook = `
+title: Wait
+steps:
+  - id: check
+    script: { run: fail.sh }
+    outcomes: [clean, dirty]
+    on: { dirty: { goto: check } }
+    retries: 2
+`;
+    const { loaded, store, runtime, sent } = await setup(playbook, { "fail.sh": "#!/bin/sh\nexit 3\n" });
+    expect(loaded.errors).toEqual([]);
+    expect(loaded.playbook!.steps[0]!.outcomes).toEqual(["clean", "dirty", "failure"]);
+    const run = await runtime.startPlaybook({ id: "m", workspaceId: "ws", cwd: "/" }, "wait", {}, { playbook: loaded.playbook! });
+    await until(() => store.get(run.id)!.status === "failed");
+    await until(() => sent.some((entry) => entry.agentId === "m"));
+    expect(store.get(run.id)!.steps.check!.attempts).toHaveLength(3);
+    expect(sent.filter((entry) => entry.agentId === "m")).toHaveLength(1);
+    expect(sent[0]!.text).not.toMatch(/not allowed/);
+  });
+
+  it("accept on.failure on a script step that does not declare failure", async () => {
+    const playbook = `
+title: Wait
+steps:
+  - id: check
+    script: { run: fail.sh }
+    outcomes: [clean]
+    on: { failure: { goto: check, max_loops: 1 } }
+`;
+    const { loaded } = await setup(playbook, { "fail.sh": "#!/bin/sh\nexit 3\n", "ok.sh": "#!/bin/sh\nexit 0\n" });
+    expect(loaded.errors).toEqual([]);
+  });
+
   it("time out as a failure", async () => {
     const playbook = `
 title: Wait

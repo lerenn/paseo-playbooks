@@ -382,7 +382,9 @@ The script contract:
   `{"outcome": "...", "summary": "...", "outputs": {...}}`, each key optional. `outcome`
   defaults to the first outcome, so a script can branch (`outcomes: [merged, closed]` with
   `on.closed`). Outputs are checked against `outputs` like an agent's report; a wrong one fails
-  the attempt. On failure, `summary` (or the last stderr line) says why.
+  the attempt. On failure, `summary` (or the last stderr line) says why. `failure` is always an
+  outcome of a script step, declared or not: a non-zero exit is retried per `retries`, then follows
+  `on.failure` or fails the run, and the manager is woken only after the retries are used up.
 - **Checks must be idempotent and short:** each check looks once and exits. The plugin does
   the waiting between checks, and it reruns the current check after a daemon restart.
   A script must not edit the checkout (the concurrency rule does not check scripts).

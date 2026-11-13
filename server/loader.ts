@@ -1634,7 +1634,10 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
       return choice;
     });
     if (gateStep?.choices !== undefined && choices.length === 0) err(`${where}: gate.choices: declare at least one choice`);
-    const outcomes = isGate ? (choices.length > 0 ? choices.map((choice) => choice.id) : GATE_OUTCOMES) : rawStep.outcomes ?? AGENT_OUTCOMES;
+    // A script step's non-zero exit is the outcome `failure` whether it declares it or not, so it is always allowed
+    // (retries, `on.failure`); agent steps already default to success/failure and hand-offs and fan-outs fix theirs.
+    const declared = rawStep.outcomes ?? AGENT_OUTCOMES;
+    const outcomes = isGate ? (choices.length > 0 ? choices.map((choice) => choice.id) : GATE_OUTCOMES) : isScript && !declared.includes("failure") ? [...declared, "failure"] : declared;
     const on: Record<string, Transition> = {};
     for (const [outcome, transition] of Object.entries(rawStep.on ?? {})) {
       if (!outcomes.includes(outcome)) err(`${where}: on.${outcome}: not an outcome of this step (${outcomes.join(", ")})`);
