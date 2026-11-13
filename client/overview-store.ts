@@ -1,6 +1,7 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { useSyncExternalStore } from "react";
 import { needsYouRpc, overviewStateRpc } from "../shared/contracts";
+import { waitsForHuman } from "../shared/gates";
 import type { RunSummary } from "../shared/types";
 import { watchAgents } from "./events";
 
@@ -55,7 +56,7 @@ export function createOverviewStore(client: PluginClientContext): OverviewStore 
     const request = withRuns
       ? client.rpc(overviewStateRpc, {}).then(({ runs }) => ({
           runs,
-          count: runs.reduce((count, run) => count + run.gates.filter((gate) => gate.status === "pending").length, 0),
+          count: runs.reduce((count, run) => count + run.gates.filter(waitsForHuman).length, 0),
         }))
       : client.rpc(needsYouRpc, {}).then(({ count }) => ({ count }));
     void request

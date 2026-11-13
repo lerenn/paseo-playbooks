@@ -2,7 +2,7 @@ import { SlowIndex, slowEntries, slowEntry } from "./slow";
 import type { SlowInfo } from "../shared/slow";
 import { checkSubscriptionScope } from "./bus";
 import { defineAgentTool, type AgentToolDefinition, type AgentToolResult } from "@getpaseo/plugin/server";
-import { askHumanText, choicesOfGate, GATE_SUMMARY_MAX } from "../shared/gates";
+import { askHumanText, choicesOfGate, GATE_SUMMARY_MAX, waitsForHuman } from "../shared/gates";
 import { z } from "zod";
 import type { PlaybookEntry, Run, When } from "../shared/types";
 import { repairReport } from "./malformed";
@@ -53,7 +53,7 @@ function runningSteps(run: Run): string[] {
 
 /** A gate without its details, its comment clipped like a step summary. */
 function compactGate(gate: Run["gates"][number]) {
-  return { id: gate.id, kind: gate.kind, ...(gate.jobId ? { jobId: gate.jobId } : {}), stepId: gate.stepId, status: gate.status, summary: gate.summary, comment: clip(gate.comment), decidedBy: gate.decidedBy };
+  return { id: gate.id, kind: gate.kind, ...(gate.jobId ? { jobId: gate.jobId } : {}), stepId: gate.stepId, status: gate.status, waitingForHuman: waitsForHuman(gate), summary: gate.summary, comment: clip(gate.comment), decidedBy: gate.decidedBy };
 }
 
 /** A batch's (or pipeline's) jobs: id, where from, status and outcome (inputs with view "full"). */
@@ -249,7 +249,7 @@ export function afterText(run: Run): string {
   if (running.length === 0) return "";
   const ready = engine.readySteps(run);
   const gates = ready.filter((id) => engine.stepDef(run, id).kind === "gate");
-  const waiting = run.gates.some((gate) => gate.status === "pending");
+  const waiting = run.gates.some(waitsForHuman);
   return ` After-tasks running: ${running.join(", ")} (their result does not change the run, which stays ${run.status}). ${
     waiting ? "A gate is waiting for a human decision. " : ""
   }Ready: ${ready.join(", ") || "none"}.${gates.length ? ` Gate(s) to open with request_gate: ${gates.join(", ")}.` : ""}`;
