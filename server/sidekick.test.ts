@@ -275,7 +275,7 @@ describe("a Sidekick's session", () => {
     const caller = { id: sidekick.agentId, workspaceId: sidekick.workspaceId };
     expect(await runtime.isSidekick(sidekick.agentId)).toBe(true);
     expect(await runtime.isSidekick("someone-else")).toBe(false);
-    await expect(runtime.startPlaybookInWorkspace(caller, { playbook: "pr", inputs: {}, newWorkspace: false, workspaceId: "ws-shop" })).rejects.toThrow(/new one/);
+    await expect(runtime.startPlaybookInWorkspace(caller, { playbook: "pr", inputs: {}, newWorkspace: false, workspaceId: "ws-shop" })).rejects.toThrow(/no `isolation: { mode: worktree }`/);
     // No workspaceId: the base is its own workspace, so it is not refused for a missing one.
     await expect(runtime.startPlaybookInWorkspace(caller, { playbook: "pr", inputs: {}, newWorkspace: true, workspaceId: undefined })).rejects.not.toThrow(/workspaceId is missing|own hidden/);
     await expect(runtime.startPlaybookInWorkspace({ id: "x", workspaceId: null }, { playbook: "pr", inputs: {}, newWorkspace: true, workspaceId: undefined })).rejects.toThrow(/workspaceId is missing/);

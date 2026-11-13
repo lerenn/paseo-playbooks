@@ -3948,9 +3948,10 @@ export class Runtime {
     const isSidekick = await this.isSidekick(caller.id);
     if (input.workspaceName && !input.newWorkspace) throw new UserError("workspaceName names the new workspace: pass it with newWorkspace");
     // Without workspaceId a Sidekick branches the new workspace off its own (hidden) one, which is the project's root checkout.
-    const baseId = input.workspaceId ?? (isSidekick ? caller.workspaceId : null);
+    const baseId = input.workspaceId ?? (isSidekick && input.newWorkspace ? caller.workspaceId : !isSidekick ? caller.workspaceId : null);
     if (!baseId) throw new UserError("workspaceId is missing: name a workspace of this project (list_workspaces) to branch the new workspace off");
-    if (!input.newWorkspace && isSidekick) throw new UserError("a Sidekick never runs in a workspace that exists: the run starts in a new one");
+    if (!input.newWorkspace && isSidekick && (!input.workspaceId || input.workspaceId === caller.workspaceId)) throw new UserError("a Sidekick never runs in its own hidden workspace: pass workspaceId of an existing workspace, or start the run in a new one");
+    if (!input.newWorkspace && !(await this.isIsolatedPlaybook(baseId, input.playbook))) throw new UserError(`"${input.playbook}" has no \`isolation: { mode: worktree }\`: it starts in a new workspace, never in an existing one`);
     const workspace = await this.api().workspaces.ref(baseId).refresh();
     if (!workspace) throw new UserError(isSidekick && !input.workspaceId ? "the Sidekick's own workspace is gone, so there is no project root to branch the new workspace off: pass workspaceId (list_workspaces)" : `workspace "${baseId}" not found (list_workspaces lists them)`);
     const callerProject = await this.projectIdOf(caller.workspaceId);
@@ -4306,6 +4307,24 @@ export class Runtime {
     if (!resolved.ok) throw new UserError(resolved.errors.join("; "));
     if (projectId) this.checkConcurrency(playbook, projectId);
     return this.startInNewWorkspace(workspaceDir, playbook, resolved.inputs, workspaceName);
+  }
+
+  /** Whether the playbook, as the workspace has it, declares `isolation: { mode: worktree }` (false when the workspace or playbook is missing or invalid). */
+  async isIsolatedPlaybook(workspaceId: string, playbookId: string): Promise<boolean> {
+    const workspace = await this.api().workspaces.ref(workspaceId).refresh();
+    if (!workspace) return false;
+    const loaded = await loadPlaybooks(workspace.workspaceDirectory ?? workspace.projectRootPath, { projectId: workspace.projectId });
+    return lookup(loaded.entries, playbookId)?.playbook?.isolation.mode === "worktree";
+  }
+
+  /** Whether the workspace holds a reservation for exactly this playbook and inputs: what the Playbook Manager the plugin created for it calls start_playbook with (another agent of the workspace starting its own run is not that). */
+  hasReservationFor(workspaceId: string | null, playbookId: string, inputs: Record<string, unknown>): boolean {
+    if (workspaceId === null) return false;
+    return (this.reservations.get(workspaceId) ?? []).some((r) => {
+      if (r.playbook.id !== playbookId) return false;
+      const resolved = engine.resolveRunInputs(r.playbook, inputs);
+      return resolved.ok && JSON.stringify(resolved.inputs) === JSON.stringify(r.inputs);
+    });
   }
 
   hasReservation(workspaceId: string | null): boolean {
