@@ -105,7 +105,38 @@ export function resolveRunInputs(
     if (coerced.ok) inputs[name] = coerced.value;
     else errors.push(`input "${name}": ${coerced.error}`);
   }
+  if (errors.length === 0) errors.push(...unsetStrictInputs(playbook, inputs));
   return errors.length > 0 ? { ok: false, errors } : { ok: true, inputs };
+}
+
+/**
+ * Fan-out templates (items, key, workspace name, child inputs, pool refill inputs) are strict: an unset `{{ inputs.<name> }}`
+ * is an error, never empty. When such an input is wired straight from a playbook input the run did not get (optional, no
+ * default), the run could only fail later, mid-run. Names each one now. Steps with a `when` are left alone (they may be skipped).
+ */
+export function unsetStrictInputs(playbook: Playbook, given: Record<string, VarValue>): string[] {
+  const errors: string[] = [];
+  for (const step of playbook.steps) {
+    const fan = step.fanout;
+    if (!fan || step.when?.length) continue;
+    const templates: [string, string][] = [["fanout.items", fan.items], ...Object.entries(fan.inputs).map(([name, t]): [string, string] => [`fanout.inputs.${name}`, t])];
+    if (fan.key !== undefined) templates.push(["fanout.key", fan.key]);
+    if (fan.workspaceName !== undefined) templates.push(["fanout.workspace_name", fan.workspaceName]);
+    for (const [name, t] of Object.entries(fan.pool?.inputs ?? {})) templates.push([`fanout.pool.refill.inputs.${name}`, t]);
+    for (const [at, template] of templates) {
+      for (const ref of templateRefs(template)) {
+        if (!ref.startsWith("inputs.")) continue;
+        const name = ref.slice("inputs.".length);
+        for (const source of templateRefs(step.inputs[name]?.source ?? "")) {
+          if (!source.startsWith("playbook.inputs.")) continue;
+          const input = source.slice("playbook.inputs.".length);
+          if (input in given) continue;
+          errors.push(`input "${input}" is not set, but step "${step.id}" ${at} reads {{ ${ref} }} (from {{ ${source} }}) and an unset reference is an error: provide "${input}" when starting, or declare a non-empty \`default\` for it in the playbook's inputs`);
+        }
+      }
+    }
+  }
+  return [...new Set(errors)];
 }
 
 /** Validates one job's inputs against a singleton playbook (every input of a singleton is each job's). */
@@ -2622,7 +2653,12 @@ export function poolPassInputs(run: Run, stepId: string, config: PoolConfig, n: 
       const value = lookup(context, ref);
       return value === undefined || value === null;
     });
-    if (missing !== undefined) return { ok: false, error: `pool.inputs.${name}: "{{ ${missing} }}" is not set` };
+    if (missing !== undefined) {
+      const from = /^inputs\.(.+)$/.exec(missing)?.[1];
+      const source = from !== undefined ? step.inputs[from]?.source.match(/playbook\.inputs\.([\w-]+)/)?.[1] : undefined;
+      const fix = source !== undefined ? `input "${source}" is not set: provide it, or declare a non-empty default in the playbook's inputs` : "declare a default for the input or provide it";
+      return { ok: false, error: `fanout.pool.refill.inputs.${name} reads "{{ ${missing} }}", which is not set; ${fix}` };
+    }
     inputs[name] = renderTemplate(template, context);
   }
   return { ok: true, inputs };

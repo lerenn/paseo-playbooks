@@ -428,3 +428,59 @@ describe("work pool engine", () => {
     expect(engine.fanoutJoined(state)).toBe(true);
   });
 });
+
+describe("inputs read by strict fan-out templates", () => {
+  const withScope = (declare: string, refill = '{ done: "{{ pool.done }}", scope: "{{ inputs.scope }}" }') => {
+    const spawn = POOL().replace('inputs: { done: "{{ pool.done }}" }', `inputs: ${refill}`);
+    return {
+      ...FILES(spawn),
+      "parent.yaml": parent(spawn)
+        .replace("title: Parent\n", `title: Parent\ninputs:\n  scope: ${declare}\n`)
+        .replace("inputs: [ready, base]", 'inputs: { ready: ~, base: ~, scope: "{{ playbook.inputs.scope }}" }'),
+      "refill.yaml": REFILL.replace("done: { type: string }", "done: { type: string }\n  scope: { type: string }"),
+    };
+  };
+
+  it("refuses to start when an optional input read by the refill block is not given, naming input and location", async () => {
+    const ctx = await setup(withScope("{ type: string }"));
+    const loaded = (await loadPlaybooks(ctx.dir)).entries.find((entry) => entry.id === "parent")!;
+    expect(loaded.errors).toEqual([]);
+    await expect(ctx.runtime.startPlaybook({ id: "mgr0", workspaceId: "ws0", cwd: ctx.dir }, "parent", {}, { playbook: loaded.playbook! })).rejects.toThrow(
+      /input "scope" is not set, but step "spawn" fanout\.pool\.refill\.inputs\.scope reads \{\{ inputs\.scope \}\}.*provide "scope".*default/,
+    );
+    expect(ctx.store.list()).toHaveLength(0);
+  });
+
+  it("starts when the input is given or has a default", async () => {
+    for (const [declare, given] of [["{ type: string }", { scope: "x" }], ['{ type: string, default: "all" }', {}]] as const) {
+      const ctx = await setup(withScope(declare));
+      const loaded = (await loadPlaybooks(ctx.dir)).entries.find((entry) => entry.id === "parent")!;
+      const run = await ctx.runtime.startPlaybook({ id: "mgr0", workspaceId: "ws0", cwd: ctx.dir }, "parent", given, { playbook: loaded.playbook! });
+      expect(ctx.store.get(run.id)).toBeDefined();
+    }
+  });
+
+  it("a required input is still refused by the existing rule, and an unread optional input is not checked", async () => {
+    const playbook = (await loadPlaybooks((await setup(withScope("{ type: string, required: true }"))).dir)).entries.find((entry) => entry.id === "parent")!.playbook!;
+    expect(engine.resolveRunInputs(playbook, {})).toEqual({ ok: false, errors: ['input "scope" is required'] });
+    const plain = (await loadPlaybooks((await setup(FILES())).dir)).entries.find((entry) => entry.id === "parent")!.playbook!;
+    expect(engine.unsetStrictInputs(plain, {})).toEqual([]);
+  });
+
+  it("refuses at load a refill template reading an input the step does not declare", async () => {
+    expect(await errorsOf(withScope("{ type: string }", '{ done: "{{ pool.done }}", scope: "{{ inputs.other }}" }'))).toMatch(
+      /fanout\.pool\.refill\.inputs\.scope uses "\{\{ inputs\.other \}\}" but the step declares no such input/,
+    );
+  });
+
+  it("a refill pass that meets an unset input says how to fix it", async () => {
+    const ctx = await setup(withScope("{ type: string }"));
+    const playbook = (await loadPlaybooks(ctx.dir)).entries.find((entry) => entry.id === "parent")!.playbook!;
+    const run = engine.newRun({ id: "run_x", playbook, workspaceId: "w", workspaceDir: ctx.dir, projectId: "p", branch: "main", managerAgentId: "m", inputs: { scope: "x" }, now: new Date().toISOString() });
+    delete run.inputs.scope;
+    run.steps.spawn!.fanout = { attempt: 1, loop: 0, startedAt: run.createdAt, children: [], pool: null } as never;
+    const result = engine.poolPassInputs(run, "spawn", playbook.steps.find((step) => step.id === "spawn")!.fanout!.pool!, 1);
+    expect(result).toMatchObject({ ok: false });
+    expect((result as { error: string }).error).toMatch(/fanout\.pool\.refill\.inputs\.scope reads "\{\{ inputs\.scope \}\}", which is not set; input "scope" is not set: provide it, or declare a non-empty default/);
+  });
+});

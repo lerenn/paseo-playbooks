@@ -579,6 +579,15 @@ children that completed), `pool.failed` (failed, canceled, not started), `pool.a
 `pool.pending` (queued), `pool.known` (every key), `pool.refill` (the pass's number). Lists are JSON text; a list input is
 at most 200 items: declare the input `type: string` for more.
 
+**Inputs the templates read must be set.** Fan-out templates (`items`, `key`, `workspace_name`, `inputs`) and the pool's
+`refill.inputs` are strict: an unset `{{ inputs.<name> }}` is an error, never empty. A step input wired from a playbook
+input (`scope: "{{ playbook.inputs.scope }}"`) is unset when that playbook input is optional (no `required`), has no
+`default` and the run was not given it. The plugin refuses to **start** such a run, naming the input and the template
+(`input "scope" is not set, but step "spawn" fanout.pool.refill.inputs.scope reads {{ inputs.scope }}`), instead of failing
+a refill pass mid-run. Declare a non-empty `default` for an input that may be left out (an empty default counts as unset; use
+a neutral value such as `none`), or mark it `required: true`. There is no `default` filter in templates. A step with a
+`when` is not checked (it may be skipped).
+
 **Mechanics.**
 
 - A pass is due when a child has ended (`after: completed`: completed; `ended`: also failed and canceled; a child being
