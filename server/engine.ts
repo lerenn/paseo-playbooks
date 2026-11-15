@@ -756,6 +756,8 @@ export function validateOutputs(
  * outcome; a job ended early (no_deploy, stopped, ejected) brings what it has.
  */
 function outputsRequired(step: Step, outcome: string): boolean {
+  // The implicit `failure` is not a result: declared outputs are optional (those given are still typed).
+  if (outcome === "failure") return false;
   return !(step.kind === "handoff" && outcome !== step.outcomes[0]);
 }
 
@@ -790,9 +792,11 @@ export function recordReport(
   let outputs: Record<string, VarValue> = {};
   const kind = defaultTransition(step, report.outcome).kind;
   // A failure, or a question for a human (`ask`), is not a result: no outputs expected.
-  if (report.outcome !== "failure" && kind !== "ask" && !outputsRequired(step, report.outcome)) {
+  if (report.outcome === "failure") {
     outputs = partialOutputs(step, report.outputs);
-  } else if (report.outcome !== "failure" && kind !== "ask") {
+  } else if (kind !== "ask" && !outputsRequired(step, report.outcome)) {
+    outputs = partialOutputs(step, report.outputs);
+  } else if (kind !== "ask") {
     const checked = validateOutputs(step, report.outputs);
     if (!checked.ok) throw new EngineError(`report refused: ${checked.errors.join("; ")}. Fix these and call report_step_result again.`);
     outputs = checked.outputs;
@@ -1397,6 +1401,7 @@ function askChoiceOutputs(run: Run, step: Step, choice: AskChoice, comment: stri
   }
   const kind = defaultTransition(step, choice.outcome!).kind;
   if (kind !== "complete" && kind !== "end" && kind !== "goto") return null;
+  if (!outputsRequired(step, choice.outcome!)) return partialOutputs(step, merged);
   const checked = validateOutputs(step, merged);
   if (!checked.ok) throw new EngineError(`"${choice.label}" cannot complete "${step.id}": ${checked.errors.join("; ")}`);
   return checked.outputs;

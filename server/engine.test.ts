@@ -2,6 +2,7 @@ import path from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { Playbook, Run } from "../shared/types";
 import {
+  currentAttempt,
   cancelRun,
   completeStep,
   decideGate,
@@ -121,6 +122,14 @@ describe("engine", () => {
     startAttempt(r, "investigate", { agentId: "a1", brief: "", now: now(), readonlySnapshot: null });
     expect(() => recordReport(r, "a1", { outcome: "success", summary: "", outputs: {} }, now())).toThrow(/missing output "plan"/);
     expect(() => recordReport(r, "a1", { outcome: "nope", summary: "", outputs: {} }, now())).toThrow(/not allowed/);
+  });
+
+  it("does not require declared outputs on a failure report or its completion", () => {
+    const r = run();
+    startAttempt(r, "investigate", { agentId: "a1", brief: "", now: now(), readonlySnapshot: null });
+    recordReport(r, "a1", { outcome: "failure", summary: "broke", outputs: { plan: "partial", bogus: 1 } }, now());
+    expect(currentAttempt(r, "investigate")!.report).toEqual({ outcome: "failure", summary: "broke", outputs: { plan: "partial" } });
+    expect(() => completeStep(r, "investigate", { outcome: "failure", now: now() })).not.toThrow();
   });
 
   it("refuses to start a step that is not ready", () => {
