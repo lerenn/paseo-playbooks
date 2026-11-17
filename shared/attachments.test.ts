@@ -32,4 +32,9 @@ describe("attachment rules", () => {
     expect(text).toContain("- a.pdf: /tmp/x/a.pdf");
     expect(promptWithFiles("", [{ name: "a.pdf", path: "/p" }]).startsWith("Attached files")).toBe(true);
   });
+
+  it("names the images in the prompt so an image-only message is not empty", () => {
+    expect(promptWithFiles("", [], 1)).toBe("Attached image: sent with this message as image content.");
+    expect(promptWithFiles("look", [], 2)).toBe("look\n\nAttached 2 images: sent with this message as image content.");
+  });
 });

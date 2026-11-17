@@ -46,9 +46,14 @@ export function refusal(current: Candidate[], candidate: Candidate): string | nu
   return null;
 }
 
-/** The message text: what the human typed, then one line per saved file naming its path (images travel as image blocks). */
-export function promptWithFiles(text: string, files: Array<{ name: string; path: string }>): string {
-  if (files.length === 0) return text;
-  const lines = files.map((file) => `- ${file.name}: ${file.path}`);
-  return `${text}${text ? "\n\n" : ""}Attached files (saved on the host; read them by path):\n${lines.join("\n")}`;
+/**
+ * The message text: what the human typed, then one line per saved file naming its path. Images travel as image
+ * blocks, which the timeline does not echo back, so the text says how many came along (an image-only message
+ * would otherwise have an empty prompt and vanish from the chat).
+ */
+export function promptWithFiles(text: string, files: Array<{ name: string; path: string }>, imageCount = 0): string {
+  const parts = [text];
+  if (imageCount > 0) parts.push(`Attached ${imageCount === 1 ? "image" : `${imageCount} images`}: sent with this message as image content.`);
+  if (files.length > 0) parts.push(`Attached files (saved on the host; read them by path):\n${files.map((file) => `- ${file.name}: ${file.path}`).join("\n")}`);
+  return parts.filter((part) => part !== "").join("\n\n");
 }
