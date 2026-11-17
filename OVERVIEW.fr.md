@@ -91,7 +91,9 @@ steps:
   des exécutions, et lancer des after-tasks manuelles, depuis n'importe quelle
   conversation. Voir [les outils](https://playbooks.paseo.lerenn.dev/how-it-works.html).
 - Nécessite Paseo 0.14 ou plus récent. L'état des exécutions est conservé dans
-  `$PASEO_HOME/plugin-data/lerenn/paseo-playbooks/runs/` jusqu'à l'archivage du worktree de
-  l'exécution. Le code serveur exécute `git` dans les dossiers des workspaces, et lance les
-  étapes script (des exécutables du dossier `scripts/` du playbook) dans le worktree de
+  `$PASEO_HOME/plugin-data/lerenn/paseo-playbooks/runs/`. Archiver une exécution la masque sans
+  supprimer son état, et `restart_run` peut la rouvrir. Le worktree de l'exécution est supprimé à
+  sa fin (celui d'une exécution en échec est conservé 24 heures, sauf si le volume est élevé),
+  ce qui ne supprime pas son état. Le code serveur exécute `git` dans les dossiers des workspaces,
+  et lance les étapes script (des exécutables du dossier `scripts/` du playbook) dans le worktree de
   l'exécution.

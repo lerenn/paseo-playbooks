@@ -202,7 +202,7 @@ inside the profile. If two repositories share an id, both are kept, and a bare `
 ambiguous: write `default:deploy` or `louis:deploy`.
 
 To use playbooks in a repository, copy `examples/.paseo/plugins/playbooks/` into it (as
-`.paseo/plugins/playbooks/` or `.paseo/playbooks/`),
+`.paseo/plugins/playbooks/`),
 adjust the roles and playbooks and commit them. Then open the Playbooks panel in a workspace of
 that repository and press Start. Start runs the playbook with the workspace's most
 recently used agent as manager (see Known limits), in that workspace (the run starts at

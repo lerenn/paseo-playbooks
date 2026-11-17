@@ -16,8 +16,8 @@ It uses the same checks as the Playbooks panel. Its result is compact (`results[
 
 ## Layout
 
-Everything lives in the repository, under `.paseo/plugins/playbooks/` or the shorter
-`.paseo/playbooks/` (both are loaded; use one):
+Everything lives in the repository, under `.paseo/plugins/playbooks/`. The older `.paseo/playbooks/` is the
+legacy location: it is still read, as part of the default repository, but move its files to the new folder:
 
 ```text
 .paseo/plugins/playbooks/
@@ -106,6 +106,7 @@ workspace:             # what happens to the workspace a run created with newWor
   archive: on_end      # never (default) | on_end: archive it when the run completes or is canceled
   keep_failed: true    # keep it when the run failed or lost its manager (default true)
   archive_with_run: false  # true: archiving a run also archives its workspace and agents when safe (default false)
+reload_stale_sessions: true  # after a plugin update, reload idle agents still holding the old plugin's tools (default true; false disables)
 isolation: none        # none (default) | worktree | { mode: worktree, submodules: none | all | [paths], base: <branch> }: see "Isolated runs"
 ```
 
@@ -1119,9 +1120,10 @@ isolation: { mode: worktree, submodules: [ops/api, ops/web], base: main }   # bl
   (fast, shares objects; a submodule the workspace never initialised is initialised in place).
 - **Cleanup**: when the run completes or is canceled (and its after-tasks end), the plugin removes the worktree
   and its branch, and the history says so. A canceled run is an intentional end, so `keep_failed` does not apply
-  to it: it is removed like a completed one. It keeps the worktree, with a `worktree_kept` history entry, when the
-  run failed and `workspace.keep_failed` is true, when it has uncommitted changes (also after a cancel), or when the guard fired; it
-  keeps the branch (not the directory) when the branch has commits on no remote. Restarting a run brings the
+  to it: it is removed like a completed one. A failed run's worktree is kept, with a `worktree_kept` history entry, for
+  24 hours after the failure when `workspace.keep_failed` is true (default), and removed earlier when the volume is at
+  least 85% used. It also keeps the worktree when it has uncommitted changes (also after a cancel; `.cache` and `.tmp`
+  do not count, and are deleted) or when the guard fired; it keeps the branch (not the directory) when the branch has commits on no remote. Restarting a run brings the
   worktree back on its branch. At daemon start the plugin deletes worktree directories whose run no longer
   exists. It never deletes outside its worktrees directory.
 - **Fresh playbook**: an isolated run reads its playbook and roles from its worktree (a freshly fetched `origin/<base>`), not from the workspace checkout, so you do not need to fast-forward the workspace for new rules to apply (and must not while isolated runs are active). `start_playbook` says where the definition came from; if it warns that the workspace checkout's copy was used (fetch failed, or the playbook is missing/invalid on origin), the rules may be stale. The playbook must still exist, valid and isolated, in the workspace checkout to be started. `validate_playbooks` reports `source` per playbook (what a new run would load). `restart_run` keeps the run's frozen definition.
@@ -1175,7 +1177,7 @@ for stricter runs. When you write role instructions, ask for simple separate com
 (with its role and model), role and model: tokens, peak context, and wasted attempts (retried, or whose
 agent did not finish) with their tokens. Look for steps that use the most tokens, retry the most or fill their context,
 and for a big model on a simple step; then propose a change to the playbook, role or model. `overhead` is the
-managers' and gate deciders' share. Usage exists only for runs that ended turns after v0.58.0.
+managers' and gate deciders' share. Usage is recorded as per-turn deltas from v0.66.1; runs recorded before that hold an inflated manager usage that analytics leaves out (their step and decider usage still counts).
 
 ## Recover a run
 

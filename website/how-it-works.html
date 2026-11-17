@@ -57,6 +57,7 @@
 <tr><td><code>complete_step</code></td><td>Records a step's outcome and applies the transition.</td></tr>
 <tr><td><code>nudge_step</code></td><td>Sends a follow-up to a step's agent, or moves it to another model.</td></tr>
 <tr><td><code>request_gate</code></td><td>Opens a ready gate with a summary for the human.</td></tr>
+<tr><td><code>refresh_scripts</code></td><td>After a script fix lands on main, makes an isolated run's script steps run the scripts as committed on the current <code>origin/&lt;branch&gt;</code> (<code>runId</code>, <code>reason</code>). Also for the Sidekick.</td></tr>
 <tr><td><code>resume</code></td><td>Records a gate decision that arrived by chat.</td></tr>
 <tr><td><code>escalate_gate</code></td><td>On a gate the manager decides: hands it to a human, with a reason.</td></tr>
 <tr><td><code>settle_job</code></td><td>On a singleton pipeline batch: sets a job's outputs, or ends it with an outcome.</td></tr>
@@ -72,6 +73,8 @@
 <tr><td><code>start_after_task</code></td><td>Starts a manual after-task of a finished run.</td></tr>
 <tr><td><code>subscribe_events</code>, <code>unsubscribe_events</code>, <code>list_subscriptions</code>, <code>list_events</code></td><td>Get a message when events matching <code>types</code> happen (<code>gate.*</code>, <code>run.failed</code>, <code>step.*</code>, <code>job.*</code>...), delivered when the caller is idle (<code>delivery: idle</code>, the default) or into the running turn (<code>steer</code>). <code>list_events</code> returns the last 500 events, with <code>since</code> to catch up.</td></tr>
 <tr><td><code>record_followup</code>, <code>requeue_job</code></td><td>For detached singleton jobs: record what was done for a job that ended with an outcome, or put a failed (or non-success settled, e.g. ejected) job back on its pipeline.</td></tr>
+<tr><td><code>resume_gate</code></td><td>Answers an open human gate with the human's own answer, given through the question tool, and resumes the run as a panel click would. For agents outside the runs only, such as the Sidekick or a coordinator: a run's own manager, step, gate and after-task agents, and anything they started, are refused. Off with <code>gates: { on_behalf: deny }</code>.</td></tr>
+<tr><td><code>replace_child</code></td><td>Links a fan-out child that was canceled and started again for the same item to its new run (<code>runId</code>, <code>newRunId</code>, <code>reason</code>). Callable by the child's manager, the parent's manager or any other agent in this table. <code>start_playbook</code> with <code>replaces</code> links in one call.</td></tr>
 </tbody></table>
 
 <h3 id="tools-other">Step, gate and Sidekick</h3>
