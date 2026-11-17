@@ -39,7 +39,15 @@ export function SidekickChat(props: Props) {
   const composer = useRef<unknown>(null);
   const attachments = useAttachments(composer, (message) => toast.error(message));
   const scroller = useRef<{ scrollToEnd?: (options?: { animated?: boolean }) => void } | null>(null);
-  useEffect(() => scroller.current?.scrollToEnd?.({ animated: false }), [state.items, state.permissions.length]);
+  // Follow new text only while the reader is at the bottom; reading earlier text must not move.
+  const stuck = useRef(true);
+  const onScroll = (event: { nativeEvent: { contentOffset: { y: number }; contentSize: { height: number }; layoutMeasurement: { height: number } } }) => {
+    const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+    stuck.current = contentSize.height - (contentOffset.y + layoutMeasurement.height) <= 40;
+  };
+  useEffect(() => {
+    if (stuck.current) scroller.current?.scrollToEnd?.({ animated: false });
+  }, [state.items, state.permissions.length]);
 
   const submit = (queue = false) => {
     const text = draft.trim();
@@ -110,7 +118,7 @@ export function SidekickChat(props: Props) {
         </View>
       ) : null}
 
-      <ScrollView ref={scroller as never} style={{ flex: 1 }} contentContainerStyle={{ padding: 14, gap: 18 }}>
+      <ScrollView ref={scroller as never} onScroll={onScroll as never} scrollEventThrottle={50} style={{ flex: 1 }} contentContainerStyle={{ padding: 14, gap: 18 }}>
         {status.loading ? <Text style={{ color: muted }}>Starting the Sidekick…</Text> : null}
         {status.error ? <Text style={{ color: theme.colors.statusDanger }}>{status.error}</Text> : null}
         {state.connection === "error" && state.error ? <Text style={{ color: theme.colors.statusWarning }}>Reconnecting… {state.error}</Text> : null}
