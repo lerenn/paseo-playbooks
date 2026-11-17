@@ -122,6 +122,18 @@ export default function contribute(server: PluginServerContext) {
       await runtime.onTurnEnded(agent.id, outcome.kind, agent.parentAgentId ?? null);
     }),
   );
+  server.on("agent.permission_requested", ({ agent, request }, context) =>
+    quietly("permission_requested", async () => {
+      await enter(context.paseo);
+      await runtime.onPermissionRequested({ id: agent.id, parentAgentId: agent.parentAgentId ?? null }, request);
+    }),
+  );
+  server.on("agent.permission_resolved", ({ agent, requestId }, context) =>
+    quietly("permission_resolved", async () => {
+      await enter(context.paseo);
+      await runtime.onPermissionResolved(agent.id, requestId);
+    }),
+  );
   server.on("agent.archived", ({ agent }, context) =>
     quietly("agent.archived", async () => {
       await enter(context.paseo);

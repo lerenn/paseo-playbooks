@@ -27,6 +27,12 @@ export const ADMISSION_CHOICES: GateChoice[] = [
   { id: "admit", label: "Admit anyway", comment: "optional", color: "warning" },
 ];
 
+/** The choices of a `permission` gate (an agent's tool permission request, `permissions.on_request: escalate`). */
+export const PERMISSION_CHOICES: GateChoice[] = [
+  { id: "allow", label: "Allow", comment: "none" },
+  { id: "deny", label: "Deny", comment: "optional", color: "danger" },
+];
+
 /** The single choice of an `ask` gate without `choices`: the answer, required, becomes the feedback of the step it goes back to. */
 export const ASK_CHOICES: GateChoice[] = [{ id: "answered", label: "Send answer", comment: "required" }];
 
@@ -51,6 +57,7 @@ export function askTransitionOf(gate: Gate, step: Pick<Step, "on"> | undefined):
 export function choicesOfGate(gate: Gate, step: Pick<Step, "on" | "choices"> | undefined): GateChoice[] {
   if (gate.kind === "loop_limit") return LOOP_LIMIT_CHOICES;
   if (gate.kind === "admission") return ADMISSION_CHOICES;
+  if (gate.kind === "permission") return PERMISSION_CHOICES;
   if (gate.kind === "ask") {
     const transition = askTransitionOf(gate, step);
     return transition ? askChoices(transition) : ASK_CHOICES;

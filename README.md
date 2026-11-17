@@ -327,6 +327,17 @@ with that tag.
   which tab has focus. To pick a specific agent, send it a message first, or use "Start on
   a new agent".
 
+## Permission requests
+
+Run agents run in Bypass mode, yet Claude Code still asks about some compound or destructive-looking commands, and the
+request would sit on the agent while the run hangs. `permissions: { on_request: authorize | escalate | deny }` (repo-wide in
+`defaults/main.yaml`, overridable in a playbook; default `authorize`) tells the plugin what to do with a tool permission
+request of any agent of a run (manager, step agents, role deciders, their subagents): `authorize` allows it on the human's
+behalf; `escalate` opens a `permission` gate (allow / deny) like any human gate, decided in the panel or with `resume_gate`;
+`deny` tells the agent to pick another way. Questions, plans and mode changes stay with the human. Each outcome is a line of the
+run history. See `docs/adrs/2026-11-17-permission-requests-policy.md`. The manager and step prompts also ask for simple
+separate commands and the file tools, so requests are rarer.
+
 ## Runs with no Playbook Manager
 
 `manager: { mode: none }` in a playbook (default `always_on`; repo-wide default `manager: { lifecycle: none }` in

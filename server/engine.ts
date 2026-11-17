@@ -5,7 +5,7 @@
 import { descendantsOf } from "../shared/graph";
 import { record } from "./event-core";
 import { blockEntrySteps, blockStepIds, holdsBlock, innermostBlock } from "../shared/slots";
-import { ADMISSION_CHOICES, askChoices, askHumanText, askTransitionOf, choicesOfGate, GATE_SUMMARY_MAX, outcomeTransition } from "../shared/gates";
+import { ADMISSION_CHOICES, PERMISSION_CHOICES, askChoices, askHumanText, askTransitionOf, choicesOfGate, GATE_SUMMARY_MAX, outcomeTransition } from "../shared/gates";
 import { parse as parseYaml, stringify as toYaml } from "yaml";
 import type { PoolPass, AfterTask, AskChoice, Attempt, AttemptAgent, FanoutChild, FanoutState, Gate, GateDecider, Job, Playbook, Run, RunDefinition, RunStep, RunWorktree, Step, Transition, VarValue, When } from "../shared/types";
 import { isActive, isAgentlessAttempt, isManagerless, MAX_FANOUT_PAST, MAX_POOL_PASSES, isPaused, isPipeline, isStepDone, isStepLive, isTerminal, restartBlocker, runningAfterTasks } from "../shared/types";
@@ -1513,6 +1513,7 @@ export function decideGate(run: Run, ref: string, decision: GateDecision): { gat
   const fx = effects();
   if (gate.status !== "pending") return { gate, alreadyDecided: true, effects: fx };
   if (gate.kind === "admission") return { gate, alreadyDecided: false, effects: decideAdmission(run, gate, decision, fx) };
+  if (gate.kind === "permission") return { gate, alreadyDecided: false, effects: decidePermission(run, gate, decision, fx) };
   assertLive(run, gate.stepId);
   const choices = choicesOfGate(gate, stepDef(run, gate.stepId));
   const choice = choices.find((candidate) => candidate.id === decision.decision);
@@ -2216,6 +2217,77 @@ export function applyAdmission(pipeline: Run, stageId: string, sent: string[], r
     else holdJob(pipeline, job, stageId, NOT_ADMITTED, now);
   }
   return { warnings, escalated };
+}
+
+/** What the plugin writes as `decidedBy` when its own policy closes a permission gate. */
+export const PERMISSION_POLICY_BY = "plugin policy (permissions.on_request)";
+
+/**
+ * Opens a `permission` gate for an agent's tool permission request (`permissions.on_request: escalate`): a human gate like
+ * the others, on the step the agent belongs to ("manager" for the manager). One gate per request: returns null when it is open already.
+ */
+export function openPermissionGate(run: Run, input: { stepId: string; agentId: string; requestId: string; tool: string; summary: string; details: string }, now: string): Gate | null {
+  if (run.gates.some((gate) => gate.kind === "permission" && gate.permission?.agentId === input.agentId && gate.permission.requestId === input.requestId)) return null;
+  const count = run.gates.filter((gate) => gate.kind === "permission").length;
+  const gate: Gate = {
+    id: `permission-${input.stepId}-${count + 1}`,
+    kind: "permission",
+    stepId: input.stepId,
+    gotoTarget: null,
+    jobId: null,
+    outcome: null,
+    status: "pending",
+    message: [input.summary, input.details].filter(Boolean).join("\n\n"),
+    summary: input.summary,
+    details: input.details,
+    requestedAt: now,
+    comment: null,
+    decidedBy: null,
+    decidedVia: null,
+    decidedAt: null,
+    decider: { by: "human" },
+    deciderAgentId: null,
+    escalated: null,
+    escalatedAt: null,
+    permission: { agentId: input.agentId, requestId: input.requestId, tool: input.tool },
+  };
+  run.gates.push(gate);
+  log(run, now, "gate_opened", input.stepId, gate.id);
+  updateStatus(run);
+  return gate;
+}
+
+/** The request is gone (answered elsewhere, the agent was canceled or reloaded): its pending gate closes, decided by nobody. */
+export function dismissPermissionGates(run: Run, agentId: string, requestId: string | null, why: string, now: string): Gate[] {
+  const closed: Gate[] = [];
+  for (const gate of run.gates) {
+    if (gate.kind !== "permission" || gate.status !== "pending" || gate.permission?.agentId !== agentId || (requestId !== null && gate.permission.requestId !== requestId)) continue;
+    gate.status = "dismissed";
+    gate.comment = why;
+    gate.decidedBy = PERMISSION_POLICY_BY;
+    gate.decidedVia = null;
+    gate.decidedAt = now;
+    log(run, now, "gate_decided", gate.stepId, `${gate.id}: dismissed (${why})`);
+    closed.push(gate);
+  }
+  updateStatus(run);
+  return closed;
+}
+
+/** A human allows or denies a permission request; the runtime then answers the agent. */
+function decidePermission(run: Run, gate: Gate, decision: GateDecision, fx: Effects): Effects {
+  if (decision.via === "manager" || decision.via === "role") throw new EngineError(`gate "${gate.id}" is an agent's tool permission request: a human decides it in the Playbooks panel`);
+  const choice = PERMISSION_CHOICES.find((candidate) => candidate.id === decision.decision);
+  if (!choice) throw new EngineError(`"${decision.decision}" is not a choice of gate "${gate.id}" (${PERMISSION_CHOICES.map((c) => c.id).join(", ")})`);
+  gate.status = choice.id;
+  gate.comment = decision.comment;
+  gate.decidedBy = decision.by;
+  gate.decidedVia = decision.via;
+  gate.decidedAt = decision.now;
+  log(run, decision.now, "gate_decided", gate.stepId, `${gate.id}: ${choice.id} via ${decision.via}`);
+  updateStatus(run);
+  fx.notes.push(`Gate ${gate.id}: ${choice.id}.`);
+  return fx;
 }
 
 /** A human answers an admission gate: retry (the runtime checks again at once), withdraw the job, or admit it anyway. */

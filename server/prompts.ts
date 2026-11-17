@@ -2,6 +2,9 @@ import type { Gate, GateChoice, Playbook, Role, Run, Step, VarValue } from "../s
 import { jobsText } from "./engine";
 import { replaceRefs } from "../shared/vars";
 
+/** Keeps tool permission requests rare: Claude Code asks about compound or destructive-looking shell commands even in Bypass mode. */
+export const COMMAND_RULE = `Shell commands: run simple, separate commands (one \`cd <dir> && <command>\` at most). Do not chain \`cd && sed -i && ... ; rm -rf\`, do not \`rm -rf\` a glob (name the exact path), and edit files with the file tools (Read, Edit, Write), not \`sed -i\` or redirections. Compound or destructive-looking commands can raise a permission request that stalls the run.`;
+
 /** How the manager works. Returned by list_playbooks and sent when Start creates a manager. */
 export const MANAGER_PROTOCOL = `You are the Playbook Manager. You run a playbook by starting each step as a subagent,
 briefing it, reading its result and deciding its outcome. The paseo-playbooks plugin owns
@@ -102,7 +105,9 @@ How to run a playbook:
    decide another run's gate.
 
 Rules: create step agents only with start_step (never with Paseo's create_agent tool), do
-not do the steps' work yourself, and never edit files in this workspace.`;
+not do the steps' work yourself, and never edit files in this workspace.
+
+${COMMAND_RULE}`;
 
 /** Staging rule given to every step agent: a blanket add in a worktree with empty submodule directories stages their deletion. */
 export const GIT_STAGING_RULE = `Never run \`git add -A\`, \`git add .\` or \`git commit -a\`/\`-am\`: stage files explicitly by path (\`git add <path>\`) and check \`git diff --cached --stat\` before committing. Never stage the removal of a submodule entry (mode 160000): in a worktree where submodule directories are empty or absent a blanket add stages their deletion; if \`git diff --cached --summary\` shows \`delete mode 160000\`, run \`git restore --staged\` on it before committing.`;
@@ -197,6 +202,8 @@ export function stepSystemPrompt(playbook: Playbook, step: Step, role: Role, run
   const preamble = run ? worktreePreamble(run) : "";
   const staging = preamble ? "" : `\n\n${GIT_STAGING_RULE}`;
   return `${preamble ? `${preamble}\n\n` : ""}${instructions}${readonly}${staging}
+
+${COMMAND_RULE}
 
 You are running step "${step.id}" (${role.title}) of the playbook "${playbook.title}", started by ${managerless ? "the playbooks plugin (this run has no Playbook Manager)" : "a\nPlaybook Manager agent"}. Other steps may share this checkout.
 

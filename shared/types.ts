@@ -21,6 +21,11 @@ export const VarDefSchema = z.object({
 });
 export type VarDef = z.infer<typeof VarDefSchema>;
 
+/** `authorize`: the plugin allows a run agent's permission request for the human; `escalate`: it becomes a gate; `deny`: refused. */
+export const PermissionPolicySchema = z.enum(["authorize", "escalate", "deny"]);
+export type PermissionPolicy = z.infer<typeof PermissionPolicySchema>;
+export const DEFAULT_PERMISSION_POLICY: PermissionPolicy = "authorize";
+
 /** One provider/model an agent may run on. */
 export const AgentTargetSchema = z.object({
   provider: z.string().optional(),
@@ -422,6 +427,8 @@ export const PlaybookSchema = z.object({
   usageCheck: z.boolean().default(true),
   /** The percentage of a usage window at which a target is skipped (`providers.usage.threshold`). */
   usageThreshold: z.number().default(100),
+  /** What the plugin does with a tool permission request of an agent of the run (`permissions.on_request`). */
+  permissions: z.object({ onRequest: PermissionPolicySchema }).default({ onRequest: "authorize" }),
   /** Whether the plugin archives the workspace it created for a run once the run ends. */
   workspace: z
     .object({ archive: z.enum(["never", "on_end"]), keepFailed: z.boolean() })
@@ -756,7 +763,7 @@ export type RunStep = z.infer<typeof RunStepSchema>;
 
 export const GateSchema = z.object({
   id: z.string(),
-  kind: z.enum(["gate", "loop_limit", "ask", "admission"]),
+  kind: z.enum(["gate", "loop_limit", "ask", "admission", "permission"]),
   /** An `admission` gate: the stage it is about (its `stepId`) and the held job it asks about. Null on the other kinds. */
   jobId: z.string().nullable().default(null),
   stepId: z.string(),
@@ -787,6 +794,8 @@ export const GateSchema = z.object({
   escalated: z.string().nullable().default(null),
   /** When it was escalated. */
   escalatedAt: z.string().nullable().default(null),
+  /** A `permission` gate: the agent whose tool permission request it holds, and that request. Null on the other kinds. */
+  permission: z.object({ agentId: z.string(), requestId: z.string(), tool: z.string() }).nullable().optional(),
   /** A run with no manager: the step agent the plugin asked to put this gate's question to the human in its own conversation. */
   chatAgentId: z.string().nullable().optional(),
   /** Set once the gate is closed and that conversation was told (its open question dismissed when the panel decided). */

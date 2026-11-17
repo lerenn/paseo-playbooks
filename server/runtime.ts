@@ -9,7 +9,7 @@ import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 type PaseoApi = PluginHandlerContext["paseo"];
 import type { AdmissionStatus, ScriptOutput } from "../shared/types";
 import type { AgentSettings, AgentTarget, Attempt, FanoutChild as FanoutChildState, PoolPass as PoolPassState, Gate, Job, Playbook, Run, RunWorktree, Step, VarValue } from "../shared/types";
-import { addUsage } from "../shared/types";
+import { addUsage, DEFAULT_PERMISSION_POLICY } from "../shared/types";
 import { UsageLedger } from "./usage-ledger";
 import { analyze, type Analytics } from "../shared/analytics";
 import {
@@ -56,6 +56,8 @@ import { FANOUT_TYPES } from "./fanout-events";
 import { gateListing, listAttention, type GateFilter } from "./overseer";
 import { gateChatPrompt, managerLostNotice, gateDeciderPrompt, gateDeciderSystemPrompt, gateDecisionReminder, managerAfterRestart, managerKickoff, managerTakeover, reportReminder, resumeAfterRestart, silenceReminder, singletonKickoff, stepSystemPrompt, withPreamble } from "./prompts";
 import { askHumanText, choicesOfGate, waitsForHuman } from "../shared/gates";
+import { PERMISSION_POLICY_BY } from "./engine";
+import { DENY_MESSAGE, describePermission, policyText, type PermissionRequestLike } from "./permissions";
 import { Backoff, describeRemovalError } from "./backoff";
 import { StaleSessions } from "./stale-sessions";
 import type { RunStore } from "./store";
@@ -585,6 +587,7 @@ export class Runtime {
       for (const gate of run.gates) if (gate.status === "pending") this.batchGates.add(`${run.id}/${gate.id}`);
     }
     await this.sweepWorktrees().catch((error) => console.error("[playbooks] worktree sweep failed:", errorText(error)));
+    await this.sweepPermissions(true).catch((error) => console.error("[playbooks] permission sweep failed:", errorText(error)));
     await this.admitQueued().catch((error) => console.error("[playbooks] admission after reconcile failed:", errorText(error)));
     await this.tick().catch((error) => console.error("[playbooks] tick after reconcile failed:", errorText(error)));
   }
@@ -706,6 +709,119 @@ export class Runtime {
     return this.runsOfManager(agentId).find((run) => isActive(run));
   }
 
+  // ---------------------------------------------------------------- tool permission requests (permissions.on_request)
+
+  /** Requests already handled (`agentId/requestId`), so a hook and a sweep never answer one twice. */
+  private readonly permissionsHandled = new Set<string>();
+
+  /** The run an agent belongs to and where to put its request: its step, or "manager". Subagents count through their parents. */
+  private async permissionOwner(agent: { id: string; parentAgentId: string | null }): Promise<{ run: Run; stepId: string; who: string } | null> {
+    let current: { id: string; parentAgentId: string | null } | null = agent;
+    for (let depth = 0; current && depth < 10; depth++) {
+      const own = this.ownedPlace(current.id);
+      if (own) return { ...own, who: depth === 0 ? own.who : `a subagent of the ${own.who}` };
+      if (!current.parentAgentId) return null;
+      const parent: string = current.parentAgentId;
+      const snapshot = (await this.api().agents.ref(parent).refresh().catch(() => null))?.agent as { parentAgentId?: string | null } | undefined;
+      current = { id: parent, parentAgentId: snapshot?.parentAgentId ?? null };
+    }
+    return null;
+  }
+
+  /** The active run that owns this agent directly (manager, step, gate decider or gate chat), and the step it sits on. */
+  private ownedPlace(agentId: string): { run: Run; stepId: string; who: string } | null {
+    const step = this.stepRunOf(agentId);
+    if (step && isActive(step.run)) return { run: step.run, stepId: step.stepId, who: `step agent of "${step.stepId}"` };
+    const manager = this.activeRunOfManager(agentId);
+    if (manager) return { run: manager, stepId: "manager", who: "Playbook Manager" };
+    for (const run of this.store.list()) {
+      if (!isActive(run)) continue;
+      const gate = run.gates.find((candidate) => candidate.deciderAgentId === agentId || candidate.chatAgentId === agentId);
+      if (gate) return { run, stepId: gate.stepId, who: `gate agent of "${gate.stepId}"` };
+    }
+    return null;
+  }
+
+  /**
+   * An agent of a run raised a tool permission request (the daemon's `agent.permission_requested`, or a sweep after a restart).
+   * The run's `permissions.on_request` decides: allow it for the human, refuse it, or open a `permission` gate. Questions,
+   * plans and mode changes are not tool requests: they stay with the human. Every outcome is written to the run's history.
+   */
+  async onPermissionRequested(agent: { id: string; parentAgentId: string | null }, request: PermissionRequestLike & { kind: string }): Promise<void> {
+    if (request.kind !== "tool") return;
+    const key = `${agent.id}/${request.id}`;
+    if (this.permissionsHandled.has(key)) return;
+    const owner = await this.permissionOwner(agent);
+    if (!owner) return;
+    this.permissionsHandled.add(key);
+    const policy = owner.run.playbook.permissions?.onRequest ?? DEFAULT_PERMISSION_POLICY;
+    const text = describePermission(request, `${owner.who} ${agent.id.slice(0, 8)}`);
+    const handle = this.api().agents.ref(agent.id);
+    try {
+      if (policy === "escalate") {
+        const opened = await this.store.mutate(owner.run.id, (run) => {
+          const gate = engine.openPermissionGate(run, { stepId: owner.stepId, agentId: agent.id, requestId: request.id, ...text }, nowIso());
+          if (gate) engine.noteEvent(run, "permission_escalated", owner.stepId, `${text.summary} (${policyText(policy)}) → gate ${gate.id}`, nowIso());
+          return gate;
+        });
+        if (opened) await this.tick();
+        return;
+      }
+      const allow = policy === "authorize";
+      await handle.respondToPermission({ requestId: request.id, response: allow ? { behavior: "allow" } : { behavior: "deny", message: DENY_MESSAGE } });
+      await this.store.mutate(owner.run.id, (run) => engine.noteEvent(run, allow ? "permission_authorized" : "permission_denied", owner.stepId, `${text.summary}: ${allow ? "allowed" : "denied"} by ${PERMISSION_POLICY_BY} (${policyText(policy)})`, nowIso()));
+    } catch (error) {
+      // Not answered: a later sweep tries again.
+      this.permissionsHandled.delete(key);
+      console.error(`[playbooks] could not handle the permission request ${request.id} of agent ${agent.id}:`, errorText(error));
+    }
+  }
+
+  /** The request was answered (by a human in the daemon, a canceled turn…): a gate still holding it closes. */
+  async onPermissionResolved(agentId: string, requestId: string | null, why = "the request was answered elsewhere"): Promise<void> {
+    for (const run of this.store.list()) {
+      if (!run.gates.some((gate) => gate.kind === "permission" && gate.status === "pending" && gate.permission?.agentId === agentId && (requestId === null || gate.permission.requestId === requestId))) continue;
+      await this.store.mutate(run.id, (current) => engine.dismissPermissionGates(current, agentId, requestId, why, nowIso()));
+    }
+  }
+
+  /** A permission gate was decided: the agent's request gets the answer; the run goes on. */
+  private async answerPermissionGate(runId: string, gate: Gate): Promise<void> {
+    const permission = gate.permission;
+    if (!permission) return;
+    const allow = gate.status === "allow";
+    const message = gate.comment?.trim() ? `The human denied this request: ${gate.comment.trim()}. Pick another way.` : "The human denied this request. Pick another way, with simple separate commands and the file tools for edits.";
+    await this.api()
+      .agents.ref(permission.agentId)
+      .respondToPermission({ requestId: permission.requestId, response: allow ? { behavior: "allow" } : { behavior: "deny", message } })
+      .catch((error: unknown) => console.error(`[playbooks] could not answer the permission request of gate ${gate.id}:`, errorText(error)));
+    await this.store.mutate(runId, (run) => engine.noteEvent(run, allow ? "permission_authorized" : "permission_denied", gate.stepId, `${gate.summary}: ${allow ? "allowed" : "denied"} by ${gate.decidedBy ?? "a human"} (gate ${gate.id})`, nowIso()));
+  }
+
+  /**
+   * After a restart, and while a permission gate is open: requests raised while the plugin was away are handled, and a gate whose
+   * request is gone (the agent was canceled, its session reloaded, someone answered in the daemon) is closed.
+   */
+  private async sweepPermissions(scanAgents: boolean): Promise<void> {
+    const runs = this.store.list().filter((run) => isActive(run));
+    if (scanAgents && runs.length > 0) {
+      const listed = await this.api().agents.list({ filter: { projectKeys: [...new Set(runs.map((run) => run.projectId))] } });
+      for (const entry of listed.entries) {
+        const snapshot = entry.agent as { id: string; parentAgentId?: string | null; archivedAt?: string | null; pendingPermissions?: Array<PermissionRequestLike & { kind: string }> };
+        if (snapshot.archivedAt) continue;
+        for (const request of snapshot.pendingPermissions ?? []) await this.onPermissionRequested({ id: snapshot.id, parentAgentId: snapshot.parentAgentId ?? null }, request);
+      }
+    }
+    for (const run of this.store.list()) {
+      for (const gate of run.gates) {
+        if (gate.kind !== "permission" || gate.status !== "pending" || !gate.permission) continue;
+        const current = await this.api().agents.ref(gate.permission.agentId).refresh().catch(() => null);
+        const still = !current || current.agent.archivedAt ? false : (current.agent.pendingPermissions ?? []).some((request) => request.id === gate.permission!.requestId);
+        if (!still) await this.onPermissionResolved(gate.permission.agentId, gate.permission.requestId, "the request no longer exists");
+      }
+    }
+  }
+
   /** Open gates and asks across the runs (see overseer.ts). */
   attention(filter: GateFilter = {}) {
     return listAttention(this.store.list(), Date.now(), filter);
@@ -735,6 +851,7 @@ export class Runtime {
     try {
       await this.producer.scan(this.store.list(), now);
       await this.bus.flush(now);
+      if (this.store.list().some((run) => run.gates.some((gate) => gate.kind === "permission" && gate.status === "pending"))) await this.sweepPermissions(false);
       // Fan-out children end in other runs: the scan is what notices them (no tokens, no agent).
       if (this.store.list().some((run) => isActive(run) && Object.values(run.steps).some((state) => state.fanout && state.status === "running"))) await this.tick();
     } finally {
@@ -1675,7 +1792,7 @@ export class Runtime {
       if (!isManagerless(run) || !isActive(run) || isPaused(run)) continue;
       for (const gate of run.gates) {
         const key = `${run.id}:${gate.id}`;
-        if (!waitsForHuman(gate) || gate.chatAgentId || this.chatSkipped.has(key)) continue;
+        if (!waitsForHuman(gate) || gate.kind === "permission" || gate.chatAgentId || this.chatSkipped.has(key)) continue;
         const step = engine.stepDef(run, gate.stepId);
         const owners = gate.kind === "ask" ? [gate.stepId] : step.needs;
         const candidates = owners
@@ -3318,6 +3435,11 @@ export class Runtime {
   /** A gate decision from the panel (wakes the manager) or from chat via resume (does not). */
   async decideGate(runId: string, gateId: string, decision: engine.GateDecision): Promise<{ alreadyDecided: boolean; gate: Run["gates"][number] }> {
     const result = await this.store.mutate(runId, (current) => engine.decideGate(current, gateId, decision));
+    if (result.gate.kind === "permission") {
+      // Not a step's decision: the agent that asked gets the answer and goes on. The manager is not woken.
+      if (!result.alreadyDecided) await this.answerPermissionGate(runId, result.gate);
+      return { alreadyDecided: result.alreadyDecided, gate: result.gate };
+    }
     if (result.gate.kind === "admission") {
       // A pipeline has no manager to tell: the decision acts on the job and the stage's queue.
       if (!result.alreadyDecided) await this.afterAdmissionDecision(runId, result.gate);
@@ -4190,6 +4312,7 @@ export class Runtime {
     this.recentArchives = [...this.recentArchives.filter((entry) => at - entry.at < 5000), { id: agentId, at }];
     this.pendingHandoffs.delete(agentId);
     await this.bus.dropOwner(agentId);
+    await this.onPermissionResolved(agentId, null, "the agent was archived").catch((error) => console.error("[playbooks] permission gate close failed:", errorText(error)));
     const decider = this.deciderOf(agentId);
     if (decider) {
       this.stoppedDeciders.add(agentId);

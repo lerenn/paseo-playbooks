@@ -25,7 +25,7 @@ import type {
   VarValue,
   When,
 } from "../shared/types";
-import { AgentSettingsSchema, DEFAULT_EXHAUSTED_FOR_MS, DEFAULT_MANAGER_COMPACT, DEFAULT_MANAGER_MODE, ManagerCompactSchema, ManagerModeSchema, type ManagerMode, type Isolation, type WakeOn, VarTypeSchema, VarValueSchema } from "../shared/types";
+import { AgentSettingsSchema, DEFAULT_EXHAUSTED_FOR_MS, DEFAULT_MANAGER_COMPACT, DEFAULT_MANAGER_MODE, DEFAULT_PERMISSION_POLICY, ManagerCompactSchema, ManagerModeSchema, type ManagerMode, type Isolation, type WakeOn, VarTypeSchema, VarValueSchema } from "../shared/types";
 import { BusError, checkTypes, FilterValueSchema } from "./bus";
 import { JOB_TYPES } from "./job-events";
 import { OVERSIGHT_TYPES } from "./oversight-events";
@@ -439,6 +439,14 @@ const RawWorkspaceSchema = z
   })
   .strict();
 
+/** What happens when an agent of a run raises a tool permission request. Same shape in a playbook and in `defaults/main.yaml`. */
+const RawPermissionsSchema = z
+  .object({
+    /** `authorize` (default): the plugin allows it on the human's behalf (a run agent in Bypass mode would have been authorized). `escalate`: a gate asks the human. `deny`: the agent is told to pick another way. */
+    on_request: z.enum(["authorize", "escalate", "deny"]).optional(),
+  })
+  .strict();
+
 /** Where a run's agents work: `worktree` (or `{ mode: worktree }`) gives the run a private git worktree. */
 const RawIsolationSchema = z.union([
   z.enum(["none", "worktree"]),
@@ -500,6 +508,7 @@ const RawPlaybookSchema = z.object({
       .optional(),
     workspace: RawWorkspaceSchema.optional(),
     isolation: RawIsolationSchema.optional(),
+    permissions: RawPermissionsSchema.optional(),
     inputs: z.record(z.string(), RawVarDefSchema.nullable()).optional(),
     outputs: z.record(z.string(), RawOutputSchema.nullable()).optional(),
     /** Removed: playbooks compose only as sub-playbook steps. Kept here to refuse it clearly. */
@@ -542,6 +551,7 @@ const RawDefaultsSchema = z.object({
     manager: RawAgentSchema.extend({ compact: ManagerCompactSchema.optional(), lifecycle: z.string().optional() }).optional(),
     workspace: RawWorkspaceSchema.optional(),
     isolation: RawIsolationSchema.optional(),
+    permissions: RawPermissionsSchema.optional(),
     /** Provider failover (a tier listing several targets). */
     providers: z
       .object({
@@ -2067,6 +2077,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
       keepFailed: pb.workspace?.keep_failed ?? defaults.workspace?.keep_failed ?? true,
     },
     isolation,
+    permissions: { onRequest: pb.permissions?.on_request ?? defaults.permissions?.on_request ?? DEFAULT_PERMISSION_POLICY },
     blocks: blockInfo,
     after: (pb.after ?? []).map((raw) => ({
       id: raw.id,

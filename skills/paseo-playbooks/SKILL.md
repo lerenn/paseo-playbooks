@@ -98,6 +98,7 @@ providers:             # provider failover
 timeout: 1h            # default step timeout (optional)
 slow_warning: { runs: 10, factor: 2 }  # warn when a step takes more than factor x the mean of its last `runs` completed runs (defaults shown; also allowed in a playbook)
 gates: { on_behalf: allow }  # allow (default) | deny: whether an agent outside the runs may answer a human gate with resume_gate, with the human's own answer
+permissions: { on_request: authorize }  # authorize (default) | escalate | deny: what the plugin does when an agent of a run raises a tool permission request (see "Permission requests"; also allowed in a playbook)
 role:                  # defaults for agent steps, in the shape of a step's `role:` block
   silence: 30m         # remind a step agent after this long without activity (default 30m; off to disable)
   archive_agents: true # archive step agents once the run no longer needs them (default true)
@@ -201,6 +202,7 @@ agent: { model: claude-opus-5-5 }          # optional playbook-wide settings
 concurrency: 1                             # optional: max active runs (or held blocks) in the project
 manager: { prompt: Check the PR exists before accepting implement., compact: on_step, mode: always_on }  # optional: prompt is added to the manager's instructions; compact overrides the default; mode: none = no manager agent, the plugin drives the run (see "Runs with no manager")
 workspace: { archive: on_end }             # optional: overrides defaults/main.yaml's workspace block
+permissions: { on_request: escalate }      # optional: overrides defaults/main.yaml's permissions block (authorize | escalate | deny)
 isolation: { mode: worktree, submodules: none }  # optional: each run works in its own git worktree (see "Isolated runs"); the string form `isolation: worktree` also works
 hidden: false                              # optional: true moves it to the panel's collapsed "Hidden playbooks" section (for one meant as a sub-playbook or after-task; also left out of the Run Playbook form; it can still be started from the panel section or by start_playbook)
 
@@ -1138,6 +1140,24 @@ comma, or use block style:
 outputs:
   changes: { type: string, description: "What you changed, per file" }
 ```
+
+## Permission requests (`permissions.on_request`)
+
+Run agents (the manager, step agents, role deciders and their subagents) normally run in Bypass mode, yet Claude Code still
+asks about some compound or destructive-looking shell commands (`cd x && sed -i ... && rm -rf .tmp/*`). The request sits on
+the agent and the run hangs silently. The plugin answers it, by `permissions: { on_request: ... }` (repo-wide in
+`defaults/main.yaml`, overridable per playbook):
+
+- `authorize` (default): the plugin allows it on the human's behalf. A run agent in Bypass mode means the human would have authorized it.
+- `escalate`: a `permission` gate opens on the run (choices `allow` / `deny`, the agent and the command in its text). It shows
+  in the panel, in `list_gates`, in `gate.opened` / `gate.decided`, and blocks the run like any human gate. The panel or
+  `resume_gate` decides it; the plugin then answers the agent. If the request disappears first, the gate closes.
+- `deny`: the agent is told to pick another way (simple separate commands, the file tools).
+
+Only tool requests are handled: a question (AskUserQuestion), a plan or a mode change stays with the human. Every outcome is
+a line of the run history (`permission_authorized`, `permission_denied`, `permission_escalated`). Choose `escalate` or `deny`
+for stricter runs. When you write role instructions, ask for simple separate commands: no `cd && sed -i && rm -rf` chains, no
+`rm -rf` globs, and the file tools for edits; the plugin adds this rule to the manager and step prompts too.
 
 ## Checklist
 

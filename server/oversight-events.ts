@@ -19,7 +19,7 @@ const gateFields = {
   ...runFields,
   gateId: z.string(),
   stepId: z.string(),
-  kind: z.enum(["gate", "ask", "loop_limit", "admission"]),
+  kind: z.enum(["gate", "ask", "loop_limit", "admission", "permission"]),
   /** An admission gate: the held job it asks about; null on the other kinds. */
   jobId: z.string().nullable(),
   question: z.string(),
@@ -34,7 +34,7 @@ function runName(payload: { runId?: unknown; playbook?: unknown; runName?: unkno
 }
 
 function gateLabel(kind: string): string {
-  return kind === "ask" ? "ask" : kind === "loop_limit" ? "loop-limit gate" : kind === "admission" ? "admission gate" : "gate";
+  return kind === "ask" ? "ask" : kind === "loop_limit" ? "loop-limit gate" : kind === "admission" ? "admission gate" : kind === "permission" ? "permission request" : "gate";
 }
 
 function gateBody(event: BusEvent): string {
@@ -74,7 +74,7 @@ export const OVERSIGHT_TYPES: EventTypeDef[] = [
   {
     type: "gate.decided",
     description: "A gate was decided: who, via panel, chat, manager or role, and the comment.",
-    payload: z.object({ ...runFields, gateId: z.string(), stepId: z.string(), kind: z.enum(["gate", "ask", "loop_limit", "admission"]), jobId: z.string().nullable(), deciderBy: z.enum(["human", "manager", "role"]), decision: z.string(), decidedBy: z.string().nullable(), decidedVia: z.string().nullable(), comment: z.string().nullable() }),
+    payload: z.object({ ...runFields, gateId: z.string(), stepId: z.string(), kind: z.enum(["gate", "ask", "loop_limit", "admission", "permission"]), jobId: z.string().nullable(), deciderBy: z.enum(["human", "manager", "role"]), decision: z.string(), decidedBy: z.string().nullable(), decidedVia: z.string().nullable(), comment: z.string().nullable() }),
     line: (event) => {
       const p = event.payload;
       if (p.decision === "dismissed") return `- gate.decided: ${gateLabel(String(p.kind))} ${p.gateId} of ${runName(p)} was closed without a decision${p.comment ? ` (${p.comment})` : ""}. Tools: get_run { runId: "${event.runId}" }.`;
