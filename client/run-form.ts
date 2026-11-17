@@ -41,8 +41,8 @@ export function defaultProject(candidates: readonly RunProject[], chip: string |
   return candidates.length === 1 ? candidates[0]!.projectId : null;
 }
 
-/** The Run Playbook button state: shown once a project has a runnable playbook; while the lists load it is shown disabled, so it does not appear late. */
-export function runButtonState(runnableProjects: number, loading: boolean): "hidden" | "loading" | "ready" {
+/** The Run Playbook button state: always shown: enabled once a project has a runnable playbook, disabled while the lists load or when there is nothing to run. */
+export function runButtonState(runnableProjects: number, loading: boolean): "empty" | "loading" | "ready" {
   if (runnableProjects > 0) return "ready";
-  return loading ? "loading" : "hidden";
+  return loading ? "loading" : "empty";
 }

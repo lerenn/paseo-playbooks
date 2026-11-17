@@ -53,9 +53,9 @@ describe("defaultProject", () => {
 });
 
 describe("runButtonState", () => {
-  it("is disabled while loading rather than hidden, so it does not appear late", () => {
+  it("is never hidden: disabled while loading or empty", () => {
     expect(runButtonState(0, true)).toBe("loading");
-    expect(runButtonState(0, false)).toBe("hidden");
+    expect(runButtonState(0, false)).toBe("empty");
     expect(runButtonState(2, true)).toBe("ready");
   });
 });

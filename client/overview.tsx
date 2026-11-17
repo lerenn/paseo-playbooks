@@ -414,7 +414,7 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
               </>
             ) : null}
           </Text>
-          {runState !== "hidden" ? <RunPlaybookButton theme={theme} loading={runState === "loading"} onPress={() => setRunForm(true)} /> : null}
+          <RunPlaybookButton theme={theme} loading={runState === "loading"} emptyReason={runState === "empty" ? (runProjects.length === 0 ? "No workspaces found" : "No runnable playbooks") : undefined} onPress={() => setRunForm(true)} />
           {!layout.compact ? (
             <Pressable
               accessibilityRole="button"
