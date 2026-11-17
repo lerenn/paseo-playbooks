@@ -75,7 +75,7 @@ describe("manager views", () => {
   it("get_run compact keeps one short line per step, without reports, outputs or inputs", async () => {
     const run = await viewsRun();
     const compact = runCompact(run);
-    expect(compact.steps.investigate).toEqual({ kind: "agent", status: "completed", outcome: "success", attempts: 1, turnEnd: "completed", summary: `${"x".repeat(COMPACT_SUMMARY_MAX)}…` });
+    expect(compact.steps.investigate).toEqual({ kind: "agent", status: "completed", outcome: "success", attempts: 1, startedAt: "2026-11-05T12:00:00.000Z", endedAt: "2026-11-05T12:00:00.000Z", durationMs: 0, turnEnd: "completed", summary: `${"x".repeat(COMPACT_SUMMARY_MAX)}…` });
     expect(compact.steps.implement).toMatchObject({ status: "ready", outcome: null, attempts: 0, summary: null });
     expect(compact.steps.retro).toMatchObject({ afterTask: "retro" });
     expect(compact.ready).toEqual(["implement"]);
@@ -184,5 +184,59 @@ describe("slow steps in tools (ADR 2026-11-12-slow-steps-in-tools)", () => {
     const listing = runListing(current, new SlowIndex(all).of(current, T0 + 112 * 60_000));
     expect(listing.slowSteps).toEqual(["investigate"]);
     expect(listing).toMatchObject({ slow: { investigate: { running: true, samples: 3 } } });
+  });
+});
+
+describe("times in get_run", () => {
+  const T0 = Date.parse("2026-11-12T10:00:00.000Z");
+  const iso = (minutes: number) => new Date(T0 + minutes * 60_000).toISOString();
+
+  it("a completed step has startedAt, endedAt and durationMs in both views, without live", async () => {
+    const run = structuredClone(await viewsRun());
+    run.steps.investigate!.attempts[0]!.startedAt = iso(0);
+    run.steps.investigate!.attempts[0]!.endedAt = iso(3);
+    for (const view of [runCompact(run, undefined, {}, T0 + 60 * 60_000), runFull(run, undefined, {}, T0 + 60 * 60_000)]) {
+      expect(view.steps.investigate).toMatchObject({ startedAt: iso(0), endedAt: iso(3), durationMs: 3 * 60_000 });
+      expect(view.steps.investigate).not.toHaveProperty("live");
+      expect(view.steps.investigate).not.toHaveProperty("totalMs");
+    }
+  });
+
+  it("a running step shows the time so far, flagged live, and the run has its own times", async () => {
+    const run = structuredClone(await viewsRun());
+    const attempt = run.steps.investigate!.attempts[0]!;
+    attempt.startedAt = iso(0);
+    attempt.endedAt = null;
+    run.steps.investigate!.status = "running";
+    run.createdAt = iso(-5);
+    const compact = runCompact(run, undefined, {}, T0 + 7 * 60_000);
+    expect(compact.steps.investigate).toMatchObject({ startedAt: iso(0), durationMs: 7 * 60_000, live: true });
+    expect(compact.steps.investigate).not.toHaveProperty("endedAt");
+    expect(compact).toMatchObject({ startedAt: iso(-5), durationMs: 12 * 60_000 });
+    expect(runFull(run, undefined, {}, T0 + 7 * 60_000).steps.investigate).toMatchObject({ live: true });
+  });
+
+  it("a retried step shows the current attempt, the total, and per attempt in full", async () => {
+    const run = structuredClone(await viewsRun());
+    const first = run.steps.investigate!.attempts[0]!;
+    first.startedAt = iso(0);
+    first.endedAt = iso(2);
+    run.steps.investigate!.attempts.push({ ...structuredClone(first), n: 2, startedAt: iso(10), endedAt: iso(15) });
+    const compact = runCompact(run, undefined, {}, T0 + 60 * 60_000);
+    expect(compact.steps.investigate).toMatchObject({ startedAt: iso(10), endedAt: iso(15), durationMs: 5 * 60_000, totalMs: 7 * 60_000 });
+    expect(compact.steps.investigate).not.toHaveProperty("attemptTimes");
+    const full = runFull(run, undefined, {}, T0 + 60 * 60_000).steps.investigate as unknown as { attemptTimes: unknown };
+    expect(full.attemptTimes).toEqual([
+      { attempt: 1, startedAt: iso(0), endedAt: iso(2), durationMs: 2 * 60_000 },
+      { attempt: 2, startedAt: iso(10), endedAt: iso(15), durationMs: 5 * 60_000 },
+    ]);
+  });
+
+  it("steps without timestamps (older runs, pending steps) omit the fields", async () => {
+    const run = structuredClone(await viewsRun());
+    run.steps.investigate!.attempts[0]!.startedAt = "";
+    expect(runCompact(run).steps.investigate).not.toHaveProperty("startedAt");
+    const pending = Object.keys(run.steps).find((id) => run.steps[id]!.attempts.length === 0)!;
+    expect(runFull(run).steps[pending]).not.toHaveProperty("durationMs");
   });
 });

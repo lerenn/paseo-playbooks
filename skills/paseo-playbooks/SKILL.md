@@ -933,8 +933,10 @@ after:
   `escalationReason`; `subscribe_events` on `gate.escalated` tells agents when that happens; its `delivery` is `idle` by default, which holds the notice until the subscriber's turn ends, or `steer` to inject it into the running turn). A retro step that reviews the whole run gets it from
   the manager: tell the manager (in the playbook `description`) to put `get_run` with
   `view: "full"` in the step's brief. The default `get_run` view is compact (per step: status,
-  outcome, attempts, turn end and the first 300 characters of the summary), without reports
-  or outputs.
+  outcome, attempts, times, turn end and the first 300 characters of the summary), without reports
+  or outputs. Times: the run and each step that started have `startedAt`, `endedAt` (ISO; absent while running) and
+  `durationMs`; a running one also has `live: true` (the duration is the time so far). A retried step shows its current
+  attempt plus `totalMs` across attempts (`view: "full"` adds `attemptTimes`). Older runs without timestamps omit them.
   `read_agent_conversation` (every agent but step and gate agents) reads any agent's conversation as text, newest page first,
   with reasoning and tool input opt-in and a `before` cursor for older entries.
 

@@ -1,5 +1,5 @@
 import { SlowIndex, slowEntries, slowEntry } from "./slow";
-import type { SlowInfo } from "../shared/slow";
+import { elapsedMs, type SlowInfo } from "../shared/slow";
 import { checkSubscriptionScope } from "./bus";
 import { defineAgentTool, type AgentToolDefinition, type AgentToolResult } from "@getpaseo/plugin/server";
 import { askHumanText, choicesOfGate, GATE_SUMMARY_MAX, waitsForHuman } from "../shared/gates";
@@ -137,13 +137,49 @@ function attemptModels(attempts: Run["steps"][string]["attempts"]) {
   }));
 }
 
+type StepAttempt = Run["steps"][string]["attempts"][number];
+
+/** One attempt's start, end and duration (ISO and ms); `live` while it still runs (the duration is then the time so far). Reuses shared/slow's elapsedMs. */
+function attemptTimes(attempt: StepAttempt, now: number): { startedAt?: string; endedAt?: string; live?: true; durationMs?: number } {
+  const startedAt = attempt.startedAt || null;
+  if (!startedAt) return {};
+  const endedAt = attempt.endedAt ?? null;
+  const durationMs = elapsedMs({ status: "running", startedAt, endedAt }, now);
+  return { startedAt, ...(endedAt ? { endedAt } : { live: true }), ...(durationMs === null ? {} : { durationMs }) };
+}
+
+/** A step's times: the current (last) attempt's, plus `totalMs` across attempts when it was retried; the full view lists every attempt. Absent when the step has none recorded. */
+function stepTimes(state: Run["steps"][string], full: boolean, now: number) {
+  const attempts = state.attempts;
+  const last = attempts.at(-1);
+  if (!last) return {};
+  const times = attemptTimes(last, now);
+  if (!("startedAt" in times)) return {};
+  const all = attempts.map((attempt) => attemptTimes(attempt, now));
+  const total = all.reduce((sum, entry) => sum + (entry.durationMs ?? 0), 0);
+  return {
+    ...times,
+    ...(attempts.length > 1 ? { totalMs: total } : {}),
+    ...(full && attempts.length > 1 ? { attemptTimes: attempts.map((attempt, i) => ({ attempt: attempt.n, ...all[i] })) } : {}),
+  };
+}
+
+/** The run's own start and end (the run_* event that closed it); durationMs is the time so far while it runs. */
+function runTimes(run: Run, now: number) {
+  const startedAt = run.createdAt;
+  const end = isTerminal(run.status) ? run.history.findLast((event) => event.type === "run_completed" || event.type === "run_failed" || event.type === "run_canceled")?.at : undefined;
+  const durationMs = elapsedMs({ status: "running", startedAt, endedAt: end ?? null }, now);
+  return { startedAt, ...(end ? { endedAt: end } : {}), ...(durationMs === null ? {} : { durationMs }) };
+}
+
 /** The default get_run view: one short line of state per step, no reports, outputs or inputs. */
-export function runCompact(run: Run, only?: string[], slow: Record<string, SlowInfo> = {}) {
+export function runCompact(run: Run, only?: string[], slow: Record<string, SlowInfo> = {}, now = Date.now()) {
   return {
     runId: run.id,
     playbook: run.playbook.id,
     status: run.status,
     failure: run.failure,
+    ...runTimes(run, now),
     managerMode: run.playbook.managerMode,
     active: isActive(run),
     paused: isPaused(run),
@@ -168,6 +204,7 @@ export function runCompact(run: Run, only?: string[], slow: Record<string, SlowI
             status: state.status,
             outcome: attempt?.outcome ?? attempt?.report?.outcome ?? null,
             attempts: state.attempts.length,
+            ...stepTimes(state, false, now),
             ...(attempt?.target ? { model: attempt.target } : {}),
             turnEnd: attempt?.turnEnd ?? null,
             ...(slow[id] ? { slow: slowEntry(run, id, slow[id]!) } : {}),
@@ -184,7 +221,7 @@ export function runCompact(run: Run, only?: string[], slow: Record<string, SlowI
 }
 
 /** The full get_run view: every step's definition, latest report, outputs and summary, with the gates in full. */
-export function runFull(run: Run, only?: string[], slow: Record<string, SlowInfo> = {}) {
+export function runFull(run: Run, only?: string[], slow: Record<string, SlowInfo> = {}, now = Date.now()) {
   return {
     runId: run.id,
     playbook: run.playbook.id,
@@ -217,6 +254,7 @@ export function runFull(run: Run, only?: string[], slow: Record<string, SlowInfo
             outcomes: step.outcomes,
             status: state.status,
             attempts: state.attempts.length,
+            ...stepTimes(state, true, now),
             agentId: attempt && !isAgentlessAttempt(attempt.agentId) ? attempt.agentId : null,
             ...(step.kind === "agent" ? { models: attemptModels(state.attempts), ...(state.nextModel ? { nextModel: state.nextModel } : {}) } : {}),
             ...(step.autoComplete?.length ? { autoComplete: step.autoComplete } : {}),
@@ -718,7 +756,7 @@ export function runTools(runtime: Runtime): AgentToolDefinition[] {
     defineAgentTool({
       name: "get_run",
       description:
-        'Show a run\'s state. Read-only on a run you do not manage (any run id works); the tools that change it refuse it. Without runId, your active (or latest) run. view "compact" (default): per step its status, outcome, attempts, turn end and the start of its summary, plus gates, loops and after-tasks. view "full": every step\'s definition, full report, outputs and summary, the run inputs and the gates in full (e.g. for a retro brief). steps limits either view to those steps. A step slower than usual (the "attention" triangle of the panel) has `slow` {elapsedMs, baselineMs, factor, ratio, samples, running}; `slowSteps` lists them.',
+        'Show a run\'s state. Read-only on a run you do not manage (any run id works); the tools that change it refuse it. Without runId, your active (or latest) run. view "compact" (default): per step its status, outcome, attempts, turn end and the start of its summary, plus gates, loops and after-tasks. view "full": every step\'s definition, full report, outputs and summary, the run inputs and the gates in full (e.g. for a retro brief). steps limits either view to those steps. Each step has startedAt, endedAt (ISO; endedAt absent while it runs), durationMs and, while it still runs, live: true (durationMs is then the time so far); a retried step shows its current attempt plus totalMs across attempts (view full also attemptTimes per attempt). The run has startedAt, endedAt, durationMs the same way. A step slower than usual (the "attention" triangle of the panel) has `slow` {elapsedMs, baselineMs, factor, ratio, samples, running}; `slowSteps` lists them.',
       input: z.object({
         runId: IdArg.optional(),
         view: z.enum(["compact", "full"]).default("compact").describe('"compact" (default) or "full" (reports, outputs, inputs, gate details)'),
