@@ -105,7 +105,7 @@ export function useSidekickChat(agentId: string | null) {
       );
       // Mid-turn the message steers the turn instead of interrupting it.
       dispatch({ type: "steer_sent" });
-      await paseo.agents.ref(agentId).send(promptWithFiles(text, files), { activeTurnBehavior: "steer", ...(images.length > 0 ? { images } : {}) });
+      await paseo.agents.ref(agentId).send(promptWithFiles(text, files, images.length), { activeTurnBehavior: "steer", ...(images.length > 0 ? { images } : {}) });
     },
     [agentId, paseo, saveAttachment],
   );
