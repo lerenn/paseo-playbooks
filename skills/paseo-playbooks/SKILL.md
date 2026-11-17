@@ -105,6 +105,7 @@ role:                  # defaults for agent steps, in the shape of a step's `rol
 workspace:             # what happens to the workspace a run created with newWorkspace
   archive: on_end      # never (default) | on_end: archive it when the run completes or is canceled
   keep_failed: true    # keep it when the run failed or lost its manager (default true)
+  archive_with_run: false  # true: archiving a run also archives its workspace and agents when safe (default false)
 isolation: none        # none (default) | worktree | { mode: worktree, submodules: none | all | [paths], base: <branch> }: see "Isolated runs"
 ```
 
@@ -1200,7 +1201,7 @@ steps that completed:
 
 `refresh_scripts` (`runId`, `reason`) makes an isolated run's script steps (`codex_check`, `ci_check`...) run the scripts as committed on the current `origin/<branch>`, instead of the copy pinned at its start: use it after a script fix landed on main. Only the `scripts/` folder is refreshed; the step definitions (inputs, declared outputs) stay pinned, so a script that needs a new input or output needs a new run. Refused for an ended run, a run without a worktree, a worktree not created from `origin/<branch>`, or when the fetch fails; refreshing twice to the same commit changes nothing. The history records the commit before and after (`scripts_refreshed`).
 
-`archive_run` (`runId`, optional `force`) archives a run that has ended, like the panel's archive button: after `cancel_run` or a finished run, once its job is settled. It hides the run from the panel and from `list_runs` (without `archived: true`); `restart_run` still reopens it. It refuses an active run, and a run whose hand-off job is still open at a pipeline stage or batch unless `force: true`; archiving twice is fine.
+`archive_run` (`runId`, optional `force`) archives a run that has ended, like the panel's archive button: after `cancel_run` or a finished run, once its job is settled. It hides the run from the panel and from `list_runs` (without `archived: true`); `restart_run` still reopens it. It refuses an active run, and a run whose hand-off job is still open at a pipeline stage or batch unless `force: true`; archiving twice is fine. With `workspace: { archive_with_run: true }` it also archives the run's workspace (and every agent in it) when no other unarchived run uses it, nothing in it runs or waits on a permission, and every visible agent in it is a run's; the result carries `workspaceArchived` and `workspaceReason`. If the workspace is gone, `restart_run` needs its `workspaceId` (an existing workspace of the same project, no active run) to restart there.
 
 `restart_run` refuses an active run (cancel it first), a step whose needs did not complete,
 and a workspace that is gone or already has another active run (the message names that run and

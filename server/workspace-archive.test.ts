@@ -74,7 +74,7 @@ describe("workspace.archive", () => {
 
   it("defaults to never", async () => {
     const ctx = await setup();
-    expect(ctx.store.get("run_x")!.playbook.workspace).toEqual({ archive: "never", keepFailed: true });
+    expect(ctx.store.get("run_x")!.playbook.workspace).toEqual({ archive: "never", keepFailed: true, archiveWithRun: false });
     await end(ctx);
     expect(ctx.archived).toEqual([]);
   });

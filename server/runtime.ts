@@ -3485,14 +3485,59 @@ export class Runtime {
     }
   }
 
-  /** Hides a finished run from the panel; nothing else changes (no agent is archived or stopped). */
+  /**
+   * Hides a finished run from the panel. No agent is archived or stopped, except that with
+   * `workspace: { archive_with_run: true }` the run's workspace is archived too when it is safe.
+   */
   async archiveRun(runId: string): Promise<string> {
-    return this.store.mutate(runId, (run) => {
+    return (await this.archiveRunAndWorkspace(runId)).archivedAt;
+  }
+
+  /** archiveRun, with what happened to the workspace (`workspaceArchived: null` when the run was already archived: nothing was tried). */
+  async archiveRunAndWorkspace(runId: string): Promise<{ archivedAt: string; workspaceArchived: { archived: boolean; reason: string } | null }> {
+    const first = await this.store.mutate(runId, (run) => {
       if (!isTerminal(run.status)) throw new UserError(`run ${runId} is ${run.status}: cancel it before archiving`);
       if (isActive(run)) throw new UserError(`run ${runId} is wrapping up (after-tasks running): wait or cancel them before archiving`);
+      const fresh = !run.archivedAt;
       run.archivedAt ??= nowIso();
-      return run.archivedAt;
+      return { archivedAt: run.archivedAt, fresh };
     });
+    if (!first.fresh) return { archivedAt: first.archivedAt, workspaceArchived: null };
+    const run = this.store.get(runId)!;
+    if (!run.playbook.workspace.archiveWithRun) return { archivedAt: first.archivedAt, workspaceArchived: { archived: false, reason: "workspace.archive_with_run is off" } };
+    const outcome = await this.archiveWorkspaceWithRun(run).catch((error: unknown) => ({ archived: false, reason: `could not check: ${errorText(error)}` }));
+    await this.store
+      .mutate(runId, (current) => {
+        if (outcome.archived) engine.noteEvent(current, "workspace_archived", null, `workspace ${current.workspaceId} archived with the run (workspace.archive_with_run)`, nowIso());
+        else engine.noteEvent(current, "workspace_kept", null, `workspace ${current.workspaceId} not archived with the run: ${outcome.reason}`, nowIso());
+      })
+      .catch((error) => console.error(`[playbooks] could not record the workspace archive of ${runId}:`, errorText(error)));
+    if (!outcome.archived) console.error(`[playbooks] workspace ${run.workspaceId} kept when archiving ${runId}: ${outcome.reason}`);
+    return { archivedAt: first.archivedAt, workspaceArchived: outcome };
+  }
+
+  /**
+   * `workspace.archive_with_run`: archives the run's workspace (and so every agent in it) when
+   * (a) no other run that is not archived uses it, (b) no agent in it runs or waits on a permission,
+   * (c) the run has ended (archiving already requires it), (d) it still exists, and (e) every visible
+   * agent in it carries a plugin label (a manager, step, gate or sidekick agent of a run), so a
+   * human's own agent is never archived. The run's worktree is a separate directory with its own
+   * cleanup (cleanupEndedWorktrees): archiving the workspace touches neither it nor its state.
+   */
+  private async archiveWorkspaceWithRun(run: Run): Promise<{ archived: boolean; reason: string }> {
+    const skip = (reason: string) => ({ archived: false, reason });
+    const others = this.store.list().filter((other) => other.id !== run.id && other.workspaceId === run.workspaceId && !other.archivedAt);
+    if (others.length > 0) return skip(`run ${others[0]!.id} still uses it and is not archived`);
+    if (!(await this.workspaceOf(run.workspaceId))) return skip("the workspace no longer exists or is already archived");
+    const listed = await this.api().agents.list({ filter: { projectKeys: [run.projectId] } });
+    const agents = listed.entries.map((entry) => entry.agent).filter((agent) => agent.workspaceId === run.workspaceId && !agent.archivedAt && !agent.internal);
+    const busy = agents.find((agent) => agent.status === "running" || agent.status === "initializing" || (agent.pendingPermissions?.length ?? 0) > 0);
+    if (busy) return skip(`agent ${busy.id} is running or waiting on a permission`);
+    const own = (agent: (typeof agents)[number]) => agent.labels?.[MANAGER_LABEL] !== undefined || agent.labels?.[RUN_LABEL] !== undefined || agent.labels?.[STEP_LABEL] !== undefined || agent.labels?.[GATE_LABEL] !== undefined;
+    const foreign = agents.filter((agent) => !own(agent));
+    if (foreign.length > 0) return skip(`it holds agents that are not part of a run: ${foreign.map((agent) => agent.id).join(", ")}`);
+    await this.api().workspaces.ref(run.workspaceId).archive();
+    return { archived: true, reason: "archived" };
   }
 
   /**
@@ -3500,10 +3545,10 @@ export class Runtime {
    * open in a pipeline (waiting or in a batch) is refused unless `force`: archiving hides it
    * while its result is still coming.
    */
-  async archiveRunByAgent(runId: string, force: boolean): Promise<{ run: Run; already: boolean }> {
+  async archiveRunByAgent(runId: string, force: boolean): Promise<{ run: Run; already: boolean; workspaceArchived: { archived: boolean; reason: string } | null }> {
     const existing = this.store.get(runId);
     if (!existing) throw new UserError(`unknown run "${runId}"`);
-    if (existing.archivedAt) return { run: existing, already: true };
+    if (existing.archivedAt) return { run: existing, already: true, workspaceArchived: null };
     if (!force) {
       const open = this.store.list().flatMap((candidate) => candidate.jobs.filter((job) => candidate.id !== runId && job.fromRunId === runId && job.status === "open").map((job) => ({ job, at: candidate })));
       const pipelineJobs = open.filter(({ at }) => !at.batch);
@@ -3512,8 +3557,8 @@ export class Runtime {
         throw new UserError(`run ${runId} has a job that is not settled yet (${where}): wait for it to settle (settle_job, or the batch ends), or pass force: true to archive anyway`);
       }
     }
-    await this.archiveRun(runId);
-    return { run: this.store.get(runId)!, already: false };
+    const { workspaceArchived } = await this.archiveRunAndWorkspace(runId);
+    return { run: this.store.get(runId)!, already: false, workspaceArchived };
   }
 
   /** Marks a finished run as seen by a human; an active run stays unseen (it can still change). */

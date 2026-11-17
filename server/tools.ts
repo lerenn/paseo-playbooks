@@ -894,15 +894,16 @@ export function runTools(runtime: Runtime): AgentToolDefinition[] {
     defineAgentTool({
       name: "archive_run",
       description:
-        "Archive a run that has ended (completed, failed or canceled), exactly like the archive button on its row in the Playbooks panel: it is hidden from the panel and from list_runs (unless archived: true); its state and agents are kept, and restart_run can still reopen it. Use it to clean up after a run is canceled or finished and its job is settled (e.g. after cancel_run, once the human no longer needs it). Refused while the run is active, running, paused or waiting at a gate (cancel_run it first), and while a job it handed to a pipeline is still open at a stage or batch, unless force: true. Archiving twice is fine. Works on any run, like cancel_run.",
+        "Archive a run that has ended (completed, failed or canceled), exactly like the archive button on its row in the Playbooks panel: it is hidden from the panel and from list_runs (unless archived: true); its state and agents are kept (unless `workspace: { archive_with_run: true }` is set: then, when no other run uses its workspace, nothing in it runs or waits on a permission and every visible agent in it belongs to a run, the workspace is archived with all its agents; the result says workspaceArchived and why not), and restart_run can still reopen it (with workspaceId when its workspace is gone). Use it to clean up after a run is canceled or finished and its job is settled (e.g. after cancel_run, once the human no longer needs it). Refused while the run is active, running, paused or waiting at a gate (cancel_run it first), and while a job it handed to a pipeline is still open at a stage or batch, unless force: true. Archiving twice is fine. Works on any run, like cancel_run.",
       input: z.object({
         runId: IdArg,
         force: z.boolean().default(false).describe("Archive even though a job the run handed to a pipeline is still open (not settled)"),
       }),
       execute: ({ runId, force }) =>
         guard(async () => {
-          const { run, already } = await runtime.archiveRunByAgent(runId, force);
-          return ok(already ? `Run ${run.id} was already archived.` : `Run ${run.id} archived.`, runListing(run));
+          const { run, already, workspaceArchived } = await runtime.archiveRunByAgent(runId, force);
+          const note = workspaceArchived ? (workspaceArchived.archived ? ` Its workspace ${run.workspaceId} was archived too.` : ` Its workspace was kept: ${workspaceArchived.reason}.`) : "";
+          return ok(already ? `Run ${run.id} was already archived.` : `Run ${run.id} archived.${note}`, { ...runListing(run), ...(workspaceArchived ? { workspaceArchived: workspaceArchived.archived, workspaceReason: workspaceArchived.reason } : {}) });
         }),
     }),
     defineAgentTool({

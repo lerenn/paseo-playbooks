@@ -436,6 +436,8 @@ const RawWorkspaceSchema = z
     archive: z.enum(["never", "on_end"]).optional(),
     /** Keep the workspace of a failed run (or one that lost its manager) for inspection. Default true. */
     keep_failed: z.boolean().optional(),
+    /** Archive the run's Paseo workspace (with its agents) when the run is archived, if nothing else lives there. Default false. */
+    archive_with_run: z.boolean().optional(),
   })
   .strict();
 
@@ -2075,6 +2077,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     workspace: {
       archive: pb.workspace?.archive ?? defaults.workspace?.archive ?? "never",
       keepFailed: pb.workspace?.keep_failed ?? defaults.workspace?.keep_failed ?? true,
+      archiveWithRun: pb.workspace?.archive_with_run ?? defaults.workspace?.archive_with_run ?? false,
     },
     isolation,
     permissions: { onRequest: pb.permissions?.on_request ?? defaults.permissions?.on_request ?? DEFAULT_PERMISSION_POLICY },
