@@ -47,7 +47,7 @@ import { SIDEKICK_LABEL } from "./server/sidekick";
 import { createSidekickStarter, createStarter } from "./server/starter";
 import { migrateDataDir } from "./server/data-dir";
 import { defaultRunsDir, RunStore } from "./server/store";
-import { answerGateTool, gateTool, managerTools, runTools, sidekickStartTools, sidekickTool, stepTool, validateTool } from "./server/tools";
+import { answerGateTool, gateTool, managerTools, resumeGateTool, runTools, sidekickStartTools, sidekickTool, stepTool, validateTool } from "./server/tools";
 
 let safetyNet = false;
 /** One bad call (a refused result, a failed timer) must not take every run's tools down: log it and keep serving. */
@@ -92,7 +92,7 @@ export default function contribute(server: PluginServerContext) {
   // Tools: report_step_result for step agents; manager tools for agents whose workspace has
   // playbooks (or that already manage a run); validate_playbooks, list_runs, cancel_run, start_after_task and
   // restart_run for every other agent, so a human can stop, wrap up or restart a run from any chat.
-  const tools = { manager: managerTools(runtime), common: [validateTool(runtime), ...runTools(runtime)], step: stepTool(runtime), answerGate: answerGateTool(runtime), sidekick: sidekickTool(runtime), sidekickStart: sidekickStartTools(runtime), gate: gateTool(runtime) };
+  const tools = { manager: managerTools(runtime), common: [validateTool(runtime), ...runTools(runtime), resumeGateTool(runtime)], step: stepTool(runtime), answerGate: answerGateTool(runtime), sidekick: sidekickTool(runtime), sidekickStart: sidekickStartTools(runtime), gate: gateTool(runtime) };
   server.before("agent.session_open", async ({ request }, context) => {
     if (request.purpose === "history") return;
     // Only the store is needed here. Do not wait for reconcile: its own sends (resume a step, wake a

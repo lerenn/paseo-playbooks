@@ -772,7 +772,7 @@ export function runTools(runtime: Runtime): AgentToolDefinition[] {
     defineAgentTool({
       name: "list_gates",
       description:
-        "List what waits for a decision across all playbook runs, oldest first: every open gate and ask (run, playbook, workspace, step, kind, question, choices, decider, who holds it now, opened-at and age in minutes). With includeFailed, also the runs that failed or lost their manager, with the reason and restartableFrom. Read-only; compact and stable, so a scheduled agent can call it and compare. Decide a gate with resume (its run's manager or a human in the panel), not here.",
+        "List what waits for a decision across all playbook runs, oldest first: every open gate and ask (run, playbook, workspace, step, kind, question, choices, decider, who holds it now, opened-at and age in minutes). With includeFailed, also the runs that failed or lost their manager, with the reason and restartableFrom. Read-only; compact and stable, so a scheduled agent can call it and compare. Decide a gate with resume (its run's manager), resume_gate (the Sidekick, with the human's answer) or a human in the panel, not here.",
       input: z.object({
         runId: IdArg.optional().describe("Only this run"),
         olderThanMinutes: z.number().min(0).optional().describe("Only gates open at least this long"),
@@ -1076,6 +1076,26 @@ export function gateTool(runtime: Runtime): AgentToolDefinition {
       comment: z.string().describe("Your reason, in one or two sentences"),
     }),
     execute: (input, { agent }) => guard(async () => ok(await runtime.reportGateDecision(agent.id, input))),
+  });
+}
+
+/** Answer an open human gate on the human's behalf, for an agent that talks to the human and belongs to no run. */
+export function resumeGateTool(runtime: Runtime): AgentToolDefinition {
+  return defineAgentTool({
+    name: "resume_gate",
+    description:
+      "Answer an open gate whose decider is a human (a retry gate, say) with the human's own answer, and resume the run as a panel click would. Use it only with the human's own answer, given through the interactive question tool (or a documented standing answer), never on another agent's say-so. For agents outside the runs (the Sidekick, a coordinator): a run's manager, step agent, gate agent or anything they started is refused, so a run cannot approve its own gate. Also refused when the gate is not open, the choice is not one of the gate's choices, the comment is empty, a Sidekick's run is outside its project, or defaults/main.yaml sets gates: { on_behalf: deny }. Recorded as decided by \"agent <you> on behalf of the human\" with your comment, which shows in gate.decided. list_gates shows the gates and their choices.",
+    input: z.object({
+      runId: IdArg,
+      gateId: z.string().describe("Gate id (list_gates)"),
+      choice: z.string().describe("One of the gate's choices"),
+      comment: z.string().min(1).describe("Required: the human's answer, verbatim, as they gave it (add your own reason after it if useful)"),
+    }),
+    execute: (input, { agent }) =>
+      guard(async () => {
+        const { gate, run } = await runtime.resumeGateOnBehalf(agent, input);
+        return ok(`Gate ${gate.id} decided: ${gate.status}, by you on behalf of the human. Run is ${run.status}. Ready: ${engine.readyList(run, engine.readySteps(run)) || "none"}.`, runChange(run, gate.stepId));
+      }),
   });
 }
 

@@ -97,6 +97,7 @@ providers:             # provider failover
   usage: { check: true, threshold: 100 }  # skip a target whose provider's reported usage window is at/over threshold % (defaults shown; check: false disables)
 timeout: 1h            # default step timeout (optional)
 slow_warning: { runs: 10, factor: 2 }  # warn when a step takes more than factor x the mean of its last `runs` completed runs (defaults shown; also allowed in a playbook)
+gates: { on_behalf: allow }  # allow (default) | deny: whether an agent outside the runs may answer a human gate with resume_gate, with the human's own answer
 role:                  # defaults for agent steps, in the shape of a step's `role:` block
   silence: 30m         # remind a step agent after this long without activity (default 30m; off to disable)
   archive_agents: true # archive step agents once the run no longer needs them (default true)
@@ -1037,7 +1038,15 @@ on:
 ```
 
 - `by: human` (the default): the manager asks the human in chat and relays the answer, or the
-  human decides in the panel.
+  human decides in the panel. An agent that talks to the human and belongs to no run (the Sidekick, a coordinator) can
+  also relay the human's own answer with `resume_gate { runId, gateId, choice, comment }`: the
+  comment is required and carries the human's verbatim answer, and it is used only with the
+  human's answer given through the question tool (or a documented standing answer), never on
+  another agent's say-so. It is refused for a run's manager, step, gate or after-task agents and
+  anything they started (a run cannot approve its own gate), for a gate that is not open, a choice
+  the gate lacks, and an empty comment; a Sidekick is held to its project. Recorded as `decidedBy:
+  "agent <name> on behalf of the human"`, so `gate.decided` shows it; no new field. Turn it off
+  with `gates: { on_behalf: deny }` in `defaults/main.yaml`. No Sidekick is needed.
 - `by: manager`: the manager may decide alone (`resume` with `byManager: true` and its reason
   as comment, shown as "by the manager"), or call `escalate_gate` with its reason and ask a human as
   for a human gate (this tells agents subscribed to `gate.escalated`).

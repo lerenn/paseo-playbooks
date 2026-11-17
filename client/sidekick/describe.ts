@@ -47,6 +47,7 @@ const KNOWN: Record<string, { sentence: string; keys: string[] }> = {
   list_runs: { sentence: "list the runs", keys: [] },
   get_run: { sentence: "read a run", keys: ["runId"] },
   list_gates: { sentence: "list the gates", keys: [] },
+  resume_gate: { sentence: "answer a gate", keys: ["runId", "gateId", "choice"] },
   validate_playbooks: { sentence: "validate the playbooks", keys: [] },
   Bash: { sentence: "run a shell command", keys: ["command"] },
   Edit: { sentence: "edit a file", keys: ["file_path"] },

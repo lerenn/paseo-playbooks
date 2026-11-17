@@ -40,7 +40,7 @@ import { workspaceTitle } from "../shared/workspace-name";
 import { createWorktree, diskUsedFraction, dirtyPaths, purgeScratch, linkedSubmodules, listWorktreeDirs, pruneWorktrees, removeWorktree, repoOfWorktree, worktreeBranch, worktreePath } from "./worktree";
 import { chooseDefinition } from "./fresh";
 import { runWorktreeTeardown } from "./teardown";
-import { loadPlaybooks, loadSidekick } from "./loader";
+import { gatesOnBehalfSetting, loadPlaybooks, loadSidekick } from "./loader";
 import { findEntry } from "../shared/repos";
 
 /** The entry a stored or typed playbook id means: bare ids resolve to the one namespaced entry (and the reverse); ambiguity or absence gives undefined. */
@@ -4707,6 +4707,44 @@ export class Runtime {
       console.error("[playbooks] could not subscribe the Sidekick:", errorText(error)),
     );
     return { projectId: project.projectId, ...record, created: true };
+  }
+
+  /**
+   * `resume_gate`: an agent that talks to the human (the Sidekick, a coordinator) relays the human's own answer to an open
+   * gate, a human-decided one included, and the run resumes as after a panel click (same path, decidedVia "panel").
+   * Refused for an agent that belongs to a run (its manager, a step or role agent, a gate chat, anything they spawned): a
+   * run never answers its own human gate. A Sidekick is held to its project. `gates: { on_behalf: deny }` turns it off.
+   */
+  async resumeGateOnBehalf(agent: { id: string; title: string | null; parentAgentId: string | null }, input: { runId: string; gateId: string; choice: string; comment: string }): Promise<{ gate: Gate; run: Run }> {
+    const run = this.store.get(input.runId);
+    if (!run) throw new UserError(`unknown run "${input.runId}"`);
+    if (await this.belongsToRun(agent)) throw new UserError("resume_gate is for agents outside the runs: a manager, a step or gate agent (or anything a run started) cannot answer a human gate. Ask the human, who decides in the panel or through the agent they talk to.");
+    if ((await gatesOnBehalfSetting(run.workspaceDir)) === "deny") throw new UserError("answering a gate on behalf of the human is turned off here (gates: { on_behalf: deny } in defaults/main.yaml): the human decides in the panel");
+    const sidekick = await this.sidekickRegistry.findByAgent(agent.id);
+    if (sidekick && run.projectId !== sidekick.projectId) throw new UserError(`run "${input.runId}" is not a run of this Sidekick's project`);
+    const comment = input.comment.trim();
+    if (!comment) throw new UserError("comment is empty: it must carry the human's answer, word for word. Ask them with your interactive question tool first.");
+    const gate = run.gates.find((candidate) => candidate.id === input.gateId);
+    if (!gate) throw new UserError(`no gate "${input.gateId}" in run ${run.id} (list_gates shows the open ones)`);
+    if (gate.status !== "pending") throw new UserError(`gate ${gate.id} is not open: it was already decided (${gate.status}${gate.decidedVia ? ` via ${gate.decidedVia}` : ""})`);
+    // The engine refuses a choice the gate does not have, and a comment a choice requires.
+    const result = await this.decideGate(run.id, gate.id, { decision: input.choice, comment, by: `agent ${agent.title?.trim() || agent.id} on behalf of the human`, via: "panel", now: nowIso() });
+    if (result.alreadyDecided) throw new UserError(`gate ${gate.id} is not open: it was just decided (${result.gate.status} via ${result.gate.decidedVia ?? "?"})`);
+    return { gate: result.gate, run: this.store.get(run.id)! };
+  }
+
+  /** True for an agent a run owns (manager, step, role decider, gate chat) or that one of them started, up to ten generations up. */
+  private async belongsToRun(agent: { id: string; parentAgentId: string | null }): Promise<boolean> {
+    const owned = (id: string) => this.store.list().some((run) => run.managerAgentId === id || run.gates.some((gate) => gate.deciderAgentId === id || gate.chatAgentId === id)) || this.stepRunOf(id) !== null;
+    let current: { id: string; parentAgentId: string | null } | null = agent;
+    for (let depth = 0; current && depth < 10; depth++) {
+      if (owned(current.id)) return true;
+      if (!current.parentAgentId) return false;
+      const parent: string = current.parentAgentId;
+      const snapshot = (await this.api().agents.ref(parent).refresh().catch(() => null))?.agent as { parentAgentId?: string | null } | undefined;
+      current = { id: parent, parentAgentId: snapshot?.parentAgentId ?? null };
+    }
+    return false;
   }
 
   /** `sidekick_handoff`: saves the Sidekick's ledger; with `restart`, it is replaced by a new session when its turn ends. */

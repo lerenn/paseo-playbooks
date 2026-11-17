@@ -71,7 +71,7 @@ The Sidekick is long-lived and found by its labels: `playbooks/sidekick` and `pl
 mode id such as `default`, `acceptEdits`, `plan`, `auto` or `bypassPermissions`, set on every subagent; unset, they
 inherit the Sidekick's own `sidekick.mode`, and if that is unset too the plugin sends none and Paseo's default mode
 for the provider applies; a value that is not a mode id is ignored with a warning); their finish notices wait
-until it is idle. It saves a short decision ledger with `sidekick_handoff`. When its context passes
+until it is idle. It can answer an open human gate of its project with `resume_gate` (also available to any agent outside the runs; set `gates: { on_behalf: deny }` in `defaults/main.yaml` to turn it off), only with the human's own answer given through its question tool; `gate.decided` shows `decidedBy: "agent <name> on behalf of the human"`. It saves a short decision ledger with `sidekick_handoff`. When its context passes
 `sidekick.session.restart_above_tokens` (default 300000) it is asked to hand off and is replaced by a new
 session that starts from the ledger.
 

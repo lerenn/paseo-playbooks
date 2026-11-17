@@ -566,6 +566,14 @@ const RawDefaultsSchema = z.object({
       })
       .strict()
       .optional(),
+    /** Who may answer a gate for the human. */
+    gates: z
+      .object({
+        /** `allow` (default): an agent outside the runs (the Sidekick, a coordinator) may answer a human gate with `resume_gate`, with the human's own answer. `deny`: only the human, in the panel. */
+        on_behalf: z.enum(["allow", "deny"]).optional(),
+      })
+      .strict()
+      .optional(),
     /** Reload agent sessions that hold the tools of an older plugin generation once idle. Default true. */
     reload_stale_sessions: z.boolean().optional(),
     /** Slow-step warning: a step slower than `factor` times the mean of its last `runs` completed runs gets a warning. Defaults 10 and 2. */
@@ -956,6 +964,19 @@ export async function reloadStaleSessionsSetting(workspaceDir: string): Promise<
     return parsed.success ? (parsed.data.reload_stale_sessions ?? true) : true;
   }
   return true;
+}
+
+/** `gates.on_behalf` of the workspace's `defaults/main.yaml` (the first playbooks folder that has one); `allow` when unset. */
+export async function gatesOnBehalfSetting(workspaceDir: string): Promise<"allow" | "deny"> {
+  for (const relDir of PLAYBOOKS_DIRS) {
+    const file = path.join(workspaceDir, relDir, "defaults", "main.yaml");
+    if ((await readText(file)) === null) continue;
+    const raw = await readYaml(file, `${relDir}/defaults/main.yaml`);
+    if ("error" in raw) return "allow";
+    const parsed = RawDefaultsSchema.safeParse(raw.value);
+    return parsed.success ? (parsed.data.gates?.on_behalf ?? "allow") : "allow";
+  }
+  return "allow";
 }
 
 export async function hasPlaybooks(workspaceDir: string): Promise<boolean> {
