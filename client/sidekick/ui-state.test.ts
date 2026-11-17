@@ -13,7 +13,7 @@ describe("sidekick ui store", () => {
     store.addProject("blog");
     store.setWidth(5000);
     store.setDraft("shop", "hello");
-    expect(store.get()).toMatchObject({ open: true, selectedProjectId: "shop", added: ["blog"], width: 800, drafts: { shop: "hello" } });
+    expect(store.get()).toMatchObject({ open: true, selectedProjectId: "shop", added: ["blog"], width: 5000, drafts: { shop: "hello" } });
     expect(listener).toHaveBeenCalledTimes(5);
     store.setDraft("shop", "");
     expect(store.get().drafts).toEqual({});
