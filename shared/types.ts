@@ -351,6 +351,8 @@ export const RunWorktreeSchema = z.object({
   workspaceSnapshot: z.string().nullable(),
   /** active: exists; removed: the plugin deleted it; kept: it stays on disk (the history says why). */
   state: z.enum(["active", "removed", "kept"]),
+  /** failed: kept only for the failure retention window (ADR 2026-11-17-worktree-auto-cleanup): removed once it passes or the disk is under pressure. */
+  keptFor: z.literal("failed").nullable().optional(),
 });
 export type RunWorktree = z.infer<typeof RunWorktreeSchema>;
 

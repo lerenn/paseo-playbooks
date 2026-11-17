@@ -37,7 +37,7 @@ import * as engine from "./engine";
 import { ADMISSION_TIMEOUT_MS, admissionInput, readAdmission } from "./admission";
 import { checkoutSnapshot, currentRef, defaultBranch, exportPaths, fastForward, freshRef, freshRefInfo, git as gitOutput, removedGitlinks, snapshotDiff } from "./git";
 import { workspaceTitle } from "../shared/workspace-name";
-import { createWorktree, dirtyPaths, linkedSubmodules, listWorktreeDirs, pruneWorktrees, removeWorktree, repoOfWorktree, worktreeBranch, worktreePath } from "./worktree";
+import { createWorktree, diskUsedFraction, dirtyPaths, purgeScratch, linkedSubmodules, listWorktreeDirs, pruneWorktrees, removeWorktree, repoOfWorktree, worktreeBranch, worktreePath } from "./worktree";
 import { chooseDefinition } from "./fresh";
 import { runWorktreeTeardown } from "./teardown";
 import { loadPlaybooks, loadSidekick } from "./loader";
@@ -349,6 +349,11 @@ function silenceDue(step: Step, attempt: Attempt, activeAt: number): number | nu
   return candidates.length > 0 ? Math.min(...candidates) : null;
 }
 
+/** How long the worktree of a failed run is kept for inspection (`workspace.keep_failed`). */
+const FAILED_RETENTION_MS = 24 * 60 * 60 * 1000;
+/** Used fraction of the volume from which failed runs' worktrees are removed early (the 85% guard of the pr playbooks). */
+const DISK_PRESSURE = 0.85;
+
 export class Runtime {
   private paseo: PaseoApi | null = null;
   private reconciled: Promise<void> | null = null;
@@ -433,7 +438,7 @@ export class Runtime {
 
   constructor(
     private readonly store: RunStore,
-    private readonly options: { dataDir?: string; debounceMs?: number; pollMs?: number; wakeGapMs?: number; admissionTimeoutMs?: number; /** Tests: false keeps the old manual flow (the plugin starts no ready agent step by itself). */ autoStartAgents?: boolean } = {},
+    private readonly options: { dataDir?: string; debounceMs?: number; pollMs?: number; wakeGapMs?: number; /** Tests: how long a failed run's worktree is kept (default 24h). */ failedRetentionMs?: number; /** Tests: the used fraction of the volume holding the worktrees. */ diskUsedFraction?: (dir: string) => Promise<number>; admissionTimeoutMs?: number; /** Tests: false keeps the old manual flow (the plugin starts no ready agent step by itself). */ autoStartAgents?: boolean } = {},
   ) {
     const dir = options.dataDir ?? path.dirname(store.dir);
     this.worktreesDir = path.join(dir, "worktrees");
@@ -1164,12 +1169,12 @@ export class Runtime {
     const wt = run.worktree;
     if (!wt) return null;
     const workspaceSnapshot = await checkoutSnapshot(workspaceDir);
-    if (wt.state !== "removed" && existsSync(wt.path)) return { ...wt, state: "active", workspaceSnapshot };
+    if (wt.state !== "removed" && existsSync(wt.path)) return { ...wt, state: "active", keptFor: null, workspaceSnapshot };
     this.creatingWorktrees.add(run.id);
     try {
       const created = await createWorktree({ workspaceDir, worktreesDir: this.worktreesDir, runId: run.id, branch: wt.branch, isolation: run.playbook.isolation, reuseBranch: true });
       const { fetchError: _fetchError, ...recreated } = created;
-      return { ...recreated, base: wt.base, baseSha: wt.baseSha, state: "active" };
+      return { ...recreated, base: wt.base, baseSha: wt.baseSha, state: "active", keptFor: null };
     } catch (error) {
       throw new UserError(`could not recreate the run's worktree: ${errorText(error)}`);
     } finally {
@@ -1188,16 +1193,28 @@ export class Runtime {
    * when the worktree has uncommitted changes, or when the original checkout changed during the run.
    */
   private async cleanupEndedWorktrees(): Promise<void> {
+    let pressure: boolean | null = null;
+    const underPressure = async () => (pressure ??= (await (this.options.diskUsedFraction ?? diskUsedFraction)(this.worktreesDir)) >= DISK_PRESSURE);
     for (const candidate of this.store.list()) {
       const wt = candidate.worktree;
-      if (!wt || wt.state !== "active" || !isTerminal(candidate.status) || isActive(candidate)) continue;
+      if (!wt || !isTerminal(candidate.status) || isActive(candidate)) continue;
+      // A worktree kept for a failure is looked at again: it goes once the retention window has passed or the disk is under pressure. Any other kept one stays.
+      if (wt.state === "kept" && wt.keptFor !== "failed") continue;
+      if (wt.state === "removed") continue;
       if (!this.cleanupBackoff.ready(candidate.id)) continue;
+      const retained = candidate.status === "failed" && candidate.playbook.workspace.keepFailed;
+      if (wt.state === "kept" && !this.failedRetentionOver(candidate) && !(await underPressure())) continue;
       try {
         if (await this.runAgentsBusy(candidate)) continue;
-        const keep = await this.worktreeKeepReason(candidate, wt);
+        // Another active run still works in this very worktree: it is not ours to delete.
+        if (this.store.list().some((other) => other.id !== candidate.id && isActive(other) && other.worktree && other.worktree.state !== "removed" && other.worktree.path === wt.path)) continue;
+        const expired = retained && (this.failedRetentionOver(candidate) || (await underPressure()));
+        const keep = await this.worktreeKeepReason(candidate, wt, expired);
         if (keep) {
+          if (keep.purgeScratch) await purgeScratch(this.worktreesDir, wt.path).catch((error) => console.error(`[playbooks] could not purge the scratch directories of ${candidate.id}:`, errorText(error)));
+          if (wt.state === "kept" && (wt.keptFor ?? null) === (keep.keptFor ?? null)) continue;
           await this.store.mutate(candidate.id, (run) => {
-            run.worktree = { ...wt, state: "kept" };
+            run.worktree = { ...wt, state: "kept", keptFor: keep.keptFor ?? null };
             engine.noteEvent(run, "worktree_kept", null, `worktree ${wt.path} kept: ${keep.reason}`, nowIso());
             if (keep.violation) engine.noteEvent(run, "isolation_violation", null, keep.violation, nowIso());
           });
@@ -1245,15 +1262,21 @@ export class Runtime {
       .catch((failure) => console.error(`[playbooks] could not record the failed cleanup of ${runId}:`, errorText(failure)));
   }
 
-  private async worktreeKeepReason(run: Run, wt: RunWorktree): Promise<{ reason: string; violation?: string } | null> {
-    if (run.status === "failed" && run.playbook.workspace.keepFailed) return { reason: "the run failed and workspace.keep_failed is true" };
+  /** Whether a failed run ended long enough ago that its worktree is no longer worth keeping. */
+  private failedRetentionOver(run: Run): boolean {
+    const ended = [...run.history].reverse().find((event) => event.type === "run_failed")?.at ?? run.updatedAt;
+    return Date.now() - Date.parse(ended) >= (this.options.failedRetentionMs ?? FAILED_RETENTION_MS);
+  }
+
+  private async worktreeKeepReason(run: Run, wt: RunWorktree, expired = false): Promise<{ reason: string; violation?: string; keptFor?: "failed"; purgeScratch?: boolean } | null> {
+    if (run.status === "failed" && run.playbook.workspace.keepFailed && !expired) return { reason: `the run failed and workspace.keep_failed is true (removed ${Math.round((this.options.failedRetentionMs ?? FAILED_RETENTION_MS) / 3_600_000)}h after the failure, or earlier when the disk is under pressure)`, keptFor: "failed" };
     if (wt.workspaceSnapshot) {
       const violation = snapshotDiff(wt.workspaceSnapshot, await checkoutSnapshot(run.workspaceDir));
       if (violation) return { reason: "the original workspace checkout changed during the run", violation };
     }
     if (existsSync(wt.path)) {
       const dirty = await dirtyPaths(wt.path, wt.linked);
-      if (dirty.length > 0) return { reason: `it has uncommitted changes (${dirty.slice(0, 5).join(", ")}${dirty.length > 5 ? ", …" : ""}); remove it by hand once they are saved` };
+      if (dirty.length > 0) return { reason: `it has uncommitted changes (${dirty.slice(0, 5).join(", ")}${dirty.length > 5 ? ", …" : ""}); remove it by hand once they are saved; its .cache and .tmp were deleted`, purgeScratch: true };
     }
     return null;
   }

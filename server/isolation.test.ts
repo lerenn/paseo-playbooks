@@ -307,7 +307,7 @@ steps:
     role: { name: implementer }
 `;
 
-async function runtimeSetup(opts: { gitlink?: boolean; extraFiles?: Record<string, string> } = {}) {
+async function runtimeSetup(opts: { gitlink?: boolean; extraFiles?: Record<string, string>; runtime?: Record<string, unknown> } = {}) {
   const files: Record<string, string> = { ...opts.extraFiles, ".gitignore": "node_modules\n", ".paseo/plugins/playbooks/iso.yaml": ISO_PLAYBOOK, ".paseo/plugins/playbooks/plain.yaml": PLAIN_PLAYBOOK, ".paseo/plugins/playbooks/iso2.yaml": FAILKEEP_PLAYBOOK };
   const ws = await workspace(files);
   await cp(path.join(EXAMPLES, ".paseo/plugins/playbooks/roles"), path.join(ws.dir, ".paseo/plugins/playbooks/roles"), { recursive: true });
@@ -339,7 +339,7 @@ async function runtimeSetup(opts: { gitlink?: boolean; extraFiles?: Record<strin
   };
   const store = new RunStore(path.join(ws.base, "data", "runs"));
   await store.init();
-  const runtime = new Runtime(store, { autoStartAgents: false, pollMs: 3_600_000 });
+  const runtime = new Runtime(store, { autoStartAgents: false, pollMs: 3_600_000, diskUsedFraction: async () => 0.1, ...opts.runtime });
   runtimes.push(runtime);
   await runtime.attach(paseo as never);
   return { ...ws, store, runtime, sent, created, running };
@@ -485,6 +485,97 @@ describe("isolated runs", () => {
     expect(ctx.store.get(dirty.id)!.worktree!.state).toBe("kept");
     expect(ctx.store.get(dirty.id)!.history.find((event) => event.type === "worktree_kept")!.detail).toMatch(/unsaved\.txt/);
     expect(existsSync(dirty.worktree!.path)).toBe(true);
+  });
+
+  describe("automatic cleanup of ended runs (ADR 2026-11-17-worktree-auto-cleanup)", () => {
+    const failRun = (ctx: { runtime: unknown }, id: string) => (ctx.runtime as { failRun(id: string, reason: string): Promise<void> }).failRun(id, "boom");
+    const fillScratch = async (dir: string) => {
+      for (const name of [".cache", ".tmp"]) {
+        await mkdir(path.join(dir, name, "deep"), { recursive: true });
+        await writeFile(path.join(dir, name, "deep", "blob"), "x".repeat(1000));
+      }
+    };
+
+    it("removes a canceled run's worktree with its .cache and .tmp, which do not count as uncommitted changes", async () => {
+      const ctx = await runtimeSetup();
+      const run = await ctx.runtime.startPlaybook(mgr("m1", ctx.dir), "iso", {});
+      await fillScratch(run.worktree!.path);
+      await ctx.runtime.cancelRun(run.id, "stop", null);
+      await ctx.runtime.onTurnEnded("m1", "completed");
+      expect(ctx.store.get(run.id)!.worktree!.state).toBe("removed");
+      expect(existsSync(run.worktree!.path)).toBe(false);
+    });
+
+    it("deletes only .cache and .tmp of a dirty worktree it keeps", async () => {
+      const ctx = await runtimeSetup();
+      const run = await ctx.runtime.startPlaybook(mgr("m1", ctx.dir), "iso", {});
+      await fillScratch(run.worktree!.path);
+      await writeFile(path.join(run.worktree!.path, "unsaved.txt"), "wip");
+      await ctx.runtime.cancelRun(run.id, "stop", null);
+      await ctx.runtime.onTurnEnded("m1", "completed");
+      expect(ctx.store.get(run.id)!.worktree!.state).toBe("kept");
+      expect(existsSync(path.join(run.worktree!.path, "unsaved.txt"))).toBe(true);
+      expect(existsSync(path.join(run.worktree!.path, ".cache"))).toBe(false);
+      expect(existsSync(path.join(run.worktree!.path, ".tmp"))).toBe(false);
+    });
+
+    it("keeps a failed run's worktree and caches for the retention window, then removes it", async () => {
+      const ctx = await runtimeSetup({ runtime: { failedRetentionMs: 60_000 } });
+      const run = await ctx.runtime.startPlaybook(mgr("m1", ctx.dir), "iso", {});
+      await fillScratch(run.worktree!.path);
+      await failRun(ctx, run.id);
+      await ctx.runtime.onTurnEnded("m1", "completed");
+      expect(ctx.store.get(run.id)!.worktree).toMatchObject({ state: "kept", keptFor: "failed" });
+      expect(existsSync(path.join(run.worktree!.path, ".cache"))).toBe(true);
+      // Still inside the window.
+      await ctx.runtime.onTurnEnded("m1", "completed");
+      expect(existsSync(run.worktree!.path)).toBe(true);
+      // Past it.
+      await ctx.store.mutate(run.id, (current) => void current.history.forEach((event) => { if (event.type === "run_failed") event.at = new Date(Date.now() - 120_000).toISOString(); }));
+      await ctx.runtime.onTurnEnded("m1", "completed");
+      expect(ctx.store.get(run.id)!.worktree!.state).toBe("removed");
+      expect(existsSync(run.worktree!.path)).toBe(false);
+    });
+
+    it("removes a failed run's worktree at once while the disk is under pressure", async () => {
+      let used = 0.5;
+      const ctx = await runtimeSetup({ runtime: { diskUsedFraction: async () => used } });
+      const run = await ctx.runtime.startPlaybook(mgr("m1", ctx.dir), "iso", {});
+      await failRun(ctx, run.id);
+      await ctx.runtime.onTurnEnded("m1", "completed");
+      expect(existsSync(run.worktree!.path)).toBe(true);
+      used = 0.9;
+      await ctx.runtime.onTurnEnded("m1", "completed");
+      expect(ctx.store.get(run.id)!.worktree!.state).toBe("removed");
+      expect(existsSync(run.worktree!.path)).toBe(false);
+    });
+
+    it("never removes a worktree while an after-task of the run runs, or another active run shares it", async () => {
+      const ctx = await runtimeSetup({ runtime: { diskUsedFraction: async () => 0.99 } });
+      const run = await ctx.runtime.startPlaybook(mgr("m1", ctx.dir), "iso", {});
+      const other = await ctx.runtime.startPlaybook(mgr("m2", ctx.dir), "iso", {});
+      await ctx.store.mutate(other.id, (current) => void (current.worktree = { ...current.worktree!, path: run.worktree!.path }));
+      await ctx.runtime.cancelRun(run.id, "stop", null);
+      await ctx.runtime.onTurnEnded("m1", "completed");
+      expect(ctx.store.get(run.id)!.worktree!.state).toBe("active");
+      expect(existsSync(run.worktree!.path)).toBe(true);
+      await ctx.runtime.cancelRun(other.id, "stop", null);
+      await ctx.runtime.onTurnEnded("m1", "completed");
+      expect(existsSync(run.worktree!.path)).toBe(false);
+    });
+
+    it("waits while a step agent still runs, even under disk pressure", async () => {
+      const ctx = await runtimeSetup({ runtime: { diskUsedFraction: async () => 0.99 } });
+      const run = await ctx.runtime.startPlaybook(mgr("m1", ctx.dir), "iso", {});
+      const { agentId } = await ctx.runtime.startStep("m1", run.id, "work", "");
+      ctx.running.add(agentId);
+      await failRun(ctx, run.id);
+      await ctx.runtime.onTurnEnded("m1", "completed");
+      expect(existsSync(run.worktree!.path)).toBe(true);
+      ctx.running.delete(agentId);
+      await ctx.runtime.onTurnEnded("m1", "completed");
+      expect(existsSync(run.worktree!.path)).toBe(false);
+    });
   });
 
   it("keeps the worktree and warns the manager when the workspace changed and the run ends", async () => {

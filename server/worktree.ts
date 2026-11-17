@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { lstat, mkdir, readdir, readFile, realpath, rm } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile, realpath, rm, statfs } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { Isolation } from "../shared/types";
@@ -138,13 +138,42 @@ async function exists(file: string): Promise<boolean> {
   }
 }
 
-/** Paths with uncommitted changes in the worktree and in its linked submodules (ignored files excluded). */
+/** Scratch directories at a worktree's root (tool caches, temp files): never work to keep, deleted with the worktree or earlier. */
+export const SCRATCH_DIRS = [".cache", ".tmp"];
+
+const isScratch = (relative: string) => SCRATCH_DIRS.some((name) => relative === name || relative.startsWith(`${name}/`));
+
+/** Fraction (0..1) of the volume holding `dir` that is used; 0 when it cannot be read. */
+export async function diskUsedFraction(dir: string): Promise<number> {
+  try {
+    const stats = await statfs(dir);
+    return stats.blocks > 0 ? 1 - stats.bavail / stats.blocks : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/** Deletes `.cache` and `.tmp` at the root of a worktree inside `worktreesDir`, keeping the rest. Returns what was deleted. */
+export async function purgeScratch(worktreesDir: string, dir: string): Promise<string[]> {
+  if (!(await inside(worktreesDir, dir))) return [];
+  const purged: string[] = [];
+  for (const name of SCRATCH_DIRS) {
+    const target = path.join(dir, name);
+    if (!(await exists(target))) continue;
+    await unlock(target);
+    await rm(target, { recursive: true, force: true });
+    purged.push(name);
+  }
+  return purged;
+}
+
+/** Paths with uncommitted changes in the worktree and in its linked submodules (ignored files and the scratch directories excluded). */
 export async function dirtyPaths(dir: string, linked: string[]): Promise<string[]> {
   const out: string[] = [];
   for (const [prefix, cwd] of [["", dir] as const, ...linked.map((sub) => [`${sub}/`, path.join(dir, sub)] as const)]) {
     try {
       const status = await git(cwd, ["status", "--porcelain=v1", "--untracked-files=all", ...(prefix === "" ? ["--ignore-submodules=all"] : [])]);
-      out.push(...status.split("\n").filter(Boolean).map((line) => `${prefix}${line.slice(3)}`));
+      out.push(...status.split("\n").filter(Boolean).map((line) => line.slice(3)).filter((file) => prefix !== "" || !isScratch(file)).map((file) => `${prefix}${file}`));
     } catch {
       // A checkout git cannot read has nothing to lose.
     }
