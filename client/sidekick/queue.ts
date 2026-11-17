@@ -26,3 +26,6 @@ export function mergeQueued(current: QueuedMessage | undefined, next: QueuedMess
   if (!current) return next;
   return { text: [current.text, next.text].filter(Boolean).join("\n\n"), attachments: [...current.attachments, ...next.attachments] };
 }
+
+/** How long the turn must stay idle before a queued message goes out (a new turn may start right after one ends). */
+export const IDLE_SETTLE_MS = 600;

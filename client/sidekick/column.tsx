@@ -5,7 +5,7 @@ import { formatSize } from "../../shared/attachments";
 import type { Theme } from "../theme";
 import { useAttachments } from "./attach";
 import { sidekickUi, useSidekickUi } from "./ui-state";
-import { isQueueKey, mergeQueued, queueAction, shouldFlush } from "./queue";
+import { isQueueKey, mergeQueued, queueAction, shouldFlush, IDLE_SETTLE_MS } from "./queue";
 import { describePermission, humanizeTool, toolIcon, toolSummary } from "./describe";
 import { pluginMessage } from "./instructions";
 import type { Item, PermissionRequest } from "./reduce";
@@ -72,15 +72,19 @@ export function SidekickChat(props: Props) {
   const live = state.connection === "live";
   useEffect(() => {
     if (!queued || !shouldFlush(queued, { live, running: state.running, sending })) return;
-    sidekickUi.setQueued(props.projectId, null);
-    setSending(true);
-    chat
-      .send(queued.text, queued.attachments)
-      .catch((error: unknown) => {
-        toast.error(error instanceof Error ? error.message : "Could not send the queued message");
-        if (!sidekickUi.get().drafts[props.projectId]) sidekickUi.setDraft(props.projectId, queued.text);
-      })
-      .finally(() => setSending(false));
+    // Wait until the turn stays idle: another turn can start right after one ends, and a steer would cancel it.
+    const timer = setTimeout(() => {
+      sidekickUi.setQueued(props.projectId, null);
+      setSending(true);
+      chat
+        .send(queued.text, queued.attachments)
+        .catch((error: unknown) => {
+          toast.error(error instanceof Error ? error.message : "Could not send the queued message");
+          if (!sidekickUi.get().drafts[props.projectId]) sidekickUi.setDraft(props.projectId, queued.text);
+        })
+        .finally(() => setSending(false));
+    }, IDLE_SETTLE_MS);
+    return () => clearTimeout(timer);
   }, [queued, live, state.running, sending]); // eslint-disable-line react-hooks/exhaustive-deps
   const stop = () => chat.stop().catch((error: unknown) => toast.error(error instanceof Error ? error.message : "Could not stop"));
   const respond = (id: string, response: PermissionResponse) =>

@@ -28,6 +28,8 @@ export interface ChatState {
   items: Item[];
   nextSeq: number;
   running: boolean;
+  /** Our own steer is in flight on a running turn: the cancel it causes is not a user stop. */
+  steering: boolean;
   permissions: PermissionRequest[];
   connection: "connecting" | "live" | "error";
   error: string | null;
@@ -51,12 +53,13 @@ export type ChatAction =
   | { type: "reset" }
   | { type: "refetch"; items: { key: string; item: RawItem }[] }
   | { type: "event"; event: { type: string; item?: RawItem; request?: PermissionRequest; requestId?: string; error?: string; reason?: string } }
+  | { type: "steer_sent" }
   | { type: "snapshot"; running: boolean; permissions: PermissionRequest[] }
   | { type: "permission_resolved"; requestId: string }
   | { type: "connection"; status: ChatState["connection"]; error?: string | null };
 
 export function initialState(): ChatState {
-  return { items: [], nextSeq: 1, running: false, permissions: [], connection: "connecting", error: null };
+  return { items: [], nextSeq: 1, running: false, steering: false, permissions: [], connection: "connecting", error: null };
 }
 
 const errorText = (error: unknown): string | null => (error == null ? null : typeof error === "string" ? error : ((error as { message?: string }).message ?? JSON.stringify(error)));
@@ -170,12 +173,14 @@ export function reduce(state: ChatState, action: ChatAction): ChatState {
       const event = action.event;
       switch (event.type) {
         case "turn_started":
-          return { ...state, running: true };
+          return { ...state, running: true, steering: false };
         case "turn_completed":
           return { ...state, running: false, items: close(state.items) };
         case "turn_failed":
           return { ...state, running: false, items: [...close(state.items), { kind: "notice", key: `live:${state.nextSeq}`, level: "error", text: event.error ?? "The turn failed" }], nextSeq: state.nextSeq + 1 };
         case "turn_canceled":
+          // A steer cancels the turn it joins and starts the next one: that is not a stop.
+          if (state.steering) return { ...state, running: false, steering: false, items: close(state.items) };
           return { ...state, running: false, items: [...close(state.items), { kind: "notice", key: `live:${state.nextSeq}`, level: "info", text: "Stopped" }], nextSeq: state.nextSeq + 1 };
         case "timeline":
           return event.item ? applyItem(state, event.item) : state;
@@ -187,6 +192,8 @@ export function reduce(state: ChatState, action: ChatAction): ChatState {
           return state;
       }
     }
+    case "steer_sent":
+      return state.running ? { ...state, steering: true } : state;
     case "snapshot":
       return { ...state, running: action.running, permissions: action.permissions };
     case "permission_resolved":

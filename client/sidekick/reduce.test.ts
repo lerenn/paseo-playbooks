@@ -82,4 +82,18 @@ describe("sidekick chat reducer", () => {
     state = reduce(state, { type: "refetch", items: [{ key: "seq:1", item: { type: "assistant_message", text: "Checking" } }] });
     expect(state.items.map((item) => item.kind)).toEqual(["assistant", "notice", "assistant"]);
   });
+
+  it("does not show Stopped when the cancel comes from our own steer", () => {
+    let state = run([{ type: "event", event: { type: "turn_started" } }, { type: "steer_sent" }]);
+    state = reduce(state, { type: "event", event: { type: "turn_canceled" } });
+    expect(state.items.filter((item) => item.kind === "notice")).toEqual([]);
+    expect(state.steering).toBe(false);
+    state = reduce(state, { type: "event", event: { type: "turn_started" } });
+    state = reduce(state, { type: "event", event: { type: "turn_canceled" } });
+    expect(state.items.at(-1)).toMatchObject({ kind: "notice", text: "Stopped" });
+  });
+
+  it("ignores a steer sent while idle", () => {
+    expect(reduce(initialState(), { type: "steer_sent" }).steering).toBe(false);
+  });
 });
