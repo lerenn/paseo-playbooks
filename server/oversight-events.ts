@@ -143,6 +143,12 @@ export const OVERSIGHT_TYPES: EventTypeDef[] = [
     line: (event) => `- run.completed: ${runName(event.payload)} in ${String(event.payload.workspaceDir)} completed. Tools: get_run { runId: "${event.runId}" }.`,
   },
   {
+    type: "run.definition_fallback",
+    description: "A run's playbook definition was read from the workspace checkout, which may be behind origin, because origin/<branch> could not supply it (its playbook is invalid, missing or unfetchable): at the run's start, or when refresh_scripts re-read it. warning is the short reason; source is where the definition came from now.",
+    payload: z.object({ ...runFields, warning: z.string(), source: z.enum(["workspace"]), trigger: z.enum(["start", "refresh_scripts"]) }),
+    line: (event) => `- run.definition_fallback: ${runName(event.payload)} in ${String(event.payload.workspaceDir)}: ${String(event.payload.warning)}. It may run an out-of-date definition. Tools: get_run { runId: "${event.runId}" }, validate_playbooks.`,
+  },
+  {
     type: "run.canceled",
     description: 'A run was canceled (status "canceled"): the reason, when given.',
     payload: z.object({ ...runFields, reason: z.string().nullable() }),

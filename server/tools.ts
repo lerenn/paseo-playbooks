@@ -13,7 +13,7 @@ import { hasPlaybooks, loadPlaybooks } from "./loader";
 import { conversationText } from "./conversation";
 import { attentionText } from "./overseer";
 import { MANAGER_PROTOCOL, managerAddedText, worktreePreamble } from "./prompts";
-import { UserError, type ModelChoice, type Runtime } from "./runtime";
+import { UserError, type ModelChoice, type RefreshResult, type Runtime } from "./runtime";
 
 function ok(text: string, structuredContent?: unknown): AgentToolResult {
   return structuredContent === undefined ? { text } : { text, structuredContent };
@@ -109,6 +109,8 @@ function worktreeView(run: Run) {
   return {
     ...(run.worktree ? { worktree: { path: run.worktree.path, branch: run.worktree.branch, state: run.worktree.state } } : {}),
     ...(run.definition ? { definition: run.definition } : {}),
+    // Visible at a glance: the definition came from the workspace checkout, which may be behind origin.
+    ...(run.definition?.warning ? { warnings: [run.definition.warning] } : {}),
   };
 }
 
@@ -384,6 +386,14 @@ export function definitionNote(run: Pick<Run, "definition">): string {
   if (!def) return "";
   if (def.source === "origin") return `\nPlaybook definition and roles: read from ${def.ref} at ${def.sha?.slice(0, 10) ?? "?"} (fetched at start), not from the workspace checkout.`;
   return `\nWARNING: playbook definition and roles come from the workspace checkout, which may be behind origin: ${def.note ?? "no fresh copy was used"}.`;
+}
+
+/** The result line of refresh_scripts and of restart_run's refresh: what was refreshed, from which source, and any warning. */
+export function refreshText(runId: string, result: RefreshResult): string {
+  const from = result.source === "origin" ? result.ref : "the workspace checkout (origin's playbook is not usable)";
+  const head = result.changed ? `Scripts of run ${runId} refreshed from ${from}: ${result.before ?? "pinned copy"} -> ${result.sha}.` : `Nothing changed: scripts of run ${runId} already are ${result.sha} (${from}).`;
+  const def = result.definition === "refreshed" ? " The definition was re-read from the same source." : result.definition === "unchanged" ? " The definition is already the current one." : "";
+  return `${head}${def}${result.note ? ` WARNING: ${result.note}.` : ""}`;
 }
 
 /** The two manager-tools a Sidekick also gets (it manages no run, so not the others): see which runs it can start. */
@@ -826,7 +836,7 @@ export function runTools(runtime: Runtime): AgentToolDefinition[] {
     defineAgentTool({
       name: "subscribe_events",
       description:
-        'Get a plain-text message from the plugin when events happen on the daemon. types: exact names or globs ("gate.*", "run.failed", "*"). Types today: gate.opened (a gate step, ask or loop-limit gate opened: question, choices, decider and who holds it), gate.stale (still open after filter.olderThanMinutes, default 30; once per gate), gate.decided (who, via panel/chat/manager/role, and the comment; not sent to the manager or role agent that decided it), run.failed (reason and restartableFrom), run.manager_lost, step.waiting_manager_stuck (a reported step still waits for its idle manager after two plugin prompts: stepId, outcome, waitingMs, nudges; once per report), manager.question_pending (the manager has had a question or permission request open for manager.nudge.after: question; once per episode), step.started (stepId, attempt), step.completed (stepId, attempt, outcome: every applied outcome, failures and retried ones included; gate and branch steps too, those without step.started), step.slow (a running step first went past factor x its usual duration: elapsedMs, baselineMs, ratio, samples; once per step run), run.completed, run.canceled (reason). Step and run events carry runId, playbook, runName, projectId, workspaceDir. filter: payload fields that must equal a value (e.g. { playbook: "release", deciderBy: "role" }, { runId }), plus olderThanMinutes for gate.stale. Bursts are merged into one message. delivery: "idle" (default) holds the message until your current turn has ended, then sends it as one new message, so it never interrupts you (an interactive question, say); "steer" sends it into your running turn at once. Held messages survive restarts (at most 50 per subscription; older ones are dropped, list_events replays them). The subscriber is you; it survives daemon restarts and ends when you are archived. Returns the subscription id. list_events replays what you missed. A new subscription must be scoped: pass filter { runId } (or { workspaceDir } for runs you drive; projectId or playbook also work); only gate.escalated, run.failed, run.manager_lost, step.waiting_manager_stuck and manager.question_pending may be unscoped. Avoid step.completed unless you need it: it fires on every step.',
+        'Get a plain-text message from the plugin when events happen on the daemon. types: exact names or globs ("gate.*", "run.failed", "*"). Types today: gate.opened (a gate step, ask or loop-limit gate opened: question, choices, decider and who holds it), gate.stale (still open after filter.olderThanMinutes, default 30; once per gate), gate.decided (who, via panel/chat/manager/role, and the comment; not sent to the manager or role agent that decided it), run.failed (reason and restartableFrom), run.manager_lost, step.waiting_manager_stuck (a reported step still waits for its idle manager after two plugin prompts: stepId, outcome, waitingMs, nudges; once per report), manager.question_pending (the manager has had a question or permission request open for manager.nudge.after: question; once per episode), step.started (stepId, attempt), step.completed (stepId, attempt, outcome: every applied outcome, failures and retried ones included; gate and branch steps too, those without step.started), step.slow (a running step first went past factor x its usual duration: elapsedMs, baselineMs, ratio, samples; once per step run), run.definition_fallback (the definition of the run was read from the workspace checkout because the playbook on origin is invalid, missing or unfetchable: warning, trigger start or refresh_scripts), run.completed, run.canceled (reason). Step and run events carry runId, playbook, runName, projectId, workspaceDir. filter: payload fields that must equal a value (e.g. { playbook: "release", deciderBy: "role" }, { runId }), plus olderThanMinutes for gate.stale. Bursts are merged into one message. delivery: "idle" (default) holds the message until your current turn has ended, then sends it as one new message, so it never interrupts you (an interactive question, say); "steer" sends it into your running turn at once. Held messages survive restarts (at most 50 per subscription; older ones are dropped, list_events replays them). The subscriber is you; it survives daemon restarts and ends when you are archived. Returns the subscription id. list_events replays what you missed. A new subscription must be scoped: pass filter { runId } (or { workspaceDir } for runs you drive; projectId or playbook also work); only gate.escalated, run.failed, run.manager_lost, step.waiting_manager_stuck and manager.question_pending may be unscoped. Avoid step.completed unless you need it: it fires on every step.',
       input: z.object({
         types: z.array(z.string()).min(1).describe('Event types or globs, e.g. ["gate.*", "run.failed"]'),
         filter: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).default({}).describe("Payload fields to match by equality; olderThanMinutes picks the delay of a stale event"),
@@ -931,17 +941,14 @@ export function runTools(runtime: Runtime): AgentToolDefinition[] {
     defineAgentTool({
       name: "refresh_scripts",
       description:
-        "Make an isolated run's script steps (codex_check, ci_check...) run the scripts as committed on the current origin/<branch> instead of the copy pinned in its worktree at start: use it when a script fix landed on main after the run started. Only the run's scripts/ folder is refreshed; the step definitions (inputs, outputs, timeouts) stay the pinned ones, so a script that needs an input or output the pinned step does not declare still fails. Fetches origin; refused when that fails, for a run that ended, for a run without a worktree and when the worktree was not created from origin/<branch>. Idempotent: changed: false when the run already has that commit. The sha before and after is recorded in the run's history. Without runId: the run you manage, else the active run of your workspace.",
+        "Make a run's script steps (codex_check, ci_check...) run the scripts as committed on the current origin/<branch> instead of the copy pinned in its worktree at start: use it when a script fix landed on main after the run started. Works on an active run AND on a failed (or any ended) run that restart_run can reopen: call it before restart_run (or pass refresh: true to restart_run) so the restart runs the current scripts. On an active run only the run's scripts/ folder is refreshed and the step definitions (inputs, outputs, timeouts) stay the pinned ones. On an ended run the definition (playbook YAML, roles, defaults) is re-read too, from the same source, as long as the steps are the same (ids, kinds, needs); otherwise it stays pinned and the result says why. The run's history, outputs and completed steps are kept; its scripts never run again by themselves (only restart_run runs them). Source: origin/<branch> (fetched) when the playbook there is valid; when it is invalid or missing there, the workspace checkout is used instead and the result says so with the short validation error (note, source: workspace; warnings on get_run). Refused when the fetch fails, for a run that restart_run cannot reopen (singleton pipeline, batch, nothing restartable), for a run without a worktree and when the worktree was not created from origin/<branch>. Idempotent: changed: false when nothing differs. The sha before and after is recorded in the run's history. Without runId: the run you manage, else the active run of your workspace (pass runId for an ended run).",
       input: z.object({ runId: IdArg.optional(), reason: z.string().max(500).describe("Why (e.g. the script fix that landed); recorded in the run's history") }),
       execute: ({ runId, reason }, { agent }) =>
         guard(async () => {
           const target = runId ? runtime.allRuns().find((run) => run.id === runId) : defaultRunToCancel(runtime.allRuns(), agent.id, agent.workspaceId);
           if (!target) throw new UserError(`unknown run "${runId}"`);
           const result = await runtime.refreshScripts(target.id, reason, agent.id);
-          return ok(
-            result.changed ? `Scripts of run ${target.id} refreshed from ${result.ref}: ${result.before ?? "pinned copy"} -> ${result.sha}.` : `Nothing changed: scripts of run ${target.id} already are ${result.sha}.`,
-            { runId: target.id, ...result },
-          );
+          return ok(refreshText(target.id, result), { runId: target.id, ...result });
         }),
     }),
     defineAgentTool({
@@ -1019,7 +1026,7 @@ export function runTools(runtime: Runtime): AgentToolDefinition[] {
     defineAgentTool({
       name: "restart_run",
       description:
-        "Recover a finished (completed, failed, canceled, or failed with \"manager lost\") or archived run: reopen it from a step of its main graph whose needs completed. That step and everything after it run again; completed steps before it keep their outputs and are not repeated. With takeOver: true you become its manager (you must be in the run's workspace). Otherwise its manager is woken, or, if that manager was archived, a new Playbook Manager is created in the run's workspace and takes over. If the run's workspace was deleted or has another active run, pass workspaceId to restart it in another workspace of the project. See list_runs (archived: true) for runs, failure and restartableFrom. With model, the restarted step's next attempt runs on it (an agent step only; start_step may still pass another).",
+        "Recover a finished (completed, failed, canceled, or failed with \"manager lost\") or archived run: reopen it from a step of its main graph whose needs completed. That step and everything after it run again; completed steps before it keep their outputs and are not repeated. The run keeps its pinned definition and scripts (the playbook as it was at its start, or at its last refresh_scripts): to run the current scripts and definition from origin, call refresh_scripts first or pass refresh: true. With takeOver: true you become its manager (you must be in the run's workspace). Otherwise its manager is woken, or, if that manager was archived, a new Playbook Manager is created in the run's workspace and takes over. If the run's workspace was deleted or has another active run, pass workspaceId to restart it in another workspace of the project. See list_runs (archived: true) for runs, failure and restartableFrom. With model, the restarted step's next attempt runs on it (an agent step only; start_step may still pass another).",
       input: z.object({
         runId: IdArg,
         stepId: z.string().describe("Step to restart from (see restartableFrom in list_runs)"),
@@ -1032,15 +1039,20 @@ export function runTools(runtime: Runtime): AgentToolDefinition[] {
           .boolean()
           .default(false)
           .describe("Become the run's manager yourself (you must be an agent of the run's workspace), instead of its previous manager or a new one"),
+        refresh: z
+          .boolean()
+          .default(false)
+          .describe("Run refresh_scripts first (scripts and definition re-read from origin/<branch>, else the workspace checkout when origin's playbook is invalid): one call instead of two. If the refresh fails, nothing is restarted and the error says why"),
         ...ModelArgs,
       }),
-      execute: ({ runId, stepId, note, takeOver, workspaceId, model, thinking }, { agent }) =>
+      execute: ({ runId, stepId, note, takeOver, workspaceId, model, thinking, refresh }, { agent }) =>
         guard(async () => {
           // A taker needs the manager tools, which agents get in a workspace with playbooks.
           if (takeOver && runtime.runsOfManager(agent.id).length === 0 && !(await hasPlaybooks(agent.cwd))) {
             throw new UserError("you do not have the manager tools (your workspace has no playbooks): omit takeOver and a Playbook Manager is found for the run");
           }
-          const { run, newManager } = await runtime.restartRun(runId, stepId, note?.trim() || null, agent.id, "agent", takeOver ? { id: agent.id, workspaceId: agent.workspaceId } : undefined, workspaceId, modelChoice(model, thinking));
+          const restarted = await runtime.restartRun(runId, stepId, note?.trim() || null, agent.id, "agent", takeOver ? { id: agent.id, workspaceId: agent.workspaceId } : undefined, workspaceId, modelChoice(model, thinking), refresh ? { reason: `restart_run from "${stepId}"` } : undefined);
+          const { run, newManager, refreshed } = restarted;
           const isManager = run.managerAgentId === agent.id;
           const next = run.managerAgentId === ""
             ? "The run has no manager (manager.mode: none): the plugin starts the ready steps itself."
@@ -1049,7 +1061,7 @@ export function runTools(runtime: Runtime): AgentToolDefinition[] {
             : newManager
               ? `Its previous manager was archived: a new Playbook Manager (agent ${run.managerAgentId}) took it over and starts the ready steps.`
               : `Its manager (agent ${run.managerAgentId}) was woken and starts the ready steps.`;
-          return ok(`Run ${run.id} restarted from "${stepId}". ${next}`, isManager ? runChange(run, stepId) : runListing(run));
+          return ok(`${refreshed ? `${refreshText(run.id, refreshed)}\n` : ""}Run ${run.id} restarted from "${stepId}". ${next}`, isManager ? runChange(run, stepId) : runListing(run));
         }),
     }),
   ];

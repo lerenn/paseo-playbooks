@@ -346,8 +346,17 @@ with that tag.
   (`results[].source`). Only a playbook that already exists, valid and isolated, in the workspace checkout can be started.
   See `docs/adrs/2026-11-10-playbooks-from-fresh-main.md`.
   Scripts are pinned too: after a script fix lands on main, `refresh_scripts` (`runId?`, `reason`; managers and the Sidekick) makes
-  the run's script steps run the scripts of the current `origin/<branch>` (only its `scripts/` folder; the step definitions stay
-  pinned). It records the commit in the run's history. See `docs/adrs/2026-11-13-refresh-run-scripts.md`.
+  the run's script steps run the scripts of the current `origin/<branch>`. On an active run only its `scripts/` folder is
+  refreshed (the step definitions stay pinned). It also works on a failed (or any ended) run `restart_run` can reopen: it then
+  re-reads the definition too (playbook, roles, defaults; when the steps are the same), so `refresh_scripts` then `restart_run`
+  (or `restart_run` with `refresh: true`) runs the current scripts and rules, with the run's history and outputs kept; a run's
+  scripts never run again by themselves. The source is `origin/<branch>` when the playbook there is valid; when it is invalid or
+  missing, the workspace checkout is used and the result says so (`source: workspace`, `note` with the short validation error).
+  A plain `restart_run` keeps the pinned scripts and definition. It records the commit in the run's history. See
+  `docs/adrs/2026-11-13-refresh-run-scripts.md` and `docs/adrs/2026-11-18-refresh-scripts-failed-runs.md`.
+  A run whose definition was read from the workspace checkout instead of origin (origin's playbook invalid, missing or
+  unfetchable) shows a warning: `warnings` in `get_run`/`list_runs`, a `definition_fallback` history entry, a
+  `run.definition_fallback` event, and a line in the run's details in the Playbooks panel.
 - Plain Start picks the workspace's most recently used agent (the one you last sent a
   message to, skipping agents that already manage a run), because the panel cannot see
   which tab has focus. To pick a specific agent, send it a message first, or use "Start on

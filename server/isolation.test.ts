@@ -646,7 +646,7 @@ describe("playbooks from fresh main", () => {
     const sha = await pushToOrigin(ctx, { [PATH]: NEWER });
     const run = await ctx.runtime.startPlaybook(mgr("m1", ctx.dir), "iso", {});
     expect(run.playbook.title).toBe("Iso v2");
-    expect(run.definition).toEqual({ source: "origin", ref: "origin/main", sha, note: null });
+    expect(run.definition).toEqual({ source: "origin", ref: "origin/main", sha, note: null, warning: null });
     expect(run.worktree!.baseSha).toBe(sha);
     expect(await git(ctx.dir, "rev-parse", "HEAD")).toBe(head);
     expect(definitionNote(run)).toContain("not from the workspace checkout");

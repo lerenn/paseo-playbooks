@@ -426,6 +426,12 @@ function RunBar(props: { theme: Theme; run: Run; hostLabel: string }) {
   return (
     <View style={{ gap: 6 }}>
       {run.failure ? <Text style={{ color: theme.colors.statusDanger, fontSize: 12 }}>{run.failure}</Text> : null}
+      {run.definition?.warning ? (
+        <View accessibilityRole="alert" style={{ flexDirection: "row", alignItems: "flex-start", gap: 6 }}>
+          <Icon name="TriangleAlert" size={13} color={theme.colors.statusWarning} />
+          <Text selectable style={{ flex: 1, color: theme.colors.statusWarning, fontSize: 12 }}>{run.definition.warning}</Text>
+        </View>
+      ) : null}
     </View>
   );
 }

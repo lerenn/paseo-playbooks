@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted (the "refused for a run that ended" rule is changed by `2026-11-18-refresh-scripts-failed-runs.md`)
 
 ## Context
 

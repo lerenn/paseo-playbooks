@@ -57,7 +57,7 @@
 <tr><td><code>complete_step</code></td><td>Records a step's outcome and applies the transition.</td></tr>
 <tr><td><code>nudge_step</code></td><td>Sends a follow-up to a step's agent, or moves it to another model.</td></tr>
 <tr><td><code>request_gate</code></td><td>Opens a ready gate with a summary for the human.</td></tr>
-<tr><td><code>refresh_scripts</code></td><td>After a script fix lands on main, makes an isolated run's script steps run the scripts as committed on the current <code>origin/&lt;branch&gt;</code> (<code>runId</code>, <code>reason</code>). Also for the Sidekick.</td></tr>
+<tr><td><code>refresh_scripts</code></td><td>After a script fix lands on main, makes an isolated run's script steps run the scripts as committed on the current <code>origin/&lt;branch&gt;</code> (<code>runId</code>, <code>reason</code>). Also works on a failed run before <code>restart_run</code>, then re-reading its definition too (from <code>origin/&lt;branch&gt;</code>, or the workspace checkout with a note when origin's playbook is invalid). Also for the Sidekick.</td></tr>
 <tr><td><code>resume</code></td><td>Records a gate decision that arrived by chat.</td></tr>
 <tr><td><code>escalate_gate</code></td><td>On a gate the manager decides: hands it to a human, with a reason.</td></tr>
 <tr><td><code>settle_job</code></td><td>On a singleton pipeline batch: sets a job's outputs, or ends it with an outcome.</td></tr>
@@ -69,7 +69,7 @@
 <tr><td><code>get_analytics</code></td><td>Where the tokens went, by playbook, step, role and model.</td></tr>
 <tr><td><code>read_agent_conversation</code></td><td>Reads any agent's conversation as text, newest entries first.</td></tr>
 <tr><td><code>validate_playbooks</code></td><td>Runs the panel's checks on the workspace's playbooks.</td></tr>
-<tr><td><code>cancel_run</code>, <code>restart_run</code>, <code>archive_run</code></td><td>Cancel a run, recover a finished run from a step (with <code>takeOver</code> the caller becomes its manager), or archive an ended one.</td></tr>
+<tr><td><code>cancel_run</code>, <code>restart_run</code>, <code>archive_run</code></td><td>Cancel a run, recover a finished run from a step (with <code>takeOver</code> the caller becomes its manager), or archive an ended one. <code>restart_run</code> keeps the run's pinned scripts and definition; <code>refresh: true</code> re-reads them first.</td></tr>
 <tr><td><code>start_after_task</code></td><td>Starts a manual after-task of a finished run.</td></tr>
 <tr><td><code>subscribe_events</code>, <code>unsubscribe_events</code>, <code>list_subscriptions</code>, <code>list_events</code></td><td>Get a message when events matching <code>types</code> happen (<code>gate.*</code>, <code>run.failed</code>, <code>step.*</code>, <code>job.*</code>...), delivered when the caller is idle (<code>delivery: idle</code>, the default) or into the running turn (<code>steer</code>). <code>list_events</code> returns the last 500 events, with <code>since</code> to catch up.</td></tr>
 <tr><td><code>record_followup</code>, <code>requeue_job</code></td><td>For detached singleton jobs: record what was done for a job that ended with an outcome, or put a failed (or non-success settled, e.g. ejected) job back on its pipeline.</td></tr>

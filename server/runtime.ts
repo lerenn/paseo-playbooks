@@ -1,14 +1,14 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readdir, rename, rm } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readdir, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 
 /** The daemon API handed to plugin handlers (typed via the SDK, so the build needs no @getpaseo/client). */
 type PaseoApi = PluginHandlerContext["paseo"];
 import type { AdmissionStatus, ScriptOutput } from "../shared/types";
-import type { AgentSettings, AgentTarget, Attempt, FanoutChild as FanoutChildState, PoolPass as PoolPassState, Gate, Job, Playbook, Run, RunWorktree, Step, VarValue } from "../shared/types";
+import type { AgentSettings, AgentTarget, Attempt, FanoutChild as FanoutChildState, PoolPass as PoolPassState, Gate, Job, Playbook, Run, RunDefinition, RunWorktree, Step, VarValue } from "../shared/types";
 import { addUsage, DEFAULT_PERMISSION_POLICY } from "../shared/types";
 import { UsageLedger } from "./usage-ledger";
 import { analyze, type Analytics } from "../shared/analytics";
@@ -38,7 +38,7 @@ import { ADMISSION_TIMEOUT_MS, admissionInput, readAdmission } from "./admission
 import { checkoutSnapshot, currentRef, defaultBranch, exportPaths, fastForward, freshRef, freshRefInfo, git as gitOutput, removedGitlinks, snapshotDiff } from "./git";
 import { workspaceTitle } from "../shared/workspace-name";
 import { createWorktree, diskUsedFraction, dirtyPaths, purgeScratch, linkedSubmodules, listWorktreeDirs, pruneWorktrees, unpushedCommits, removeWorktree, repoOfWorktree, worktreeBranch, worktreePath } from "./worktree";
-import { chooseDefinition } from "./fresh";
+import { chooseDefinition, definitionMismatch, isAdoptable, readAtRef, shortReason, workspaceWarning } from "./fresh";
 import { runWorktreeTeardown } from "./teardown";
 import { gatesOnBehalfSetting, loadPlaybooks, loadSidekick } from "./loader";
 import { findEntry } from "../shared/repos";
@@ -100,6 +100,20 @@ type AgentConfig = { provider: string; modeId?: string; thinkingOptionId?: strin
 
 /** Pre-approves our own tools so unattended agents in `default` mode are not blocked on them. */
 /** A model the manager picks for one step attempt: `provider/model`, and optionally a thinking option. */
+/** What `refresh_scripts` did: the source it read from (`ref` names it), whether anything changed, and what happened to the definition. */
+export interface RefreshResult {
+  ref: string;
+  sha: string;
+  before: string | null;
+  changed: boolean;
+  /** `origin`: the fetched origin/<branch>; `workspace`: the checkout, because origin's playbook is invalid or missing (see `note`). */
+  source: "origin" | "workspace";
+  /** `refreshed`/`unchanged`: an ended run re-read its definition; `pinned`: kept (an active run, or no compatible definition: see `note`). */
+  definition: "refreshed" | "unchanged" | "pinned";
+  /** The warning or reason behind a fallback or a definition that was not replaced. */
+  note: string | null;
+}
+
 export interface ModelChoice {
   target: string;
   thinking?: string;
@@ -1412,6 +1426,10 @@ export class Runtime {
       this.creatingWorktrees.delete(runId);
     }
     if (reservation) this.dropReservation(workspace.id, reservation);
+    if (run.definition?.warning) {
+      await this.store.mutate(run.id, (current) => engine.noteEvent(current, "definition_fallback", null, current.definition?.warning ?? "", nowIso()));
+      await this.announceDefinitionFallback(run.id, "start");
+    }
     await this.admitQueued(run.id);
     return this.store.get(run.id)!;
   }
@@ -1627,16 +1645,36 @@ export class Runtime {
     }
   }
 
+  /** Why an ended run cannot be restarted from any step (so refresh_scripts has nothing to prepare), else null. */
+  private refreshBlocker(run: Run): string | null {
+    if (isPipeline(run)) return "a singleton pipeline is not restarted";
+    if (run.batch) return `a batch of pipeline ${run.batch.pipelineId} is not restarted`;
+    let first: string | null = null;
+    for (const step of run.playbook.steps) {
+      const blocker = restartBlocker(run, step.id);
+      if (blocker === null) return null;
+      first ??= blocker;
+    }
+    return first ?? "it has no step";
+  }
+
   /**
    * `refresh_scripts`: copies the run's `<relDir>/scripts/` tree from a freshly fetched origin/<branch> into
-   * `<data>/run-scripts/<runId>`, which script steps then run from. The pinned step definitions are untouched.
+   * `<data>/run-scripts/<runId>`, which script steps then run from. On an active run the step definitions stay pinned.
+   * On an ended run that restart_run can reopen, the definition is re-read from the same source too (when its steps
+   * are the same), so a restart picks up the current scripts and rules; history and outputs are kept. The source is
+   * origin/<branch>; when the playbook there is invalid (or missing), the workspace checkout is the source, said in `note`.
    */
-  async refreshScripts(runId: string, reason: string, by: string): Promise<{ ref: string; sha: string; before: string | null; changed: boolean }> {
+  async refreshScripts(runId: string, reason: string, by: string): Promise<RefreshResult> {
     const run = this.store.get(runId);
     if (!run) throw new UserError(`unknown run "${runId}"`);
-    if (!isActive(run)) throw new UserError(`run ${runId} has ended (${run.status}): its scripts are not run again`);
+    const ended = !isActive(run);
+    if (ended) {
+      const blocker = this.refreshBlocker(run);
+      if (blocker) throw new UserError(`run ${runId} has ended (${run.status}) and cannot be restarted (${blocker}): its scripts are not run again`);
+    }
     const wt = run.worktree;
-    if (!wt || wt.state === "removed") throw new UserError(`run ${runId} has no worktree: its scripts already run from the workspace checkout`);
+    if (!wt || (wt.state === "removed" && !ended)) throw new UserError(`run ${runId} has no worktree: its scripts already run from the workspace checkout`);
     if (!wt.base.startsWith("origin/")) throw new UserError(`run ${runId}'s worktree was created from "${wt.base}", not from origin/<branch>: there is no fresh remote ref to refresh from`);
     const branch = wt.base.slice("origin/".length);
     const dirs = new Set<string>();
@@ -1646,28 +1684,93 @@ export class Runtime {
     const fresh = await freshRefInfo(repo, branch);
     if (fresh.fetchError) throw new UserError(`could not fetch origin/${branch}: ${fresh.fetchError}`);
     if (fresh.ref !== wt.base) throw new UserError(`no ref ${wt.base} after the fetch (got ${fresh.ref})`);
-    const sha = (await gitOutput(repo, ["rev-parse", fresh.ref])).trim();
+    const originSha = (await gitOutput(repo, ["rev-parse", fresh.ref])).trim();
+
+    // An ended run re-reads its definition from origin, else (origin's playbook unusable) from the workspace checkout.
+    let source: "origin" | "workspace" = "origin";
+    let why: string | null = null;
+    let next: Playbook | null = null;
+    if (ended) {
+      const read = await readAtRef(repo, fresh.ref, { projectId: run.projectId });
+      if ("error" in read) why = `the playbooks of ${fresh.ref} could not be read: ${shortReason(read.error)}`;
+      else {
+        const entry = read.loaded.entries.find((candidate) => candidate.id === run.playbook.id);
+        if (!entry) why = `${fresh.ref} has no playbook "${run.playbook.id}"`;
+        else if (!entry.playbook) why = `${fresh.ref} is invalid: ${shortReason(entry.errors[0] ?? "unknown error")}`;
+        else if (!isAdoptable(entry)) why = `"${run.playbook.id}" on ${fresh.ref} is no longer an isolated, non-singleton playbook`;
+        else next = entry.playbook;
+      }
+      if (why) {
+        source = "workspace";
+        const local = await loadPlaybooks(run.workspaceDir, { projectId: run.projectId }).catch(() => null);
+        const entry = local?.entries.find((candidate) => candidate.id === run.playbook.id);
+        next = isAdoptable(entry) ? entry.playbook : null;
+      }
+    }
+    const notes: string[] = [];
+    if (why) notes.push(`${workspaceWarning(why)}; the scripts were copied from the workspace checkout too`);
+    let definition: RefreshResult["definition"] = "pinned";
+    let record: RunDefinition | null = null;
+    if (ended) {
+      const mismatch = next ? definitionMismatch(run.playbook, next) : null;
+      if (!next) notes.push("no valid playbook to read the definition from: the run keeps its pinned definition");
+      else if (mismatch) notes.push(`the definition was not replaced: ${mismatch}; the run keeps its pinned definition (only the scripts were refreshed)`);
+      else {
+        definition = JSON.stringify(next) === JSON.stringify(run.playbook) ? "unchanged" : "refreshed";
+        record = source === "origin"
+          ? { source: "origin", ref: fresh.ref, sha: originSha, note: null, warning: null }
+          : { source: "workspace", ref: null, sha: null, note: `${why}; using the workspace checkout's playbook`, warning: workspaceWarning(why!) };
+      }
+    }
+    const scriptsSha = source === "origin" ? originSha : (await gitOutput(run.workspaceDir, ["rev-parse", "HEAD"]).catch(() => "workspace")).trim();
     const before = run.scripts?.sha ?? null;
-    if (before === sha && existsSync(run.scripts!.dir)) return { ref: fresh.ref, sha, before, changed: false };
-    await mkdir(this.runScriptsDir, { recursive: true });
+    const label = source === "origin" ? fresh.ref : "the workspace checkout";
+    const scriptsSame = source === "origin" && run.scripts?.source === "origin" && before === originSha && existsSync(run.scripts.dir);
+    const definitionChanged = record !== null && JSON.stringify(record) !== JSON.stringify(run.definition);
+    const result = (changed: boolean): RefreshResult => ({ ref: label, sha: scriptsSha, before, changed, source, definition, note: notes.length > 0 ? notes.join("; ") : null });
+    if (scriptsSame && !definitionChanged) return result(false);
     const final = path.join(this.runScriptsDir, runId);
-    const tmp = await mkdtemp(path.join(this.runScriptsDir, `.${runId}.`));
-    try {
-      await exportPaths(repo, fresh.ref, [...dirs], tmp);
-      // Written aside and renamed, so a running check never sees a half-written copy.
-      const old = `${tmp}.old`;
-      await rename(final, old).catch(() => undefined);
-      await rename(tmp, final);
-      await rm(old, { recursive: true, force: true }).catch(() => undefined);
-    } catch (error) {
-      await rm(tmp, { recursive: true, force: true }).catch(() => undefined);
-      throw new UserError(`could not copy the scripts of ${fresh.ref}: ${errorText(error)}`);
+    if (!scriptsSame) {
+      await mkdir(this.runScriptsDir, { recursive: true });
+      const tmp = await mkdtemp(path.join(this.runScriptsDir, `.${runId}.`));
+      try {
+        if (source === "origin") await exportPaths(repo, fresh.ref, [...dirs], tmp);
+        else {
+          for (const rel of dirs) {
+            const from = path.join(run.workspaceDir, rel);
+            if (existsSync(from)) await cp(from, path.join(tmp, rel), { recursive: true });
+          }
+        }
+        // Written aside and renamed, so a running check never sees a half-written copy.
+        const old = `${tmp}.old`;
+        await rename(final, old).catch(() => undefined);
+        await rename(tmp, final);
+        await rm(old, { recursive: true, force: true }).catch(() => undefined);
+      } catch (error) {
+        await rm(tmp, { recursive: true, force: true }).catch(() => undefined);
+        throw new UserError(`could not copy the scripts of ${label}: ${errorText(error)}`);
+      }
     }
     await this.store.mutate(runId, (current) => {
-      current.scripts = { sha, dir: final, refreshedAt: nowIso() };
-      engine.noteEvent(current, "scripts_refreshed", null, `scripts refreshed from ${fresh.ref} by ${by}: ${before ?? wt.baseSha} -> ${sha}${reason ? ` (${reason})` : ""}`, nowIso());
+      if (!scriptsSame) current.scripts = { sha: scriptsSha, dir: final, refreshedAt: nowIso(), source };
+      if (record && next && definition !== "pinned") {
+        current.playbook = next;
+        current.definition = record;
+      }
+      const defText = ended ? `; definition ${definition === "pinned" ? "kept pinned" : definition === "unchanged" ? "unchanged" : `re-read from ${label}`}` : "";
+      engine.noteEvent(current, "scripts_refreshed", null, `scripts refreshed from ${label} by ${by}: ${before ?? wt.baseSha} -> ${scriptsSha}${defText}${reason ? ` (${reason})` : ""}${notes.length > 0 ? `. ${notes.join("; ")}` : ""}`, nowIso());
+      if (record?.warning) engine.noteEvent(current, "definition_fallback", null, record.warning, nowIso());
     });
-    return { ref: fresh.ref, sha, before, changed: true };
+    if (record?.warning) await this.announceDefinitionFallback(runId, "refresh_scripts");
+    return result(true);
+  }
+
+  /** Emits `run.definition_fallback` for a run whose definition came from the workspace checkout; never fails. */
+  private async announceDefinitionFallback(runId: string, trigger: "start" | "refresh_scripts"): Promise<void> {
+    const run = this.store.get(runId);
+    const warning = run?.definition?.warning;
+    if (!run || !warning) return;
+    await this.bus.emit("run.definition_fallback", { ...runFieldsOf(run), warning, source: "workspace", trigger }, { runId, source: "runs" }).catch((error: unknown) => console.error("[playbooks] could not emit run.definition_fallback:", errorText(error)));
   }
 
   /** Removes a run's worktree and records nothing; callers write the history. */
@@ -3942,7 +4045,8 @@ export class Runtime {
     takeOver?: { id: string; workspaceId: string | null },
     workspaceId?: string,
     model?: ModelChoice,
-  ): Promise<{ run: Run; newManager: boolean }> {
+    refresh?: { reason: string },
+  ): Promise<{ run: Run; newManager: boolean; refreshed?: RefreshResult }> {
     const run = this.store.get(runId);
     if (!run) throw new UserError(`unknown run "${runId}"`);
     if (model) {
@@ -3990,6 +4094,8 @@ export class Runtime {
         throw new UserError(`"${playbookId}" allows ${limit} active run(s) in this project; held by: ${holders.filter((id) => !id.startsWith(run.id)).join(", ")}. Try again once one ends.`);
       }
     }
+    // refresh: the scripts and definition are re-read first; when that fails nothing was restarted.
+    const refreshed = refresh ? await this.refreshScripts(runId, refresh.reason, by ?? "restart_run") : undefined;
     const managerless = isManagerless(run);
     // A run with no manager (manager.mode: none) is restarted by the plugin: no manager is woken, created or taken over.
     if (managerless) takeOver = undefined;
@@ -4028,7 +4134,7 @@ export class Runtime {
       await this.enqueue(runId, lines);
       await this.deliver(runId);
     }
-    return { run: this.store.get(runId)!, newManager: replacement !== null || (takeOver !== undefined && takeOver.id !== run.managerAgentId) };
+    return { run: this.store.get(runId)!, newManager: replacement !== null || (takeOver !== undefined && takeOver.id !== run.managerAgentId), ...(refreshed ? { refreshed } : {}) };
   }
 
   /** The workspace, or null when it no longer exists. */

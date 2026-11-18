@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Runtime, MANAGER_TOOL_NAMES } from "./runtime";
 import { RunStore } from "./store";
 import { SIDEKICK_PLUGIN_TOOLS } from "./sidekick";
-import { managerTools, runTools } from "./tools";
+import { managerTools, refreshText, runListing, runTools } from "./tools";
 
 const exec = promisify(execFile);
 const EXAMPLES = path.resolve(__dirname, "..", "examples");
@@ -102,7 +102,7 @@ async function setup() {
     }
     return lastVersion();
   };
-  return { base, dir, origin, store, storeDir, runtime, open, start, publish, nextCheck, mark };
+  return { base, dir, origin, store, storeDir, runtime, open, start, publish, nextCheck, mark, versions };
 }
 
 describe("refresh_scripts: tools", () => {
@@ -173,9 +173,11 @@ describe("refresh_scripts", () => {
     await expectUntouched(bare.id);
     await ctx.runtime.cancelRun(bare.id, "x", null);
 
+    // An ended run that restart_run cannot reopen (here: no step can restart, a step is unknown to the run's graph).
     const ended = await ctx.start();
     await ctx.runtime.cancelRun(ended.id, "x", null);
-    await expect(ctx.runtime.refreshScripts(ended.id, "x", "a")).rejects.toThrow(/has ended/);
+    await ctx.store.mutate(ended.id, (current) => void (current.playbook.steps[0]!.needs = ["ghost"]));
+    await expect(ctx.runtime.refreshScripts(ended.id, "x", "a")).rejects.toThrow(/has ended \(canceled\) and cannot be restarted/);
     await expectUntouched(ended.id);
 
     const broken = await ctx.start();
@@ -225,5 +227,172 @@ describe("refresh_scripts", () => {
     await ctx.runtime.onWorkspaceArchived("ws");
     expect(ctx.store.get(second.id)).toBeUndefined();
     expect(existsSync(secondDir)).toBe(false);
+  });
+});
+
+
+const INVALID = `
+title: Wait
+isolation: worktree
+not_a_field: [1
+steps: []
+`;
+
+/** The same playbook with a bigger contract: one more declared output (a script bug fix that needs it). */
+const PLAYBOOK_V2 = `
+title: Wait
+isolation: worktree
+steps:
+  - id: wait_merge
+    script: { run: wait.sh, poll: 1s }
+    timeout: 2m
+    outputs: { merged_sha: {}, extra: {} }
+`;
+
+describe("refresh_scripts: ended runs", () => {
+  const events = async (ctx: Awaited<ReturnType<typeof setup>>, type: string) =>
+    (await (ctx.runtime as unknown as { bus: { recent: (q: object) => Promise<{ events: Array<{ payload: Record<string, unknown> }> }> } }).bus.recent({ types: [type] })).events;
+  /** A run that failed after v1 ran: its worktree is gone (cleaned up), as for a real failed run. */
+  const failed = async (ctx: Awaited<ReturnType<typeof setup>>) => {
+    const run = await ctx.start();
+    expect(await ctx.nextCheck()).toBe("v1");
+    await ctx.runtime.cancelRun(run.id, "script bug", null);
+    await ctx.store.mutate(run.id, (current) => {
+      current.status = "failed";
+      current.failure = "unknown output extra";
+    });
+    await (ctx.runtime as unknown as { cleanupEndedWorktrees(): Promise<void> }).cleanupEndedWorktrees();
+    expect(ctx.store.get(run.id)!.worktree!.state).toBe("removed");
+    return run;
+  };
+  const publishPlaybook = async (ctx: Awaited<ReturnType<typeof setup>>, yaml: string, message: string) => {
+    await writeFile(path.join(ctx.dir, REL, "iso.yaml"), yaml);
+    await git(ctx.dir, "add", REL);
+    await git(ctx.dir, "commit", "-qm", message);
+    await git(ctx.dir, "push", "-q", "origin", "main");
+  };
+
+  it("works on a failed run: refresh then restart_run runs the current scripts and definition, history and outputs kept", async () => {
+    const ctx = await setup();
+    const run = await failed(ctx);
+    await ctx.publish("v2");
+    await publishPlaybook(ctx, PLAYBOOK_V2, "declare extra");
+    const sha = await git(ctx.dir, "rev-parse", "HEAD");
+    const historyBefore = ctx.store.get(run.id)!.history.length;
+
+    const result = await ctx.runtime.refreshScripts(run.id, "the v2 fix", "agent-x");
+    expect(result).toMatchObject({ ref: "origin/main", sha, changed: true, source: "origin", definition: "refreshed", note: null });
+    const after = ctx.store.get(run.id)!;
+    expect(after.status).toBe("failed");
+    expect(after.history.length).toBeGreaterThan(historyBefore);
+    expect(after.playbook.steps[0]!.outputs).toHaveProperty("extra");
+    expect(after.playbook.steps[0]).toMatchObject({ timeoutMs: 120_000 });
+    expect(after.definition).toMatchObject({ source: "origin", ref: "origin/main", sha, warning: null });
+    expect(after.history.at(-1)!.detail).toContain("definition re-read from origin/main");
+    // The scripts of a failed run never run by themselves.
+    const seen = (await ctx.versions()).length;
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    expect((await ctx.versions()).length).toBe(seen);
+
+    await ctx.runtime.restartRun(run.id, "wait_merge", "after the fix", "agent-x");
+    expect(await ctx.nextCheck()).toBe("v2");
+  });
+
+  it("restart_run without refresh keeps the pinned definition", async () => {
+    const ctx = await setup();
+    const run = await failed(ctx);
+    await ctx.publish("v2");
+    await publishPlaybook(ctx, PLAYBOOK_V2, "declare extra");
+    await ctx.runtime.restartRun(run.id, "wait_merge", null, "agent-x");
+    expect(ctx.store.get(run.id)!.playbook.steps[0]!.outputs).not.toHaveProperty("extra");
+  });
+
+  it("restart_run refresh: true refreshes then restarts in one call; a failing refresh restarts nothing", async () => {
+    const ctx = await setup();
+    const run = await failed(ctx);
+    await ctx.publish("v2");
+    const done = await ctx.runtime.restartRun(run.id, "wait_merge", null, "agent-x", "agent", undefined, undefined, undefined, { reason: "restart" });
+    expect(done.refreshed).toMatchObject({ source: "origin", changed: true });
+    expect(done.run.status).toBe("running");
+    expect(await ctx.nextCheck()).toBe("v2");
+
+    const other = await setup();
+    const second = await failed(other);
+    await git(other.dir, "remote", "set-url", "origin", path.join(other.base, "gone.git"));
+    await expect(other.runtime.restartRun(second.id, "wait_merge", null, "agent-x", "agent", undefined, undefined, undefined, { reason: "restart" })).rejects.toThrow(/could not fetch origin\/main/);
+    expect(other.store.get(second.id)!.status).toBe("failed");
+    expect(other.store.get(second.id)!.scripts ?? null).toBeNull();
+  });
+
+  it("says what it refreshed from, and keeps the definition pinned when the step graph changed", async () => {
+    const ctx = await setup();
+    const run = await failed(ctx);
+    await publishPlaybook(
+      ctx,
+      `title: Wait\nisolation: worktree\nsteps:\n  - id: wait_merge\n    script: { run: wait.sh }\n    outputs: { merged_sha: {} }\n  - id: after_it\n    script: { run: wait.sh }\n    needs: [wait_merge]\n    outputs: { x: {} }\n`,
+      "add a step",
+    );
+    const result = await ctx.runtime.refreshScripts(run.id, "x", "a");
+    expect(result).toMatchObject({ source: "origin", definition: "pinned", changed: true });
+    expect(result.note).toContain("the step graph changed (new steps: after_it)");
+    expect(ctx.store.get(run.id)!.playbook.steps.map((step) => step.id)).toEqual(["wait_merge"]);
+    expect(refreshText(run.id, result)).toContain("WARNING: the definition was not replaced");
+    expect(refreshText(run.id, result)).toContain("refreshed from origin/main");
+  });
+
+  it("falls back to the workspace checkout when origin's playbook is invalid, with the validation error in the result, the run and an event", async () => {
+    const ctx = await setup();
+    const run = await failed(ctx);
+    // Origin gets a broken playbook; the workspace checkout keeps the valid one (and the v1 scripts).
+    await publishPlaybook(ctx, INVALID, "break the playbook");
+    await git(ctx.dir, "reset", "-q", "--hard", "HEAD~1");
+    await writeFile(path.join(ctx.dir, REL, "scripts/wait.sh"), script("ws", ctx.mark));
+    await chmod(path.join(ctx.dir, REL, "scripts/wait.sh"), 0o755);
+
+    const result = await ctx.runtime.refreshScripts(run.id, "x", "a");
+    expect(result).toMatchObject({ source: "workspace", ref: "the workspace checkout", changed: true, definition: "unchanged" });
+    expect(result.note).toMatch(/^definition read from the workspace checkout because origin\/main is invalid: /);
+    const after = ctx.store.get(run.id)!;
+    expect(after.scripts).toMatchObject({ source: "workspace" });
+    expect(after.definition).toMatchObject({ source: "workspace", warning: result.note!.split("; the scripts")[0] });
+    expect(refreshText(run.id, result)).toContain("refreshed from the workspace checkout");
+    expect(after.history.some((entry) => entry.type === "definition_fallback")).toBe(true);
+    const emitted = await events(ctx, "run.definition_fallback");
+    expect(emitted.at(-1)!.payload).toMatchObject({ runId: run.id, trigger: "refresh_scripts", warning: after.definition!.warning });
+
+    await ctx.runtime.restartRun(run.id, "wait_merge", null, "agent-x");
+    expect(await ctx.nextCheck()).toBe("ws");
+
+    // Origin valid again: the warning goes away.
+    await git(ctx.dir, "reset", "-q", "--hard", "origin/main");
+    await publishPlaybook(ctx, PLAYBOOK("isolation: worktree").trimStart(), "fix the playbook");
+    await ctx.runtime.cancelRun(run.id, "again", null);
+    const again = await ctx.runtime.refreshScripts(run.id, "x", "a");
+    expect(again).toMatchObject({ source: "origin", note: null });
+    expect(ctx.store.get(run.id)!.definition).toMatchObject({ source: "origin", warning: null });
+  });
+
+  it("warns on a run that starts from an invalid origin playbook: get_run field, history, event and panel data; none on a valid source", async () => {
+    const ctx = await setup();
+    const clean = await ctx.start();
+    expect(ctx.store.get(clean.id)!.definition).toMatchObject({ source: "origin", warning: null });
+    expect(runListing(ctx.store.get(clean.id)!)).not.toHaveProperty("warnings");
+    expect(await events(ctx, "run.definition_fallback")).toHaveLength(0);
+    await ctx.runtime.cancelRun(clean.id, "x", null);
+
+    await publishPlaybook(ctx, INVALID, "break the playbook");
+    await git(ctx.dir, "reset", "-q", "--hard", "HEAD~1");
+    const run = await ctx.start();
+    const stored = ctx.store.get(run.id)!;
+    expect(stored.definition!.warning).toMatch(/^definition read from the workspace checkout because origin\/main is invalid: .+/);
+    expect(runListing(stored)).toMatchObject({ warnings: [stored.definition!.warning] });
+    expect(stored.history.some((entry) => entry.type === "definition_fallback")).toBe(true);
+    expect((await events(ctx, "run.definition_fallback")).at(-1)!.payload).toMatchObject({ runId: run.id, trigger: "start", source: "workspace" });
+  });
+
+  it("reads a definition stored before the warning existed", async () => {
+    const { RunDefinitionSchema, RunScriptsSchema } = await import("../shared/types");
+    expect(RunDefinitionSchema.parse({ source: "workspace", note: "n" }).warning).toBeNull();
+    expect(RunScriptsSchema.parse({ sha: "a", dir: "/d", refreshedAt: "t" }).source).toBe("origin");
   });
 });

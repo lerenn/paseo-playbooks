@@ -387,6 +387,8 @@ export const RunScriptsSchema = z.object({
   /** The directory holding the copy: script paths (`<relDir>/scripts/<name>`) resolve inside it. */
   dir: z.string(),
   refreshedAt: z.string(),
+  /** Where the copy was taken from: `origin` (the fetched origin/<branch>) or `workspace` (the checkout, when origin's playbook is invalid). Runs from before read as origin. */
+  source: z.enum(["origin", "workspace"]).default("origin"),
 });
 export type RunScripts = z.infer<typeof RunScriptsSchema>;
 
@@ -399,6 +401,8 @@ export const RunDefinitionSchema = z.object({
   sha: z.string().nullable().default(null),
   /** Why the workspace checkout was used instead (workspace only). */
   note: z.string().nullable().default(null),
+  /** Set when the workspace checkout was used although origin was the intended source: "definition read from the workspace checkout because origin/<branch> is invalid: <reason>". Null on origin and on runs from before. */
+  warning: z.string().nullable().default(null),
 });
 export type RunDefinition = z.infer<typeof RunDefinitionSchema>;
 
