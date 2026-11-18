@@ -307,6 +307,53 @@ steps:
     expect((await loadPlaybooks(none)).entries[0]!.playbook!.slowWarning).toEqual({ runs: 10, factor: 2 });
   });
 
+  it("reads agent_rules: defaults first, then the playbook's, each once; absent means none", async () => {
+    const steps = "steps:\n  - id: a\n    role: { name: investigator, prompt: go }\n";
+    const dir = await workspace({
+      "defaults/main.yaml": 'agent_rules: ["  Prefer simple, separate shell commands.  ", "Check the listener first.", "Check the listener first."]\n',
+      "pr.yaml": `agent_rules: ["Check the listener first.", "Be brief."]\n${steps}`,
+      "plain.yaml": steps,
+    });
+    const entries = (await loadPlaybooks(dir)).entries;
+    expect(entries.every((entry) => entry.errors.length === 0)).toBe(true);
+    expect(entries.find((entry) => entry.id === "pr")!.playbook!.agentRules).toEqual(["Prefer simple, separate shell commands.", "Check the listener first.", "Be brief."]);
+    expect(entries.find((entry) => entry.id === "plain")!.playbook!.agentRules).toEqual(["Prefer simple, separate shell commands.", "Check the listener first."]);
+    const none = await workspace({ "plain.yaml": steps });
+    expect((await loadPlaybooks(none)).entries[0]!.playbook!.agentRules).toEqual([]);
+    const own = await workspace({ "pr.yaml": `agent_rules: [Be brief.]\n${steps}` });
+    expect((await loadPlaybooks(own)).entries[0]!.playbook!.agentRules).toEqual(["Be brief."]);
+  });
+
+  it("adds a sub-playbook's agent_rules to its parent's", async () => {
+    const steps = "steps:\n  - id: a\n    role: { name: investigator, prompt: go }\n";
+    const dir = await workspace({
+      "defaults/main.yaml": "agent_rules: [Repo rule.]\n",
+      "child.yaml": `agent_rules: [Child rule.]\n${steps}`,
+      "parent.yaml": `agent_rules: [Parent rule.]\nsteps:\n  - { id: c, playbook: { name: child } }\n`,
+    });
+    const parent = (await loadPlaybooks(dir)).entries.find((entry) => entry.id === "parent")!;
+    expect(parent.errors).toEqual([]);
+    expect(parent.playbook!.agentRules).toEqual(["Repo rule.", "Parent rule.", "Child rule."]);
+  });
+
+  it("refuses a malformed agent_rules, in a playbook and in defaults", async () => {
+    const steps = "steps:\n  - id: a\n    role: { name: investigator, prompt: go }\n";
+    const cases: Array<[string, RegExp]> = [
+      ["agent_rules: be nice", /agent_rules: expected a list of strings/],
+      ["agent_rules: { a: b }", /agent_rules: expected a list of strings/],
+      ["agent_rules: [ok, 3]", /agent_rules\.1: expected a string/],
+      ['agent_rules: ["  "]', /agent_rules\.0: empty rule/],
+      [`agent_rules: ["${"x".repeat(501)}"]`, /agent_rules\.0: 501 characters, at most 500/],
+      [`agent_rules: [${Array.from({ length: 21 }, (_, i) => `r${i}`).join(", ")}]`, /agent_rules: 21 rules, at most 20/],
+    ];
+    for (const [line, message] of cases) {
+      const inPlaybook = (await loadPlaybooks(await workspace({ "pr.yaml": `${line}\n${steps}` }))).entries[0]!;
+      expect(inPlaybook.errors.join("\n"), line).toMatch(message);
+      const inDefaults = (await loadPlaybooks(await workspace({ "defaults/main.yaml": `${line}\n`, "pr.yaml": steps }))).entries[0]!;
+      expect(inDefaults.errors.join("\n"), line).toMatch(message);
+    }
+  });
+
   it("refuses a bad or unknown slow_warning", async () => {
     const steps = "steps:\n  - id: a\n    role: { name: investigator, prompt: go }\n";
     for (const block of ["{ runs: 2 }", "{ factor: 1 }", "{ every: 3 }", "3"]) {

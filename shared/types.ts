@@ -463,6 +463,12 @@ export const PlaybookSchema = z.object({
    * Unset on runs from before manager instructions.
    */
   managerInstructions: z.array(z.object({ playbook: z.string().nullable(), text: z.string() })).default([]),
+  /**
+   * `agent_rules`: house rules for every agent of the run, from `defaults/main.yaml`, then this
+   * playbook's and its sub-playbooks', each once. Rendered into prompts when an agent starts.
+   * Unset on runs from before agent rules.
+   */
+  agentRules: z.array(z.string()).default([]),
   /** `slow_warning`: how the slow-step warning is computed (ADR 2026-11-12-slow-step-warning). */
   slowWarning: z.object({ runs: z.number().int().min(3), factor: z.number().gt(1) }).default({ runs: 10, factor: 2 }),
   /**

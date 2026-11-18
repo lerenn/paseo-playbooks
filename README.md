@@ -271,6 +271,12 @@ with that tag.
   Playbooks screen and on the step in the panel, with e.g. "12m, 3.1x the usual 4m". It needs 3 completed runs, ignores samples under 1s (steps that did not really run) and never warns under 10s;
   it is computed from the run history the panel has loaded (nothing is stored) and, once shown, stays on screen.
   Set `slow_warning: { runs, factor }` in a playbook or in `defaults/main.yaml` (the playbook's wins, field by field).
+- Agent rules: `agent_rules: ["Prefer simple, separate shell commands."]` in `defaults/main.yaml` is a list of short
+  house rules (at most 20, 500 characters each) put in the prompt of every agent of the folder's playbooks: the Playbook
+  Manager (with its instructions), step role agents, after-task agents, role deciders and fan-out child managers. A
+  playbook adds its own `agent_rules:` after the repository's; a rule written twice appears once; there is no opt-out.
+  They show as a "Rules" section, apart from the playbook's prompts, which cannot override it. An agent keeps the prompt it
+  started with: a changed list applies to agents started (or restarted) afterwards. See `docs/adrs/2026-11-18-agent-rules.md`.
 - Times in `get_run` (both views): the run and each started step have `startedAt`, `endedAt` (ISO, absent while running)
   and `durationMs`; `live: true` marks a running one (the duration is the time so far). A retried step shows its current
   attempt and `totalMs` across attempts (full view: `attemptTimes`). Runs recorded without timestamps omit them.

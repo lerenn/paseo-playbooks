@@ -563,6 +563,8 @@ const RawPlaybookSchema = z.object({
     /** How the playbook can end, for a parent that uses it as a sub-playbook. The first is a normal finish. */
     /** Slow-step warning: a step slower than `factor` times the mean of its last `runs` completed runs gets a warning. Defaults 10 and 2. */
     slow_warning: RawSlowWarningSchema.optional(),
+    /** House rules added to the prompt of every agent of the playbook, after the repository's `agent_rules` (a list of short strings; checked by `parseAgentRules`). */
+    agent_rules: z.unknown().optional(),
     outcomes: z.array(z.string()).min(1).optional(),
     steps: z.array(RawStepSchema).min(1),
     /** Tasks run once the main graph ends (completed or failed); they never change the run's status. */
@@ -616,6 +618,8 @@ const RawDefaultsSchema = z.object({
       })
       .strict()
       .optional(),
+    /** House rules added to the prompt of every agent of every playbook of the folder (a list of short strings; checked by `parseAgentRules`). */
+    agent_rules: z.unknown().optional(),
     /** Reload agent sessions that hold the tools of an older plugin generation once idle. Default true. */
     reload_stale_sessions: z.boolean().optional(),
     /** Slow-step warning: a step slower than `factor` times the mean of its last `runs` completed runs gets a warning. Defaults 10 and 2. */
@@ -637,7 +641,7 @@ const RawDefaultsSchema = z.object({
     silence: z.unknown().optional(),
     archive_agents: z.unknown().optional(),
   });
-type RawDefaults = Omit<z.infer<typeof RawDefaultsSchema>, "tiers"> & { tiers?: Tiers; managerCompact?: ManagerCompact; managerNudge?: Partial<ManagerNudge>; managerMode?: ManagerMode };
+type RawDefaults = Omit<z.infer<typeof RawDefaultsSchema>, "tiers"> & { tiers?: Tiers; managerCompact?: ManagerCompact; managerNudge?: Partial<ManagerNudge>; managerMode?: ManagerMode; agentRules?: string[] };
 
 function formatZodError(file: string, error: z.ZodError): string[] {
   return error.issues.map((issue) => {
@@ -815,7 +819,37 @@ async function loadDefaults(root: string, relDir: string): Promise<{ defaults: R
   if (parsed.data.role?.silence && parseSilence(parsed.data.role.silence) === null) {
     errors.push(`${rel}: role.silence: expected a duration such as 30m, or off`);
   }
+  const rules = parseAgentRules(parsed.data.agent_rules);
+  for (const message of rules.errors) errors.push(`${rel}: ${message}`);
+  defaults.agentRules = rules.rules;
   return { defaults, errors };
+}
+
+/** Most rules of one `agent_rules` list, and the longest rule (characters). */
+export const MAX_AGENT_RULES = 20;
+export const MAX_AGENT_RULE_LENGTH = 500;
+
+/** A written `agent_rules`: a list of at most 20 non-empty strings of at most 500 characters. Trimmed, each once. */
+export function parseAgentRules(value: unknown): { rules: string[]; errors: string[] } {
+  if (value === undefined || value === null) return { rules: [], errors: [] };
+  if (!Array.isArray(value)) return { rules: [], errors: ["agent_rules: expected a list of strings (`agent_rules: [\"prefer simple, separate shell commands\"]`)"] };
+  const errors: string[] = [];
+  if (value.length > MAX_AGENT_RULES) errors.push(`agent_rules: ${value.length} rules, at most ${MAX_AGENT_RULES} (they go in every agent's prompt: keep the few that matter)`);
+  const rules: string[] = [];
+  value.forEach((entry, index) => {
+    if (typeof entry !== "string") errors.push(`agent_rules.${index}: expected a string`);
+    else if (entry.trim() === "") errors.push(`agent_rules.${index}: empty rule`);
+    else if (entry.trim().length > MAX_AGENT_RULE_LENGTH) errors.push(`agent_rules.${index}: ${entry.trim().length} characters, at most ${MAX_AGENT_RULE_LENGTH}`);
+    else if (!rules.includes(entry.trim())) rules.push(entry.trim());
+  });
+  return { rules, errors };
+}
+
+/** The rules of a playbook: the repository's, this playbook's, then its sub-playbooks', each once. */
+function mergeAgentRules(repo: string[], own: string[], subs: Playbook[]): string[] {
+  const list = [...repo];
+  for (const rule of [...own, ...subs.flatMap((sub) => sub.agentRules)]) if (!list.includes(rule)) list.push(rule);
+  return list;
 }
 
 /**
@@ -2105,6 +2139,8 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     if (pb.manager?.mode !== undefined) err("`manager: { mode: none }` does not apply to a singleton: a pipeline's batches each have a manager");
     managerMode = "always_on";
   }
+  const ownRules = parseAgentRules(pb.agent_rules);
+  for (const message of ownRules.errors) err(message);
   if (errors.length > 0) return fail(errors);
   const manager = mergeAgent(defaults.agent?.provider ? { provider: defaults.agent.provider, model: defaults.agent.model } : undefined, defaults.manager);
   entry.playbook = {
@@ -2127,6 +2163,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     usageCheck: defaults.providers?.usage?.check ?? true,
     usageThreshold: defaults.providers?.usage?.threshold ?? 100,
     slowWarning: { runs: pb.slow_warning?.runs ?? defaults.slow_warning?.runs ?? DEFAULT_SLOW_WARNING.runs, factor: pb.slow_warning?.factor ?? defaults.slow_warning?.factor ?? DEFAULT_SLOW_WARNING.factor },
+    agentRules: mergeAgentRules(defaults.agentRules ?? [], ownRules.rules, [...blocks.values()]),
     managerInstructions: managerInstructions(folder.managerText, qid, pb.manager?.prompt, [...blocks.values()]),
     outcomes: playbookOutcomes,
     workspace: {

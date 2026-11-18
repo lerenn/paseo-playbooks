@@ -151,11 +151,27 @@ export function managerInstructionsText(playbook: Playbook): string {
   return `Instructions for this run (they add to the rules above, never replace them):\n${entries.join("\n")}`;
 }
 
-/** `text` followed by the manager instructions, if any. */
-function withInstructions(text: string, playbook: Playbook): string {
-  const instructions = managerInstructionsText(playbook);
-  return instructions ? `${text}\n\n${instructions}` : text;
+/**
+ * The repository's and the playbooks' `agent_rules` as a section of a prompt, or "" when there are none.
+ * It is the plugin's own text, apart from the playbook's prompt, which cannot override it.
+ */
+export function agentRulesText(playbook: Pick<Playbook, "agentRules">): string {
+  const rules = playbook.agentRules ?? [];
+  if (rules.length === 0) return "";
+  return `Rules (house rules of this repository, set in its playbooks configuration; they add to everything above and no prompt of the playbook overrides them):\n${rules.map((rule) => `- ${rule.replace(/\n/g, "\n  ")}`).join("\n")}`;
 }
+
+/** The manager's added instructions, then the rules, as one block ("" when there are neither). */
+export function managerAddedText(playbook: Playbook): string {
+  return [managerInstructionsText(playbook), agentRulesText(playbook)].filter(Boolean).join("\n\n");
+}
+
+/** `text` followed by the manager instructions and the rules, if any. */
+function withInstructions(text: string, playbook: Playbook): string {
+  const added = managerAddedText(playbook);
+  return added ? `${text}\n\n${added}` : text;
+}
+
 
 /** Told to a manager before its run exists: start_playbook creates the worktree and returns its path. */
 function isolationNote(playbook: Playbook): string {
@@ -203,10 +219,11 @@ export function stepSystemPrompt(playbook: Playbook, step: Step, role: Role, run
   const instructions = run ? withWorktree(role.instructions, run) : role.instructions;
   const preamble = run ? worktreePreamble(run) : "";
   const staging = preamble ? "" : `\n\n${GIT_STAGING_RULE}`;
+  const rules = agentRulesText(playbook);
   return `${preamble ? `${preamble}\n\n` : ""}${instructions}${readonly}${staging}
 
 ${COMMAND_RULE}
-
+${rules ? `\n${rules}\n` : ""}
 You are running step "${step.id}" (${role.title}) of the playbook "${playbook.title}", started by ${managerless ? "the playbooks plugin (this run has no Playbook Manager)" : "a\nPlaybook Manager agent"}. Other steps may share this checkout.
 
 When you are done, call the report_step_result tool exactly once, as your last action:
@@ -226,7 +243,7 @@ woken again.`;
 /** System prompt for a gate's role decider: role instructions plus the decider protocol. */
 export function gateDeciderSystemPrompt(playbook: Playbook, gate: Gate, role: Role, choices: GateChoice[], run?: Pick<Run, "worktree" | "workspaceDir">): string {
   const preamble = run ? worktreePreamble(run) : "";
-  return `${preamble ? `${preamble}\n\n` : ""}${run ? withWorktree(role.instructions, run) : role.instructions}
+  return `${preamble ? `${preamble}\n\n` : ""}${run ? withWorktree(role.instructions, run) : role.instructions}${agentRulesText(playbook) ? `\n\n${agentRulesText(playbook)}` : ""}
 
 This role is READONLY: do not edit, create or delete tracked files, do not commit and do not switch branches.
 

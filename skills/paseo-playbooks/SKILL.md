@@ -105,6 +105,7 @@ providers:             # provider failover
   usage: { check: true, threshold: 100 }  # skip a target whose provider's reported usage window is at/over threshold % (defaults shown; check: false disables)
 timeout: 1h            # default step timeout (optional)
 slow_warning: { runs: 10, factor: 2 }  # warn when a step takes more than factor x the mean of its last `runs` completed runs (defaults shown; also allowed in a playbook)
+agent_rules: ["Prefer simple, separate shell commands."]  # house rules added to the prompt of every agent of the folder (a playbook can add its own `agent_rules:`; at most 20 rules of 500 characters; see "Agent rules")
 gates: { on_behalf: allow }  # allow (default) | deny: whether an agent outside the runs may answer a human gate with resume_gate, with the human's own answer
 permissions: { on_request: authorize }  # authorize (default) | escalate | deny: what the plugin does when an agent of a run raises a tool permission request (see "Permission requests"; also allowed in a playbook)
 role:                  # defaults for agent steps, in the shape of a step's `role:` block

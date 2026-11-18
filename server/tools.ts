@@ -12,7 +12,7 @@ import { resolveForNewRun } from "./fresh";
 import { hasPlaybooks, loadPlaybooks } from "./loader";
 import { conversationText } from "./conversation";
 import { attentionText } from "./overseer";
-import { MANAGER_PROTOCOL, managerInstructionsText, worktreePreamble } from "./prompts";
+import { MANAGER_PROTOCOL, managerAddedText, worktreePreamble } from "./prompts";
 import { UserError, type ModelChoice, type Runtime } from "./runtime";
 
 function ok(text: string, structuredContent?: unknown): AgentToolResult {
@@ -514,7 +514,7 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
               runListing(run),
             );
           }
-          const instructions = managerInstructionsText(run.playbook);
+          const instructions = managerAddedText(run.playbook);
           const auto = autoStart ? await runtime.autoStartReady(agent.id, run.id) : null;
           const current = runtime.ownedRun(agent.id, run.id);
           const pending = engine.readySteps(current).filter((id) => !auto?.started.some((s) => s.stepId === id));
