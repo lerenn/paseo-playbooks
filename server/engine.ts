@@ -2602,7 +2602,7 @@ export function startFanout(run: Run, stepId: string, input: { agentId: string; 
     const child = built.child;
     children.push(child);
   }
-  state.fanout = { attempt: attempt.n, loop: state.loop, startedAt: input.now, children, pool: config.pool ? { refills: 0, lastRefillAt: null, added: 0, handled: [], status: "open", stopReason: null, passes: [] } : null };
+  state.fanout = { attempt: attempt.n, loop: state.loop, startedAt: input.now, children, pool: config.pool ? { refills: 0, lastRefillAt: null, added: 0, handled: [], wakeAt: null, status: "open", stopReason: null, passes: [] } : null };
   log(run, input.now, "fanout_started", stepId, `${children.length} item(s), at most ${config.maxActive} active`);
   return { error: null };
 }
@@ -2717,6 +2717,8 @@ export function addFanoutItem(run: Run, stepId: string, item: unknown, now: stri
   if (clash) throw new EngineError(`the key "${child.key}" is already in fan-out step "${stepId}" (${clash.status.replace("_", " ")}): an item is added once`);
   if (child.status === "not_started") throw new EngineError(`the item cannot be added: ${child.error}`);
   fanout.children.push(child);
+  // A pool that waits on blockers re-plans for the new item (all adds before the pass starts share one wake-up).
+  if (fanout.pool?.status === "open" && step.fanout.pool?.idle && !fanout.pool.wakeAt) fanout.pool.wakeAt = now;
   log(run, now, "fanout_item_added", stepId, `${child.key}: added by ${by ?? "the panel"}, waiting for a slot (${fanoutSummaryText(fanout)})`);
   return { key: child.key, index };
 }
@@ -2741,17 +2743,43 @@ export function poolDoneKeys(state: FanoutState): string[] {
   return state.children.filter(isChildDone).map((child) => child.key);
 }
 
+/** The latest finished pass, when it completed. */
+function lastPass(state: FanoutState): PoolPass | undefined {
+  return state.pool?.passes.findLast((pass) => pass.status === "completed" || pass.status === "failed" || pass.status === "canceled");
+}
+
+/**
+ * A pool with `idle` is waiting on blockers: open, no pass runs, nothing unhandled, and the latest pass completed saying blocked items
+ * remain. Children may still run (their ending triggers a pass as usual); the fan-out does not end while it waits.
+ */
+export function poolWaiting(state: FanoutState, config: PoolConfig | undefined): boolean {
+  const pool = state.pool;
+  if (!pool || !config?.idle || pool.status !== "open" || poolPassInFlight(state)) return false;
+  const last = lastPass(state);
+  return !!last && last.status === "completed" && last.waiting && poolTriggers(state, config).length === 0;
+}
+
 /** Whether a pass should start now: none runs, the pool is open, a trigger is unhandled, the cap allows and the debounce has passed. */
 export function poolPassDue(state: FanoutState, config: PoolConfig, nowMs: number): boolean {
   const pool = state.pool;
   if (!pool || pool.status !== "open" || poolPassInFlight(state)) return false;
   const triggers = poolTriggers(state, config);
-  if (triggers.length === 0) return false;
+  if (triggers.length === 0) return poolWaitingDue(state, config, nowMs);
   if (pool.refills >= config.maxRefills) return false;
   const oldest = Math.min(...triggers.map((child) => (child.endedAt ? Date.parse(child.endedAt) : nowMs)));
   const lastEnd = pool.passes.findLast((pass) => pass.endedAt)?.endedAt;
   const since = Math.max(oldest, lastEnd ? Date.parse(lastEnd) : 0);
   return nowMs - since >= config.debounceMs;
+}
+
+/** A waiting pool re-plans when an item was added (after the debounce, one pass for all adds) or the poll interval has passed since the last pass. */
+function poolWaitingDue(state: FanoutState, config: PoolConfig, nowMs: number): boolean {
+  if (!poolWaiting(state, config)) return false;
+  const lastEnd = lastPass(state)?.endedAt;
+  const lastEndMs = lastEnd ? Date.parse(lastEnd) : 0;
+  const wake = state.pool!.wakeAt;
+  if (wake) return nowMs - Math.max(Date.parse(wake), lastEndMs) >= config.debounceMs;
+  return nowMs - lastEndMs >= config.idle!.pollMs;
 }
 
 /** Stops the pool when the cap is reached with endings still unhandled. Returns whether it changed. */
@@ -2770,9 +2798,11 @@ export function poolCheckLimit(run: Run, stepId: string, config: PoolConfig, now
 
 /** Records a new pass as `starting` with the keys of the items finished now (what it is told with `pool.done` and `pool.failed`). The run is created after, by the caller. */
 export function beginPass(run: Run, stepId: string, config: PoolConfig, input: { runId: string; now: string }): PoolPass {
-  void config;
   const state = run.steps[stepId]!.fanout!;
   const pool = state.pool!;
+  // A re-plan of a waiting pool (no child ending behind it) does not count against max_refills: polling for a long wait would exhaust it.
+  const counted = poolTriggers(state, config).length > 0;
+  const reason = counted ? null : pool.wakeAt ? "an item was added while the pool waited on blockers" : "the pool waited on blockers: periodic re-plan";
   const pass: PoolPass = {
     n: (pool.passes.at(-1)?.n ?? 0) + 1,
     runId: input.runId,
@@ -2785,12 +2815,15 @@ export function beginPass(run: Run, stepId: string, config: PoolConfig, input: {
     added: [],
     skipped: 0,
     output: null,
+    waiting: false,
+    counted,
   };
-  pool.refills += 1;
+  if (counted) pool.refills += 1;
+  pool.wakeAt = null;
   pool.lastRefillAt = input.now;
   pool.passes.push(pass);
   pool.passes = pool.passes.slice(-MAX_POOL_PASSES);
-  log(run, input.now, "fanout_refill_started", stepId, `refill #${pass.n}: ${pass.keys.length} item(s) done so far, ${state.children.length - pass.keys.length} not yet`);
+  log(run, input.now, "fanout_refill_started", stepId, `refill #${pass.n}: ${pass.keys.length} item(s) done so far, ${state.children.length - pass.keys.length} not yet${reason ? ` (re-plan, not counted in max_refills: ${reason})` : ""}`);
   return pass;
 }
 
@@ -2835,8 +2868,8 @@ export function abandonPass(run: Run, stepId: string, n: number): void {
   if (!pool) return;
   const index = pool.passes.findIndex((pass) => pass.n === n && pass.status === "starting");
   if (index < 0) return;
-  pool.passes.splice(index, 1);
-  pool.refills = Math.max(0, pool.refills - 1);
+  const [removed] = pool.passes.splice(index, 1);
+  if (removed!.counted) pool.refills = Math.max(0, pool.refills - 1);
   pool.lastRefillAt = pool.passes.at(-1)?.startedAt ?? null;
 }
 
@@ -2849,7 +2882,7 @@ export function endPass(run: Run, stepId: string, status: "failed" | "canceled" 
   pass.status = status;
   pass.error = error;
   pass.endedAt = now;
-  if (status === "lost") pool.refills = Math.max(0, pool.refills - 1);
+  if (status === "lost") pool.refills = Math.max(0, pool.refills - (pass.counted ? 1 : 0));
   else {
     pool.status = "stopped";
     pool.stopReason = `refill #${pass.n} ${status}: ${error}`.slice(0, 300);
@@ -2899,6 +2932,8 @@ export function applyPass(run: Run, stepId: string, config: PoolConfig, outputs:
   const list = parseList(raw);
   if (!list.ok) return fail(`its output "${config.itemsOutput}" is not a usable list: ${list.error}`);
   pass.output = list.text.slice(0, 2000);
+  const waitRaw = config.idle ? outputs[config.idle.output] : undefined;
+  const waiting = waitRaw !== undefined && String(waitRaw).trim().toLowerCase() === "true";
   const values = Object.fromEntries(Object.entries(stepInputs(run, step)).map(([name, entry]) => [name, entry.value]));
   const known = new Set(state.children.map((child) => child.key));
   const seen = new Map<string, number>();
@@ -2919,12 +2954,14 @@ export function applyPass(run: Run, stepId: string, config: PoolConfig, outputs:
   state.children.push(...fresh);
   pass.status = "completed";
   pass.endedAt = now;
+  pass.waiting = waiting && fresh.length === 0;
   pass.added = fresh.map((child) => child.key);
   pass.skipped = skipped;
   pool.added += fresh.length;
   const stillDone = new Set(state.children.filter(isChildDone).map((child) => child.key));
   pool.handled = [...new Set([...pool.handled, ...pass.keys.filter((key) => stillDone.has(key))])];
   log(run, now, "fanout_refill_ended", stepId, `refill #${pass.n} completed: ${fresh.length} added${fresh.length ? ` (${pass.added.slice(0, 20).join(", ")})` : ""}${skipped ? `, ${skipped} already present` : ""}`);
+  if (pass.waiting) log(run, now, "fanout_pool_waiting", stepId, `refill #${pass.n}: nothing can start, blocked items remain; the pool stays open and re-plans when an item is added, a child ends or after ${Math.round(config.idle!.pollMs / 1000)}s`);
   return pass.added;
 }
 
@@ -2972,7 +3009,7 @@ export function fanoutSummaryText(state: FanoutState): string {
 export function fanoutJoined(state: FanoutState, config?: NonNullable<Step["fanout"]>["pool"]): boolean {
   if (!state.children.every(isChildDone)) return false;
   if (!state.pool || !config) return true;
-  if (poolPassInFlight(state)) return false;
+  if (poolPassInFlight(state) || poolWaiting(state, config)) return false;
   return state.pool.status === "stopped" || poolTriggers(state, config).length === 0;
 }
 

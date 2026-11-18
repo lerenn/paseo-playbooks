@@ -414,7 +414,7 @@ describe("work pool engine", () => {
   it("is due only with an unhandled trigger, the cap left, no pass running and the debounce passed", () => {
     const base = Date.parse("2026-01-01T00:00:10Z");
     const child = (key: string, status: engine.FanoutChildStatus) => ({ key, index: 0, item: "1", inputs: {}, workspaceName: "", status, runId: null, workspaceId: null, error: null, startedAt: null, endedAt: "2026-01-01T00:00:00Z", outputs: {}, previous: [] });
-    const state = { attempt: 1, loop: 0, startedAt: "", children: [child("a", "completed"), child("b", "failed")], pool: { refills: 0, lastRefillAt: null, added: 0, handled: [] as string[], status: "open" as const, stopReason: null, passes: [] } };
+    const state = { attempt: 1, loop: 0, startedAt: "", children: [child("a", "completed"), child("b", "failed")], pool: { refills: 0, lastRefillAt: null, added: 0, handled: [] as string[], wakeAt: null, status: "open" as const, stopReason: null, passes: [] } };
     const config = { playbook: "p", inputs: {}, itemsOutput: "items", after: "completed" as const, maxRefills: 2, debounceMs: 5000 };
     expect(engine.poolTriggers(state, config).map((entry) => entry.key)).toEqual(["a"]);
     expect(engine.poolPassDue(state, config, base)).toBe(true);
@@ -563,5 +563,143 @@ describe("add_fanout_item (ADR 2026-11-18-add-fanout-item)", () => {
     await expect(add(ctx, run.id, { id: "a" })).rejects.toThrow(/key "a" is already/);
     await expect(add(ctx, run.id, { name: "no id" })).rejects.toThrow(/"{{ item.id }}" is not set/);
     await expect(add(ctx, run.id, "plain")).rejects.toThrow(/"{{ item.id }}" is not set/);
+  });
+});
+
+describe("a pool that waits on blockers accepts items (ADR 2026-11-18-pool-wait-accepts-items)", () => {
+  const REFILL_WAIT = REFILL.replace("outputs:\n  items:", 'outputs:\n  waiting: { type: string, value: "{{ steps.pick.outputs.waiting }}" }\n  items:').replace("outputs: { items: { type: list } }", "outputs: { items: { type: list }, waiting: {} }");
+  const idleFiles = (debounce = "", poll = "1h") => ({
+    "parent.yaml": parent(POOL(`\n        idle: { output: waiting, poll: ${poll} }`, debounce ? `\n          debounce: ${debounce}` : "")),
+    "child.yaml": CHILD,
+    "refill.yaml": REFILL_WAIT,
+  });
+  const add = (ctx: Ctx, runId: string, item: unknown, by: string | null = "mgr0") => ctx.runtime.addFanoutItem({ runId, stepId: "spawn", item, by });
+  const waitingPass = (ctx: Ctx, runId: string, items: string[] = []) => end(ctx, runId, "completed", { items: JSON.stringify(items), waiting: "true" });
+  const refillWs = (ctx: Ctx, n: number) => ctx.created.findIndex((workspace) => workspace.title === `Refill #${n}`) + 1;
+
+  /** a ended, b running; pass 1 found nothing ready and said blocked items remain. */
+  async function waiting(debounce?: string, opts: { endB?: boolean } = {}) {
+    const ctx = await setup(idleFiles(debounce));
+    const run = await startParent(ctx);
+    await until(() => ctx.created.length === 2);
+    const a = await createChild(ctx, 1, "a");
+    const b = await createChild(ctx, 2, "b");
+    await until(() => kids(ctx, run.id).every((child) => child.status === "running"));
+    await end(ctx, a.id, "completed", { result: "ra" });
+    if (opts.endB) await end(ctx, b.id, "completed", { result: "rb" });
+    await until(() => refillWs(ctx, 1) > 0);
+    const pass1 = await createPass(ctx, refillWs(ctx, 1), opts.endB ? '["a","b"]' : '["a"]');
+    await until(() => pool(ctx, run.id).passes[0]!.status === "running");
+    await waitingPass(ctx, pass1.id);
+    await until(() => pool(ctx, run.id).passes[0]!.status === "completed");
+    return { ctx, run, a, b };
+  }
+
+  it("loads the idle block, and refuses an output the pass playbook lacks or a bad poll", async () => {
+    const { dir } = await setup(idleFiles("", "30m"));
+    const loaded = (await loadPlaybooks(dir)).entries.find((entry) => entry.id === "parent")!;
+    expect(loaded.errors).toEqual([]);
+    expect(loaded.playbook!.steps.find((step) => step.id === "spawn")!.fanout!.pool!.idle).toEqual({ output: "waiting", pollMs: 30 * 60_000 });
+    expect(await errorsOf({ ...idleFiles(), "refill.yaml": REFILL })).toMatch(/fanout\.pool\.idle\.output: playbook "refill" has no output "waiting"/);
+    expect(await errorsOf(idleFiles("", "soon"))).toMatch(/fanout\.pool\.idle\.poll: expected a duration/);
+  });
+
+  it("stays open while the pass says items are blocked, and accepts an item (known/pending, never listed again), re-planning at once", async () => {
+    const { ctx, run, b } = await waiting();
+    expect(stepOf(ctx, run.id).status).toBe("running");
+    expect(pool(ctx, run.id).passes[0]).toMatchObject({ waiting: true, counted: true });
+    expect(engine.poolWaiting(stepOf(ctx, run.id).fanout!, engine.stepDef(ctx.store.get(run.id)!, "spawn").fanout!.pool)).toBe(true);
+    expect(await add(ctx, run.id, "x")).toMatchObject({ key: "x" });
+    // Re-plan: one pass, started because of the add, not counted against max_refills; x starts under max_active.
+    await until(() => pool(ctx, run.id).passes.length === 2);
+    expect(pool(ctx, run.id).passes[1]).toMatchObject({ n: 2, counted: false });
+    expect(pool(ctx, run.id).refills).toBe(1);
+    expect(pool(ctx, run.id).wakeAt).toBeNull();
+    expect(engine.poolContext(stepOf(ctx, run.id).fanout!, 2).known).toBe('["a","b","x"]');
+    expect(ctx.store.get(run.id)!.history.find((entry) => entry.type === "fanout_refill_started" && entry.detail.includes("refill #2"))!.detail).toContain("an item was added while the pool waited on blockers");
+    expect(ctx.store.get(run.id)!.history.map((entry) => entry.type)).toContain("fanout_pool_waiting");
+    await until(() => refillWs(ctx, 2) > 0);
+    const pass2 = await createPass(ctx, refillWs(ctx, 2), '["a"]');
+    await until(() => pool(ctx, run.id).passes[1]!.status === "running");
+    await endPass(ctx, pass2.id, ["x", "y"]);
+    await until(() => pool(ctx, run.id).passes[1]!.status === "completed");
+    expect(pool(ctx, run.id).passes[1]).toMatchObject({ added: ["y"], skipped: 1, waiting: false });
+    expect(b.id).toBeDefined();
+  });
+
+  it("ends when a pass no longer says blocked items remain", async () => {
+    const { ctx, run, b } = await waiting();
+    await end(ctx, b.id, "completed", { result: "rb" });
+    await until(() => refillWs(ctx, 2) > 0);
+    const pass2 = await createPass(ctx, refillWs(ctx, 2), '["a","b"]');
+    await until(() => pool(ctx, run.id).passes[1]!.status === "running");
+    await endPass(ctx, pass2.id, []);
+    await until(() => stepOf(ctx, run.id).status === "completed");
+    expect(pool(ctx, run.id).refills).toBe(2);
+  });
+
+  it("coalesces several adds in a short time into one re-plan", async () => {
+    const { ctx, run } = await waiting("1s");
+    await add(ctx, run.id, "x");
+    await add(ctx, run.id, "y");
+    await add(ctx, run.id, "z");
+    expect(pool(ctx, run.id).passes).toHaveLength(1);
+    await until(() => pool(ctx, run.id).passes.length === 2, 6000);
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    expect(pool(ctx, run.id).passes).toHaveLength(2);
+    expect(JSON.parse(engine.poolContext(stepOf(ctx, run.id).fanout!, 2).known)).toEqual(["a", "b", "x", "y", "z"]);
+  });
+
+  it("refuses a duplicate key while waiting, and refuses once the step has ended or the run was canceled", async () => {
+    const { ctx, run } = await waiting();
+    await expect(add(ctx, run.id, "a")).rejects.toThrow(/key "a" is already in fan-out step "spawn"/);
+    await expect(add(ctx, run.id, "x", "plan-agent")).rejects.toThrow(/only the manager of run/);
+    await ctx.store.mutate(run.id, (current) => void (current.steps.spawn!.status = "completed"));
+    await expect(add(ctx, run.id, "x")).rejects.toThrow(/not running \(completed\)/);
+    await ctx.store.mutate(run.id, (current) => void (current.steps.spawn!.status = "running"));
+    await ctx.store.mutate(run.id, (current) => void (current.status = "canceled"));
+    await expect(add(ctx, run.id, "x")).rejects.toThrow(/has ended/);
+  });
+
+  it("re-plans on the poll interval without counting against max_refills", async () => {
+    const { ctx, run } = await waiting();
+    const state = stepOf(ctx, run.id).fanout!;
+    const config = engine.stepDef(ctx.store.get(run.id)!, "spawn").fanout!.pool!;
+    const endedAt = Date.parse(pool(ctx, run.id).passes[0]!.endedAt!);
+    expect(engine.poolPassDue(state, config, endedAt + 59 * 60_000)).toBe(false);
+    expect(engine.poolPassDue(state, config, endedAt + 60 * 60_000)).toBe(true);
+    // Even at the cap, a waiting pool keeps re-planning.
+    pool(ctx, run.id).refills = config.maxRefills;
+    expect(engine.poolPassDue(state, config, endedAt + 60 * 60_000)).toBe(true);
+  });
+
+  it("an item added while a child ends at the same moment: one pass at a time, and the ending is accounted by exactly one follow-up", async () => {
+    const { ctx, run, b } = await waiting();
+    await Promise.all([add(ctx, run.id, "x"), end(ctx, b.id, "completed", { result: "rb" })]);
+    await until(() => refillWs(ctx, 2) > 0);
+    // Never two passes at once: b's ending is covered by this pass or waits for the next.
+    expect(pool(ctx, run.id).passes.filter((pass) => pass.status === "starting" || pass.status === "running")).toHaveLength(1);
+    const pass2 = await createPass(ctx, refillWs(ctx, 2), '["a"]');
+    await until(() => pool(ctx, run.id).passes[1]!.status === "running");
+    await endPass(ctx, pass2.id, ["x"]);
+    await until(() => pool(ctx, run.id).passes.length === 3 || (pool(ctx, run.id).passes.length === 2 && pool(ctx, run.id).handled.includes("b")));
+    const keys = pool(ctx, run.id).passes.flatMap((pass) => pass.keys);
+    expect(keys).toContain("b");
+    expect(JSON.parse(engine.poolContext(stepOf(ctx, run.id).fanout!, 3).known)).toEqual(["a", "b", "x"]);
+    expect(pool(ctx, run.id).passes.length).toBeLessThanOrEqual(3);
+  });
+
+  it("a pool without idle still ends when nothing is ready, and a pass saying waiting is ignored", async () => {
+    const ctx = await setup({ "parent.yaml": parent(POOL()), "child.yaml": CHILD, "refill.yaml": REFILL_WAIT });
+    const run = await startParent(ctx);
+    await until(() => ctx.created.length === 2);
+    const a = await createChild(ctx, 1, "a");
+    const b = await createChild(ctx, 2, "b");
+    await until(() => kids(ctx, run.id).every((child) => child.status === "running"));
+    await end(ctx, a.id, "completed", { result: "ra" });
+    await end(ctx, b.id, "completed", { result: "rb" });
+    await until(() => refillWs(ctx, 1) > 0);
+    await waitingPass(ctx, (await createPass(ctx, refillWs(ctx, 1), '["a","b"]')).id);
+    await until(() => stepOf(ctx, run.id).status === "completed");
   });
 });

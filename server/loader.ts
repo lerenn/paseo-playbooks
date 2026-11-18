@@ -290,6 +290,16 @@ const RawFanoutStepSchema = z
             debounce: z.string().optional(),
           })
           .strict(),
+        /** Keep the pool open, waiting, when a pass says items remain but are blocked (instead of ending the step). */
+        idle: z
+          .object({
+            /** The pass playbook's output that says so: `true` = blocked items remain, wait. */
+            output: z.string().min(1),
+            /** While waiting, re-plan this often (a blocker may have landed). Default 10m. An added item re-plans at once. */
+            poll: z.string().optional(),
+          })
+          .strict()
+          .optional(),
       })
       .strict()
       .optional(),
@@ -1651,6 +1661,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
       }
       let pool: NonNullable<Step["fanout"]>["pool"];
       const refill = fan.pool?.refill;
+      const idleRaw = fan.pool?.idle;
       if (refill) {
         const poolId = refill.playbook;
         let passTarget: Playbook | null = null;
@@ -1684,7 +1695,14 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
         }
         const debounceMs = refill.debounce === undefined ? 0 : parseDuration(refill.debounce);
         if (debounceMs === null) err(`${where}: fanout.pool.refill.debounce: expected a duration such as 30s or 5m`);
-        pool = { playbook: qualifyId(folder.repo, poolId), inputs: passInputs, itemsOutput: refill.items_output, after: refill.after, maxRefills: refill.max_refills, debounceMs: debounceMs ?? 0 };
+        let idle: { output: string; pollMs: number } | undefined;
+        if (idleRaw) {
+          const pollMs = idleRaw.poll === undefined ? 10 * 60_000 : parseDuration(idleRaw.poll);
+          if (pollMs === null || pollMs <= 0) err(`${where}: fanout.pool.idle.poll: expected a duration such as 30s or 10m`);
+          if (passTarget && !passTarget.outputs[idleRaw.output]) err(`${where}: fanout.pool.idle.output: playbook "${poolId}" has no output "${idleRaw.output}" (it has: ${Object.keys(passTarget.outputs).join(", ") || "none"}); the pass must output whether blocked items remain`);
+          idle = { output: idleRaw.output, pollMs: pollMs ?? 10 * 60_000 };
+        }
+        pool = { playbook: qualifyId(folder.repo, poolId), inputs: passInputs, itemsOutput: refill.items_output, after: refill.after, maxRefills: refill.max_refills, debounceMs: debounceMs ?? 0, ...(idle ? { idle } : {}) };
       }
       const outcomeNames = pool ? POOL_OUTCOMES : FANOUT_OUTCOMES;
       const on: Record<string, Transition> = {};

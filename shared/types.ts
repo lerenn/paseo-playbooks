@@ -251,6 +251,8 @@ export const StepSchema = z.object({
           maxRefills: z.number().int().positive(),
           /** A pass starts once the oldest unhandled child ending is this old (0 = at once). */
           debounceMs: z.number().int().min(0),
+          /** The pool waits, open, instead of ending when a pass says items remain but are blocked (ADR 2026-11-18-pool-wait-accepts-items). Unset = it ends. */
+          idle: z.object({ output: z.string(), pollMs: z.number().int().positive() }).optional(),
         })
         .optional(),
     })
@@ -725,6 +727,10 @@ export const PoolPassSchema = z.object({
   skipped: z.number().int().default(0),
   /** What the pass decided: its items output as it gave it (cut short). */
   output: z.string().nullable().default(null),
+  /** Pools with `idle`: the pass said items remain but are blocked, so the pool waits instead of ending. */
+  waiting: z.boolean().default(false),
+  /** Whether the pass counts against `max_refills`: false for a re-plan of a waiting pool (poll or added item), which would starve the pool. */
+  counted: z.boolean().default(true),
 });
 export type PoolPass = z.infer<typeof PoolPassSchema>;
 
@@ -738,6 +744,8 @@ export const PoolStateSchema = z.object({
   added: z.number().int().min(0).default(0),
   /** Keys of ending children already accounted for by a completed pass. */
   handled: z.array(z.string()).default([]),
+  /** A waiting pool: when an item was added (the oldest one not yet re-planned), asking for a re-plan. Cleared when a pass begins. */
+  wakeAt: z.string().nullable().default(null),
   /** open: refilling as children end; stopped: a pass failed or `max_refills` was reached, no more passes (running children go on). */
   status: z.enum(["open", "stopped"]).default("open"),
   stopReason: z.string().nullable().default(null),

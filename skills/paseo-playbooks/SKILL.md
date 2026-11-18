@@ -531,7 +531,7 @@ workspace** with its own Playbook Manager, keeps at most `max_active` going, and
   (an object as an object, not JSON text). It is built like any list or refill item (same `inputs`, `key`, `workspace_name`
   templates), waits for a `max_active` slot as `pending`, and is in `pool.known` / `pending` / `active`, so a refill pass is
   told about it and does not list it again. Refused: step not a fan-out or not running, key already in the fan-out (any
-  state), unusable item or templates that do not render. Logged as run event `fanout_item_added`; the bus has
+  state), unusable item or templates that do not render. Also accepted while a pool with `idle` waits on blockers. Logged as run event `fanout_item_added`; the bus has
   `fanout.item_added`. Do not start a separate run for it: it would sit outside `max_active` and the pool would not know it.
 - **Replaced children.** A child's manager sometimes cancels its run and starts a new one of the same playbook for the same
   item (`Restarting on the fixed playbook`). Link them so the item stays running: `replace_child { runId: "<old>",
@@ -579,6 +579,7 @@ full). The step ends when no child runs or waits and the last pass added nothing
         after: completed                                      # completed (default): a success triggers a pass; ended: also failed/canceled
         max_refills: 20                                       # default 20, at most 500
         debounce: 10s                                         # optional: wait this long after the oldest unhandled ending
+    idle: { output: waiting, poll: 10m }                      # optional: stay open, waiting, while blocked items remain (see below)
   on: { some_failed: complete, refill_stopped: complete }
   timeout: 8h                                                 # a pool with no timeout gets 12h
 ```
@@ -621,6 +622,16 @@ a neutral value such as `none`), or mark it `required: true`. There is no `defau
   `max_active` as before; the pass's own run does not use a slot.
 - **End**: no child active or queued, no pass running, no ending left for a pass. `max_refills` reached with endings still
   unhandled stops refilling. An empty first list completes at once (no pass).
+- **Waiting on blockers (`pool.idle`).** Without it, a pool whose pass lists nothing ends, even when unstarted items remain
+  that are only blocked; a playbook that wants to keep going loops back (`goto`) and then no fan-out is running, so
+  `add_fanout_item` is refused. With `idle: { output: <name>, poll: 10m }` (`poll` default 10m) the pass playbook also
+  outputs `<name>`: `true` when it listed nothing to start but items remain that are blocked (by running or queued items). Then
+  the pool **stays open** (the step keeps running; run event `fanout_pool_waiting`) instead of ending, and it re-plans:
+  when a child ends (a normal pass), **when an item is added** with `add_fanout_item` or the panel (after `debounce`; several
+  adds in a short time share one pass), and every `poll` as a safety net. The pass that finds nothing blocked (`<name>` not
+  `true`, or it listed new items) lets the pool end as usual. Re-plans that no child ending triggered (an add, the poll) are
+  **not counted** in `max_refills` (a long wait would exhaust it); a pass that follows a child ending counts as before. The
+  step's `timeout` still bounds the wait. `get_run` shows `pool.waiting`.
 - **Failure.** A pass that fails, is canceled, outputs nothing usable or has clashing keys **stops refilling** (running
   children are never killed): the step waits for them, then ends with the outcome `refill_stopped` (a pool step's extra
   outcome; it fails the run unless `on` routes it, like `some_failed`). The pass's own steps follow the usual step rules
