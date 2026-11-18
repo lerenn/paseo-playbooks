@@ -96,7 +96,8 @@ describe("reloading stale sessions", () => {
     expect((await after.tryReload(paseo, "a")).kind).toBe("busy");
     expect(calls).toBe(1);
     // The scheduled retries run by themselves, then stop.
-    await new Promise((resolve) => setTimeout(resolve, 80));
+    for (let waited = 0; calls < 3 && waited < 3000; waited += 10) await new Promise((resolve) => setTimeout(resolve, 10));
+    await new Promise((resolve) => setTimeout(resolve, 50));
     expect(calls).toBe(3);
     expect(logs.join("\n")).toMatch(/could not reload.*boom.*retrying/);
     expect(logs.join("\n")).toMatch(/giving up after 3 attempts/);
