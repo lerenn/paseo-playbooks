@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readdir, rename, rm } from "node:fs/promises";
+import { monitorEventLoopDelay } from "node:perf_hooks";
 import path from "node:path";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 
@@ -377,10 +378,14 @@ function silenceDue(step: Step, attempt: Attempt, activeAt: number): number | nu
 const FAILED_RETENTION_MS = 24 * 60 * 60 * 1000;
 /** Used fraction of the volume from which failed runs' worktrees are removed early (the 85% guard of the pr playbooks). */
 const DISK_PRESSURE = 0.85;
+/** Stale sessions reloaded at once after a plugin update: the daemon calls back into the plugin for each. */
+const RELOAD_CONCURRENCY = 4;
 
 export class Runtime {
   private paseo: PaseoApi | null = null;
   private reconciled: Promise<void> | null = null;
+  /** The first phase of reconcile (the runs picked up again): what hooks and RPCs wait for, with a budget. */
+  private reconciledRuns: Promise<void> | null = null;
   private readonly busyManagers = new Set<string>();
   /** `run/step` whose agent is being created (the plugin's auto-start and the manager's start_step must not both create one). */
   private readonly startingSteps = new Set<string>();
@@ -466,7 +471,7 @@ export class Runtime {
 
   constructor(
     private readonly store: RunStore,
-    private readonly options: { dataDir?: string; debounceMs?: number; pollMs?: number; wakeGapMs?: number; /** Tests: how long a failed run's worktree is kept (default 24h). */ failedRetentionMs?: number; /** Tests: the used fraction of the volume holding the worktrees. */ diskUsedFraction?: (dir: string) => Promise<number>; admissionTimeoutMs?: number; /** Tests: false keeps the old manual flow (the plugin starts no ready agent step by itself). */ autoStartAgents?: boolean; /** Tests: the grace period of a Sidekick subagent's workspace archive when the project sets none. */ subagentArchiveAfterMs?: number } = {},
+    private readonly options: { dataDir?: string; debounceMs?: number; pollMs?: number; wakeGapMs?: number; /** Tests: how long a failed run's worktree is kept (default 24h). */ failedRetentionMs?: number; /** Tests: the used fraction of the volume holding the worktrees. */ diskUsedFraction?: (dir: string) => Promise<number>; admissionTimeoutMs?: number; /** Tests: false keeps the old manual flow (the plugin starts no ready agent step by itself). */ autoStartAgents?: boolean; /** Tests: the grace period of a Sidekick subagent's workspace archive when the project sets none. */ subagentArchiveAfterMs?: number; /** Tests: sessions reloaded at once after a plugin update (default 4). */ reloadConcurrency?: number; /** Tests: pause after each reload (default 20 ms). */ reloadPauseMs?: number } = {},
   ) {
     const dir = options.dataDir ?? path.dirname(store.dir);
     this.worktreesDir = path.join(dir, "worktrees");
@@ -535,17 +540,41 @@ export class Runtime {
   /** Every hook, tool and RPC context hands us the daemon API; the first one triggers reconcile. */
   attach(paseo: PaseoApi): Promise<void> {
     this.paseo ??= paseo;
-    this.reconciled ??= this.reconcile()
-      .catch((error) => console.error("[playbooks] reconcile failed:", error))
-      .then(() => this.reloadStaleSessions())
-      .catch((error) => console.error("[playbooks] stale session reload failed:", errorText(error)))
-      .then(() => this.rearmSubagentArchives())
-      .catch((error) => console.error("[playbooks] could not re-arm the pending subagent workspace archives:", errorText(error)));
+    if (!this.reconciled) {
+      this.reconciledRuns = this.reconcileRuns().catch((error) => console.error("[playbooks] reconcile failed:", error));
+      this.reconciled = this.reconciledRuns
+        .then(() => this.reconcileSweeps())
+        .catch((error) => console.error("[playbooks] reconcile failed:", error))
+        .then(() => this.reloadStaleSessions())
+        .catch((error) => console.error("[playbooks] stale session reload failed:", errorText(error)))
+        .then(() => this.rearmSubagentArchives())
+        .catch((error) => console.error("[playbooks] could not re-arm the pending subagent workspace archives:", errorText(error)));
+    }
     if (!this.eventsTimer) {
       this.eventsTimer = setInterval(() => void this.watchEvents().catch((error) => console.error("[playbooks] event watch failed:", errorText(error))), this.options.pollMs ?? 2000);
       (this.eventsTimer as unknown as { unref?: () => void }).unref?.();
     }
     return this.reconciled;
+  }
+
+  /**
+   * The entry point of hooks and RPCs: starts reconcile if needed and waits only for its first phase
+   * (runs picked up again), for at most `budgetMs`. The worktree sweep, the first tick and the reload
+   * of stale sessions run on in the background: a hook or the panel never waits for them, which took
+   * minutes after a plugin update and made every hook and RPC time out.
+   */
+  async enter(paseo: PaseoApi, budgetMs = 3_000): Promise<void> {
+    void this.attach(paseo);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const budget = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, budgetMs);
+      (timer as unknown as { unref?: () => void }).unref?.();
+    });
+    try {
+      await Promise.race([this.reconciledRuns, budget]);
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /** Provider usage of the host (`providers.listUsage`): shared by every run, read at most once at a time and reused for a short while. */
@@ -603,7 +632,7 @@ export class Runtime {
    * After a (re)start: re-arm timeouts, ask step agents whose turn the restart cut to carry on,
    * treat the ones that cannot as lost, wake idle managers of stalled runs, flush wake-ups.
    */
-  private async reconcile(): Promise<void> {
+  private async reconcileRuns(): Promise<void> {
     // Logged before anything ticks: a step found ready now was dropped by the previous plugin process.
     await this.logRecoveredSteps().catch((error) => console.error("[playbooks] recovery log failed:", errorText(error)));
     for (const run of this.store.list()) {
@@ -619,6 +648,10 @@ export class Runtime {
       if (!run.batch || isTerminal(run.status)) continue;
       for (const gate of run.gates) if (gate.status === "pending") this.batchGates.add(`${run.id}/${gate.id}`);
     }
+  }
+
+  /** The slow second phase of reconcile: removing orphan worktrees, permissions, admission, the first tick. Nothing waits for it. */
+  private async reconcileSweeps(): Promise<void> {
     await this.sweepWorktrees().catch((error) => console.error("[playbooks] worktree sweep failed:", errorText(error)));
     await this.sweepPermissions(true).catch((error) => console.error("[playbooks] permission sweep failed:", errorText(error)));
     await this.admitQueued().catch((error) => console.error("[playbooks] admission after reconcile failed:", errorText(error)));
@@ -4637,26 +4670,37 @@ export class Runtime {
    * (those still running are reloaded when their turn ends). Off with `reload_stale_sessions: false`.
    */
   private async reloadStaleSessions(): Promise<void> {
+    const started = Date.now();
+    const loopDelay = monitorEventLoopDelay({ resolution: 10 });
+    loopDelay.enable();
     const listed = await this.api().agents.list({});
     let reloaded = 0;
     let gone = 0;
     let busy = 0;
     const failed = new Map<string, number>();
-    for (const { agent } of listed.entries) {
-      if (agent.archivedAt) continue;
-      // A running agent is reloaded when its turn ends (onTurnEnded).
-      if (agent.status !== "idle") continue;
-      const outcome = await this.sessions.tryReload(this.api(), agent.id, { quiet: true, known: agent.labels?.[STEP_LABEL] !== undefined || agent.labels?.[GATE_LABEL] !== undefined || this.isRunAgent(agent.id) });
-      if (outcome.kind === "reloaded") reloaded++;
-      else if (outcome.kind === "gone") gone++;
-      else if (outcome.kind === "busy") busy++;
-      else if (outcome.kind === "failed") failed.set(outcome.reason, (failed.get(outcome.reason) ?? 0) + 1);
-    }
+    const candidates = listed.entries.map(({ agent }) => agent).filter((agent) => !agent.archivedAt && agent.status === "idle");
+    // A running agent is reloaded when its turn ends (onTurnEnded). A few reloads at a time, with a
+    // yield between two: each one makes the daemon call back (session-open hook) and must not starve hooks and RPCs.
+    let next = 0;
+    const worker = async () => {
+      while (next < candidates.length) {
+        const agent = candidates[next++]!;
+        const outcome = await this.sessions.tryReload(this.api(), agent.id, { quiet: true, known: agent.labels?.[STEP_LABEL] !== undefined || agent.labels?.[GATE_LABEL] !== undefined || this.isRunAgent(agent.id) });
+        if (outcome.kind === "reloaded") reloaded++;
+        else if (outcome.kind === "gone") gone++;
+        else if (outcome.kind === "busy") busy++;
+        else if (outcome.kind === "failed") failed.set(outcome.reason, (failed.get(outcome.reason) ?? 0) + 1);
+        await new Promise<void>((resolve) => setTimeout(resolve, this.options.reloadPauseMs ?? 20));
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(this.options.reloadConcurrency ?? RELOAD_CONCURRENCY, candidates.length) }, worker));
+    loopDelay.disable();
+    const maxLoopDelayMs = Math.round(loopDelay.max / 1e6);
     const stale = new Set(this.sessions.staleIds());
     const running = listed.entries.filter(({ agent }) => !agent.archivedAt && agent.status !== "idle" && stale.has(agent.id)).length;
     const failures = [...failed].map(([reason, count]) => `${count}× ${reason}`).join("; ");
     if (reloaded + gone + busy + running + failed.size > 0) {
-      console.log(`[playbooks] session reload after the plugin update: ${reloaded} reloaded, ${gone} skipped because their working directory is gone, ${running + busy} deferred (mid-turn: reloaded when the turn ends, or retried), ${[...failed.values()].reduce((a, b) => a + b, 0)} failed${failures ? ` (${failures}); retrying` : ""}`);
+      console.log(`[playbooks] session reload after the plugin update: ${reloaded} reloaded, ${gone} skipped because their working directory is gone, ${running + busy} deferred (mid-turn: reloaded when the turn ends, or retried), ${[...failed.values()].reduce((a, b) => a + b, 0)} failed${failures ? ` (${failures}); retrying` : ""}; took ${((Date.now() - started) / 1000).toFixed(1)}s, max event-loop delay ${maxLoopDelayMs}ms`);
     }
   }
 

@@ -297,7 +297,8 @@ with that tag.
   kept) so they stop failing with "Tool not found"; an agent mid-turn is reloaded when its turn ends,
   never one waiting on a permission or question. Turn off with `reload_stale_sessions: false` in
   `defaults/main.yaml`. Agents from before v0.51.0 are reloaded only if they belong to a run
-  (see `docs/adrs/2026-11-09-reload-stale-sessions.md`).
+  (see `docs/adrs/2026-11-09-reload-stale-sessions.md`). The reload runs in the background, four sessions at a time: hooks and the panel stay
+  answered during an update (`docs/adrs/2026-11-18-non-blocking-hooks-and-reload.md`); its end is logged with its duration.
 - A `tiers:` entry in `defaults/main.yaml` may be a list of providers: when a step agent runs out of tokens
   (quota, rate or usage limit, no credits), the same attempt restarts on the next entry, without using a
   retry, and the exhausted `provider/model` is skipped for `providers: { exhausted_for: 1h }` (default 1h; limits

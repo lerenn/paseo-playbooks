@@ -72,10 +72,10 @@ export default function contribute(server: PluginServerContext) {
   });
   const runtime = new Runtime(store);
 
-  /** Every entry point waits for the store and hands the runtime the daemon API. */
+  /** Every entry point waits for the store, hands the runtime the daemon API and waits (briefly) for the runs to be picked up again, never for the sweeps or the session reload. */
   const enter = async (paseo: PaseoApi) => {
     await ready;
-    await runtime.attach(paseo);
+    await runtime.enter(paseo);
   };
   const quietly = (label: string, fn: () => Promise<void>) =>
     fn().catch((error) => console.error(`[playbooks] ${label} failed:`, error));
