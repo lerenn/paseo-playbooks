@@ -15,6 +15,7 @@ import {
   resumeRun,
   startAttempt,
 } from "./engine";
+import { resolveRunInputs } from "./engine";
 import { isPaused } from "../shared/types";
 import { loadPlaybooks } from "./loader";
 
@@ -239,5 +240,44 @@ describe("engine", () => {
     cancelRun(r, "user", now());
     expect(r.pausedAt).toBeNull();
     expect(() => pauseRun(r, now())).toThrow(/only an active run can be paused/);
+  });
+
+  describe("resolveRunInputs: an empty value falls back to the declared default", () => {
+    const pb = (inputs: Record<string, unknown>, steps: unknown[] = []) => ({ inputs, steps }) as unknown as Playbook;
+    const defs = {
+      exclude: { type: "string", required: false, default: "none" },
+      count: { type: "number", required: false, default: 3 },
+      mode: { type: "enum", required: false, values: ["a", "b"], default: "b" },
+      note: { type: "string", required: false },
+      must: { type: "string", required: true },
+    };
+    it("falls back for empty and whitespace-only values, of every type", () => {
+      for (const blank of ["", "   ", "\t\n"]) {
+        const r = resolveRunInputs(pb(defs), { exclude: blank, count: blank, mode: blank, must: "x" });
+        expect(r).toEqual({ ok: true, inputs: { exclude: "none", count: 3, mode: "b", must: "x" } });
+      }
+    });
+    it("a real value wins over the default", () => {
+      const r = resolveRunInputs(pb(defs), { exclude: "src", count: 5, mode: "a", must: "x" });
+      expect(r).toEqual({ ok: true, inputs: { exclude: "src", count: 5, mode: "a", must: "x" } });
+    });
+    it("an input without a default is unchanged: empty stays unset, a required one is refused", () => {
+      expect(resolveRunInputs(pb(defs), { note: "  ", must: "x" })).toMatchObject({ ok: true, inputs: { exclude: "none", count: 3, mode: "b", must: "x" } });
+      expect(resolveRunInputs(pb(defs), { must: "" })).toEqual({ ok: false, errors: ['input "must" is required'] });
+    });
+    it("a strict fan-out reference to a defaulted input no longer trips on an empty panel value", () => {
+      const steps = [
+        {
+          id: "spawn",
+          when: [],
+          inputs: { exclude: { source: "{{ playbook.inputs.exclude }}" } },
+          fanout: { items: "x", inputs: {}, pool: { inputs: { exclude: "{{ inputs.exclude }}" } } },
+        },
+      ];
+      const playbook = pb({ exclude: defs.exclude }, steps);
+      expect(resolveRunInputs(playbook, { exclude: "" })).toEqual({ ok: true, inputs: { exclude: "none" } });
+      const noDefault = pb({ exclude: { type: "string", required: false } }, steps);
+      expect(resolveRunInputs(noDefault, { exclude: "" })).toMatchObject({ ok: false });
+    });
   });
 });
