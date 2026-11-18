@@ -897,6 +897,21 @@ export function runTools(runtime: Runtime): AgentToolDefinition[] {
         }),
     }),
     defineAgentTool({
+      name: "add_fanout_item",
+      description:
+        "Add ONE item to a RUNNING fan-out step, live: e.g. a ticket created after the run started, which would otherwise wait for the next refill pass. The plugin starts one more child run of the step's sub-playbook, with the step's inputs, key and workspace_name templates, exactly as for an item of the list or of a refill; it counts against max_active and waits for a slot like any pending item. The item shows in the step's pool.known / pool.pending / pool.active, so a refill pass is told about it and does not propose it again. `item` has the shape of the step's items: a string (or number) key, or a flat object of scalars when the step sets `fanout.key` (pass an object as an object, not as JSON text). Refused when the step is not a fan-out step or not running, when the run is not yours (only the run's manager calls it; a human uses the panel), when the item is not a usable item or its templates do not render, and when its key is already in the fan-out (pending, active or done). Not for starting a run outside the fan-out: that one would sit outside max_active and the pool would not know it. Emits fanout.item_added and a run event fanout_item_added; get_run shows the child.",
+      input: z.object({
+        runId: IdArg.describe("The parent run (the one with the fan-out step)"),
+        stepId: z.string().describe("The fan-out step"),
+        item: z.union([z.string(), z.number(), z.boolean(), z.record(z.string(), z.union([z.string(), z.number(), z.boolean()]))]).describe("The item, shaped like the step's items (a key, or an object with the fields its key template reads)"),
+      }),
+      execute: ({ runId, stepId, item }, { agent }) =>
+        guard(async () => {
+          const result = await runtime.addFanoutItem({ runId, stepId, item, by: agent.id });
+          return ok(`Item "${result.key}" added to fan-out step "${stepId}" of run ${runId}: ${result.status === "pending" ? "waiting for a free slot (max_active)" : "starting"}. get_run on ${runId} shows it among the children.`, { runId, stepId, ...result });
+        }),
+    }),
+    defineAgentTool({
       name: "cancel_run",
       description:
         "Cancel a playbook run and stop its running step agents; its manager is told. On a run that has ended, cancels its running after-tasks (its status stays). Without runId: the run you manage, else the active run of your workspace (see list_runs).",

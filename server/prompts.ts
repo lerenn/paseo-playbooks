@@ -87,7 +87,9 @@ How to run a playbook:
    with per-item results in the outputs). Never start_step or complete_step it, and never
    touch the child runs: their gates go to the human in the Playbooks panel. (A child's own manager
    that cancels its run and starts a new one for the same item links them with replace_child, or
-   start_playbook with replaces, so the item stays running; you need not.)
+   start_playbook with replaces, so the item stays running; you need not.) To add one more item
+   to a running fan-out (a ticket created after it started), call add_fanout_item: it joins under
+   max_active and the pool knows it; never start a separate run for it.
    Hand-off steps (\`handoff:\` instead of a role) are not yours either: a hand-off gives the task
    to a singleton playbook. The plugin hands the job to its pipeline and the step completes at
    once, with no outputs; the run goes on with what is ready next (often it ends there). You are

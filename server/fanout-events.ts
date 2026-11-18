@@ -22,6 +22,16 @@ export const FANOUT_TYPES: EventTypeDef[] = [
     },
   },
   {
+    type: "fanout.item_added",
+    description:
+      "An item was added by hand to a running fan-out step (add_fanout_item, or the panel): it is a pending child like any other, started under max_active, and a work pool's refill pass sees its key in pool.known. runId is the parent run; by is the agent that added it, or null for a human in the panel.",
+    payload: z.object({ runId: z.string(), stepId: z.string(), key: z.string(), by: z.string().nullable() }),
+    line: (event) => {
+      const p = event.payload as { runId: string; stepId: string; key: string; by: string | null };
+      return `Fan-out "${p.stepId}" of run ${p.runId}: item "${p.key}" added by ${p.by ? `agent ${p.by}` : "a human"}; it starts when a slot is free.`;
+    },
+  },
+  {
     type: "fanout.refill",
     description:
       "A work pool's refill pass (a fan-out step with `pool`): phase started when the pass begins (doneKeys: the finished items it is given), ended when its items were applied or it failed. `added` are the keys of the children this pass created, which answers why a child appeared; items already present are ignored. runId is the parent run.",

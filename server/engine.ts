@@ -8,7 +8,7 @@ import { blockEntrySteps, blockStepIds, holdsBlock, innermostBlock } from "../sh
 import { ADMISSION_CHOICES, PERMISSION_CHOICES, askChoices, askHumanText, askTransitionOf, choicesOfGate, GATE_SUMMARY_MAX, outcomeTransition } from "../shared/gates";
 import { parse as parseYaml, stringify as toYaml } from "yaml";
 import type { PoolPass, AfterTask, AskChoice, Attempt, AttemptAgent, FanoutChild, FanoutState, Gate, GateDecider, Job, Playbook, Run, RunDefinition, RunStep, RunWorktree, Step, Transition, VarValue, When } from "../shared/types";
-import { isActive, isAgentlessAttempt, isManagerless, MAX_FANOUT_PAST, MAX_POOL_PASSES, isPaused, isPipeline, isStepDone, isStepLive, isTerminal, restartBlocker, runningAfterTasks } from "../shared/types";
+import { isActive, isAgentlessAttempt, isFanoutAttempt, isManagerless, MAX_FANOUT_PAST, MAX_POOL_PASSES, isPaused, isPipeline, isStepDone, isStepLive, isTerminal, restartBlocker, runningAfterTasks } from "../shared/types";
 import { coerceValue, formatValue, type ListItem, lookup, parseDuration, parseList, renderTemplate, replaceRefs, resolveValue, singleRef, templateRefs } from "../shared/vars";
 
 export class EngineError extends Error {}
@@ -2631,6 +2631,33 @@ export function replaceFanoutChild(
   const pool = run.steps[stepId]!.fanout!.pool;
   if (pool) pool.handled = pool.handled.filter((handled) => handled !== key);
   log(run, input.now, "fanout_child_replaced", stepId, `${key}: ${child.previous.at(-1)!.runId} → ${input.newRunId}${input.reason ? ` (${input.reason.slice(0, 200)})` : ""}`);
+}
+
+/**
+ * Adds one item to a running fan-out step, as a `pending` child built exactly like a list or refill item (the same key, inputs and
+ * workspace name templates); the tick starts it under `max_active`. Refused (with the reason) when the step is not a running
+ * fan-out, the item is not a usable one, its key is already in the fan-out (any state) or its templates do not render.
+ */
+export function addFanoutItem(run: Run, stepId: string, item: unknown, now: string, by: string | null): { key: string; index: number } {
+  const step = stepDef(run, stepId);
+  if (!step.fanout) throw new EngineError(`step "${stepId}" is not a fan-out step`);
+  const state = run.steps[stepId]!;
+  const attempt = state.attempts.at(-1);
+  if (state.status !== "running" || !state.fanout || !attempt || !isFanoutAttempt(attempt.agentId)) throw new EngineError(`fan-out step "${stepId}" is not running (${state.status}): an item joins only a running fan-out`);
+  const list = parseList([item]);
+  if (!list.ok) throw new EngineError(`the item is not usable: ${list.error}`);
+  const values = Object.fromEntries(Object.entries(stepInputs(run, step)).map(([name, entry]) => [name, entry.value]));
+  const fanout = state.fanout;
+  const index = fanout.children.reduce((max, child) => Math.max(max, child.index + 1), 0);
+  const built = buildChild(step.fanout, values, list.items[0]!, index, now, new Map());
+  if ("error" in built) throw new EngineError(`the item cannot be added: ${built.error}`);
+  const child = built.child;
+  const clash = fanout.children.find((candidate) => candidate.key === child.key);
+  if (clash) throw new EngineError(`the key "${child.key}" is already in fan-out step "${stepId}" (${clash.status.replace("_", " ")}): an item is added once`);
+  if (child.status === "not_started") throw new EngineError(`the item cannot be added: ${child.error}`);
+  fanout.children.push(child);
+  log(run, now, "fanout_item_added", stepId, `${child.key}: added by ${by ?? "the panel"}, waiting for a slot (${fanoutSummaryText(fanout)})`);
+  return { key: child.key, index };
 }
 
 // ---------------------------------------------------------------- work pools (refill passes)

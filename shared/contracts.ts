@@ -192,6 +192,13 @@ export const nudgeStepRpc = defineRpc({
   output: z.object({ sent: z.boolean() }),
 });
 
+/** Adds one item to a running fan-out step, from the panel (a human). */
+export const addFanoutItemRpc = defineRpc({
+  name: "steps.add_fanout_item",
+  input: z.object({ runId: z.string(), stepId: z.string(), item: z.union([z.string(), z.record(z.string(), z.union([z.string(), z.number(), z.boolean()]))]) }),
+  output: z.object({ key: z.string() }),
+});
+
 /** Reopens a finished run from a step: the step and what follows run again, with the same manager. */
 export const restartRunRpc = defineRpc({
   name: "runs.restart",

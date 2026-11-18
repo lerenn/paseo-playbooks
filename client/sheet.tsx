@@ -3,7 +3,7 @@ import { Icon, Markdown, Modal, TextInput, useToast } from "@getpaseo/plugin/cli
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState, type ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
-import { decideGateRpc, nudgeStepRpc, restartRunRpc, retryStepRpc, scriptOutputRpc, stepDetailRpc } from "../shared/contracts";
+import { addFanoutItemRpc, decideGateRpc, nudgeStepRpc, restartRunRpc, retryStepRpc, scriptOutputRpc, stepDetailRpc } from "../shared/contracts";
 import { askChoices, askTransitionOf, choicesOfGate, destinationOf, gateText, linkify, waitsForHuman } from "../shared/gates";
 import { withDetail } from "../shared/lean";
 import { runningFor } from "../shared/elapsed";
@@ -360,6 +360,8 @@ export function StepSheet(props: {
   const decidedGates = run?.gates.filter((gate) => gate.stepId === stepId && gate.status !== "pending") ?? [];
   const nudge = useRpc(nudgeStepRpc);
   const retry = useRpc(retryStepRpc);
+  const addItem = useRpc(addFanoutItemRpc);
+  const [newItem, setNewItem] = useState("");
   const toast = useToast();
   const [message, setMessage] = useState("");
   const active = run !== null && isStepLive(run, stepId);
@@ -462,6 +464,43 @@ export function StepSheet(props: {
                     {child.previous.length ? ` · restarted ×${child.previous.length} (earlier: ${child.previous.map((entry) => `${entry.runId} ${entry.status.replace("_", " ")}`).join(", ")})` : ""}
                   </Line>
                 ))}
+              </>
+            ) : null}
+            {active && state?.status === "running" && state.fanout ? (
+              <>
+                <TextInput
+                  accessibilityLabel="Item to add to the fan-out"
+                  placeholder={step.fanout.key ? "New item: its key, or a JSON object" : "New item"}
+                  placeholderTextColor={theme.colors.foregroundMuted}
+                  value={newItem}
+                  onChangeText={setNewItem}
+                  style={{ minHeight: 36, borderRadius: 8, borderWidth: 1, borderColor: theme.colors.border, padding: 8, color: theme.colors.foreground, backgroundColor: theme.colors.surface2 }}
+                />
+                <View style={{ flexDirection: "row", gap: 8 }}>
+                  <Button
+                    theme={theme}
+                    label="Add item"
+                    disabled={!newItem.trim()}
+                    onPress={() => {
+                      const text = newItem.trim();
+                      let item: string | Record<string, string | number | boolean> = text;
+                      if (text.startsWith("{")) {
+                        try {
+                          item = JSON.parse(text) as Record<string, string | number | boolean>;
+                        } catch {
+                          toast.error("The item looks like a JSON object but is not valid JSON");
+                          return;
+                        }
+                      }
+                      void addItem({ runId: run!.id, stepId, item })
+                        .then((added) => {
+                          setNewItem("");
+                          toast.show(`Added ${added.key}`, { variant: "success" });
+                        })
+                        .catch((error: unknown) => toast.error(error instanceof Error ? error.message : String(error)));
+                    }}
+                  />
+                </View>
               </>
             ) : null}
           </Section>

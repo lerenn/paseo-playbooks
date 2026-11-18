@@ -27,6 +27,7 @@ import {
   scriptOutputRpc,
   admissionStatusRpc,
   nudgeStepRpc,
+  addFanoutItemRpc,
   createSidekickFilesRpc,
   listSidekicksRpc,
   openSidekickRpc,
@@ -243,6 +244,8 @@ export default function contribute(server: PluginServerContext) {
     await runtime.nudgeStep(runId, stepId, message, true);
     return { sent: true };
   });
+
+  handle(addFanoutItemRpc, async ({ runId, stepId, item }) => ({ key: (await runtime.addFanoutItem({ runId, stepId, item, by: null })).key }));
 
   return () => runtime.dispose();
 }

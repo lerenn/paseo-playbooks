@@ -2216,6 +2216,30 @@ export class Runtime {
     return report(true);
   }
 
+  /**
+   * add_fanout_item / the panel: one more item joins a running fan-out step. It is a `pending` child like any list or refill item:
+   * the next tick starts it under `max_active`, and the pool planner sees its key in `pool.known` / `pending` / `active`.
+   * `by` is the calling agent (it must manage the run), or null for a human in the panel.
+   */
+  async addFanoutItem(input: { runId: string; stepId: string; item: unknown; by: string | null }): Promise<{ key: string; status: string }> {
+    const run = this.store.get(input.runId);
+    if (!run) throw new UserError(`unknown run "${input.runId}"`);
+    if (input.by !== null && run.managerAgentId !== input.by) throw new UserError(`only the manager of run ${run.id} (or a human, in the panel) adds an item to its fan-out: you do not manage it`);
+    if (!isActive(run)) throw new UserError(`run ${run.id} has ended (${run.status})`);
+    const added = await this.store.mutate(run.id, (current) => {
+      try {
+        return engine.addFanoutItem(current, input.stepId, input.item, nowIso(), input.by === null ? null : `agent ${input.by}`);
+      } catch (error) {
+        throw error instanceof engine.EngineError ? new UserError(error.message) : error;
+      }
+    });
+    await this.bus.emit("fanout.item_added", { runId: run.id, stepId: input.stepId, key: added.key, by: input.by }, { runId: run.id, source: "fanout" }).catch((error: unknown) => console.error("[playbooks] could not emit fanout.item_added:", errorText(error)));
+    // Do not wait for the next poll: a free slot starts the item now.
+    void this.tick().catch((error: unknown) => console.error("[playbooks] tick after add_fanout_item failed:", errorText(error)));
+    const child = this.store.get(run.id)?.steps[input.stepId]?.fanout?.children.find((candidate) => candidate.key === added.key);
+    return { key: added.key, status: child?.status ?? "pending" };
+  }
+
   // ---------------------------------------------------------------- hand-offs and singleton pipelines
 
   /** Starts the ready hand-off steps of every active, unpaused run: each hands a job to its singleton's pipeline. */

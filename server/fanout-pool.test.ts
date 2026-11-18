@@ -484,3 +484,84 @@ describe("inputs read by strict fan-out templates", () => {
     expect((result as { error: string }).error).toMatch(/fanout\.pool\.refill\.inputs\.scope reads "\{\{ inputs\.scope \}\}", which is not set; input "scope" is not set: provide it, or declare a non-empty default/);
   });
 });
+
+describe("add_fanout_item (ADR 2026-11-18-add-fanout-item)", () => {
+  const add = (ctx: Ctx, runId: string, item: unknown, by: string | null = "mgr0", stepId = "spawn") => ctx.runtime.addFanoutItem({ runId, stepId, item, by });
+
+  it("adds an item that waits for a slot, shows in pool.known / pending and is not proposed again by a refill", async () => {
+    const { ctx, run, a } = await twoStarted();
+    const added = await add(ctx, run.id, "x");
+    expect(added).toEqual({ key: "x", status: "pending" });
+    expect(kid(ctx, run.id, "x")).toMatchObject({ status: "pending", index: 2, item: '"x"', inputs: { item: "x", base: "main" }, workspaceName: "Work on x" });
+    // max_active is 2 and both slots are taken: x waits.
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(ctx.created).toHaveLength(2);
+    expect(engine.poolContext(stepOf(ctx, run.id).fanout!, 1)).toMatchObject({ known: '["a","b","x"]', pending: '["x"]', active: '["a","b"]' });
+    const events = ctx.store.get(run.id)!.history.filter((entry) => entry.type === "fanout_item_added");
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ stepId: "spawn" });
+    expect(events[0]!.detail).toContain("x: added by agent mgr0");
+    // A slot frees: x starts like any pending item; the refill pass that lists it again adds nothing.
+    await end(ctx, a.id, "completed", { result: "ra" });
+    await until(() => ctx.created.length === 4);
+    expect(ctx.created.map((workspace) => workspace.title)).toContain("Work on x");
+    const pass = await createPass(ctx, ctx.created.findIndex((workspace) => workspace.title === "Refill #1") + 1, '["a"]');
+    await until(() => pool(ctx, run.id).passes[0]!.status === "running");
+    await endPass(ctx, pass.id, ["a", "x", "y"]);
+    await until(() => pool(ctx, run.id).passes[0]!.status === "completed");
+    expect(pool(ctx, run.id).passes[0]).toMatchObject({ added: ["y"], skipped: 2 });
+    expect(kids(ctx, run.id).map((child) => child.key)).toEqual(["a", "b", "x", "y"]);
+  });
+
+  it("starts at once when a slot is free", async () => {
+    const ctx = await setup(FILES(POOL().replace("max_active: 2", "max_active: 3")));
+    const run = await startParent(ctx);
+    await until(() => ctx.created.length === 2);
+    await add(ctx, run.id, "x");
+    await until(() => ctx.created.length === 3);
+    expect(ctx.created[2]!.title).toBe("Work on x");
+    expect(kid(ctx, run.id, "x").status).toBe("starting");
+  });
+
+  it("refuses a duplicate key (known, active, done), a bad item, a step that is not a fan-out or not running, and a caller that does not manage the run", async () => {
+    const { ctx, run, a } = await twoStarted();
+    await end(ctx, a.id, "completed", { result: "ra" });
+    await until(() => kid(ctx, run.id, "a").status === "completed");
+    await expect(add(ctx, run.id, "a")).rejects.toThrow(/key "a" is already in fan-out step "spawn" \(completed\)/);
+    await expect(add(ctx, run.id, "b")).rejects.toThrow(/key "b" is already .*running/);
+    await expect(add(ctx, run.id, "  ")).rejects.toThrow(/empty key/);
+    await expect(add(ctx, run.id, ["x"])).rejects.toThrow(/not usable/);
+    await expect(add(ctx, run.id, { id: 1 })).rejects.toThrow(/is an object: set `fanout.key`/);
+    await expect(add(ctx, run.id, "x", "plan-agent")).rejects.toThrow(/only the manager of run/);
+    await expect(add(ctx, run.id, "x", "mgr0", "plan")).rejects.toThrow(/not a fan-out step/);
+    await expect(add(ctx, run.id, "x", "mgr0", "after")).rejects.toThrow(/not a fan-out step/);
+    await expect(add(ctx, "nope", "x")).rejects.toThrow(/unknown run/);
+    expect(kids(ctx, run.id).map((child) => child.key)).toEqual(["a", "b"]);
+    // Human (panel) path: no manager check.
+    await expect(add(ctx, run.id, "h", null)).resolves.toMatchObject({ key: "h" });
+    expect(ctx.store.get(run.id)!.history.findLast((entry) => entry.type === "fanout_item_added")!.detail).toContain("added by the panel");
+  });
+
+  it("refuses when the fan-out step is not running yet or has ended", async () => {
+    const ctx = await setup(FILES());
+    const run = await startParent(ctx);
+    await until(() => ctx.created.length === 2);
+    await ctx.store.mutate(run.id, (current) => void (current.steps.spawn!.status = "completed"));
+    await expect(add(ctx, run.id, "x")).rejects.toThrow(/not running \(completed\)/);
+    await ctx.store.mutate(run.id, (current) => void (current.steps.spawn!.status = "pending"));
+    await expect(add(ctx, run.id, "x")).rejects.toThrow(/not running/);
+  });
+
+  it("takes an object item through the key template, and refuses one the template cannot key", async () => {
+    const spawn = POOL().replace('items: "{{ inputs.ready }}"', 'items: "{{ inputs.ready }}"\n      key: "{{ item.id }}"').replace('item: "{{ item }}"', 'item: "{{ item.id }}"').replace("Work on {{ item }}", "Work on {{ item.id }}");
+    const ctx = await setup(FILES(spawn));
+    await writeFile(path.join(ctx.dir, ".paseo/plugins/playbooks/scripts/plan.sh"), `#!/bin/sh\necho '{"summary": "planned", "outputs": {"ready": [{"id": "a"}], "base": "main"}}'\n`);
+    const run = await startParent(ctx);
+    await until(() => ctx.created.length === 1);
+    await expect(add(ctx, run.id, { id: "t-9", title: "New" })).resolves.toMatchObject({ key: "t-9" });
+    expect(kid(ctx, run.id, "t-9")).toMatchObject({ inputs: { item: "t-9" }, item: '{"id":"t-9","title":"New"}' });
+    await expect(add(ctx, run.id, { id: "a" })).rejects.toThrow(/key "a" is already/);
+    await expect(add(ctx, run.id, { name: "no id" })).rejects.toThrow(/"{{ item.id }}" is not set/);
+    await expect(add(ctx, run.id, "plain")).rejects.toThrow(/"{{ item.id }}" is not set/);
+  });
+});

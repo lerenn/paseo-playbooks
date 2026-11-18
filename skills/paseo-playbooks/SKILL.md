@@ -516,6 +516,14 @@ workspace** with its own Playbook Manager, keeps at most `max_active` going, and
   `any_failed` (boolean). An empty list completes at once with `all_completed`.
 - Canceling or failing the parent run, resetting the step with a `goto`, or its `timeout` cancels the active children and
   drops the waiting ones (`cancel_children: false` leaves them running). Archiving the ended parent does not touch them.
+- **Adding an item live.** An item created after the step started (a new ticket) joins the running fan-out with
+  `add_fanout_item { runId, stepId, item }` (manager of the run only; a human uses the *Add item* field of the step's
+  Fan-out section in the panel). `item` has the shape of the step's items: a key, or an object when `fanout.key` is set
+  (an object as an object, not JSON text). It is built like any list or refill item (same `inputs`, `key`, `workspace_name`
+  templates), waits for a `max_active` slot as `pending`, and is in `pool.known` / `pending` / `active`, so a refill pass is
+  told about it and does not list it again. Refused: step not a fan-out or not running, key already in the fan-out (any
+  state), unusable item or templates that do not render. Logged as run event `fanout_item_added`; the bus has
+  `fanout.item_added`. Do not start a separate run for it: it would sit outside `max_active` and the pool would not know it.
 - **Replaced children.** A child's manager sometimes cancels its run and starts a new one of the same playbook for the same
   item (`Restarting on the fixed playbook`). Link them so the item stays running: `replace_child { runId: "<old>",
   newRunId: "<new>", reason? }` (child's manager, parent's manager or any other non-step agent), or in one call
