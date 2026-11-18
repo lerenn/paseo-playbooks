@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { type Run, type Usage, UsageSchema, isAgentlessAttempt } from "./types";
+import { type Attempt, type Run, type Step, type Usage, UsageSchema, isAgentlessAttempt } from "./types";
 
 /** One row of a breakdown: what a group of agents spent, and how much of it was thrown away. */
 export const UsageRowSchema = z.object({
@@ -11,11 +11,32 @@ export const UsageRowSchema = z.object({
   detail: z.string().nullable(),
   runs: z.number().int(),
   attempts: z.number().int(),
-  /** Attempts whose work was redone: not the step's last attempt, or one whose agent did not finish. */
+  /** Deprecated alias of `repeatAttempts`, kept so consumers do not break (the word "wasted" was wrong: most repeats are by design). */
   wastedAttempts: z.number().int(),
   usage: UsageSchema,
-  /** Tokens (input + output) spent by the wasted attempts. */
+  /** Deprecated alias of `repeatTokens`. */
   wastedTokens: z.number(),
+  /** Repeat passes: earlier attempts of a step (not its last), or one whose agent did not finish. Equals feedback + poll + retry + interrupted. */
+  repeatAttempts: z.number().int().default(0),
+  /** Tokens (input + output) of the repeat passes. */
+  repeatTokens: z.number().default(0),
+  /** Repeat passes that ended with an outcome whose transition is a `goto` (or an `ask`): the loop worked as designed. */
+  feedbackAttempts: z.number().int().default(0),
+  /** Repeat passes that ended with a `goto` that has a `delay`: a re-check after a wait (a poll). */
+  pollAttempts: z.number().int().default(0),
+  /** Repeat passes that ended in failure or a timeout, after which the step ran again. */
+  retryAttempts: z.number().int().default(0),
+  /** Repeat passes whose agent did not finish (error, canceled, lost) or ended without a report. */
+  interruptedAttempts: z.number().int().default(0),
+  /** Passes of a stalled loop: STALLED_AFTER identical outcomes and summaries in a row (polls excepted), or a loop that hit its limit gate. Overlaps the other kinds. */
+  stalledAttempts: z.number().int().default(0),
+  /** Tokens of the stalled passes. */
+  stalledTokens: z.number().default(0),
+  /** Lost work: retries + interrupted attempts, failed or interrupted work. */
+  lostAttempts: z.number().int().default(0),
+  lostTokens: z.number().default(0),
+  /** `lostTokens` over the row's total tokens, 0..1. */
+  lostShare: z.number().default(0),
 });
 export type UsageRow = z.infer<typeof UsageRowSchema>;
 
@@ -47,6 +68,18 @@ export type AgentRow = z.infer<typeof AgentRowSchema>;
 
 /** The label of the run managers' rows (by role; by step it follows the playbook and a slash). */
 export const MANAGER_LABEL = "Playbook Manager";
+
+/** A loop is stalled once this many passes in a row return the same outcome and summary. */
+export const STALLED_AFTER = 3;
+
+/** How a repeat pass ended: a loop as designed (`feedback`), a delayed re-check (`poll`), `retry`, or `interrupted`. */
+export type PassKind = "feedback" | "poll" | "retry" | "interrupted";
+
+/** The rows to show, sorted by tokens (the default, as `analyze` returns them) or by the share of lost work, most first. */
+export function sortRows<T extends { usage: Usage; lostShare?: number }>(rows: T[], by: "tokens" | "lost"): T[] {
+  if (by === "tokens") return rows;
+  return [...rows].sort((a, b) => (b.lostShare ?? 0) - (a.lostShare ?? 0) || tokensOf(b.usage) - tokensOf(a.usage));
+}
 
 /** The identity of a row or series: the label, apart for the manager's, which no author-named group can share. */
 export function rowId(row: { key: string; manager?: boolean }): string {
@@ -156,31 +189,109 @@ interface Group {
   detail: string | null;
   runs: Set<string>;
   attempts: number;
-  wasted: number;
+  repeat: number;
+  repeatTokens: number;
+  kinds: Record<PassKind, number>;
+  stalled: number;
+  stalledTokens: number;
+  lostTokens: number;
   usage: Usage;
-  wastedTokens: number;
+}
+
+/** What one attempt adds to a row: its usage, and how it counts when it is a repeat pass. */
+interface Pass {
+  kind?: PassKind | null;
+  stalled?: boolean;
+  manager?: boolean;
 }
 
 class Groups {
   private readonly map = new Map<string, Group>();
-  add(key: string, detail: string | null, runId: string, usage: Usage, wasted: boolean, manager = false): void {
-    const id = rowId({ key, manager });
+  add(key: string, detail: string | null, runId: string, usage: Usage, pass: Pass = {}): void {
+    const id = rowId({ key, manager: pass.manager });
     let group = this.map.get(id);
-    if (!group) this.map.set(id, (group = { detail, runs: new Set(), attempts: 0, wasted: 0, usage: zero(), wastedTokens: 0 }));
+    if (!group) {
+      this.map.set(id, (group = { detail, runs: new Set(), attempts: 0, repeat: 0, repeatTokens: 0, kinds: { feedback: 0, poll: 0, retry: 0, interrupted: 0 }, stalled: 0, stalledTokens: 0, lostTokens: 0, usage: zero() }));
+    }
+    const tokens = tokensOf(usage);
     group.runs.add(runId);
     group.attempts += 1;
     group.usage = plus(group.usage, usage);
-    if (wasted) {
-      group.wasted += 1;
-      group.wastedTokens += tokensOf(usage);
+    if (pass.kind) {
+      group.repeat += 1;
+      group.repeatTokens += tokens;
+      group.kinds[pass.kind] += 1;
+      if (pass.kind === "retry" || pass.kind === "interrupted") group.lostTokens += tokens;
+    }
+    if (pass.stalled) {
+      group.stalled += 1;
+      group.stalledTokens += tokens;
     }
   }
   rows(limit: number): UsageRow[] {
     return [...this.map.entries()]
-      .map(([id, g]) => ({ key: id.startsWith("\u0000") ? id.slice(1) : id, manager: id.startsWith("\u0000"), detail: g.detail, runs: g.runs.size, attempts: g.attempts, wastedAttempts: g.wasted, usage: g.usage, wastedTokens: g.wastedTokens }))
+      .map(([id, g]) => {
+        const total = tokensOf(g.usage);
+        return {
+          key: id.startsWith("\u0000") ? id.slice(1) : id,
+          manager: id.startsWith("\u0000"),
+          detail: g.detail,
+          runs: g.runs.size,
+          attempts: g.attempts,
+          wastedAttempts: g.repeat,
+          usage: g.usage,
+          wastedTokens: g.repeatTokens,
+          repeatAttempts: g.repeat,
+          repeatTokens: g.repeatTokens,
+          feedbackAttempts: g.kinds.feedback,
+          pollAttempts: g.kinds.poll,
+          retryAttempts: g.kinds.retry,
+          interruptedAttempts: g.kinds.interrupted,
+          stalledAttempts: g.stalled,
+          stalledTokens: g.stalledTokens,
+          lostAttempts: g.kinds.retry + g.kinds.interrupted,
+          lostTokens: g.lostTokens,
+          lostShare: total > 0 ? g.lostTokens / total : 0,
+        };
+      })
       .sort((a, b) => tokensOf(b.usage) - tokensOf(a.usage))
       .slice(0, limit);
   }
+}
+
+/**
+ * How each attempt of a step counts: null for one that is no repeat (the step's last attempt, when its agent finished), else why it
+ * ended. A failure or timeout that the step ran again is a retry; an agent that did not finish (error, canceled, lost) or reported
+ * nothing is interrupted; an outcome whose transition is a `goto` with a `delay` is a poll, any other `goto` or `ask` is feedback.
+ * `stalled` flags the passes of a loop that returned STALLED_AFTER identical outcomes and summaries in a row (polls repeat by design, so
+ * they never count), or that hit its limit gate. Pure.
+ */
+export function classifyAttempts(step: Step, attempts: Attempt[], limitReached: boolean): Array<{ kind: PassKind | null; stalled: boolean }> {
+  const kinds = attempts.map((attempt, index): PassKind | null => {
+    const last = index === attempts.length - 1;
+    const end = attempt.turnEnd;
+    if (end === "timeout") return "retry";
+    if (end !== null && end !== "completed") return "interrupted";
+    if (last) return null;
+    if (!attempt.report) return "interrupted";
+    const outcome = attempt.outcome ?? attempt.report.outcome;
+    const transition = step.on?.[outcome];
+    if (transition?.kind === "goto") return transition.delayMs ? "poll" : "feedback";
+    if (transition?.kind === "ask") return "feedback";
+    // No loop edge, yet the step ran again: a failure retried, or a restart.
+    return "retry";
+  });
+  const stalled = attempts.map(() => false);
+  let start = 0;
+  const signature = (attempt: Attempt) => (attempt.report ? `${attempt.outcome ?? attempt.report.outcome}\u0000${attempt.report.summary.trim()}` : null);
+  for (let i = 1; i <= attempts.length; i++) {
+    const same = i < attempts.length && kinds[i] !== "poll" && kinds[start] !== "poll" && signature(attempts[i]!) !== null && signature(attempts[i]!) === signature(attempts[start]!);
+    if (same) continue;
+    if (i - start >= STALLED_AFTER) for (let j = start; j < i; j++) stalled[j] = true;
+    start = i;
+  }
+  if (limitReached) kinds.forEach((kind, i) => { if (kind === "feedback") stalled[i] = true; });
+  return kinds.map((kind, i) => ({ kind, stalled: stalled[i]! }));
 }
 
 export interface AnalyticsOptions {
@@ -244,9 +355,9 @@ export function analyze(runs: Run[], options: AnalyticsOptions = {}): Analytics 
       daily.byStep.add(stepKey, runDay, tokens, true);
       daily.byRole.add(MANAGER_LABEL, runDay, tokens, true);
       daily.byModel.add(managerModel, runDay, tokens);
-      byStep.add(stepKey, `role ${MANAGER_LABEL}, model ${managerModel}`, run.id, managerUsage, false, true);
-      byRole.add(MANAGER_LABEL, null, run.id, managerUsage, false, true);
-      byModel.add(managerModel, null, run.id, managerUsage, false);
+      byStep.add(stepKey, `role ${MANAGER_LABEL}, model ${managerModel}`, run.id, managerUsage, { manager: true });
+      byRole.add(MANAGER_LABEL, null, run.id, managerUsage, { manager: true });
+      byModel.add(managerModel, null, run.id, managerUsage);
       note(runDay);
     }
     manager = plus(manager, managerUsage);
@@ -266,11 +377,12 @@ export function analyze(runs: Run[], options: AnalyticsOptions = {}): Analytics 
     for (const gate of run.gates) runUsage = plus(runUsage, gate.usage);
     for (const step of run.playbook.steps) {
       const attempts = run.steps[step.id]?.attempts ?? [];
+      const limitReached = run.gates.some((gate) => gate.kind === "loop_limit" && gate.stepId === step.id);
+      const passes = classifyAttempts(step, attempts, limitReached);
       attempts.forEach((attempt, index) => {
         if (isAgentlessAttempt(attempt.agentId) || !attempt.usage) return;
         any = true;
-        const last = index === attempts.length - 1;
-        const wasted = !last || (attempt.turnEnd !== null && attempt.turnEnd !== "completed");
+        const pass = passes[index]!;
         const model = attempt.target || [step.agent.provider, step.agent.model].filter(Boolean).join("/") || "default";
         const day = dayKey(attempt.endedAt ?? attempt.startedAt, tz);
         const tokens = tokensOf(attempt.usage);
@@ -281,13 +393,13 @@ export function analyze(runs: Run[], options: AnalyticsOptions = {}): Analytics 
         note(day);
         total = plus(total, attempt.usage);
         runUsage = plus(runUsage, attempt.usage);
-        byStep.add(`${playbook}/${step.id}`, `role ${step.role ?? "none"}, model ${model}`, run.id, attempt.usage, wasted);
-        byRole.add(step.role ?? "(no role)", null, run.id, attempt.usage, wasted);
-        byModel.add(model, null, run.id, attempt.usage, wasted);
+        byStep.add(`${playbook}/${step.id}`, `role ${step.role ?? "none"}, model ${model}`, run.id, attempt.usage, pass);
+        byRole.add(step.role ?? "(no role)", null, run.id, attempt.usage, pass);
+        byModel.add(model, null, run.id, attempt.usage, pass);
       });
     }
     if (!any) withoutUsage += 1;
-    byPlaybook.add(playbook, null, run.id, runUsage, false);
+    byPlaybook.add(playbook, null, run.id, runUsage);
   }
   const today = dayKey((options.now ?? new Date()).toISOString(), tz);
   // The day `since` falls on (a partial day) through today; all time starts at the first usage, at most 90 days back.

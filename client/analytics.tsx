@@ -2,7 +2,7 @@ import { useRpc } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/ui";
 import { useEffect, useState } from "react";
 import { Pressable, Text, View } from "react-native";
-import { rowId, tokensOf, type AgentRow, type Analytics, type DailySeries, type UsageRow } from "../shared/analytics";
+import { rowId, sortRows, tokensOf, type AgentRow, type Analytics, type DailySeries, type UsageRow } from "../shared/analytics";
 import { analyticsStateRpc } from "../shared/contracts";
 import type { Usage } from "../shared/types";
 import { axisTicks, compactNumber, isDarkColor, labelIndexes, niceAxis, seriesColor, shortDate } from "./analytics-chart";
@@ -196,6 +196,7 @@ export function AnalyticsView(props: { theme: Theme }) {
   const { theme } = props;
   const fetchAnalytics = useRpc(analyticsStateRpc);
   const [days, setDays] = useState<number | undefined>(30);
+  const [sort, setSort] = useState<SortBy>("tokens");
   const [data, setData] = useState<Analytics | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -218,6 +219,9 @@ export function AnalyticsView(props: { theme: Theme }) {
         {RANGES.map((range) => (
           <Pill key={range.label} theme={theme} label={range.label} selected={days === range.days} onPress={() => setDays(range.days)} />
         ))}
+        <View style={{ width: 8 }} />
+        <Pill theme={theme} label="Sort: tokens" selected={sort === "tokens"} onPress={() => setSort("tokens")} />
+        <Pill theme={theme} label="Sort: lost share" selected={sort === "lost"} onPress={() => setSort("lost")} />
       </View>
       {error ? <Text style={{ color: theme.colors.statusDanger }}>{error}</Text> : null}
       {!data && !error ? <Text style={{ color: muted }}>Loading…</Text> : null}
@@ -229,10 +233,10 @@ export function AnalyticsView(props: { theme: Theme }) {
               No usage recorded in this range yet. It is recorded as agents finish turns, so runs from before this feature show nothing.
             </Text>
           ) : null}
-          <Breakdown theme={theme} title="By playbook" rows={data.byPlaybook} chart={data.daily?.byPlaybook} />
-          <Breakdown theme={theme} title="By step" rows={data.byStep} chart={data.daily?.byStep} showWaste />
-          <Breakdown theme={theme} title="By role" rows={data.byRole} chart={data.daily?.byRole} showWaste />
-          <Breakdown theme={theme} title="By model" rows={data.byModel} chart={data.daily?.byModel} showWaste />
+          <Breakdown theme={theme} title="By playbook" rows={data.byPlaybook} chart={data.daily?.byPlaybook} sort={sort} />
+          <Breakdown theme={theme} title="By step" rows={data.byStep} chart={data.daily?.byStep} showWaste sort={sort} />
+          <Breakdown theme={theme} title="By role" rows={data.byRole} chart={data.daily?.byRole} showWaste sort={sort} />
+          <Breakdown theme={theme} title="By model" rows={data.byModel} chart={data.daily?.byModel} showWaste sort={sort} />
           <TopAgents theme={theme} rows={data.topAgents} />
         </>
       ) : null}
@@ -277,22 +281,43 @@ function Summary(props: { theme: Theme; data: Analytics }) {
   const total: Usage = data.total;
   const overhead = tokensOf(data.overhead.manager) + tokensOf(data.overhead.deciders);
   const share = tokensOf(total) > 0 ? Math.round((overhead / tokensOf(total)) * 100) : 0;
-  const wasted = data.byStep.reduce((sum, row) => sum + row.wastedTokens, 0);
+  const steps = data.byStep.filter((row) => !row.manager);
+  const repeats = steps.reduce((sum, row) => sum + row.repeatAttempts, 0);
+  const lost = steps.reduce((sum, row) => sum + row.lostTokens, 0);
+  const stalled = steps.reduce((sum, row) => sum + row.stalledAttempts, 0);
   const cacheBase = total.inputTokens + total.cachedInputTokens;
   return (
     <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 10 }}>
       <Stat theme={theme} label="Runs" value={String(data.runs)} hint={[data.runsWithoutUsage ? `${data.runsWithoutUsage} without usage` : "", data.runsWithInvalidManagerUsage ? `manager usage of ${data.runsWithInvalidManagerUsage} older runs hidden (inflated)` : ""].filter(Boolean).join(" · ") || undefined} />
       <Stat theme={theme} label="Tokens (excl. cache)" value={compactNumber(tokensOf(total))} hint={`${compactNumber(total.inputTokens)} in · ${compactNumber(total.outputTokens)} out · ${compactNumber(total.cachedInputTokens)} cached`} />
-      <Stat theme={theme} label="Wasted on retries" value={compactNumber(wasted)} hint="tokens of redone attempts" />
+      <Stat theme={theme} label="Repeat passes" value={compactNumber(repeats)} hint="earlier attempts of a step: feedback loops, polls, retries" />
+      <Stat theme={theme} label="Lost work" value={compactNumber(lost)} hint={`tokens of failed or interrupted attempts${stalled > 0 ? ` · ${stalled} stalled passes` : ""}`} />
       <Stat theme={theme} label="Cache hits" value={cacheBase > 0 ? `${Math.round((total.cachedInputTokens / cacheBase) * 100)}%` : "–"} />
       <Stat theme={theme} label="Managers + deciders" value={`${share}%`} hint="of the tokens, outside the steps" />
     </View>
   );
 }
 
+type SortBy = "tokens" | "lost";
+
+/** "12 passes (5 feedback, 3 polls, 2 retries, 1 interrupted) · lost 4.2k (35%) · 3 stalled", leaving out what is zero. */
+function passesText(row: UsageRow): string {
+  const parts = [
+    row.feedbackAttempts ? `${row.feedbackAttempts} feedback` : "",
+    row.pollAttempts ? `${row.pollAttempts} polls` : "",
+    row.retryAttempts ? `${row.retryAttempts} retries` : "",
+    row.interruptedAttempts ? `${row.interruptedAttempts} interrupted` : "",
+  ].filter(Boolean);
+  let text = `${row.attempts} passes${parts.length > 0 ? ` (${parts.join(", ")})` : ""}`;
+  if (row.lostAttempts > 0) text += ` · lost ${compactNumber(row.lostTokens)} (${Math.round(row.lostShare * 100)}%)`;
+  if (row.stalledAttempts > 0) text += ` · ${row.stalledAttempts} stalled`;
+  return text;
+}
+
 /** One breakdown: its title, the per-day chart, then the table rows, all in one card with separators. */
-function Breakdown(props: { theme: Theme; title: string; rows: UsageRow[]; chart: DailySeries | undefined; showWaste?: boolean }) {
-  const { theme, rows, chart } = props;
+function Breakdown(props: { theme: Theme; title: string; rows: UsageRow[]; chart: DailySeries | undefined; showWaste?: boolean; sort: SortBy }) {
+  const { theme, chart } = props;
+  const rows = props.showWaste ? sortRows(props.rows, props.sort) : props.rows;
   if (rows.length === 0) return null;
   const colors = colorsOf(theme, chart);
   const top = Math.max(...rows.map((row) => tokensOf(row.usage)), 1);
@@ -315,8 +340,7 @@ function Breakdown(props: { theme: Theme; title: string; rows: UsageRow[]; chart
                 </View>
                 <Text style={{ color: theme.colors.foreground, fontSize: 13, fontWeight: "600" }}>{compactNumber(tokensOf(row.usage))}</Text>
                 <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>
-                  {props.showWaste ? `${row.attempts} attempts` : `${row.runs} runs`}
-                  {props.showWaste && row.wastedAttempts > 0 ? ` · ${row.wastedAttempts} wasted (${compactNumber(row.wastedTokens)})` : ""}
+                  {props.showWaste ? passesText(row) : `${row.runs} runs`}
                   {row.usage.contextPeak > 0 ? ` · ctx ${compactNumber(row.usage.contextPeak)}` : ""}
                 </Text>
               </View>

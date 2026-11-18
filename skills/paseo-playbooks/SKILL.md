@@ -1219,9 +1219,15 @@ requests under `escalate`). No setting: it is always on.
 ## Improve a playbook from its token spend
 
 `get_analytics` (read-only; `days`, `playbook`, `projectId`, `limit`) sums what agents spent, by playbook, step
-(with its role and model), role and model: tokens, peak context, and wasted attempts (retried, or whose
-agent did not finish) with their tokens. Look for steps that use the most tokens, retry the most or fill their context,
-and for a big model on a simple step; then propose a change to the playbook, role or model. `overhead` is the
+(with its role and model), role and model: tokens, peak context, and repeat passes (`repeatAttempts` /
+`repeatTokens`: earlier attempts of a step, often by design) split by why the earlier attempt ended: `feedbackAttempts`
+(a `goto` loop-back such as `changes_requested`), `pollAttempts` (a `goto` with a `delay`: a re-check), `retryAttempts`
+(failure or timeout, then run again) and `interruptedAttempts` (the agent errored, was canceled or lost, or reported
+nothing). Lost work is the real loss: `lostAttempts` / `lostTokens` (retries + interrupted) and `lostShare` (lost over the
+row's tokens, 0..1); `stalledAttempts` flags loops that returned the same outcome and summary 3 times in a row, or hit
+their `max_loops` gate. `wastedAttempts` / `wastedTokens` are deprecated aliases of the repeat passes. The Analytics tab
+shows the same, and can sort by lost share. Look for steps with a high lost share or stalled loops, that fill their
+context, and for a big model on a simple step; then propose a change to the playbook, role or model. `overhead` is the
 managers' and gate deciders' share. Usage is recorded as per-turn deltas from v0.66.1; runs recorded before that hold an inflated manager usage that analytics leaves out (their step and decider usage still counts).
 
 ## Recover a run

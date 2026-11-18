@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { addDays, analyze, dayKey } from "./analytics";
+import { addDays, analyze, classifyAttempts, dayKey, sortRows, STALLED_AFTER } from "./analytics";
 import { addUsage } from "./types";
 
 const usage = (input: number, output: number) => addUsage(null, { inputTokens: input, outputTokens: output, contextWindowUsedTokens: input });
@@ -124,5 +124,105 @@ describe("analyze", () => {
     const old = run("r4", []);
     old.usageDeltas = false;
     expect(analyze([old]).byRole.find((row) => row.manager)).toBeUndefined();
+  });
+});
+
+type A = { outcome?: string; summary?: string; turnEnd?: string | null; tokens?: number; report?: boolean };
+const attempt = (a: A, i: number) => ({
+  agentId: `a${i}`,
+  usage: usage(a.tokens ?? 100, 0),
+  turnEnd: a.turnEnd === undefined ? "completed" : a.turnEnd,
+  outcome: a.outcome ?? "ok",
+  report: a.report === false ? null : { outcome: a.outcome ?? "ok", summary: a.summary ?? `s${i}`, outputs: {} },
+});
+function loopRun(attempts: A[], on: Record<string, any>, gates: any[] = [], id = "r1"): any {
+  return {
+    id,
+    createdAt: "2026-11-10T00:00:00Z",
+    projectId: "p",
+    playbook: { id: "pb", steps: [{ id: "build", role: "dev", agent: { model: "opus" }, on }] },
+    usageDeltas: true,
+    managerUsage: usage(5, 5),
+    gates,
+    steps: { build: { attempts: attempts.map(attempt) } },
+  };
+}
+const stepRow = (r: any) => analyze([r]).byStep.find((row) => !row.manager)!;
+
+describe("repeat passes and lost work", () => {
+  it("counts a loop-back attempt as feedback, not lost", () => {
+    const row = stepRow(loopRun([{ outcome: "changes_requested" }, { outcome: "approved" }], { changes_requested: { kind: "goto", target: "build" } }));
+    expect(row).toMatchObject({ attempts: 2, repeatAttempts: 1, feedbackAttempts: 1, retryAttempts: 0, lostAttempts: 0, lostTokens: 0, lostShare: 0 });
+  });
+
+  it("counts a failed attempt that ran again as a retry, and lost", () => {
+    const row = stepRow(loopRun([{ outcome: "failure", tokens: 300 }, { outcome: "ok", tokens: 100 }], {}));
+    expect(row).toMatchObject({ repeatAttempts: 1, retryAttempts: 1, lostAttempts: 1, lostTokens: 300 });
+    expect(row.lostShare).toBeCloseTo(0.75);
+  });
+
+  it("counts an attempt whose agent did not finish, or that reported nothing, as interrupted and lost, even the last", () => {
+    const row = stepRow(loopRun([{ turnEnd: "canceled", report: false, tokens: 50 }, { report: false, turnEnd: "completed", tokens: 20 }, { turnEnd: "lost", tokens: 10 }], {}));
+    expect(row).toMatchObject({ interruptedAttempts: 3, lostAttempts: 3, lostTokens: 80, repeatAttempts: 3 });
+  });
+
+  it("counts a timeout as a retry", () => {
+    expect(stepRow(loopRun([{ turnEnd: "timeout", report: false }, {}], {}))).toMatchObject({ retryAttempts: 1, interruptedAttempts: 0 });
+  });
+
+  it("counts a goto with a delay as a poll: neither feedback nor lost, and never stalled", () => {
+    const polls = Array.from({ length: 6 }, () => ({ outcome: "waiting", summary: "still waiting", tokens: 10 }));
+    const row = stepRow(loopRun([...polls, { outcome: "ok" }], { waiting: { kind: "goto", target: "build", delayMs: 60000 } }));
+    expect(row).toMatchObject({ pollAttempts: 6, feedbackAttempts: 0, lostAttempts: 0, stalledAttempts: 0, repeatAttempts: 6 });
+  });
+
+  it("keeps the old fields, equal to the repeat passes", () => {
+    const row = stepRow(loopRun([{ outcome: "changes_requested" }, { outcome: "failure" }, { turnEnd: "failed" }], { changes_requested: { kind: "goto", target: "build" } }));
+    expect(row.wastedAttempts).toBe(3);
+    expect(row.wastedAttempts).toBe(row.repeatAttempts);
+    expect(row.wastedTokens).toBe(row.repeatTokens);
+    expect(row.repeatAttempts).toBe(row.feedbackAttempts + row.pollAttempts + row.retryAttempts + row.interruptedAttempts);
+  });
+
+  it("flags a loop that returns the same outcome and summary STALLED_AFTER times in a row", () => {
+    expect(STALLED_AFTER).toBe(3);
+    const on = { again: { kind: "goto", target: "build" } };
+    const same = (n: number) => Array.from({ length: n }, () => ({ outcome: "again", summary: "same" }));
+    expect(stepRow(loopRun([...same(2), { outcome: "ok" }], on)).stalledAttempts).toBe(0);
+    const row = stepRow(loopRun([...same(3), { outcome: "ok" }], on));
+    expect(row.stalledAttempts).toBe(3);
+    expect(row.stalledTokens).toBe(300);
+    // a different summary breaks the streak
+    expect(stepRow(loopRun([{ outcome: "again", summary: "a" }, { outcome: "again", summary: "b" }, { outcome: "again", summary: "a" }, {}], on)).stalledAttempts).toBe(0);
+  });
+
+  it("flags the feedback passes of a loop that reached its limit gate", () => {
+    const on = { again: { kind: "goto", target: "build", maxLoops: 2 } };
+    const gates = [{ kind: "loop_limit", stepId: "build", usage: null }];
+    const row = stepRow(loopRun([{ outcome: "again" }, { outcome: "again", summary: "x" }, { outcome: "again", summary: "y" }], on, gates));
+    expect(row.stalledAttempts).toBe(2);
+    expect(row.lostAttempts).toBe(0);
+  });
+
+  it("never counts a manager row as repeated or lost", () => {
+    const result = analyze([loopRun([{ outcome: "failure" }, {}], {})]);
+    const manager = result.byStep.find((row) => row.manager)!;
+    expect(manager).toMatchObject({ repeatAttempts: 0, wastedAttempts: 0, lostAttempts: 0, lostTokens: 0, lostShare: 0, stalledAttempts: 0 });
+    expect(result.byRole.find((row) => row.manager)).toMatchObject({ lostTokens: 0, feedbackAttempts: 0 });
+  });
+
+  it("classifies a step's attempts directly", () => {
+    const step: any = { on: { x: { kind: "ask", ask: "?", target: "build" } } };
+    const attempts = [attempt({ outcome: "x" }, 0), attempt({}, 1)] as any;
+    expect(classifyAttempts(step, attempts, false).map((p) => p.kind)).toEqual(["feedback", null]);
+  });
+
+  it("sorts rows by lost share, then tokens, without touching the order of tokens", () => {
+    const low = { usage: usage(500, 0), lostShare: 0.1 };
+    const high = { usage: usage(100, 0), lostShare: 0.9 };
+    const none = { usage: usage(900, 0), lostShare: 0 };
+    const rows = [none, low, high];
+    expect(sortRows(rows, "lost")).toEqual([high, low, none]);
+    expect(sortRows(rows, "tokens")).toBe(rows);
   });
 });

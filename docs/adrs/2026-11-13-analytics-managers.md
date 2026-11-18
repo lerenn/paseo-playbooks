@@ -22,7 +22,7 @@ invisible and the views did not add up.
     when it sets neither.
 - A manager's usage has no timestamp, so it counts on the day its run was created, in the charts, as in
   the by-playbook one. Runs from before usage was recorded as deltas stay excluded, as everywhere.
-- Manager rows are never "wasted": they show no wasted attempts. Their "attempts" are the runs.
+- Manager rows never show repeat passes or lost work (said "wasted" here before ADR 2026-11-18-analytics-repeat-passes-lost-work): they show none. Their "attempts" are the runs.
 - No new RPC, no schema change: the rows come from data already read.
 
 ## Consequences
