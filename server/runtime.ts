@@ -3845,7 +3845,7 @@ export class Runtime {
     const own = (agent: (typeof agents)[number]) => agent.labels?.[MANAGER_LABEL] !== undefined || agent.labels?.[RUN_LABEL] !== undefined || agent.labels?.[STEP_LABEL] !== undefined || agent.labels?.[GATE_LABEL] !== undefined;
     const foreign = agents.filter((agent) => !own(agent));
     if (foreign.length > 0) return skip(`it holds agents that are not part of a run: ${foreign.map((agent) => agent.id).join(", ")}`);
-    await this.api().workspaces.ref(run.workspaceId).archive();
+    await this.archiveWorkspace(run.workspaceId);
     return { archived: true, reason: "archived" };
   }
 
@@ -5439,7 +5439,7 @@ export class Runtime {
     });
     if (refusal) return keep(refusal);
     if (subagent && !subagent.archivedAt) await this.api().agents.ref(entry.agentId).archive().catch((error) => console.error(`[playbooks] could not archive subagent ${entry.agentId}:`, errorText(error)));
-    await this.api().workspaces.ref(entry.workspaceId).archive();
+    await this.archiveWorkspace(entry.workspaceId);
     return { archived: true, reason: "archived" };
   }
 

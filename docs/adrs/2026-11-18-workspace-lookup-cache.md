@@ -30,6 +30,16 @@ A workspace's descriptor can be up to 15 s old (title, branch, directory). The f
 A workspace archived by something other than the plugin is dropped from the cache by the `workspace.archived` event.
 The plugin has no workspace rename call; if one is added, invalidate after it.
 
+Known limits:
+
+- A workspace archived outside the plugin can still be served from the cache for up to 15 s, until its
+  `workspace.archived` event arrives. Callers that act on it (auto-archive, start) already tolerate a daemon error.
+- The lookup assumes one host per runtime: the cache is keyed by workspace id alone, with no host in the key.
+- The "unsupported background workspaces" fallback matches the client's error message text, so a reworded message
+  makes the unfiltered fallback stop triggering (the lookup then fails loudly instead of degrading).
+- Every plugin-side archive (`archive_run` with its workspace, the Sidekick subagent auto-archive) goes through
+  `Runtime.archiveWorkspace`, which invalidates the cache; a new direct `workspaces.ref(id).archive()` would not.
+
 ## Review amendments
 
 - The background-workspace filter falls back to the plain list only on the client's own "Update the host to use

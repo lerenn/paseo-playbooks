@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadSidekick } from "./loader";
 import { Runtime } from "./runtime";
 import { sidekickPrompt, SIDEKICK_PASEO_TOOLS } from "./sidekick";
@@ -108,6 +108,14 @@ async function setup(options: { sidekickYaml?: string; afterMs?: number } = {}) 
 }
 
 describe("archiving the workspace of a Sidekick subagent", () => {
+  it("drops the cached workspace list when it archives the workspace", async () => {
+    const ctx = await setup({ afterMs: 150 });
+    const invalidate = vi.spyOn((ctx.runtime as unknown as { workspaces: { invalidate(): void } }).workspaces, "invalidate");
+    await ctx.finish();
+    await until(() => ctx.archivedWorkspaces.length > 0);
+    expect(invalidate).toHaveBeenCalled();
+  });
+
   it("archives the subagent and its workspace after the grace period, not before", async () => {
     const ctx = await setup({ afterMs: 150 });
     await ctx.finish();
