@@ -8,7 +8,7 @@ import { reloadStaleSessionsSetting } from "./loader";
 
 type PaseoApi = PluginHandlerContext["paseo"];
 
-export type ReloadOptions = { known?: boolean; /** No log line: the caller reports a summary. */ quiet?: boolean };
+export type ReloadOptions = { known?: boolean; /** No log line: the caller reports a summary. */ quiet?: boolean; /** The scheduled retry itself: its wait is over even if the timer fired a millisecond early. */ retry?: boolean };
 /** `current`: nothing to do; `busy`: not now (mid-turn, asking, or waiting to retry); `gone`: its working directory no longer exists. */
 export type ReloadOutcome = { kind: "reloaded" | "current" | "busy" | "gone" } | { kind: "failed"; reason: string };
 
@@ -110,7 +110,7 @@ export class StaleSessions {
       const recorded = this.seen.get(agentId);
       if (recorded === this.generation) return { kind: "current" };
       if (recorded === undefined && !options.known) return { kind: "current" };
-      if (!this.retries.ready(agentId)) return { kind: "busy" };
+      if (!options.retry && !this.retries.ready(agentId)) return { kind: "busy" };
       const current = await paseo.agents.ref(agentId).refresh();
       const agent = current?.agent;
       if (!agent || agent.archivedAt) return { kind: "current" };
@@ -149,7 +149,7 @@ export class StaleSessions {
     if (!options.quiet) this.log(`could not reload the session of agent ${agentId}: ${reason}; retrying in ${Math.round(delay / 1000)}s`);
     const timer = setTimeout(() => {
       this.timers.delete(timer);
-      void this.tryReload(paseo, agentId, { ...options, quiet: true });
+      void this.tryReload(paseo, agentId, { ...options, quiet: true, retry: true });
     }, delay);
     (timer as unknown as { unref?: () => void }).unref?.();
     this.timers.add(timer);
