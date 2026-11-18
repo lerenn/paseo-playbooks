@@ -447,10 +447,21 @@ const RawWorkspaceSchema = z
     archive: z.enum(["never", "on_end"]).optional(),
     /** Keep the workspace of a failed run (or one that lost its manager) for inspection. Default true. */
     keep_failed: z.boolean().optional(),
-    /** Archive the run's Paseo workspace (with its agents) when the run is archived, if nothing else lives there. Default false. */
+    /** Archive the run's own Paseo workspace (with its agents) when the run is archived, if nothing is lost. Default true. */
     archive_with_run: z.boolean().optional(),
+    /** Archive the workspace of a run that completed or was canceled this long after it ended (a duration such as 6h), or `never`. Default 6h. */
+    archive_after: z.string().refine((value) => value === "never" || parseDuration(value) !== null, { message: "archive_after must be a duration such as 6h or 30m, or never" }).optional(),
   })
   .strict();
+
+export const DEFAULT_WORKSPACE_ARCHIVE_AFTER_MS = 6 * 3_600_000;
+
+/** `workspace.archive_after`: unset gives the default, `never` turns it off; a bad value was refused at load. */
+function archiveAfterMs(raw: string | undefined): number | null {
+  if (raw === undefined) return DEFAULT_WORKSPACE_ARCHIVE_AFTER_MS;
+  if (raw === "never") return null;
+  return parseDuration(raw) ?? DEFAULT_WORKSPACE_ARCHIVE_AFTER_MS;
+}
 
 /** What happens when an agent of a run raises a tool permission request. Same shape in a playbook and in `defaults/main.yaml`. */
 const RawPermissionsSchema = z
@@ -2187,7 +2198,8 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     workspace: {
       archive: pb.workspace?.archive ?? defaults.workspace?.archive ?? "never",
       keepFailed: pb.workspace?.keep_failed ?? defaults.workspace?.keep_failed ?? true,
-      archiveWithRun: pb.workspace?.archive_with_run ?? defaults.workspace?.archive_with_run ?? false,
+      archiveWithRun: pb.workspace?.archive_with_run ?? defaults.workspace?.archive_with_run ?? true,
+      archiveAfterMs: archiveAfterMs(pb.workspace?.archive_after ?? defaults.workspace?.archive_after),
     },
     isolation,
     permissions: { onRequest: pb.permissions?.on_request ?? defaults.permissions?.on_request ?? DEFAULT_PERMISSION_POLICY },

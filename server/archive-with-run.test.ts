@@ -24,13 +24,13 @@ async function setup(opts: { on?: boolean; agents?: FakeAgent[]; goneWorkspace?:
   const root = path.join(dir, ".paseo/playbooks");
   await mkdir(path.join(root, "defaults"), { recursive: true });
   await cp(path.join(EXAMPLES, ".paseo/plugins/playbooks/roles"), path.join(root, "roles"), { recursive: true });
-  if (opts.on !== false) await writeFile(path.join(root, "defaults/main.yaml"), "workspace: { archive_with_run: true }\n");
+  if (opts.on === false) await writeFile(path.join(root, "defaults/main.yaml"), "workspace: { archive_with_run: false }\n");
   await writeFile(path.join(root, "main.yaml"), `title: Main\nsteps:\n  - id: a\n    role: { name: implementer }\n`);
   const entry = (await loadPlaybooks(dir)).entries.find((candidate) => candidate.id === "main")!;
   expect(entry.errors).toEqual([]);
   const store = new RunStore(path.join(dir, "runs"));
   await store.init();
-  const base = newRun({ id: "run_x", playbook: entry.playbook!, workspaceId: "ws", workspaceDir: dir, projectId: "p", branch: null, managerAgentId: "m", inputs: {}, now: new Date().toISOString() });
+  const base = newRun({ id: "run_x", playbook: entry.playbook!, workspaceId: "ws", workspaceDir: dir, projectId: "p", branch: null, managerAgentId: "m", inputs: {}, workspaceCreated: true, now: new Date().toISOString() });
   await store.create(base);
   if (opts.other) await store.create({ ...structuredClone(base), id: "run_y", status: opts.other === "active" ? "running" : "completed", archivedAt: opts.other === "archived" ? new Date().toISOString() : null });
   const archived: string[] = [];

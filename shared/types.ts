@@ -456,8 +456,8 @@ export const PlaybookSchema = z.object({
   permissions: z.object({ onRequest: PermissionPolicySchema }).default({ onRequest: "authorize" }),
   /** Whether the plugin archives the workspace it created for a run once the run ends. */
   workspace: z
-    .object({ archive: z.enum(["never", "on_end"]), keepFailed: z.boolean(), archiveWithRun: z.boolean().default(false) })
-    .default({ archive: "never", keepFailed: true, archiveWithRun: false }),
+    .object({ archive: z.enum(["never", "on_end"]), keepFailed: z.boolean(), archiveWithRun: z.boolean().default(false), archiveAfterMs: z.number().nullable().default(null) })
+    .default({ archive: "never", keepFailed: true, archiveWithRun: false, archiveAfterMs: null }),
   /**
    * Where the run's agents work: the workspace checkout (`none`), or a private git worktree the
    * plugin creates for the run (`worktree`). Unset on runs from before isolation.

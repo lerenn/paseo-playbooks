@@ -114,7 +114,8 @@ role:                  # defaults for agent steps, in the shape of a step's `rol
 workspace:             # what happens to the workspace a run created with newWorkspace
   archive: on_end      # never (default) | on_end: archive it when the run completes or is canceled
   keep_failed: true    # keep it when the run failed or lost its manager (default true)
-  archive_with_run: false  # true: archiving a run also archives its workspace and agents when safe (default false)
+  archive_with_run: true   # archiving a run also archives the workspace it created, when safe: no uncommitted/unpushed work (default true)
+  archive_after: 6h        # archive the workspace of a completed/canceled run this long after it ended; never = off (default 6h)
 reload_stale_sessions: true  # after a plugin update, reload idle agents still holding the old plugin's tools (default true; false disables)
 isolation: none        # none (default) | worktree | { mode: worktree, submodules: none | all | [paths], base: <branch> }: see "Isolated runs"
 ```

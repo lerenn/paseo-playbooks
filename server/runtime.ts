@@ -35,7 +35,7 @@ import { isQuotaError, isQuotaMessage } from "./quota";
 import { UsageCache, usageBlock, type UsageBlock, type UsageSnapshot } from "./usage";
 import * as engine from "./engine";
 import { ADMISSION_TIMEOUT_MS, admissionInput, readAdmission } from "./admission";
-import { checkoutSnapshot, currentRef, defaultBranch, exportPaths, fastForward, freshRef, freshRefInfo, git as gitOutput, removedGitlinks, snapshotDiff, checkoutViolationSince } from "./git";
+import { checkoutSnapshot, currentRef, defaultBranch, exportPaths, fastForward, freshRef, freshRefInfo, git as gitOutput, removedGitlinks, snapshotDiff, checkoutViolationSince, unsavedWork } from "./git";
 import { workspaceTitle } from "../shared/workspace-name";
 import { createWorktree, diskUsedFraction, dirtyPaths, purgeScratch, linkedSubmodules, listWorktreeDirs, pruneWorktrees, unpushedCommits, removeWorktree, repoOfWorktree, worktreeBranch, worktreePath } from "./worktree";
 import { chooseDefinition, definitionMismatch, isAdoptable, readAtRef, shortReason, workspaceWarning } from "./fresh";
@@ -1899,6 +1899,7 @@ export class Runtime {
         await this.tickPhase("startBatches", () => this.startBatches());
         await this.tickPhase("cleanupEndedWorktrees", () => this.cleanupEndedWorktrees());
         await this.tickPhase("archiveEndedWorkspaces", () => this.archiveEndedWorkspaces());
+        await this.tickPhase("archiveAgedWorkspaces", () => this.archiveAgedWorkspaces());
       } while (this.tickAgain);
     } finally {
       this.ticking = false;
@@ -3817,7 +3818,10 @@ export class Runtime {
     const outcome = await this.archiveWorkspaceWithRun(run).catch((error: unknown) => ({ archived: false, reason: `could not check: ${errorText(error)}` }));
     await this.store
       .mutate(runId, (current) => {
-        if (outcome.archived) engine.noteEvent(current, "workspace_archived", null, `workspace ${current.workspaceId} archived with the run (workspace.archive_with_run)`, nowIso());
+        if (outcome.archived) {
+          current.workspaceArchive = "done";
+          engine.noteEvent(current, "workspace_archived", null, `workspace ${current.workspaceId} archived with the run (workspace.archive_with_run)`, nowIso());
+        }
         else engine.noteEvent(current, "workspace_kept", null, `workspace ${current.workspaceId} not archived with the run: ${outcome.reason}`, nowIso());
       })
       .catch((error) => console.error(`[playbooks] could not record the workspace archive of ${runId}:`, errorText(error)));
@@ -3833,11 +3837,13 @@ export class Runtime {
    * human's own agent is never archived. The run's worktree is a separate directory with its own
    * cleanup (cleanupEndedWorktrees): archiving the workspace touches neither it nor its state.
    */
-  private async archiveWorkspaceWithRun(run: Run): Promise<{ archived: boolean; reason: string }> {
+  private async archiveWorkspaceWithRun(run: Run, siblings: "unarchived" | "active" = "unarchived"): Promise<{ archived: boolean; reason: string }> {
     const skip = (reason: string) => ({ archived: false, reason });
-    const others = this.store.list().filter((other) => other.id !== run.id && other.workspaceId === run.workspaceId && !other.archivedAt);
-    if (others.length > 0) return skip(`run ${others[0]!.id} still uses it and is not archived`);
-    if (!(await this.workspaceOf(run.workspaceId))) return skip("the workspace no longer exists or is already archived");
+    if (!run.workspaceCreated) return skip("the run did not create its workspace (the project checkout or a workspace someone made is never archived)");
+    const others = this.store.list().filter((other) => other.id !== run.id && other.workspaceId === run.workspaceId && (siblings === "active" ? isActive(other) : !other.archivedAt));
+    if (others.length > 0) return skip(`run ${others[0]!.id} still uses it${siblings === "active" ? " and is active" : " and is not archived"}`);
+    const workspace = await this.workspaceOf(run.workspaceId);
+    if (!workspace) return skip("the workspace no longer exists or is already archived");
     const listed = await this.api().agents.list({ filter: { projectKeys: [run.projectId] } });
     const agents = listed.entries.map((entry) => entry.agent).filter((agent) => agent.workspaceId === run.workspaceId && !agent.archivedAt && !agent.internal);
     const busy = agents.find((agent) => agent.status === "running" || agent.status === "initializing" || (agent.pendingPermissions?.length ?? 0) > 0);
@@ -3845,8 +3851,34 @@ export class Runtime {
     const own = (agent: (typeof agents)[number]) => agent.labels?.[MANAGER_LABEL] !== undefined || agent.labels?.[RUN_LABEL] !== undefined || agent.labels?.[STEP_LABEL] !== undefined || agent.labels?.[GATE_LABEL] !== undefined;
     const foreign = agents.filter((agent) => !own(agent));
     if (foreign.length > 0) return skip(`it holds agents that are not part of a run: ${foreign.map((agent) => agent.id).join(", ")}`);
+    const dir = workspace.workspaceDirectory;
+    if (dir && dir !== workspace.projectRootPath) {
+      const unsaved = await unsavedWork(dir).catch((error: unknown) => `could not check its git state: ${errorText(error)}`);
+      if (unsaved) return skip(unsaved);
+    }
     await this.archiveWorkspace(run.workspaceId);
     return { archived: true, reason: "archived" };
+  }
+
+  /**
+   * `workspace.archive_after` (default 6h): the workspace of a run that completed or was canceled is archived that long after it
+   * ended, with the same safety checks as archiving the run (the run itself stays visible). A failed run only on an explicit archive.
+   * A refusal is written once in the history; a later archive of the run tries again.
+   */
+  private async archiveAgedWorkspaces(): Promise<void> {
+    const now = Date.now();
+    for (const candidate of this.store.list()) {
+      const after = candidate.playbook.workspace.archiveAfterMs;
+      if (after === null || candidate.workspaceArchive !== null || !candidate.workspaceCreated || candidate.status === "failed" || !isTerminal(candidate.status) || isActive(candidate)) continue;
+      if (now - Date.parse(candidate.updatedAt) < after) continue;
+      const outcome = await this.archiveWorkspaceWithRun(candidate, "active").catch((error: unknown) => ({ archived: false, reason: `could not check: ${errorText(error)}` }));
+      await this.store.mutate(candidate.id, (run) => {
+        run.workspaceArchive = outcome.archived ? "done" : "skipped";
+        if (outcome.archived) engine.noteEvent(run, "workspace_archived", null, `workspace ${run.workspaceId} archived ${Math.round(after / 60_000)} min after the run ended (workspace.archive_after)`, nowIso());
+        else engine.noteEvent(run, "workspace_kept", null, `workspace ${run.workspaceId} not archived after the run ended: ${outcome.reason}`, nowIso());
+      });
+      if (!outcome.archived) console.error(`[playbooks] workspace ${candidate.workspaceId} kept after ${candidate.id} ended: ${outcome.reason}`);
+    }
   }
 
   /**

@@ -183,7 +183,7 @@ describe("restart decisions through the real lookup", () => {
     const booted = await boot(daemon);
     let tick = 0;
     const now = () => new Date(Date.UTC(2026, 10, 4, 12, 0, tick++)).toISOString();
-    const run = newRun({ id: "run_r", playbook: await playbook(), workspaceId: "ws", workspaceDir: "/tmp", projectId: "p", branch: null, managerAgentId: "m", inputs: {}, now: now() });
+    const run = newRun({ id: "run_r", playbook: await playbook(), workspaceId: "ws", workspaceDir: "/tmp", projectId: "p", branch: null, managerAgentId: "m", inputs: {}, workspaceCreated: true, now: now() });
     startAttempt(run, "one", { agentId: "x", brief: "", now: now(), readonlySnapshot: null });
     cancelRun(run, "stop", now());
     await booted.store.create(run);

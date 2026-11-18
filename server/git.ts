@@ -165,3 +165,18 @@ export async function fastForward(cwd: string, branch: string): Promise<void> {
     // Offline, no origin, or not a fast-forward: keep the checkout as it is.
   }
 }
+
+/**
+ * Work in `cwd` that archiving its workspace could hide: uncommitted changes (untracked files included) or commits on a local
+ * branch that no remote has. Null when there is none, or when `cwd` is not a git checkout.
+ */
+export async function unsavedWork(cwd: string): Promise<string | null> {
+  try {
+    await git(cwd, ["rev-parse", "--git-dir"]);
+  } catch {
+    return null;
+  }
+  if ((await git(cwd, ["status", "--porcelain"])).trim()) return "it has uncommitted changes";
+  if ((await git(cwd, ["log", "--branches", "--not", "--remotes", "--oneline", "-n", "1"])).trim()) return "it has commits that are not pushed";
+  return null;
+}
