@@ -1175,10 +1175,24 @@ the agent and the run hangs silently. The plugin answers it, by `permissions: { 
   `resume_gate` decides it; the plugin then answers the agent. If the request disappears first, the gate closes.
 - `deny`: the agent is told to pick another way (simple separate commands, the file tools).
 
-Only tool requests are handled: a question (AskUserQuestion), a plan or a mode change stays with the human. Every outcome is
+Only tool requests are handled by the policy: a plan or a mode change stays with the human. The Playbook Manager's own
+question (AskUserQuestion) is mirrored as a `manager_question` gate (below). Every outcome is
 a line of the run history (`permission_authorized`, `permission_denied`, `permission_escalated`). Choose `escalate` or `deny`
 for stricter runs. When you write role instructions, ask for simple separate commands: no `cd && sed -i && rm -rf` chains, no
 `rm -rf` globs, and the file tools for edits; the plugin adds this rule to the manager and step prompts too.
+
+### Manager questions (`manager_question` gates)
+
+When the manager asks the human a question in its conversation (AskUserQuestion), the plugin opens a gate of kind
+`manager_question` on step `manager`, so it shows under "Needs you" in the panel and in `list_gates` like any human gate
+(`gate.opened` / `gate.decided` fire, the run is `waiting_gate`). Choices: `option-1`, `option-2`, ... (the question's options, in
+order), `other` (needs the typed answer as `comment`); a question with no options has the single choice `answered` (comment
+required). Decide it in the panel or with `resume_gate` (a Sidekick relays the human's words); the plugin delivers the answer to
+the manager's pending question, and the manager's turn goes on. A manager cannot decide it (it asked the question). If the human
+answers in the manager's conversation, or the request disappears, the gate closes as `dismissed`. A request with several questions
+or a multi-select has no choices: tell the human to answer in the manager's conversation. A question the manager asks for a
+gate step, ask or loop-limit gate is that gate's own question and is not mirrored. Not duplicated with `permission` gates (tool
+requests under `escalate`). No setting: it is always on.
 
 ## Checklist
 

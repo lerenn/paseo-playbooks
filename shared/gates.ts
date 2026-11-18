@@ -33,6 +33,26 @@ export const PERMISSION_CHOICES: GateChoice[] = [
   { id: "deny", label: "Deny", comment: "optional", color: "danger" },
 ];
 
+/**
+ * The choices of a `manager_question` gate (the manager's open question): one button per option, plus "Something else" (a typed answer);
+ * a question without options takes a typed answer; a request the panel cannot answer (several questions, multi-select) has none.
+ */
+export function managerQuestionChoices(question: Gate["question"]): GateChoice[] {
+  if (!question || !question.answerable) return [];
+  if (question.options.length === 0) return [{ id: "answered", label: "Send answer", comment: "required" }];
+  return [
+    ...question.options.map((option, index) => ({ id: `option-${index + 1}`, label: option.label, comment: "none" as const })),
+    { id: "other", label: "Something else", comment: "required" as const },
+  ];
+}
+
+/** The answer a `manager_question` choice gives the manager: the option's label, or the typed text. */
+export function managerQuestionAnswer(question: NonNullable<Gate["question"]>, choiceId: string, comment: string | null): string {
+  if (choiceId === "other" || choiceId === "answered") return (comment ?? "").trim();
+  const index = Number(choiceId.replace(/^option-/, "")) - 1;
+  return question.options[index]?.label ?? "";
+}
+
 /** The single choice of an `ask` gate without `choices`: the answer, required, becomes the feedback of the step it goes back to. */
 export const ASK_CHOICES: GateChoice[] = [{ id: "answered", label: "Send answer", comment: "required" }];
 
@@ -58,6 +78,7 @@ export function choicesOfGate(gate: Gate, step: Pick<Step, "on" | "choices"> | u
   if (gate.kind === "loop_limit") return LOOP_LIMIT_CHOICES;
   if (gate.kind === "admission") return ADMISSION_CHOICES;
   if (gate.kind === "permission") return PERMISSION_CHOICES;
+  if (gate.kind === "manager_question") return managerQuestionChoices(gate.question);
   if (gate.kind === "ask") {
     const transition = askTransitionOf(gate, step);
     return transition ? askChoices(transition) : ASK_CHOICES;

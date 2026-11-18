@@ -782,7 +782,7 @@ export type RunStep = z.infer<typeof RunStepSchema>;
 
 export const GateSchema = z.object({
   id: z.string(),
-  kind: z.enum(["gate", "loop_limit", "ask", "admission", "permission"]),
+  kind: z.enum(["gate", "loop_limit", "ask", "admission", "permission", "manager_question"]),
   /** An `admission` gate: the stage it is about (its `stepId`) and the held job it asks about. Null on the other kinds. */
   jobId: z.string().nullable().default(null),
   stepId: z.string(),
@@ -815,6 +815,11 @@ export const GateSchema = z.object({
   escalatedAt: z.string().nullable().default(null),
   /** A `permission` gate: the agent whose tool permission request it holds, and that request. Null on the other kinds. */
   permission: z.object({ agentId: z.string(), requestId: z.string(), tool: z.string() }).nullable().optional(),
+  /**
+   * A `manager_question` gate (the Playbook Manager's open AskUserQuestion-style request; `permission` holds its agent and request):
+   * the question, its options, and whether the panel can answer it (one single-choice question; several questions or a multi-select are answered in the manager's conversation).
+   */
+  question: z.object({ text: z.string(), options: z.array(z.object({ label: z.string(), description: z.string().default("") })).default([]), answerable: z.boolean().default(true) }).nullable().optional(),
   /** A run with no manager: the step agent the plugin asked to put this gate's question to the human in its own conversation. */
   chatAgentId: z.string().nullable().optional(),
   /** Set once the gate is closed and that conversation was told (its open question dismissed when the panel decided). */

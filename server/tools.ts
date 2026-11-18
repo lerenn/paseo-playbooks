@@ -810,7 +810,7 @@ export function runTools(runtime: Runtime): AgentToolDefinition[] {
     defineAgentTool({
       name: "list_gates",
       description:
-        "List what waits for a decision across all playbook runs, oldest first: every open gate and ask (run, playbook, workspace, step, kind, question, choices, decider, who holds it now, opened-at and age in minutes). With includeFailed, also the runs that failed or lost their manager, with the reason and restartableFrom. Read-only; compact and stable, so a scheduled agent can call it and compare. Decide a gate with resume (its run's manager), resume_gate (the Sidekick, with the human's answer) or a human in the panel, not here.",
+        "List what waits for a decision across all playbook runs, oldest first: every open gate and ask (run, playbook, workspace, step, kind (gate, ask, loop_limit, admission, permission, or manager_question: the manager's own open question, on step manager; answer it with resume_gate), question, choices, decider, who holds it now, opened-at and age in minutes). With includeFailed, also the runs that failed or lost their manager, with the reason and restartableFrom. Read-only; compact and stable, so a scheduled agent can call it and compare. Decide a gate with resume (its run's manager), resume_gate (the Sidekick, with the human's answer) or a human in the panel, not here.",
       input: z.object({
         runId: IdArg.optional().describe("Only this run"),
         olderThanMinutes: z.number().min(0).optional().describe("Only gates open at least this long"),

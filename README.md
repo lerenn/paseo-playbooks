@@ -354,9 +354,19 @@ request would sit on the agent while the run hangs. `permissions: { on_request: 
 `defaults/main.yaml`, overridable in a playbook; default `authorize`) tells the plugin what to do with a tool permission
 request of any agent of a run (manager, step agents, role deciders, their subagents): `authorize` allows it on the human's
 behalf; `escalate` opens a `permission` gate (allow / deny) like any human gate, decided in the panel or with `resume_gate`;
-`deny` tells the agent to pick another way. Questions, plans and mode changes stay with the human. Each outcome is a line of the
+`deny` tells the agent to pick another way. Plans and mode changes stay with the human. Each outcome is a line of the
 run history. See `docs/adrs/2026-11-17-permission-requests-policy.md`. The manager and step prompts also ask for simple
 separate commands and the file tools, so requests are rarer.
+
+A question the Playbook Manager asks the human in its own conversation (AskUserQuestion) is no run gate, so it would be
+invisible in the panel. The plugin mirrors it as a `manager_question` gate: it is listed under "Needs you" with the run, the
+question and its options as buttons (plus "Something else" for a typed answer; a question without options takes a typed
+answer), and in `list_gates` (`kind: manager_question`, `stepId: manager`, choices `option-1`, `option-2`, ..., `other`, or
+`answered`). Answering in the panel (or with `resume_gate`) delivers the answer to the manager's pending question; answering
+in the manager's conversation closes the gate. The first answer wins, nothing is delivered twice. Several questions in one
+request, or a multi-select, are listed with their text but answered in the manager's conversation (no buttons; the manager
+button on the run opens it). A tool request is not duplicated: under `permissions.on_request: escalate` it is the `permission`
+gate, not a question gate. See `docs/adrs/2026-11-18-manager-questions-as-gates.md`.
 
 ## Runs with no Playbook Manager
 

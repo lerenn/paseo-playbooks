@@ -184,7 +184,7 @@ function ago(iso: string): string {
 }
 
 function gateKindLabel(gate: Gate): string {
-  return gate.kind === "ask" ? "Answer" : gate.kind === "loop_limit" ? "Loop limit" : gate.kind === "admission" ? "Admission" : gate.kind === "permission" ? "Permission" : "Decide";
+  return gate.kind === "ask" ? "Answer" : gate.kind === "loop_limit" ? "Loop limit" : gate.kind === "admission" ? "Admission" : gate.kind === "permission" ? "Permission" : gate.kind === "manager_question" ? "Question" : "Decide";
 }
 
 /**

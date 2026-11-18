@@ -89,6 +89,7 @@ function destinationLabel(run: Pick<RunSummary, "playbook">, gate: Gate, choiceI
   const step = run.playbook.steps.find((candidate) => candidate.id === gate.stepId);
   let outcome = choiceId;
   if (gate.kind === "permission") return choiceId === "allow" ? "→ The agent goes on" : "→ The agent picks another way";
+  if (gate.kind === "manager_question") return "→ The manager goes on";
   if (gate.kind === "admission") return choiceId === "admit" ? "→ Joins the next batch" : choiceId === "withdraw" ? "→ Leaves the pipeline" : "→ Checks again";
   if (gate.kind === "ask") {
     const ask = askTransitionOf(gate, step);

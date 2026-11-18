@@ -57,9 +57,9 @@ import { JOB_TYPES, publicJobEvents } from "./job-events";
 import { FANOUT_TYPES } from "./fanout-events";
 import { gateListing, listAttention, type GateFilter } from "./overseer";
 import { gateChatPrompt, managerLostNotice, gateDeciderPrompt, gateDeciderSystemPrompt, gateDecisionReminder, managerAfterRestart, managerKickoff, managerTakeover, managerWaitingNudge, reportReminder, resumeAfterRestart, silenceReminder, singletonKickoff, stepSystemPrompt, withPreamble } from "./prompts";
-import { askHumanText, choicesOfGate, waitsForHuman } from "../shared/gates";
+import { askHumanText, choicesOfGate, managerQuestionAnswer, waitsForHuman } from "../shared/gates";
 import { PERMISSION_POLICY_BY } from "./engine";
-import { DENY_MESSAGE, describePermission, policyText, type PermissionRequestLike } from "./permissions";
+import { DENY_MESSAGE, describePermission, describeQuestion, policyText, type PermissionRequestLike } from "./permissions";
 import { Backoff, describeRemovalError } from "./backoff";
 import { StaleSessions } from "./stale-sessions";
 import type { RunStore } from "./store";
@@ -764,6 +764,7 @@ export class Runtime {
    * plans and mode changes are not tool requests: they stay with the human. Every outcome is written to the run's history.
    */
   async onPermissionRequested(agent: { id: string; parentAgentId: string | null }, request: PermissionRequestLike & { kind: string }): Promise<void> {
+    if (request.kind === "question") return this.onManagerQuestion(agent, request);
     if (request.kind !== "tool") return;
     const key = `${agent.id}/${request.id}`;
     if (this.permissionsHandled.has(key)) return;
@@ -793,10 +794,38 @@ export class Runtime {
     }
   }
 
+  /**
+   * The Playbook Manager of an active run has an AskUserQuestion-style question open: it opens a `manager_question` gate, so the human
+   * sees it in the panel and `list_gates` like any gate (ADR 2026-11-18-manager-questions-as-gates). Only the manager's own questions
+   * (not a step agent's or a subagent's), and not while the run has a gate step, ask or loop-limit gate held by a human: the manager is then asking that
+   * gate's question in chat (the gate already shows it).
+   */
+  private async onManagerQuestion(agent: { id: string; parentAgentId: string | null }, request: PermissionRequestLike & { kind: string }): Promise<void> {
+    const run = this.activeRunOfManager(agent.id);
+    if (!run || isPaused(run) || this.retiredManagers.has(agent.id)) return;
+    const key = `${agent.id}/${request.id}`;
+    if (this.permissionsHandled.has(key)) return;
+    const text = describeQuestion(request, `the Playbook Manager ${agent.id.slice(0, 8)}`);
+    if (!text) return;
+    if (run.gates.some((gate) => waitsForHuman(gate) && (gate.kind === "gate" || gate.kind === "ask" || gate.kind === "loop_limit"))) return;
+    this.permissionsHandled.add(key);
+    try {
+      const opened = await this.store.mutate(run.id, (current) => {
+        const gate = engine.openManagerQuestionGate(current, { agentId: agent.id, requestId: request.id, ...text }, nowIso());
+        if (gate) engine.noteEvent(current, "manager_question_opened", "manager", `${text.summary} → gate ${gate.id}`, nowIso());
+        return gate;
+      });
+      if (opened) await this.tick();
+    } catch (error) {
+      this.permissionsHandled.delete(key);
+      console.error(`[playbooks] could not open a gate for the manager's question ${request.id} of agent ${agent.id}:`, errorText(error));
+    }
+  }
+
   /** The request was answered (by a human in the daemon, a canceled turn…): a gate still holding it closes. */
   async onPermissionResolved(agentId: string, requestId: string | null, why = "the request was answered elsewhere"): Promise<void> {
     for (const run of this.store.list()) {
-      if (!run.gates.some((gate) => gate.kind === "permission" && gate.status === "pending" && gate.permission?.agentId === agentId && (requestId === null || gate.permission.requestId === requestId))) continue;
+      if (!run.gates.some((gate) => (gate.kind === "permission" || gate.kind === "manager_question") && gate.status === "pending" && gate.permission?.agentId === agentId && (requestId === null || gate.permission.requestId === requestId))) continue;
       await this.store.mutate(run.id, (current) => engine.dismissPermissionGates(current, agentId, requestId, why, nowIso()));
     }
   }
@@ -805,6 +834,16 @@ export class Runtime {
   private async answerPermissionGate(runId: string, gate: Gate): Promise<void> {
     const permission = gate.permission;
     if (!permission) return;
+    if (gate.kind === "manager_question") {
+      // The first answer wins: if the manager's conversation answered meanwhile, the daemon refuses this one (logged) and nothing is delivered twice.
+      const answer = gate.question ? managerQuestionAnswer(gate.question, gate.status, gate.comment) : "";
+      await this.api()
+        .agents.ref(permission.agentId)
+        .respondToPermission({ requestId: permission.requestId, response: { behavior: "allow", updatedInput: { answers: { [gate.question?.text ?? ""]: answer } } } })
+        .catch((error: unknown) => console.error(`[playbooks] could not deliver the answer of gate ${gate.id} to the manager:`, errorText(error)));
+      await this.store.mutate(runId, (run) => engine.noteEvent(run, "manager_question_answered", "manager", `${gate.summary}: answered by ${gate.decidedBy ?? "a human"} (gate ${gate.id})`, nowIso()));
+      return;
+    }
     const allow = gate.status === "allow";
     const message = gate.comment?.trim() ? `The human denied this request: ${gate.comment.trim()}. Pick another way.` : "The human denied this request. Pick another way, with simple separate commands and the file tools for edits.";
     await this.api()
@@ -830,7 +869,7 @@ export class Runtime {
     }
     for (const run of this.store.list()) {
       for (const gate of run.gates) {
-        if (gate.kind !== "permission" || gate.status !== "pending" || !gate.permission) continue;
+        if ((gate.kind !== "permission" && gate.kind !== "manager_question") || gate.status !== "pending" || !gate.permission) continue;
         const current = await this.api().agents.ref(gate.permission.agentId).refresh().catch(() => null);
         const still = !current || current.agent.archivedAt ? false : (current.agent.pendingPermissions ?? []).some((request) => request.id === gate.permission!.requestId);
         if (!still) await this.onPermissionResolved(gate.permission.agentId, gate.permission.requestId, "the request no longer exists");
@@ -868,7 +907,7 @@ export class Runtime {
       await this.producer.scan(this.store.list(), now);
       await this.bus.flush(now);
       await this.watchManagers(now).catch((error) => console.error("[playbooks] manager watch failed:", errorText(error)));
-      if (this.store.list().some((run) => run.gates.some((gate) => gate.kind === "permission" && gate.status === "pending"))) await this.sweepPermissions(false);
+      if (this.store.list().some((run) => run.gates.some((gate) => (gate.kind === "permission" || gate.kind === "manager_question") && gate.status === "pending"))) await this.sweepPermissions(false);
       // Fan-out children end in other runs: the scan is what notices them (no tokens, no agent).
       if (this.store.list().some((run) => isActive(run) && Object.values(run.steps).some((state) => state.fanout && state.status === "running"))) await this.tick();
     } finally {
@@ -1932,7 +1971,7 @@ export class Runtime {
       if (!isManagerless(run) || !isActive(run) || isPaused(run)) continue;
       for (const gate of run.gates) {
         const key = `${run.id}:${gate.id}`;
-        if (!waitsForHuman(gate) || gate.kind === "permission" || gate.chatAgentId || this.chatSkipped.has(key)) continue;
+        if (!waitsForHuman(gate) || gate.kind === "permission" || gate.kind === "manager_question" || gate.chatAgentId || this.chatSkipped.has(key)) continue;
         const step = engine.stepDef(run, gate.stepId);
         const owners = gate.kind === "ask" ? [gate.stepId] : step.needs;
         const candidates = owners
@@ -3599,7 +3638,7 @@ export class Runtime {
   /** A gate decision from the panel (wakes the manager) or from chat via resume (does not). */
   async decideGate(runId: string, gateId: string, decision: engine.GateDecision): Promise<{ alreadyDecided: boolean; gate: Run["gates"][number] }> {
     const result = await this.store.mutate(runId, (current) => engine.decideGate(current, gateId, decision));
-    if (result.gate.kind === "permission") {
+    if (result.gate.kind === "permission" || result.gate.kind === "manager_question") {
       // Not a step's decision: the agent that asked gets the answer and goes on. The manager is not woken.
       if (!result.alreadyDecided) await this.answerPermissionGate(runId, result.gate);
       return { alreadyDecided: result.alreadyDecided, gate: result.gate };

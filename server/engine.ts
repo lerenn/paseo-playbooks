@@ -1515,6 +1515,7 @@ export function decideGate(run: Run, ref: string, decision: GateDecision): { gat
   if (gate.status !== "pending") return { gate, alreadyDecided: true, effects: fx };
   if (gate.kind === "admission") return { gate, alreadyDecided: false, effects: decideAdmission(run, gate, decision, fx) };
   if (gate.kind === "permission") return { gate, alreadyDecided: false, effects: decidePermission(run, gate, decision, fx) };
+  if (gate.kind === "manager_question") return { gate, alreadyDecided: false, effects: decideManagerQuestion(run, gate, decision, fx) };
   assertLive(run, gate.stepId);
   const choices = choicesOfGate(gate, stepDef(run, gate.stepId));
   const choice = choices.find((candidate) => candidate.id === decision.decision);
@@ -2258,11 +2259,70 @@ export function openPermissionGate(run: Run, input: { stepId: string; agentId: s
   return gate;
 }
 
+/**
+ * Opens a `manager_question` gate for the Playbook Manager's open question (an AskUserQuestion-style request): a human gate on the
+ * step "manager", shown in the panel and `list_gates` like the others. One gate per request: returns null when it is open already.
+ */
+export function openManagerQuestionGate(
+  run: Run,
+  input: { agentId: string; requestId: string; tool: string; summary: string; details: string; question: NonNullable<Gate["question"]> },
+  now: string,
+): Gate | null {
+  if (run.gates.some((gate) => gate.kind === "manager_question" && gate.permission?.agentId === input.agentId && gate.permission.requestId === input.requestId)) return null;
+  const count = run.gates.filter((gate) => gate.kind === "manager_question").length;
+  const gate: Gate = {
+    id: `manager-question-${count + 1}`,
+    kind: "manager_question",
+    stepId: "manager",
+    gotoTarget: null,
+    jobId: null,
+    outcome: null,
+    status: "pending",
+    message: [input.summary, input.details].filter(Boolean).join("\n\n"),
+    summary: input.summary,
+    details: input.details,
+    requestedAt: now,
+    comment: null,
+    decidedBy: null,
+    decidedVia: null,
+    decidedAt: null,
+    decider: { by: "human" },
+    deciderAgentId: null,
+    escalated: null,
+    escalatedAt: null,
+    permission: { agentId: input.agentId, requestId: input.requestId, tool: input.tool },
+    question: input.question,
+  };
+  run.gates.push(gate);
+  log(run, now, "gate_opened", "manager", gate.id);
+  updateStatus(run);
+  return gate;
+}
+
+/** A human answers the manager's question (an option, or typed text); the runtime then delivers it to the manager's pending question. */
+function decideManagerQuestion(run: Run, gate: Gate, decision: GateDecision, fx: Effects): Effects {
+  if (decision.via === "manager" || decision.via === "role") throw new EngineError(`gate "${gate.id}" is the manager's own question to the human: a human answers it in the Playbooks panel`);
+  const choices = choicesOfGate(gate, undefined);
+  if (choices.length === 0) throw new EngineError(`gate "${gate.id}" has several questions or a multi-select: the human answers it in the manager's conversation`);
+  const choice = choices.find((candidate) => candidate.id === decision.decision);
+  if (!choice) throw new EngineError(`"${decision.decision}" is not a choice of gate "${gate.id}" (${choices.map((c) => c.id).join(", ")})`);
+  if (choice.comment === "required" && !decision.comment?.trim()) throw new EngineError(`"${choice.label}" needs the answer as a comment`);
+  gate.status = choice.id;
+  gate.comment = decision.comment;
+  gate.decidedBy = decision.by;
+  gate.decidedVia = decision.via;
+  gate.decidedAt = decision.now;
+  log(run, decision.now, "gate_decided", gate.stepId, `${gate.id}: ${choice.id} via ${decision.via}`);
+  updateStatus(run);
+  fx.notes.push(`Gate ${gate.id}: ${choice.id}.`);
+  return fx;
+}
+
 /** The request is gone (answered elsewhere, the agent was canceled or reloaded): its pending gate closes, decided by nobody. */
 export function dismissPermissionGates(run: Run, agentId: string, requestId: string | null, why: string, now: string): Gate[] {
   const closed: Gate[] = [];
   for (const gate of run.gates) {
-    if (gate.kind !== "permission" || gate.status !== "pending" || gate.permission?.agentId !== agentId || (requestId !== null && gate.permission.requestId !== requestId)) continue;
+    if ((gate.kind !== "permission" && gate.kind !== "manager_question") || gate.status !== "pending" || gate.permission?.agentId !== agentId || (requestId !== null && gate.permission.requestId !== requestId)) continue;
     gate.status = "dismissed";
     gate.comment = why;
     gate.decidedBy = PERMISSION_POLICY_BY;
