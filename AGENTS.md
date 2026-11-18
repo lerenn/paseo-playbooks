@@ -33,3 +33,10 @@ Bug fixes, refactors, copy edits and visual tweaks need no ADR.
   statement is fine.
 - `docs/adrs/2026-11-02-design.md` is the original design and holds decisions 1–52. New
   decisions go in their own files, not in its list.
+
+## GitHub access (agents)
+
+Agents working in this repo call GitHub with `gh-proxy <cmd>` (same flags as `gh`; `gh-proxy api` is the passthrough), never `gh`, and hold no
+GitHub token (github-proxy, ADR-002 of the Anyshift monorepo). The real `gh` is break-glass for a human only. This covers agent-run skills such as
+`.agents/skills/`; it does not cover what ships to users or runs on GitHub's runners: `.github/workflows/release.yml` and the generic
+`examples/` keep plain `gh`, since neither has `gh-proxy`.

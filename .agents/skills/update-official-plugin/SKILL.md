@@ -17,8 +17,8 @@ before step 5 (unless they already said to go ahead).
 
 ```bash
 git fetch --tags origin
-gh release list --repo lerenn/paseo-playbooks --limit 1   # latest tag, e.g. v0.70.0
-gh api repos/lerenn/paseo-playbooks/commits/<tag> -q .sha  # the commit it points at
+gh-proxy release list --repo lerenn/paseo-playbooks --limit 1   # latest tag, e.g. v0.70.0
+gh-proxy api repos/lerenn/paseo-playbooks/commits/<tag> -q .sha  # the commit it points at
 ```
 
 The tag must come from a release on `main` (the Release workflow creates it). If the version
@@ -27,7 +27,7 @@ in `package.json` on `main` has no tag yet, stop: the release is not out.
 ## 2. Read what is listed now
 
 ```bash
-gh api repos/getpaseo/plugins/contents/plugins/lerenn/playbooks.json -q .content | base64 -d
+gh-proxy api repos/getpaseo/plugins/contents/plugins/lerenn/playbooks.json -q .content | base64 -d
 ```
 
 Note `artifact.tag` and `artifact.commit`. If it already equals the latest tag, say so and stop.
@@ -35,8 +35,8 @@ Note `artifact.tag` and `artifact.commit`. If it already equals the latest tag, 
 ## 3. Check for pending submissions
 
 ```bash
-gh issue list --repo getpaseo/plugins --author lerenn --state open
-gh pr list --repo getpaseo/plugins --state open --search "Playbooks"
+gh-proxy issue list --repo getpaseo/plugins --author lerenn --state open
+gh-proxy pr list --repo getpaseo/plugins --state open --search "Playbooks"
 ```
 
 Any open, unmerged Playbooks submission is superseded by the new one: list it in the new
@@ -92,7 +92,7 @@ permissions note from the actual diff; the reviewer checks it against the artifa
 ## 5. Open the issue
 
 ```bash
-gh issue create --repo getpaseo/plugins --label submission --title "Playbooks" --body-file <file>
+gh-proxy issue create --repo getpaseo/plugins --label submission --title "Playbooks" --body-file <file>
 ```
 
 The title is the plugin's name. Do not add a Git ref other than the tag in the Source URL.
@@ -102,13 +102,13 @@ The title is the plugin's name. Do not add a Git ref other than the tag in the S
 For each one from step 3, comment that it is superseded by the new issue, then close it:
 
 ```bash
-gh issue close <n> --repo getpaseo/plugins --comment "Superseded by #<new>."
-gh pr close <pr> --repo getpaseo/plugins --comment "Superseded by #<new>."
+gh-proxy issue close <n> --repo getpaseo/plugins --comment "Superseded by #<new>."
+gh-proxy pr close <pr> --repo getpaseo/plugins --comment "Superseded by #<new>."
 ```
 
 ## 7. Report and follow up
 
 Give the user the issue link. Within about 30 minutes the bot opens the review PR
-(`gh pr list --repo getpaseo/plugins --search "Playbooks"`); the reviewer then tags the
+(`gh-proxy pr list --repo getpaseo/plugins --search "Playbooks"`); the reviewer then tags the
 author in the outcome. If a PR exists but nothing happens for a day, say so rather than
 re-submitting. Do not open a second issue for the same tag.
