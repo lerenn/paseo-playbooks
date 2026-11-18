@@ -97,7 +97,7 @@ export function StartForm(props: {
       const inputs: Record<string, VarValue> = {};
       for (const [name, def] of Object.entries(playbook.inputs)) {
         const value = values[name];
-        if (value === "" || value === undefined) continue;
+        if (value === undefined || (typeof value === "string" && value.trim() === "")) continue;
         inputs[name] = def.type === "number" ? Number(value) : value;
       }
       const agentId = manager?.id;

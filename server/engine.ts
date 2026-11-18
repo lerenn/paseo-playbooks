@@ -96,7 +96,10 @@ export function resolveRunInputs(
     if (!playbook.inputs[name]) errors.push(`unknown input "${name}"`);
   }
   for (const [name, def] of Object.entries(playbook.inputs)) {
-    const raw = given[name] ?? def.default;
+    // An empty or whitespace-only value (the panel's empty field) counts as not given, so the declared default applies.
+    const g = given[name];
+    const blank = g === undefined || g === null || (typeof g === "string" && g.trim() === "");
+    const raw = blank ? def.default ?? (typeof g === "string" ? g : undefined) : g;
     if (raw === undefined || raw === "") {
       if (def.required) errors.push(`input "${name}" is required`);
       continue;
