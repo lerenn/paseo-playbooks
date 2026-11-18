@@ -1,5 +1,5 @@
 import { openExternalUrl, usePaseo, useRpc, useSettings, type PluginIconProps, type PluginScreenProps, type PluginSidebarItemProps } from "@getpaseo/plugin/client";
-import { Icon, ScrollView, SidebarRow, useToast } from "@getpaseo/plugin/client/ui";
+import { copyText, Icon, ScrollView, SidebarRow, useToast } from "@getpaseo/plugin/client/ui";
 import { useQueries, useQueryClient } from "@tanstack/react-query";
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { Animated, Easing, Pressable, Text, View } from "react-native";
@@ -985,6 +985,7 @@ function RunRow(props: {
   onOpenAgent?: (agentId: string) => void;
 }) {
   const { theme, run, compact } = props;
+  const toast = useToast();
   const state = progress(run);
   const color = toneColor(theme, state.tone);
   const history = useMemo(() => [...props.runs.values()].map(slowView), [props.runs]);
@@ -1032,7 +1033,21 @@ function RunRow(props: {
           </View>
         ) : null}
         <Text numberOfLines={1} style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>
-          {shortId(run)} · <Text style={{ color: state.tone === "seen" || state.tone === "paused" ? theme.colors.foregroundMuted : color }}>{state.status}</Text> ·{" "}
+          <Text
+            accessibilityRole="button"
+            accessibilityLabel="Copy run id"
+            onPress={(event) => {
+              event?.stopPropagation?.();
+              copyText(run.id).then(
+                () => toast.show(`Copied ${run.id}`, { variant: "success" }),
+                (error: unknown) => toast.error(error instanceof Error ? error.message : "Could not copy the run id"),
+              );
+            }}
+            style={{ textDecorationLine: "underline", textDecorationStyle: "dotted" }}
+          >
+            {shortId(run)}
+          </Text>{" "}
+          · <Text style={{ color: state.tone === "seen" || state.tone === "paused" ? theme.colors.foregroundMuted : color }}>{state.status}</Text> ·{" "}
           {ago(run.updatedAt)}
           {props.workspace ? ` · ${props.workspace}` : ""}
           {run.parent ? ` · item ${run.parent.key} of ${run.parent.runId.replace(/^run_/, "")}` : ""}
