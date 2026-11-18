@@ -31,6 +31,7 @@ import { JOB_TYPES } from "./job-events";
 import { OVERSIGHT_TYPES } from "./oversight-events";
 import { readProjectDefault, readProjectProfiles } from "./config";
 import { bareId, DEFAULT_REPO, qualified } from "../shared/repos";
+import { MAX_SUBAGENT_ARCHIVE_AFTER_MS } from "./sidekick-archive";
 import { coerceValue, parseDuration, replaceRefs, singleRef, templateRefs, typeCompatible } from "../shared/vars";
 
 /** Folders searched for playbooks, relative to the workspace. Each folder is self-contained. */
@@ -859,7 +860,18 @@ const RawSidekickSchema = z
         /** Event types (or globs such as `gate.*`) it is subscribed to, for this project's runs. */
         watch: z.array(z.string().min(1)).min(1).optional(),
         /** Provider and model of the subagents the Sidekick creates (default: claude / claude-sonnet-5-5). */
-        subagents: z.object({ provider: z.string().min(1).optional(), model: z.string().min(1).optional(), mode: z.unknown().optional() }).strict().optional(),
+        subagents: z
+          .object({
+            provider: z.string().min(1).optional(),
+            model: z.string().min(1).optional(),
+            mode: z.unknown().optional(),
+            /** Archive the hidden workspace of a subagent (and the subagent) once it finished and the Sidekick was told (default true). */
+            archive_workspace: z.boolean().optional(),
+            /** Grace period before that archive, such as 10m (default 10m, at most 24h): the Sidekick can still read the report. */
+            archive_after: z.string().optional(),
+          })
+          .strict()
+          .optional(),
         session: z.object({ restart_above_tokens: z.number().int().positive().optional() }).strict().optional(),
         /** Rules for the runs the Sidekick starts. Enforced by its prompt only. */
         runs: z
@@ -888,7 +900,7 @@ export interface SidekickConfig {
   watch: string[];
   /** Context size above which the Sidekick is restarted with a hand-off; default 300000. */
   restartAboveTokens?: number;
-  subagents?: { provider?: string; model?: string; mode?: string };
+  subagents?: { provider?: string; model?: string; mode?: string; archiveWorkspace?: boolean; archiveAfterMs?: number };
   /** `sidekick.runs`: rules for the runs it starts; unset means unlimited and no confirmation. */
   runs?: { maxConcurrent?: number; confirmBulk?: boolean };
 }
@@ -932,10 +944,16 @@ export async function loadSidekick(workspaceDir: string): Promise<SidekickLoad> 
         if (!parsed.success) errors.push(...formatZodError(`${rel}/sidekick.yaml`, parsed.error));
         else {
           const { watch, session, runs, subagents: rawSubagents, ...settings } = parsed.data.sidekick ?? {};
-          let subagents: { provider?: string; model?: string; mode?: string } | undefined;
+          let subagents: { provider?: string; model?: string; mode?: string; archiveWorkspace?: boolean; archiveAfterMs?: number } | undefined;
           if (rawSubagents) {
-            const { mode, ...rest } = rawSubagents;
+            const { mode, archive_workspace, archive_after, ...rest } = rawSubagents;
             subagents = rest;
+            if (archive_workspace !== undefined) subagents.archiveWorkspace = archive_workspace;
+            if (archive_after !== undefined) {
+              const ms = parseDuration(archive_after);
+              if (ms === null || ms > MAX_SUBAGENT_ARCHIVE_AFTER_MS) errors.push(`${rel}/sidekick.yaml: sidekick.subagents.archive_after must be a duration such as 30s, 10m or 2h, at most 24h (got "${archive_after}")`);
+              else subagents.archiveAfterMs = ms;
+            }
             if (mode !== undefined) {
               if (typeof mode === "string" && MODE_ID.test(mode)) subagents.mode = mode;
               else warnings.push(`${rel}/sidekick.yaml: sidekick.subagents.mode must be a mode id such as default, acceptEdits, plan, auto or bypassPermissions; ignored`);
@@ -944,7 +962,7 @@ export async function loadSidekick(workspaceDir: string): Promise<SidekickLoad> 
           config = {
             ...Object.fromEntries(Object.entries(settings).filter(([, value]) => value !== undefined)),
             watch: watch ?? DEFAULT_SIDEKICK_WATCH,
-            ...(subagents && (subagents.provider || subagents.model || subagents.mode) ? { subagents: Object.fromEntries(Object.entries(subagents).filter(([, value]) => value !== undefined)) } : {}),
+            ...(subagents && Object.keys(subagents).length > 0 ? { subagents: Object.fromEntries(Object.entries(subagents).filter(([, value]) => value !== undefined)) } : {}),
             ...(session?.restart_above_tokens ? { restartAboveTokens: session.restart_above_tokens } : {}),
             ...(runs && (runs.max_concurrent !== undefined || runs.confirm_bulk !== undefined)
               ? { runs: { ...(runs.max_concurrent !== undefined ? { maxConcurrent: runs.max_concurrent } : {}), ...(runs.confirm_bulk !== undefined ? { confirmBulk: runs.confirm_bulk } : {}) } }

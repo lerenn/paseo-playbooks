@@ -2,6 +2,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { SIDEKICK_PROMPT_START } from "../shared/sidekick-marker";
+import { DEFAULT_SUBAGENT_ARCHIVE_AFTER_MS } from "./sidekick-archive";
 
 /** Label on the Sidekick agent (and nothing else): the tools hook and the manager checks read it. */
 export const SIDEKICK_LABEL = "playbooks/sidekick";
@@ -21,6 +22,7 @@ export const DEFAULT_SIDEKICK_SUBAGENT = { provider: "claude", model: "claude-so
 /** Paseo's own tools the Sidekick may use without asking: it creates and follows subagents, and reads workspaces. */
 export const SIDEKICK_PASEO_TOOLS = [
   "create_agent",
+  "create_workspace",
   "send_agent_prompt",
   "list_agents",
   "get_agent_status",
@@ -50,6 +52,8 @@ export interface SidekickProject {
   watch: string[];
   /** Provider and model for the subagents it creates. */
   subagent?: { provider: string; model: string; mode?: string };
+  /** `sidekick.subagents.archive_workspace` / `archive_after`: whether, and when, the plugin archives the hidden workspace of a finished subagent. */
+  subagentWorkspace?: { archive: boolean; afterMs: number };
   /** `sidekick.runs`: limits on the runs it starts. */
   runs?: { maxConcurrent?: number; confirmBulk?: boolean };
 }
@@ -60,6 +64,13 @@ function runsRules(runs: SidekickProject["runs"]): string {
   if (runs?.maxConcurrent !== undefined) lines.push(`- Limit: at most ${runs.maxConcurrent} run${runs.maxConcurrent === 1 ? "" : "s"} of this project active at once. Before starting a run, count the active ones with list_runs; start only what fits, and tell the human what is left waiting.`);
   if (runs?.confirmBulk) lines.push("- Before launching more than one run in a batch (yours, or a bulk coordinator's), ask the human with the interactive question tool and launch only after they agree.");
   return lines.length > 0 ? `\n${lines.join("\n")}` : "";
+}
+
+/** The prompt line about the archive of a subagent's hidden workspace. */
+function subagentWorkspaceRule(setting: SidekickProject["subagentWorkspace"]): string {
+  if (setting && !setting.archive) return "";
+  const minutes = Math.max(1, Math.round((setting?.afterMs ?? DEFAULT_SUBAGENT_ARCHIVE_AFTER_MS) / 60_000));
+  return `\n- The plugin archives such a hidden workspace and its subagent about ${minutes} minute${minutes === 1 ? "" : "s"} after it told you the subagent finished, so read the report (get_agent_activity) within that time. It never archives a visible workspace, the project's checkout or a run's workspace, and it keeps a workspace with uncommitted changes or commits that are not pushed: tell the subagent to push or discard its work before it reports.`;
 }
 
 /**
@@ -114,7 +125,7 @@ You are a coordinator, not a worker. You have no workspace of your own, and you 
 - Keep your context small: read conversations in small pages, do not paste large outputs. When the plugin asks you to hand off because your context is large, call sidekick_handoff with restart: true and a summary that lets a new session continue (ledger, open questions, subagents, what to check next), then end your turn.
 
 **Work**
-- Where to create a subagent (its workspaceId): (1) a job about a specific run (a failure, a stuck step, something a run's manager or a release batch is doing) goes to a subagent created in THAT run's workspace, the run's workspaceId from get_run or list_runs; that workspace is visible in Paseo, so the human can follow the work there. (2) A job about the project's playbooks, roles or scripts goes to a visible existing workspace of this project (list_workspaces) whose checkout holds the playbooks; never create a new hidden workspace for it. (3) Never create a subagent in your own hidden workspace: you have none to use, and the human cannot see it. In a run's workspace the manager may be working, so tell the subagent not to disturb the run's branch or files: for a change it creates its own git worktree on a new branch off the freshly fetched default branch, and opens the pull request from there.
+- Where to create a subagent (its workspaceId): (1) a job about a specific run (a failure, a stuck step, something a run's manager or a release batch is doing) goes to a subagent created in THAT run's workspace, the run's workspaceId from get_run or list_runs; that workspace is visible in Paseo, so the human can follow the work there. (2) A job about the project's playbooks, roles or scripts goes to a visible existing workspace of this project (list_workspaces) whose checkout holds the playbooks; never create a new hidden workspace for it. (3) A job that needs a place of its own and concerns no run (a one-off investigation, a change in a fresh checkout): first create a new hidden workspace with create_workspace { isolation: "worktree", background: true, path: "${project.root}" } (it is a worktree on a new branch, off the project's checkout), then create the subagent in it with that workspaceId. (4) NEVER call create_agent without a workspaceId: Paseo then puts the subagent in the project's own checkout, a workspace that must never be archived or edited by a subagent. (5) Never create a subagent in your own hidden workspace: you have none to use, and the human cannot see it.${subagentWorkspaceRule(project.subagentWorkspace)} In a run's workspace the manager may be working, so tell the subagent not to disturb the run's branch or files: for a change it creates its own git worktree on a new branch off the freshly fetched default branch, and opens the pull request from there.
 - Delegate anything that takes more than a couple of tool calls to a subagent. Give it one clear job, its workspace (per the rules above) and the rules above. Follow it until it reports; never let a subagent sit idle on something you can unblock. Check the result yourself (pull request state, CI, validate_playbooks) before you report a job done, then archive the subagent.
 - To see what an agent said or did (a step agent, a manager, a subagent, "is it stuck?"), read it yourself with read_agent_conversation: it returns the conversation as text, newest entries first page, with a cursor for older ones. Do not send a subagent to read a transcript.
 - Use plugin tools directly only to read: get_run, list_runs, list_gates, list_events. Also read_agent_conversation. Writes on a run (cancel_run, restart_run, refresh_scripts) only when the human asks or a documented rule says so; start_playbook (and list_playbooks) as described under Runs, with workspaceId, newWorkspace and forJob; record_followup, requeue_job and start_after_task when a rule or the human asks; resume_gate only as described under Guardrails. These tools are yours in this session: never tell the human to start a run from the panel because you think start_playbook is missing; call it.
@@ -205,6 +216,7 @@ sidekick:
   # Events it is told about, for this project's runs (globs such as "gate.*" work).
   watch: [gate.escalated, run.failed, run.manager_lost]
   # subagents: { provider: claude, model: claude-sonnet-5-5, mode: acceptEdits }   # what it creates for jobs; mode defaults to the Sidekick's own
+  # subagents: { archive_workspace: true, archive_after: 10m }   # archive a finished subagent's hidden workspace after this grace period (default: on, 10m)
   # runs:                          # rules for the runs it starts, kept by its prompt only
   #   max_concurrent: 5            # at most this many runs of the project active at once (default: unlimited)
   #   confirm_bulk: true           # ask the human before launching more than one run in a batch (default: false)

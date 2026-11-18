@@ -193,6 +193,15 @@ export async function hasUnpushedCommits(repo: string, branch: string, baseSha: 
   }
 }
 
+/** Commits of the checkout at `dir` that are on no remote-tracking ref (so nowhere else). Null when git cannot tell: the caller keeps the checkout. */
+export async function unpushedCommits(dir: string): Promise<string[] | null> {
+  try {
+    return (await git(dir, ["rev-list", "HEAD", "--not", "--remotes"])).split("\n").filter(Boolean);
+  } catch {
+    return null;
+  }
+}
+
 /** True when `dir` is inside `parent` (after resolving links), so a recursive delete may never leave it. */
 async function inside(parent: string, dir: string): Promise<boolean> {
   try {

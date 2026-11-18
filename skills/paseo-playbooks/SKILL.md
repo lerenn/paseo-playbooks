@@ -64,10 +64,17 @@ its tab offers "Create the Sidekick files".
 sidekick:
   model: claude-opus-5-5        # provider, model, mode, thinking: as an agent block
   watch: [gate.escalated, run.failed, run.manager_lost]   # event types or globs, for this project's runs
-  subagents: { provider: claude, model: claude-sonnet-5-5, mode: acceptEdits }   # what it creates for jobs (default claude / claude-sonnet-5-5; mode defaults to its own)
+  subagents: { provider: claude, model: claude-sonnet-5-5, mode: acceptEdits, archive_workspace: true, archive_after: 10m }   # what it creates for jobs (default claude / claude-sonnet-5-5; mode defaults to its own); archive_* : the hidden workspace of a finished subagent is archived after the grace period (default true / 10m)
   session: { restart_above_tokens: 300000 }   # hand off and restart when its context grows past this (default 300000)
   runs: { max_concurrent: 5, confirm_bulk: true }   # rules for the runs it starts; max_concurrent unset means unlimited, confirm_bulk defaults to false
 ```
+
+`sidekick.subagents.archive_workspace` / `archive_after`: a subagent the Sidekick created in its own new hidden worktree
+workspace is archived, with that workspace, `archive_after` (default 10m, at most 24h) after the Sidekick was told it finished,
+only if the workspace is not the project's root checkout, a run's or the Sidekick's own workspace, holds no other agent,
+nothing runs, and there are no uncommitted changes or unpushed commits (otherwise it is kept and the reason logged; the
+pending archives survive a restart). The Sidekick creates that workspace with `create_workspace` (isolation worktree,
+background true) and never calls `create_agent` without a `workspaceId`.
 
 `sidekick.runs` is enforced by its prompt only, not by the plugin. Its prompt also forbids it to edit files or run
 commands itself: it sends subagents for that work. `sidekick/instructions.md` holds the repository's rules for it;

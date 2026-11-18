@@ -37,7 +37,7 @@ import * as engine from "./engine";
 import { ADMISSION_TIMEOUT_MS, admissionInput, readAdmission } from "./admission";
 import { checkoutSnapshot, currentRef, defaultBranch, exportPaths, fastForward, freshRef, freshRefInfo, git as gitOutput, removedGitlinks, snapshotDiff } from "./git";
 import { workspaceTitle } from "../shared/workspace-name";
-import { createWorktree, diskUsedFraction, dirtyPaths, purgeScratch, linkedSubmodules, listWorktreeDirs, pruneWorktrees, removeWorktree, repoOfWorktree, worktreeBranch, worktreePath } from "./worktree";
+import { createWorktree, diskUsedFraction, dirtyPaths, purgeScratch, linkedSubmodules, listWorktreeDirs, pruneWorktrees, unpushedCommits, removeWorktree, repoOfWorktree, worktreeBranch, worktreePath } from "./worktree";
 import { chooseDefinition } from "./fresh";
 import { runWorktreeTeardown } from "./teardown";
 import { gatesOnBehalfSetting, loadPlaybooks, loadSidekick } from "./loader";
@@ -48,6 +48,7 @@ function lookup(entries: Parameters<typeof findEntry>[0], ref: string) {
   const found = findEntry(entries, ref);
   return "entry" in found ? found.entry : undefined;
 }
+import { DEFAULT_SUBAGENT_ARCHIVE_AFTER_MS, subagentWorkspaceRefusal, SubagentArchiveStore } from "./sidekick-archive";
 import { DEFAULT_SIDEKICK_RESTART_TOKENS, DEFAULT_SIDEKICK_SUBAGENT, SIDEKICK_LABEL, SIDEKICK_PROJECT_LABEL, sidekickGateSweep, sidekickHandoffRequest, sidekickKickoff, SIDEKICK_PASEO_TOOLS, SIDEKICK_PLUGIN_TOOLS, SidekickRegistry, sidekickPrompt, sidekickTitle } from "./sidekick";
 import { BusError, EventBus, globToRegExp, type BusEvent, type Notifier, type Subscription } from "./bus";
 import { OversightProducer, registerOversightTypes } from "./oversight-events";
@@ -113,6 +114,11 @@ function splitTarget(entry: string): [string, string] {
 function inheritTarget(base: AgentTarget, provider: string, model: string): AgentTarget {
   const same = base.provider === provider;
   return { provider, model, ...(same && base.mode ? { mode: base.mode } : {}), ...(same && base.thinking ? { thinking: base.thinking } : {}) };
+}
+
+/** Provider, model and mode of `sidekick.subagents`: the archive options are not agent settings. */
+function pickAgentSettings(subagents: { provider?: string; model?: string; mode?: string } | undefined) {
+  return { ...(subagents?.provider ? { provider: subagents.provider } : {}), ...(subagents?.model ? { model: subagents.model } : {}), ...(subagents?.mode ? { mode: subagents.mode } : {}) };
 }
 
 function preapprove(config: AgentConfig, provider: string, tools: string[]): AgentConfig {
@@ -430,6 +436,10 @@ export class Runtime {
   /** Gates (runId:gateId) already put to each Sidekick by an end-of-turn sweep, so a gate left for the human is not repeated every turn. */
   private readonly sidekickSwept = new Map<string, Set<string>>();
   private readonly sidekickHeld = new Map<string, string[]>();
+  /** The subagents behind the finish notices held for each Sidekick: their workspace archive starts once the notice is delivered. */
+  private readonly sidekickHeldAgents = new Map<string, string[]>();
+  private readonly subagentArchives: SubagentArchiveStore;
+  private readonly subagentArchiveTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly sidekickOpening = new Map<string, Promise<{ projectId: string; workspaceId: string; agentId: string; created: boolean }>>();
 
   /** The event bus (bus.ts) and its first producer, the runs (oversight-events.ts). */
@@ -440,7 +450,7 @@ export class Runtime {
 
   constructor(
     private readonly store: RunStore,
-    private readonly options: { dataDir?: string; debounceMs?: number; pollMs?: number; wakeGapMs?: number; /** Tests: how long a failed run's worktree is kept (default 24h). */ failedRetentionMs?: number; /** Tests: the used fraction of the volume holding the worktrees. */ diskUsedFraction?: (dir: string) => Promise<number>; admissionTimeoutMs?: number; /** Tests: false keeps the old manual flow (the plugin starts no ready agent step by itself). */ autoStartAgents?: boolean } = {},
+    private readonly options: { dataDir?: string; debounceMs?: number; pollMs?: number; wakeGapMs?: number; /** Tests: how long a failed run's worktree is kept (default 24h). */ failedRetentionMs?: number; /** Tests: the used fraction of the volume holding the worktrees. */ diskUsedFraction?: (dir: string) => Promise<number>; admissionTimeoutMs?: number; /** Tests: false keeps the old manual flow (the plugin starts no ready agent step by itself). */ autoStartAgents?: boolean; /** Tests: the grace period of a Sidekick subagent's workspace archive when the project sets none. */ subagentArchiveAfterMs?: number } = {},
   ) {
     const dir = options.dataDir ?? path.dirname(store.dir);
     this.worktreesDir = path.join(dir, "worktrees");
@@ -448,6 +458,7 @@ export class Runtime {
     this.sessions = new StaleSessions(path.join(dir, "sessions.json"));
     this.usageLedger = new UsageLedger(path.join(dir, "agent-usage.json"));
     this.sidekickRegistry = new SidekickRegistry(path.join(dir, "sidekick.json"));
+    this.subagentArchives = new SubagentArchiveStore(path.join(dir, "sidekick-archive.json"));
     this.bus = new EventBus({ events: path.join(dir, "events.json"), subscriptions: path.join(dir, "subscriptions.json"), pending: path.join(dir, "pending-events.json") }, options.debounceMs === undefined ? {} : { debounceMs: options.debounceMs });
     registerOversightTypes(this.bus);
     for (const def of JOB_TYPES) this.bus.register(def);
@@ -511,7 +522,9 @@ export class Runtime {
     this.reconciled ??= this.reconcile()
       .catch((error) => console.error("[playbooks] reconcile failed:", error))
       .then(() => this.reloadStaleSessions())
-      .catch((error) => console.error("[playbooks] stale session reload failed:", errorText(error)));
+      .catch((error) => console.error("[playbooks] stale session reload failed:", errorText(error)))
+      .then(() => this.rearmSubagentArchives())
+      .catch((error) => console.error("[playbooks] could not re-arm the pending subagent workspace archives:", errorText(error)));
     if (!this.eventsTimer) {
       this.eventsTimer = setInterval(() => void this.watchEvents().catch((error) => console.error("[playbooks] event watch failed:", errorText(error))), this.options.pollMs ?? 2000);
       (this.eventsTimer as unknown as { unref?: () => void }).unref?.();
@@ -562,6 +575,8 @@ export class Runtime {
     this.watches.clear();
     for (const timer of this.delayTimers.values()) clearTimeout(timer);
     this.delayTimers.clear();
+    for (const timer of this.subagentArchiveTimers.values()) clearTimeout(timer);
+    this.subagentArchiveTimers.clear();
     for (const id of [...this.scripts.keys()]) this.stopScript(id);
     return Promise.all([this.store.close(), this.bus.close(), this.sessions.flush(), this.usageLedger.flush()]).then(() => undefined);
   }
@@ -4795,6 +4810,7 @@ export class Runtime {
         this.sidekickRolling.delete(known.agentId);
         this.sidekickAsked.delete(known.agentId);
         this.sidekickHeld.delete(known.agentId);
+        this.sidekickHeldAgents.delete(known.agentId);
         await this.api().agents.ref(known.agentId).archive().catch(() => undefined);
         return this.launchSidekick(project, load, known, known.handoff);
       })().finally(() => this.sidekickOpening.delete(project.projectId));
@@ -4886,12 +4902,12 @@ export class Runtime {
       ? this.api().workspaces.ref(workspaceId)
       : await this.api().workspaces.create({ title: sidekickTitle(project.label), source: { kind: "directory", path: project.root }, background: true });
     for (const warning of load.warnings) console.warn(`[playbooks] ${warning}`);
-    const subagent = { ...DEFAULT_SIDEKICK_SUBAGENT, ...(settings.mode ? { mode: settings.mode } : {}), ...settings.subagents };
+    const subagent = { ...DEFAULT_SIDEKICK_SUBAGENT, ...(settings.mode ? { mode: settings.mode } : {}), ...pickAgentSettings(settings.subagents) };
     const agent = await workspace.agents.create({
       config,
       title: sidekickTitle(project.label),
       labels: { [SIDEKICK_LABEL]: "true", [SIDEKICK_PROJECT_LABEL]: project.projectId },
-      prompt: `${sidekickPrompt({ projectId: project.projectId, label: project.label, root: project.root, watch: settings.watch, subagent, ...(settings.runs ? { runs: settings.runs } : {}) }, load.instructions)}\n\n${sidekickKickoff(handoff)}`,
+      prompt: `${sidekickPrompt({ projectId: project.projectId, label: project.label, root: project.root, watch: settings.watch, subagent, subagentWorkspace: this.subagentArchiveSetting(settings), ...(settings.runs ? { runs: settings.runs } : {}) }, load.instructions)}\n\n${sidekickKickoff(handoff)}`,
     });
     const record = { workspaceId: workspaceId ?? workspace.id, agentId: agent.id };
     await this.sidekickRegistry.write(project.projectId, record);
@@ -4972,8 +4988,13 @@ export class Runtime {
       if (!parent) return false;
       const notice = `[playbooks] Subagent ${agentId.slice(0, 8)} finished its turn (${outcome}); read its report with get_agent_activity (limit 1).`;
       const sidekick = await this.api().agents.ref(parentAgentId).refresh().catch(() => null);
-      if (sidekick?.agent.status === "idle") await this.api().agents.ref(parentAgentId).send(notice);
-      else this.sidekickHeld.set(parentAgentId, [...(this.sidekickHeld.get(parentAgentId) ?? []), notice]);
+      if (sidekick?.agent.status === "idle") {
+        await this.api().agents.ref(parentAgentId).send(notice);
+        await this.scheduleSubagentArchive(agentId, parent.projectId, parent.record).catch((error) => console.error("[playbooks] could not schedule the subagent workspace archive:", errorText(error)));
+      } else {
+        this.sidekickHeld.set(parentAgentId, [...(this.sidekickHeld.get(parentAgentId) ?? []), notice]);
+        this.sidekickHeldAgents.set(parentAgentId, [...(this.sidekickHeldAgents.get(parentAgentId) ?? []), agentId]);
+      }
       return true;
     }
     const own = await this.sidekickRegistry.findByAgent(agentId);
@@ -4989,7 +5010,9 @@ export class Runtime {
     const limit = (project ? (await loadSidekick(project.root)).config?.restartAboveTokens : undefined) ?? DEFAULT_SIDEKICK_RESTART_TOKENS;
     const used = (await this.api().agents.ref(agentId).refresh().catch(() => null))?.agent.lastUsage?.contextWindowUsedTokens ?? 0;
     const parts = this.sidekickHeld.get(agentId) ?? [];
+    const toldAbout = this.sidekickHeldAgents.get(agentId) ?? [];
     this.sidekickHeld.delete(agentId);
+    this.sidekickHeldAgents.delete(agentId);
     if (used > limit) {
       // Asked once; if it still has not handed off after its next turn, restart it from the last saved ledger.
       if (this.sidekickAsked.has(agentId)) {
@@ -5018,8 +5041,96 @@ export class Runtime {
         this.busyManagers.delete(agentId);
         throw error;
       }
+      for (const subagentId of toldAbout) await this.scheduleSubagentArchive(subagentId, own.projectId, own.record).catch((error) => console.error("[playbooks] could not schedule the subagent workspace archive:", errorText(error)));
     } else await this.bus.flush();
     return true;
+  }
+
+  // ---------------------------------------------------------------- Sidekick subagent workspaces
+
+  /** `sidekick.subagents.archive_workspace` and `archive_after`, with their defaults (on, 10 minutes). */
+  private subagentArchiveSetting(config: { subagents?: { archiveWorkspace?: boolean; archiveAfterMs?: number } } | null | undefined): { archive: boolean; afterMs: number } {
+    return { archive: config?.subagents?.archiveWorkspace ?? true, afterMs: config?.subagents?.archiveAfterMs ?? this.options.subagentArchiveAfterMs ?? DEFAULT_SUBAGENT_ARCHIVE_AFTER_MS };
+  }
+
+  /**
+   * A Sidekick was told that its subagent finished: its hidden workspace is archived after the grace period, unless
+   * the project's `sidekick.subagents.archive_workspace` is false. The due time is saved, so a restart keeps it, and a
+   * new finish of the same subagent moves it back. Only a subagent of a Sidekick gets here (its parent is the Sidekick).
+   */
+  private async scheduleSubagentArchive(subagentId: string, projectId: string, record: { workspaceId: string }): Promise<void> {
+    const project = await this.projectOf(record.workspaceId).catch(() => null);
+    const setting = this.subagentArchiveSetting(project ? (await loadSidekick(project.root)).config : null);
+    if (!setting.archive) return;
+    const subagent = (await this.api().agents.ref(subagentId).refresh().catch(() => null))?.agent;
+    if (!subagent?.workspaceId || subagent.archivedAt) return;
+    const entry = { agentId: subagentId, workspaceId: subagent.workspaceId, projectId, dueAt: Date.now() + setting.afterMs };
+    await this.subagentArchives.upsert(entry);
+    this.armSubagentArchive(entry);
+  }
+
+  private armSubagentArchive(entry: { agentId: string; dueAt: number }): void {
+    const previous = this.subagentArchiveTimers.get(entry.agentId);
+    if (previous) clearTimeout(previous);
+    const timer = setTimeout(() => {
+      this.subagentArchiveTimers.delete(entry.agentId);
+      void this.archiveSubagentWorkspace(entry.agentId).catch((error) => console.error(`[playbooks] subagent workspace archive of ${entry.agentId} failed:`, errorText(error)));
+    }, Math.min(Math.max(0, entry.dueAt - Date.now()), 2 ** 31 - 1));
+    (timer as unknown as { unref?: () => void }).unref?.();
+    this.subagentArchiveTimers.set(entry.agentId, timer);
+  }
+
+  /** After a restart: the saved archives are armed again with the time left (the ones overdue run at once); nothing runs earlier than saved. */
+  private async rearmSubagentArchives(): Promise<void> {
+    for (const entry of await this.subagentArchives.all()) this.armSubagentArchive(entry);
+  }
+
+  /**
+   * The grace period of a Sidekick subagent is over: archives the subagent and its workspace when every guard
+   * holds (`subagentWorkspaceRefusal`: a hidden Paseo worktree made for it, never a checkout of the project or a
+   * run's workspace; nothing else in it; nothing running; no uncommitted changes; no unpushed commits).
+   * Otherwise the workspace is kept and the reason is logged. The entry is gone either way: a new finish of the subagent starts a new grace.
+   */
+  async archiveSubagentWorkspace(subagentId: string): Promise<{ archived: boolean; reason: string }> {
+    const entry = (await this.subagentArchives.all()).find((candidate) => candidate.agentId === subagentId);
+    if (!entry) return { archived: false, reason: "nothing pending" };
+    this.subagentArchiveTimers.delete(subagentId);
+    const outcome = await this.trySubagentArchive(entry).catch((error: unknown) => ({ archived: false, reason: `could not check: ${errorText(error)}` }));
+    await this.subagentArchives.remove(subagentId);
+    if (outcome.archived) console.log(`[playbooks] workspace ${entry.workspaceId} of Sidekick subagent ${subagentId} archived (sidekick.subagents.archive_workspace)`);
+    else console.error(`[playbooks] workspace ${entry.workspaceId} of Sidekick subagent ${subagentId} kept: ${outcome.reason}`);
+    return outcome;
+  }
+
+  private async trySubagentArchive(entry: { agentId: string; workspaceId: string; projectId: string }): Promise<{ archived: boolean; reason: string }> {
+    const keep = (reason: string) => ({ archived: false, reason });
+    const sidekick = await this.sidekickRegistry.read(entry.projectId);
+    if (!sidekick) return keep("the project has no Sidekick any more");
+    const project = await this.projectOf(sidekick.workspaceId).catch(() => null);
+    if (!project) return keep("the Sidekick's workspace is gone, so the project root is unknown");
+    if (!this.subagentArchiveSetting((await loadSidekick(project.root)).config).archive) return keep("sidekick.subagents.archive_workspace is off");
+    const subagent = (await this.api().agents.ref(entry.agentId).refresh().catch(() => null))?.agent;
+    if (subagent && (subagent as { parentAgentId?: string | null }).parentAgentId !== sidekick.agentId) return keep("the agent is not a subagent of the project's Sidekick");
+    if (subagent && subagent.workspaceId !== entry.workspaceId) return keep("the agent is not in the recorded workspace any more");
+    const workspace = await this.workspaceOf(entry.workspaceId);
+    if (!workspace) return keep("the workspace no longer exists or is already archived");
+    const listed = await this.api().agents.list({ filter: { projectKeys: [entry.projectId] } });
+    const otherAgents = listed.entries.map((item) => item.agent).filter((agent) => agent.workspaceId === entry.workspaceId && agent.id !== entry.agentId && !agent.archivedAt && !agent.internal).map((agent) => agent.id);
+    const directory = workspace.workspaceDirectory ?? null;
+    const refusal = subagentWorkspaceRefusal({
+      workspace: { id: workspace.id, kind: workspace.workspaceKind, background: workspace.background ?? null, worktreeSlug: workspace.worktreeSlug ?? null, directory },
+      sidekickWorkspaceId: sidekick.workspaceId,
+      projectRoot: project.root,
+      runWorkspaceIds: this.store.list().map((run) => run.workspaceId),
+      otherAgents,
+      agent: subagent ? { status: subagent.status, pendingPermissions: subagent.pendingPermissions?.length ?? 0 } : { status: "idle", pendingPermissions: 0 },
+      dirty: directory && existsSync(directory) ? await dirtyPaths(directory, []).catch(() => null) : [],
+      unpushed: directory && existsSync(directory) ? await unpushedCommits(directory) : [],
+    });
+    if (refusal) return keep(refusal);
+    if (subagent && !subagent.archivedAt) await this.api().agents.ref(entry.agentId).archive().catch((error) => console.error(`[playbooks] could not archive subagent ${entry.agentId}:`, errorText(error)));
+    await this.api().workspaces.ref(entry.workspaceId).archive();
+    return { archived: true, reason: "archived" };
   }
 
   /** A new workspace branched off this one's current ref, with a new Playbook Manager that starts the run there. */

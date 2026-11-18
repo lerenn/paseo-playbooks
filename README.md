@@ -75,6 +75,15 @@ until it is idle. It can answer an open human gate of its project with `resume_g
 `sidekick.session.restart_above_tokens` (default 300000) it is asked to hand off and is replaced by a new
 session that starts from the ledger.
 
+A subagent that needs a place of its own gets a new hidden worktree workspace (the Sidekick creates it first with
+`create_workspace { isolation: worktree, background: true }`; it never calls `create_agent` without a `workspaceId`,
+which would put the subagent in the project's own checkout). Once such a subagent has finished and the Sidekick was told,
+the plugin archives the subagent and its workspace after a grace period (`sidekick.subagents.archive_after`, default
+`10m`; `sidekick.subagents.archive_workspace: false` turns it off). It only ever archives a hidden worktree workspace
+that is not the project's root checkout, not a run's workspace and not the Sidekick's own, with no other agent in it,
+nothing running or waiting on a permission, no uncommitted changes and no commits that are not pushed; otherwise it
+keeps the workspace and logs why. The pending archives are saved and survive a restart.
+
 Every ready agent step starts by itself: as soon as a step becomes ready (after a predecessor, a script, a gate, a loop-back or
 a fan-in; also the steps of an after-task) the plugin starts it with its rendered prompt and inputs and an empty brief, with
 the same model, role and workspace resolution as `start_step`. `start_playbook`'s `autoStart: false` keeps the steps ready at
