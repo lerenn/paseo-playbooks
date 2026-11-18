@@ -77,6 +77,64 @@ export const ManagerWatchSchema = z.object({
 });
 export type ManagerWatch = z.infer<typeof ManagerWatchSchema>;
 
+/**
+ * The warden (`warden`; ADR 2026-11-18-warden): one periodic, deterministic pass over the active runs. OFF unless
+ * `enabled: true`: with no block it does nothing at all (no timer, scan, event, notice or Sidekick message).
+ */
+export const WARDEN_ACTIONS = ["report", "refresh_scripts", "none"] as const;
+export const WardenActionSchema = z.enum(WARDEN_ACTIONS);
+export type WardenAction = z.infer<typeof WardenActionSchema>;
+export const WardenConfigSchema = z.object({
+  enabled: z.boolean(),
+  intervalMs: z.number().int().positive(),
+  cooldownMs: z.number().int().positive(),
+  checks: z.object({
+    /** A run pinned to an older definition than origin/<base> (or read from the workspace checkout). `refresh_scripts`: only isolated runs. */
+    staleDefinition: z.object({ action: WardenActionSchema }),
+    /** A manager that is gone or idle while its run has an open gate nobody else can decide. */
+    managerBlocked: z.object({ action: WardenActionSchema }),
+    /** A goto edge fired more than `above` times. */
+    loops: z.object({ above: z.number().int().min(1), action: WardenActionSchema }),
+    /** A running step slower than its baseline (the slow-step warning). */
+    slow: z.object({ action: WardenActionSchema }),
+    /** A gate open longer than `afterMs`. */
+    gateOpen: z.object({ afterMs: z.number().int().positive(), action: WardenActionSchema }),
+  }),
+});
+export type WardenConfig = z.infer<typeof WardenConfigSchema>;
+export const WARDEN_CHECKS = ["stale_definition", "manager_blocked", "loops", "slow", "gate_open"] as const;
+export type WardenCheck = (typeof WARDEN_CHECKS)[number];
+export const DEFAULT_WARDEN: WardenConfig = {
+  enabled: false,
+  intervalMs: 15 * 60_000,
+  cooldownMs: 60 * 60_000,
+  checks: {
+    staleDefinition: { action: "report" },
+    managerBlocked: { action: "report" },
+    loops: { above: 5, action: "report" },
+    slow: { action: "report" },
+    gateOpen: { afterMs: 30 * 60_000, action: "report" },
+  },
+};
+
+/** What the warden remembers about a run (server/warden.ts): the findings it reported and still sees; survives a restart. */
+export const WardenFindingSchema = z.object({
+  check: z.enum(WARDEN_CHECKS),
+  /** The step, gate or edge the finding is about (null: the run). */
+  subject: z.string().nullable(),
+  /** A change of it makes a new finding (a new origin sha, a new step run). */
+  signature: z.string(),
+  detail: z.string(),
+  since: z.string(),
+  /** When it was last reported (event, summary); it is reported again after the cooldown while still true. */
+  reportedAt: z.string(),
+  /** The action taken when it was first reported (`refresh_scripts` runs once per finding). */
+  acted: z.enum(["refresh_scripts"]).nullable().default(null),
+});
+export type WardenFinding = z.infer<typeof WardenFindingSchema>;
+export const WardenStateSchema = z.object({ findings: z.record(z.string(), WardenFindingSchema).default({}) });
+export type WardenState = z.infer<typeof WardenStateSchema>;
+
 /** Used when neither the playbook nor `defaults/main.yaml` sets `manager.compact`. */
 export const DEFAULT_MANAGER_COMPACT: ManagerCompact = { above_tokens: 150_000 };
 
@@ -438,6 +496,8 @@ export const PlaybookSchema = z.object({
   managerCompact: ManagerCompactSchema.default(DEFAULT_MANAGER_COMPACT),
   /** `manager.nudge`: the watchdog for reported steps the manager has not acted on. Unset on runs from before it (= the defaults). */
   managerNudge: ManagerNudgeSchema.default(DEFAULT_MANAGER_NUDGE),
+  /** `warden`: the periodic checks. Unset on runs from before it (= off). */
+  warden: WardenConfigSchema.default(DEFAULT_WARDEN),
   /** `manager.mode`: `none` = no manager agent, the plugin drives the run. Unset on runs from before it (= always_on). */
   managerMode: ManagerModeSchema.default(DEFAULT_MANAGER_MODE),
   /** How long an exhausted `provider/model` is skipped before it is tried again (`providers.exhausted_for`), in ms. */
@@ -1025,6 +1085,8 @@ export const RunSchema = z.object({
   pausedAt: z.string().nullable().default(null),
   /** The manager watchdog's memory (nudges sent per reported step, the manager's open question). */
   managerWatch: ManagerWatchSchema.default({ steps: {}, question: null }),
+  /** The warden's findings for this run (empty unless `warden.enabled`). */
+  warden: WardenStateSchema.default({ findings: {} }),
   steps: z.record(z.string(), RunStepSchema),
   /** Times each goto edge fired, keyed "source->target", and extra loops granted at a loop-limit gate. */
   loops: z.record(z.string(), z.number().int()),

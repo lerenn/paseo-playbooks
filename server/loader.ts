@@ -25,7 +25,7 @@ import type {
   VarValue,
   When,
 } from "../shared/types";
-import { AgentSettingsSchema, DEFAULT_EXHAUSTED_FOR_MS, DEFAULT_MANAGER_COMPACT, DEFAULT_MANAGER_MODE, DEFAULT_MANAGER_NUDGE, DEFAULT_PERMISSION_POLICY, type ManagerNudge, ManagerCompactSchema, ManagerModeSchema, type ManagerMode, type Isolation, type WakeOn, VarTypeSchema, VarValueSchema } from "../shared/types";
+import { AgentSettingsSchema, DEFAULT_EXHAUSTED_FOR_MS, DEFAULT_MANAGER_COMPACT, DEFAULT_MANAGER_MODE, DEFAULT_MANAGER_NUDGE, DEFAULT_PERMISSION_POLICY, DEFAULT_WARDEN, WARDEN_ACTIONS, type WardenConfig, type ManagerNudge, ManagerCompactSchema, ManagerModeSchema, type ManagerMode, type Isolation, type WakeOn, VarTypeSchema, VarValueSchema } from "../shared/types";
 import { BusError, checkTypes, FilterValueSchema } from "./bus";
 import { JOB_TYPES } from "./job-events";
 import { OVERSIGHT_TYPES } from "./oversight-events";
@@ -539,6 +539,62 @@ function resolveManagerNudge(raw: RawManagerNudge | undefined, where: string, fa
   return out;
 }
 
+/** `warden`: the periodic checks over the active runs (ADR 2026-11-18-warden). Off unless `enabled: true`. */
+const RawWardenSchema = z
+  .object({
+    /** `true` turns the warden on. Default false: with no block, nothing runs. */
+    enabled: z.boolean().optional(),
+    /** How often a run is looked at (`15m`). */
+    interval: z.string().optional(),
+    /** How long a finding that is still true waits before it is reported again (`1h`). */
+    cooldown: z.string().optional(),
+    checks: z
+      .object({
+        /** A run pinned to an older definition than origin/<base>: `report` | `refresh_scripts` (isolated runs only) | `none`. */
+        stale_definition: z.object({ action: z.enum(WARDEN_ACTIONS).optional() }).strict().optional(),
+        /** A manager gone or idle while its run has an open gate it holds: `report` | `none`. */
+        manager_blocked: z.object({ action: z.enum(WARDEN_ACTIONS).optional() }).strict().optional(),
+        /** A goto edge fired more than `above` times (default 5): `report` | `none`. */
+        loops: z.object({ above: z.number().int().min(1).optional(), action: z.enum(WARDEN_ACTIONS).optional() }).strict().optional(),
+        /** A running step slower than its baseline (the slow-step warning): `report` | `none`. */
+        slow: z.object({ action: z.enum(WARDEN_ACTIONS).optional() }).strict().optional(),
+        /** A gate open longer than `after` (default 30m): `report` | `none`. */
+        gate_open: z.object({ after: z.string().optional(), action: z.enum(WARDEN_ACTIONS).optional() }).strict().optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+type RawWarden = z.infer<typeof RawWardenSchema>;
+
+/** The warden block over a base config, field by field; a bad value is reported through `fail`. */
+function resolveWarden(raw: RawWarden | undefined, base: WardenConfig, where: string, fail: (message: string) => void): WardenConfig {
+  const out: WardenConfig = structuredClone(base);
+  if (!raw) return out;
+  if (raw.enabled !== undefined) out.enabled = raw.enabled;
+  const duration = (value: string | undefined, key: string): number | undefined => {
+    if (value === undefined) return undefined;
+    const ms = parseDuration(value);
+    if (ms === null || ms <= 0) fail(`${where}.${key}: expected a duration such as 15m or 1h`);
+    return ms !== null && ms > 0 ? ms : undefined;
+  };
+  out.intervalMs = duration(raw.interval, "interval") ?? out.intervalMs;
+  out.cooldownMs = duration(raw.cooldown, "cooldown") ?? out.cooldownMs;
+  const checks = raw.checks;
+  if (!checks) return out;
+  for (const [name, check] of Object.entries(checks)) {
+    if (check?.action === "refresh_scripts" && name !== "stale_definition") fail(`${where}.checks.${name}.action: \`refresh_scripts\` only applies to stale_definition (use report or none)`);
+  }
+  if (checks.stale_definition?.action) out.checks.staleDefinition.action = checks.stale_definition.action;
+  if (checks.manager_blocked?.action) out.checks.managerBlocked.action = checks.manager_blocked.action;
+  if (checks.loops?.action) out.checks.loops.action = checks.loops.action;
+  if (checks.loops?.above !== undefined) out.checks.loops.above = checks.loops.above;
+  if (checks.slow?.action) out.checks.slow.action = checks.slow.action;
+  if (checks.gate_open?.action) out.checks.gateOpen.action = checks.gate_open.action;
+  out.checks.gateOpen.afterMs = duration(checks.gate_open?.after, "checks.gate_open.after") ?? out.checks.gateOpen.afterMs;
+  return out;
+}
+
 const RawPlaybookSchema = z.object({
     title: z.string().optional(),
     description: z.string().optional(),
@@ -584,6 +640,8 @@ const RawPlaybookSchema = z.object({
     /** How the playbook can end, for a parent that uses it as a sub-playbook. The first is a normal finish. */
     /** Slow-step warning: a step slower than `factor` times the mean of its last `runs` completed runs gets a warning. Defaults 10 and 2. */
     slow_warning: RawSlowWarningSchema.optional(),
+    /** The warden's periodic checks; see RawWardenSchema. Off unless `enabled: true`. */
+    warden: RawWardenSchema.optional(),
     /** House rules added to the prompt of every agent of the playbook, after the repository's `agent_rules` (a list of short strings; checked by `parseAgentRules`). */
     agent_rules: z.unknown().optional(),
     outcomes: z.array(z.string()).min(1).optional(),
@@ -645,6 +703,8 @@ const RawDefaultsSchema = z.object({
     reload_stale_sessions: z.boolean().optional(),
     /** Slow-step warning: a step slower than `factor` times the mean of its last `runs` completed runs gets a warning. Defaults 10 and 2. */
     slow_warning: RawSlowWarningSchema.optional(),
+    /** The warden's periodic checks (repo-wide default; a playbook may override field by field). Off unless `enabled: true`. */
+    warden: RawWardenSchema.optional(),
     timeout: z.string().optional(),
     /** Default `manage` of every step. */
     manage: RawManageSchema.optional(),
@@ -662,7 +722,7 @@ const RawDefaultsSchema = z.object({
     silence: z.unknown().optional(),
     archive_agents: z.unknown().optional(),
   });
-type RawDefaults = Omit<z.infer<typeof RawDefaultsSchema>, "tiers"> & { tiers?: Tiers; managerCompact?: ManagerCompact; managerNudge?: Partial<ManagerNudge>; managerMode?: ManagerMode; agentRules?: string[] };
+type RawDefaults = Omit<z.infer<typeof RawDefaultsSchema>, "tiers"> & { tiers?: Tiers; managerCompact?: ManagerCompact; managerNudge?: Partial<ManagerNudge>; wardenConfig?: WardenConfig; managerMode?: ManagerMode; agentRules?: string[] };
 
 function formatZodError(file: string, error: z.ZodError): string[] {
   return error.issues.map((issue) => {
@@ -822,6 +882,7 @@ async function loadDefaults(root: string, relDir: string): Promise<{ defaults: R
       else fail(`manager.lifecycle: ${mode}`);
     }
   }
+  if (parsed.data.warden !== undefined) defaults.wardenConfig = resolveWarden(parsed.data.warden, DEFAULT_WARDEN, "warden", fail);
   if (parsed.data.timeout && parseDuration(parsed.data.timeout) === null) {
     errors.push(`${rel}: timeout: expected a duration such as 30m or 2h`);
   }
@@ -2158,6 +2219,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     if (nudgeOwn.maxIntervalMs !== undefined || nudgeOwn.afterMs !== undefined) err("manager.nudge.max_interval must not be shorter than manager.nudge.after");
     else managerNudge.maxIntervalMs = managerNudge.afterMs;
   }
+  const warden = resolveWarden(pb.warden, defaults.wardenConfig ?? DEFAULT_WARDEN, "warden", err);
   let managerMode: ManagerMode = defaults.managerMode ?? DEFAULT_MANAGER_MODE;
   if (pb.manager?.mode !== undefined) {
     const parsedMode = parseManagerMode(pb.manager.mode);
@@ -2184,6 +2246,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     manager,
     managerCompact: pb.manager?.compact ?? defaults.managerCompact ?? DEFAULT_MANAGER_COMPACT,
     managerNudge,
+    warden,
     managerMode,
     exhaustedForMs: (defaults.providers?.exhausted_for ? parseDuration(defaults.providers.exhausted_for) : null) ?? DEFAULT_EXHAUSTED_FOR_MS,
     onExhausted: defaults.providers?.on_exhausted ?? "fail",

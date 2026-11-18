@@ -432,6 +432,12 @@ function RunBar(props: { theme: Theme; run: Run; hostLabel: string }) {
           <Text selectable style={{ flex: 1, color: theme.colors.statusWarning, fontSize: 12 }}>{run.definition.warning}</Text>
         </View>
       ) : null}
+      {Object.values(run.warden.findings).map((finding) => (
+        <View key={`${finding.check}:${finding.subject ?? ""}`} accessibilityRole="alert" style={{ flexDirection: "row", alignItems: "flex-start", gap: 6 }}>
+          <Icon name="TriangleAlert" size={13} color={theme.colors.statusWarning} />
+          <Text selectable style={{ flex: 1, flexShrink: 1, color: theme.colors.statusWarning, fontSize: 12 }}>{`Warden · ${finding.check.replace("_", " ")}: ${finding.detail}`}</Text>
+        </View>
+      ))}
     </View>
   );
 }

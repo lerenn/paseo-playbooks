@@ -20,3 +20,15 @@ manager:
 # isolation: worktree          # every run works in its own git worktree, so runs can share a workspace
 # reload_stale_sessions: false   # default true: after a plugin update, reload idle agents' sessions that hold the old tools
 # permissions: { on_request: authorize }   # what the plugin does when a run agent raises a tool permission request: authorize (default) | escalate (a gate) | deny
+# The warden: one periodic, deterministic pass over the active runs (no LLM, no message to an agent). OFF by default.
+warden: { enabled: false }
+# warden:                      # defaults shown; set enabled: true to turn it on
+#   enabled: false
+#   interval: 15m              # how often a run is looked at
+#   cooldown: 1h               # a finding that is still true is reported again after this
+#   checks:                    # action: report | none (stale_definition also: refresh_scripts, isolated runs only)
+#     stale_definition: { action: report }   # the run is pinned to an older definition than origin/<base>
+#     manager_blocked: { action: report }    # its manager is gone, or idle while a gate it holds is open
+#     loops: { above: 5, action: report }    # a goto edge fired more than this
+#     slow: { action: report }               # a running step is slower than its baseline
+#     gate_open: { after: 30m, action: report }

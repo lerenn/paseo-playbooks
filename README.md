@@ -285,6 +285,16 @@ with that tag.
   `list_runs` rows have `slowSteps`, and `list_runs { slow: true }` lists only runs with a step that is slow right
   now; `subscribe_events` type `step.slow` fires once when a running step first goes past the threshold (checked
   every 30 s). See `docs/adrs/2026-11-12-slow-steps-in-tools.md`.
+- Warden (`warden: { enabled: false, interval: 15m, cooldown: 1h, checks: { stale_definition: { action: report }, manager_blocked: { action: report }, loops: { above: 5, action: report }, slow: { action: report }, gate_open: { after: 30m, action: report } } }`, in `defaults/main.yaml` or a
+  playbook): **off by default**; with no block, or `enabled: false`, nothing runs. When on, one deterministic pass (no LLM, no
+  message to any run agent) looks at each active run every `interval` and finds: a run pinned to an older definition than
+  `origin/<base>` (`stale_definition`; its action may be `refresh_scripts`, isolated runs only, once per finding), a manager gone or
+  idle while a gate it holds is open (`manager_blocked`), a goto edge that fired more than `above` times (`loops`), a running step
+  slower than its baseline (`slow`, the `step.slow` data) and a gate open longer than `after` (`gate_open`, `gate.stale`'s age).
+  `action` is `report` or `none` (`none` turns a check off). A finding is reported once (event `warden.finding`, for the first
+  three; `slow` and `gate_open` reuse `step.slow` and `gate.stale`), shown in the run's panel and in `get_run`'s `warden`, and again
+  only after `cooldown` if still true; a running Sidekick gets one summary per pass with only the new findings. See
+  `docs/adrs/2026-11-18-warden.md`.
 - Manager watchdog (`manager: { nudge: { enabled: true, after: 3m, max_interval: 30m } }`, in `defaults/main.yaml` or a
   playbook's `manager:` block): a step that reported (an agent or script step, a success or a failure) and still waits for
   its manager after `after` gets ONE targeted prompt to the manager (run, step, outcome: complete or route it), then again after

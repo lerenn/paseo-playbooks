@@ -9,7 +9,7 @@ import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 /** The daemon API handed to plugin handlers (typed via the SDK, so the build needs no @getpaseo/client). */
 type PaseoApi = PluginHandlerContext["paseo"];
 import type { AdmissionStatus, ScriptOutput } from "../shared/types";
-import type { AgentSettings, AgentTarget, Attempt, FanoutChild as FanoutChildState, PoolPass as PoolPassState, Gate, Job, Playbook, Run, RunDefinition, RunWorktree, Step, VarValue } from "../shared/types";
+import type { AgentSettings, AgentTarget, Attempt, FanoutChild as FanoutChildState, PoolPass as PoolPassState, Gate, Job, Playbook, Run, RunDefinition, RunWorktree, Step, VarValue, WardenFinding } from "../shared/types";
 import { addUsage, DEFAULT_PERMISSION_POLICY } from "../shared/types";
 import { UsageLedger } from "./usage-ledger";
 import { analyze, type Analytics } from "../shared/analytics";
@@ -53,6 +53,8 @@ import { DEFAULT_SUBAGENT_ARCHIVE_AFTER_MS, subagentWorkspaceRefusal, SubagentAr
 import { DEFAULT_SIDEKICK_RESTART_TOKENS, DEFAULT_SIDEKICK_SUBAGENT, SIDEKICK_LABEL, SIDEKICK_PROJECT_LABEL, sidekickGateSweep, sidekickHandoffRequest, sidekickKickoff, SIDEKICK_PASEO_TOOLS, SIDEKICK_PLUGIN_TOOLS, SidekickRegistry, sidekickPrompt, sidekickTitle } from "./sidekick";
 import { BusError, EventBus, globToRegExp, type BusEvent, type Notifier, type Subscription } from "./bus";
 import { blockedOnGate, MANAGER_WATCH_CHECK_MS, nudgeDue, STUCK_AFTER_NUDGES } from "./manager-watch";
+import { diffFindings, gateOpenCandidates, loopCandidates, managerBlockedCandidates, slowCandidates, staleDefinitionCandidate, WARDEN_CHECK_MS, WARDEN_MAX_RUNS_PER_PASS, wardenSummary, type Act, type Candidate, type WardenIo } from "./warden";
+import { SlowIndex } from "./slow";
 import { OversightProducer, registerOversightTypes, runFieldsOf } from "./oversight-events";
 import { JOB_TYPES, publicJobEvents } from "./job-events";
 import { FANOUT_TYPES } from "./fanout-events";
@@ -957,6 +959,7 @@ export class Runtime {
       await this.producer.scan(this.store.list(), now);
       await this.bus.flush(now);
       await this.watchManagers(now).catch((error) => console.error("[playbooks] manager watch failed:", errorText(error)));
+      await this.wardenPass(now).catch((error) => console.error("[playbooks] warden pass failed:", errorText(error)));
       if (this.store.list().some((run) => run.gates.some((gate) => (gate.kind === "permission" || gate.kind === "manager_question") && gate.status === "pending"))) await this.sweepPermissions(false);
       // Fan-out children end in other runs: the scan is what notices them (no tokens, no agent).
       if (this.store.list().some((run) => isActive(run) && Object.values(run.steps).some((state) => state.fanout && state.status === "running"))) await this.tick();
@@ -966,6 +969,118 @@ export class Runtime {
   }
 
   private managerWatchAt = 0;
+  private wardenAt = 0;
+  /** When the warden last looked at each run (memory only: a restart looks again, and the persisted findings stop a storm). */
+  private readonly wardenSeen = new Map<string, number>();
+
+  /**
+   * The warden (ADR 2026-11-18-warden): at most every WARDEN_CHECK_MS, from the event scan, the runs whose `warden.enabled`
+   * is true and whose own `interval` passed get one deterministic pass (at most WARDEN_MAX_RUNS_PER_PASS, the longest
+   * waiting first). A run with the warden off is never touched: with no `warden` block nothing here does any work.
+   * Deterministic: no LLM, no message to an agent. One check failing does not stop the others or the next run.
+   */
+  private async wardenPass(now: number): Promise<void> {
+    if (now - this.wardenAt < WARDEN_CHECK_MS) return;
+    const due = this.store
+      .list()
+      .filter((run) => run.playbook.warden.enabled && isActive(run) && !run.archivedAt)
+      .filter((run) => now - (this.wardenSeen.get(run.id) ?? 0) >= run.playbook.warden.intervalMs)
+      .sort((a, b) => (this.wardenSeen.get(a.id) ?? 0) - (this.wardenSeen.get(b.id) ?? 0))
+      .slice(0, WARDEN_MAX_RUNS_PER_PASS);
+    if (due.length === 0) return;
+    this.wardenAt = now;
+    const iso = new Date(now).toISOString();
+    const origins = new Map<string, Promise<string | null>>();
+    const managers = new Map<string, Promise<"running" | "idle" | "gone">>();
+    const io: WardenIo = {
+      originSha: (run) => {
+        const wt = run.worktree;
+        if (!wt || wt.state === "removed" || !wt.base.startsWith("origin/")) return Promise.resolve(null);
+        const key = `${run.workspaceDir}|${wt.base}`;
+        if (!origins.has(key)) origins.set(key, this.wardenOriginSha(run, wt));
+        return origins.get(key)!;
+      },
+      manager: async (run) => {
+        if (isManagerless(run) || isPipeline(run) || !run.managerAgentId) return null;
+        const id = run.managerAgentId;
+        if (!managers.has(id)) managers.set(id, this.wardenManagerState(id));
+        return managers.get(id)!;
+      },
+    };
+    let slowIndex: SlowIndex | null = null;
+    const notices = new Map<string, Array<{ runId: string; playbook: string; runName: string | null; findings: WardenFinding[] }>>();
+    for (const listed of due) {
+      this.wardenSeen.set(listed.id, now);
+      try {
+        const config = listed.playbook.warden;
+        const found: Candidate[] = [];
+        const guarded = async (name: string, check: () => Promise<Candidate[]> | Candidate[]) => {
+          try {
+            found.push(...(await check()));
+          } catch (error) {
+            console.error(`[playbooks] warden check ${name} failed on ${listed.id}:`, errorText(error));
+          }
+        };
+        const { staleDefinition, managerBlocked, loops, slow, gateOpen } = config.checks;
+        if (staleDefinition.action !== "none") await guarded("stale_definition", async () => staleDefinitionCandidate(listed, await io.originSha(listed), staleDefinition.action as Act));
+        if (managerBlocked.action !== "none") await guarded("manager_blocked", async () => managerBlockedCandidates(listed, await io.manager(listed), managerBlocked.action as Act));
+        if (loops.action !== "none") await guarded("loops", () => loopCandidates(listed, loops.above, loops.action as Act));
+        if (slow.action !== "none") await guarded("slow", () => slowCandidates(listed, (slowIndex ??= new SlowIndex(this.store.list())).of(listed, now), slow.action as Act));
+        if (gateOpen.action !== "none") await guarded("gate_open", () => gateOpenCandidates(listed, gateOpen.afterMs, now, gateOpen.action as Act));
+        // The state is written before any effect: a crash or a failed effect never repeats a report.
+        const reported = await this.store.mutate(listed.id, (run) => {
+          const { next, report } = diffFindings(run.warden.findings, found, iso, config.cooldownMs);
+          const before = JSON.stringify(run.warden.findings);
+          run.warden.findings = next;
+          if (JSON.stringify(next) !== before) engine.noteEvent(run, "warden", null, `${report.length} finding(s) reported, ${Object.keys(next).length} open`, iso);
+          for (const entry of report) if (entry.fresh && entry.candidate.action === "refresh_scripts") entry.finding.acted = "refresh_scripts";
+          return report;
+        });
+        for (const { finding, candidate, fresh } of reported) {
+          // slow, gate_open: step.slow and gate.stale already announce them; the finding only joins the panel and the summary.
+          if (finding.check !== "slow" && finding.check !== "gate_open") {
+            await this.bus.emit("warden.finding", { ...runFieldsOf(listed), check: finding.check, subject: finding.subject, detail: finding.detail, since: finding.since }, { runId: listed.id, source: "runs" }).catch((error: unknown) => console.error("[playbooks] could not emit warden.finding:", errorText(error)));
+          }
+          if (fresh && candidate.action === "refresh_scripts") {
+            await this.refreshScripts(listed.id, `the warden found: ${finding.detail}`, "warden").catch((error: unknown) => console.error(`[playbooks] warden refresh_scripts of ${listed.id} failed:`, errorText(error)));
+          }
+        }
+        if (reported.length > 0) {
+          const list = notices.get(listed.projectId) ?? [];
+          list.push({ runId: listed.id, playbook: listed.playbook.id, runName: listed.name ?? null, findings: reported.map((entry) => entry.finding) });
+          notices.set(listed.projectId, list);
+        }
+      } catch (error) {
+        console.error(`[playbooks] warden pass on ${listed.id} failed:`, errorText(error));
+      }
+    }
+    for (const [projectId, items] of notices) await this.wardenTellSidekick(projectId, wardenSummary(items)).catch((error: unknown) => console.error("[playbooks] warden summary failed:", errorText(error)));
+  }
+
+  /** The commit origin/<base> is at after a fetch; null when it cannot be read (offline, no such ref). */
+  private async wardenOriginSha(run: Run, wt: RunWorktree): Promise<string | null> {
+    const repo = await this.repoOf(run, wt);
+    const fresh = await freshRefInfo(repo, wt.base.slice("origin/".length));
+    if (fresh.fetchError || fresh.ref !== wt.base) return null;
+    return (await gitOutput(repo, ["rev-parse", fresh.ref])).trim();
+  }
+
+  private async wardenManagerState(id: string): Promise<"running" | "idle" | "gone"> {
+    if (this.retiredManagers.has(id)) return "gone";
+    const agent = (await this.api().agents.ref(id).refresh().catch(() => null))?.agent;
+    if (!agent || agent.archivedAt || agent.status === "closed" || agent.status === "error") return "gone";
+    return agent.status === "running" || agent.status === "initializing" || agent.activeTurn || this.busyManagers.has(id) ? "running" : "idle";
+  }
+
+  /** One summary to the project's Sidekick, when there is one: sent now when it is idle, else held until its turn ends. */
+  private async wardenTellSidekick(projectId: string, text: string): Promise<void> {
+    const record = await this.sidekickRegistry.read(projectId);
+    if (!record) return;
+    const sidekick = await this.api().agents.ref(record.agentId).refresh().catch(() => null);
+    if (!sidekick || sidekick.agent.archivedAt) return;
+    if (sidekick.agent.status === "idle" && !this.busyManagers.has(record.agentId)) await this.api().agents.ref(record.agentId).send(text);
+    else this.sidekickHeld.set(record.agentId, [...(this.sidekickHeld.get(record.agentId) ?? []), text]);
+  }
 
   /**
    * The manager watchdog (manager.nudge; ADR 2026-11-18-manager-waiting-watchdog), looked at every MANAGER_WATCH_CHECK_MS

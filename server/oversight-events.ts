@@ -137,6 +137,12 @@ export const OVERSIGHT_TYPES: EventTypeDef[] = [
     },
   },
   {
+    type: "warden.finding",
+    description: "The warden (warden.enabled) found something that may need action, once per finding (until it clears or changes; again after warden.cooldown): check (stale_definition, manager_blocked or loops; slow and gate_open findings reuse step.slow and gate.stale), subject (the gate or edge; null for the run), detail, since.",
+    payload: z.object({ ...runFields, check: z.enum(["stale_definition", "manager_blocked", "loops", "slow", "gate_open"]), subject: z.string().nullable(), detail: z.string(), since: z.string() }),
+    line: (event) => `- warden.finding: ${runName(event.payload)} in ${String(event.payload.workspaceDir)}, ${String(event.payload.check)}: ${String(event.payload.detail)}. Tools: get_run { runId: "${event.runId}" }.`,
+  },
+  {
     type: "run.completed",
     description: "A run completed (its main steps are done; after-tasks may still run).",
     payload: z.object(runFields),

@@ -216,6 +216,7 @@ function createRun(input: NewRunInput, inputs: Record<string, VarValue>, kind: "
     seenAt: null,
     pausedAt: null,
     managerWatch: { steps: {}, question: null },
+    warden: { findings: {} },
     steps: Object.fromEntries(
       input.playbook.steps.map((step) => [
         step.id,
