@@ -141,15 +141,17 @@ export default function contribute(server: PluginServerContext) {
       await runtime.onAgentArchived(agent.id, agent.parentAgentId);
     }),
   );
+  server.on("workspace.created", () => runtime.invalidateWorkspaces());
   server.on("workspace.archived", ({ workspace }, context) =>
     quietly("workspace.archived", async () => {
       await enter(context.paseo);
+      runtime.invalidateWorkspaces();
       await runtime.onWorkspaceArchived(workspace.id);
     }),
   );
 
-  handle(listPlaybooks, async ({ workspaceId }, { paseo }) => {
-    const workspace = await paseo.workspaces.ref(workspaceId).refresh();
+  handle(listPlaybooks, async ({ workspaceId }) => {
+    const workspace = await runtime.peekWorkspace(workspaceId);
     if (!workspace) throw new UserError("workspace not found");
     const loaded = await loadPlaybooks(workspace.workspaceDirectory ?? workspace.projectRootPath, { projectId: workspace.projectId });
     // The profiles on offer come from the project's main checkout, the same for every workspace of the project.
@@ -157,17 +159,17 @@ export default function contribute(server: PluginServerContext) {
     return { ...loaded, projectId: workspace.projectId, profiles: offered.profiles, diagnostics: [...offered.diagnostics, ...loaded.diagnostics.filter((note) => !offered.diagnostics.includes(note))] };
   });
   handle(setProfileRpc, async ({ projectId, profile, active }) => ({ active: await setProjectProfile(projectId, profile, active) }));
-  handle(listProjectProfilesRpc, async ({ workspaces }, { paseo }) => {
+  handle(listProjectProfilesRpc, async ({ workspaces }) => {
     const projects = new Map<string, { projectId: string; label: string; root: string }>();
     for (const { projectId, workspaceId } of workspaces) {
       if (projects.has(projectId)) continue;
-      const workspace = await paseo.workspaces.ref(workspaceId).refresh().catch(() => null);
+      const workspace = await runtime.peekWorkspace(workspaceId).catch(() => null);
       if (workspace) projects.set(projectId, { projectId, label: workspace.projectDisplayName || path.basename(workspace.projectRootPath), root: workspace.projectRootPath });
     }
     return { projects: await Promise.all([...projects.values()].map(async ({ projectId, label, root }) => ({ projectId, label, ...(await projectProfiles(root, projectId)) }))) };
   });
-  handle(createExampleRpc, async ({ workspaceId }, { paseo }) => {
-    const workspace = await paseo.workspaces.ref(workspaceId).refresh();
+  handle(createExampleRpc, async ({ workspaceId }) => {
+    const workspace = await runtime.lookupWorkspace(workspaceId);
     if (!workspace) throw new UserError("workspace not found");
     return { files: await createStarter(workspace.workspaceDirectory ?? workspace.projectRootPath) };
   });
@@ -180,17 +182,17 @@ export default function contribute(server: PluginServerContext) {
   handle(archiveRunRpc, async ({ runId }) => ({ archivedAt: await runtime.archiveRun(runId) }));
   handle(startRun, (input) => runtime.startFromPanel(input));
   /** The workspaces among these whose directory has playbooks. */
-  const withPlaybooksOf = async (workspaceIds: string[], paseo: PaseoApi) => {
+  const withPlaybooksOf = async (workspaceIds: string[]) => {
     const withPlaybooks: string[] = [];
     for (const workspaceId of workspaceIds) {
-      const workspace = await paseo.workspaces.ref(workspaceId).refresh().catch(() => null);
+      const workspace = await runtime.peekWorkspace(workspaceId).catch(() => null);
       const dir = workspace?.workspaceDirectory ?? workspace?.projectRootPath;
       if (dir && (await hasPlaybooks(dir))) withPlaybooks.push(workspaceId);
     }
     return withPlaybooks;
   };
   handle(headerStateRpc, async ({ workspaceIds }, context) => {
-    const withPlaybooks = await withPlaybooksOf(workspaceIds, context.paseo);
+    const withPlaybooks = await withPlaybooksOf(workspaceIds);
     const waiting = store
       .list()
       .filter((run) => !run.archivedAt && run.gates.some(waitsForHuman) && workspaceIds.includes(run.workspaceId))

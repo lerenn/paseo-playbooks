@@ -62,6 +62,7 @@ import { PERMISSION_POLICY_BY } from "./engine";
 import { DENY_MESSAGE, describePermission, describeQuestion, policyText, type PermissionRequestLike } from "./permissions";
 import { Backoff, describeRemovalError } from "./backoff";
 import { StaleSessions } from "./stale-sessions";
+import { fetchAllWorkspaces, WorkspaceLookup } from "./workspace-lookup";
 import type { RunStore } from "./store";
 import { holdsBlock, planAdmissions, slotHolders } from "../shared/slots";
 
@@ -551,6 +552,8 @@ export class Runtime {
   private readonly usage = new UsageCache(async () => (await this.api().providers.listUsage()) as unknown as UsageSnapshot);
   /** Usage skips already written to a run's log (`run|target|window|reset`), so a skip is logged once. */
   private readonly usageLogged = new Set<string>();
+  /** Workspace lookups by id: one fetch of the daemon's list serves every id (the SDK's `ref().refresh()` fetched it per call). */
+  private readonly workspaces = new WorkspaceLookup(() => fetchAllWorkspaces(this.api()));
 
   /** The targets (`provider/model`) whose provider's usage is at the playbook's threshold now, with the window that blocks them. Empty when `providers.usage.check` is off or usage cannot be read. */
   private async usageBlocks(playbook: Pick<Playbook, "usageCheck" | "usageThreshold">, targets: Array<{ provider: string; model?: string | undefined }>): Promise<Map<string, UsageBlock>> {
@@ -1374,7 +1377,7 @@ export class Runtime {
     options: { playbook?: Playbook; name?: string; hold?: boolean } = {},
   ): Promise<Run> {
     if (!manager.workspaceId) throw new UserError("this agent has no workspace");
-    const workspace = await this.api().workspaces.ref(manager.workspaceId).refresh();
+    const workspace = await this.lookupWorkspace(manager.workspaceId);
     if (!workspace) throw new UserError("workspace not found");
     const workspaceDir = workspace.workspaceDirectory ?? manager.cwd;
     const reservation = this.reservationFor(workspace.id, playbookId, inputs);
@@ -2169,7 +2172,7 @@ export class Runtime {
       const verdict = await this.workspaceArchiveVerdict(candidate.id).catch((error: unknown) => ({ skip: `could not check: ${errorText(error)}` }));
       if (verdict === "wait") continue;
       if (verdict === "ok") {
-        const archived = await this.api().workspaces.ref(candidate.workspaceId).archive().then(() => null, (error: unknown) => errorText(error));
+        const archived = await this.archiveWorkspace(candidate.workspaceId).then(() => null, (error: unknown) => errorText(error));
         if (archived === null) {
           await this.store.mutate(candidate.id, (run) => {
             run.workspaceArchive = "done";
@@ -2199,7 +2202,7 @@ export class Runtime {
     if (others.some((other) => isActive(other))) return "wait";
     const open = others.concat(run).find((other) => other.gates.some((gate) => gate.status === "pending"));
     if (open) return { skip: `run ${open.id} has an open gate` };
-    const workspace = await this.api().workspaces.ref(run.workspaceId).refresh();
+    const workspace = await this.lookupWorkspace(run.workspaceId);
     if (!workspace) return { skip: "the workspace no longer exists" };
     const listed = await this.api().agents.list({ filter: { projectKeys: [run.projectId] } });
     const agents = listed.entries.map((entry) => entry.agent).filter((agent) => agent.workspaceId === run.workspaceId && !agent.archivedAt && !agent.internal);
@@ -2617,16 +2620,16 @@ export class Runtime {
     const ref = base ? await freshRef(sourceDir, base) : undefined;
     const id = shortId();
     const branch = worktreeBranch(playbook.id, id);
-    const created = await this.api().workspaces.create({
+    const created = await this.createWorkspace({
       title: playbook.title,
       source: { kind: "worktree", cwd: sourceDir, action: "branch-off", branchName: branch, ...(ref ? { refName: ref } : {}) },
     });
-    const workspace = await this.api().workspaces.ref(created.id).refresh();
+    const workspace = await this.lookupWorkspace(created.id);
     const workspaceDir = workspace?.workspaceDirectory ?? sourceDir;
     const entry = lookup((await loadPlaybooks(workspaceDir, { projectId })).entries, playbook.id);
     if (!entry?.playbook?.singleton) {
       // Nothing will run there: do not leave an empty workspace behind.
-      await this.api().workspaces.ref(created.id).archive().catch((error) => console.error(`[playbooks] could not archive workspace ${created.id}:`, errorText(error)));
+      await this.archiveWorkspace(created.id).catch((error) => console.error(`[playbooks] could not archive workspace ${created.id}:`, errorText(error)));
       throw new UserError(entry ? `playbook "${playbook.id}" is not a valid singleton on ${ref ?? "its branch"}: ${entry.errors[0] ?? ""}` : `no playbook "${playbook.id}" on ${ref ?? "its branch"}`);
     }
     const run = engine.newPipelineRun({ id: `run_${id}`, playbook: entry.playbook, workspaceId: created.id, workspaceDir, projectId, branch, now: nowIso() });
@@ -4137,9 +4140,42 @@ export class Runtime {
     return { run: this.store.get(runId)!, newManager: replacement !== null || (takeOver !== undefined && takeOver.id !== run.managerAgentId), ...(refreshed ? { refreshed } : {}) };
   }
 
-  /** The workspace, or null when it no longer exists. */
+  /** The workspace from the shared lookup (one cached list for every id), or null when a fresh list does not have it: safe to act on as "gone". Rejects when the daemon cannot be asked, as `ref().refresh()` did. */
+  lookupWorkspace(workspaceId: string) {
+    return this.workspaces.get(workspaceId, { confirm: true });
+  }
+
+  /** Like `lookupWorkspace`, but a miss inside the miss-refetch gap is null without asking the daemon (it may be uncertain): for hot, non-critical reads only. */
+  peekWorkspace(workspaceId: string) {
+    return this.workspaces.get(workspaceId);
+  }
+
+  /** Creates a workspace; the cached list no longer matches the daemon's. */
+  private async createWorkspace(options: Parameters<PaseoApi["workspaces"]["create"]>[0]) {
+    try {
+      return await this.api().workspaces.create(options);
+    } finally {
+      this.workspaces.invalidate();
+    }
+  }
+
+  /** Archives a workspace; the cached list no longer matches the daemon's. */
+  private async archiveWorkspace(workspaceId: string) {
+    try {
+      return await this.api().workspaces.ref(workspaceId).archive();
+    } finally {
+      this.workspaces.invalidate();
+    }
+  }
+
+  /** Drops the cached workspace list: a workspace was created, archived or renamed. */
+  invalidateWorkspaces(): void {
+    this.workspaces.invalidate();
+  }
+
+  /** The workspace, or null when a fresh list does not have it. Rejects when the daemon cannot be asked: that is not "gone". */
   private async workspaceOf(workspaceId: string) {
-    return (await this.api().workspaces.ref(workspaceId).refresh().catch(() => null)) ?? null;
+    return (await this.lookupWorkspace(workspaceId)) ?? null;
   }
 
   /** A new Playbook Manager in the run's workspace, created without a prompt so it cannot look for the run before the run is its own. */
@@ -4698,7 +4734,8 @@ export class Runtime {
   private async archiveCause(agentId: string, parentAgentId: string | null, workspaceId: string): Promise<string> {
     const parts = [`manager ${agentId} was archived; the host does not say by whom (an agent, the UI, a workspace archive or a cleanup)`];
     if (parentAgentId) parts.push(`its parent ${parentAgentId} is ${(await this.archivedWithParent(parentAgentId)) ? "archived too" : "still active"}`);
-    parts.push(`workspace ${workspaceId} ${(await this.workspaceOf(workspaceId)) ? "still exists" : "is gone"}`);
+    const origin = await this.workspaceOf(workspaceId).then((found) => (found ? "still exists" : "is gone"), () => "could not be checked");
+    parts.push(`workspace ${workspaceId} ${origin}`);
     const now = Date.now();
     const together = this.recentArchives.filter((entry) => entry.id !== agentId && now - entry.at < 2000 && this.runsOfManager(entry.id).length > 0).map((entry) => entry.id);
     if (together.length > 0) parts.push(`other managers archived within 2 s: ${together.join(", ")} (one batch, probably one source)`);
@@ -4874,7 +4911,7 @@ export class Runtime {
 
   /** Agents of a workspace that can manage a run: not step agents, not archived; most recent first. */
   async workspaceAgents(workspaceId: string) {
-    const workspace = await this.api().workspaces.ref(workspaceId).refresh();
+    const workspace = await this.lookupWorkspace(workspaceId);
     if (!workspace) throw new UserError("workspace not found");
     const listed = await this.api().agents.list({ filter: { projectKeys: [workspace.projectId] } });
     const recent = (agent: { lastUserMessageAt: string | null; updatedAt: string }) => agent.lastUserMessageAt ?? agent.updatedAt;
@@ -4970,10 +5007,13 @@ export class Runtime {
     if (!baseId) throw new UserError("workspaceId is missing: name a workspace of this project (list_workspaces) to branch the new workspace off");
     if (!input.newWorkspace && isSidekick && (!input.workspaceId || input.workspaceId === caller.workspaceId)) throw new UserError("a Sidekick never runs in its own hidden workspace: pass workspaceId of an existing workspace, or start the run in a new one");
     if (!input.newWorkspace && !(await this.isIsolatedPlaybook(baseId, input.playbook))) throw new UserError(`"${input.playbook}" has no \`isolation: { mode: worktree }\`: it starts in a new workspace, never in an existing one`);
-    const workspace = await this.api().workspaces.ref(baseId).refresh();
+    const workspace = await this.lookupWorkspace(baseId);
     if (!workspace) throw new UserError(isSidekick && !input.workspaceId ? "the Sidekick's own workspace is gone, so there is no project root to branch the new workspace off: pass workspaceId (list_workspaces)" : `workspace "${baseId}" not found (list_workspaces lists them)`);
-    const callerProject = await this.projectIdOf(caller.workspaceId);
-    if (callerProject && workspace.projectId !== callerProject) throw new UserError("that workspace belongs to another project");
+    // Fail closed: when the caller's project cannot be determined, nothing says the workspace is the caller's own.
+    if (!caller.workspaceId) throw new UserError("cannot check that workspace against the caller's project: the caller has no workspace");
+    const callerProject = (await this.lookupWorkspace(caller.workspaceId))?.projectId;
+    if (!callerProject) throw new UserError("cannot check that workspace against the caller's project: the caller's own workspace is not listed (list_workspaces)");
+    if (workspace.projectId !== callerProject) throw new UserError("that workspace belongs to another project");
     const started = await this.startFromPanel({ workspaceId: workspace.id, playbook: input.playbook, inputs: input.inputs, force: false, sameWorkspace: !input.newWorkspace, autoStart: input.autoStart !== false, workspaceName: input.workspaceName });
     if (started.status === "duplicate") throw new UserError(`${started.message} Not started again.`);
     return started;
@@ -4994,7 +5034,7 @@ export class Runtime {
     child?: { runId: string; parent: NonNullable<Run["parent"]> } | undefined;
   }) {
     if (input.workspaceName?.trim() && (input.agentId || input.sameWorkspace)) throw new UserError("workspaceName names a new workspace: it does not apply when the run starts in this one");
-    const workspace = await this.api().workspaces.ref(input.workspaceId).refresh();
+    const workspace = await this.lookupWorkspace(input.workspaceId);
     if (!workspace) throw new UserError("workspace not found");
     const workspaceDir = workspace.workspaceDirectory ?? workspace.projectRootPath;
     const loaded = await loadPlaybooks(workspaceDir, { projectId: workspace.projectId });
@@ -5091,7 +5131,7 @@ export class Runtime {
 
   /** The workspace's project: id, label and root directory. */
   private async projectOf(workspaceId: string) {
-    const workspace = await this.api().workspaces.ref(workspaceId).refresh();
+    const workspace = await this.lookupWorkspace(workspaceId);
     if (!workspace) throw new UserError("workspace not found");
     return {
       projectId: workspace.projectId,
@@ -5167,10 +5207,10 @@ export class Runtime {
     }
     // Reuse the hidden workspace while it is alive; otherwise make a new one on the project root.
     let workspaceId = known?.workspaceId ?? null;
-    if (workspaceId && !(await this.api().workspaces.ref(workspaceId).refresh().catch(() => null))) workspaceId = null;
+    if (workspaceId && !(await this.workspaceOf(workspaceId))) workspaceId = null;
     const workspace = workspaceId
       ? this.api().workspaces.ref(workspaceId)
-      : await this.api().workspaces.create({ title: sidekickTitle(project.label), source: { kind: "directory", path: project.root }, background: true });
+      : await this.createWorkspace({ title: sidekickTitle(project.label), source: { kind: "directory", path: project.root }, background: true });
     for (const warning of load.warnings) console.warn(`[playbooks] ${warning}`);
     const subagent = { ...DEFAULT_SIDEKICK_SUBAGENT, ...(settings.mode ? { mode: settings.mode } : {}), ...pickAgentSettings(settings.subagents) };
     const agent = await workspace.agents.create({
@@ -5409,7 +5449,7 @@ export class Runtime {
     const id = runId.replace(/^run_/, "");
     const branch = worktreeBranch(playbook.id, id);
     const base = (await currentRef(workspaceDir)) ?? undefined;
-    const created = await this.api().workspaces.create({
+    const created = await this.createWorkspace({
       title: workspaceTitle(playbook.title, inputs, workspaceName),
       source: { kind: "worktree", cwd: workspaceDir, action: "branch-off", branchName: branch, ...(base ? { refName: base } : {}) },
     });
@@ -5441,7 +5481,7 @@ export class Runtime {
     let workspaceDir = manager.cwd;
     let projectId: string | null = null;
     if (manager.workspaceId) {
-      const workspace = await this.api().workspaces.ref(manager.workspaceId).refresh();
+      const workspace = await this.lookupWorkspace(manager.workspaceId);
       if (workspace) {
         workspaceDir = workspace.workspaceDirectory ?? manager.cwd;
         projectId = workspace.projectId;
@@ -5463,7 +5503,7 @@ export class Runtime {
 
   /** Whether the playbook, as the workspace has it, declares `isolation: { mode: worktree }` (false when the workspace or playbook is missing or invalid). */
   async isIsolatedPlaybook(workspaceId: string, playbookId: string): Promise<boolean> {
-    const workspace = await this.api().workspaces.ref(workspaceId).refresh();
+    const workspace = await this.lookupWorkspace(workspaceId);
     if (!workspace) return false;
     const loaded = await loadPlaybooks(workspace.workspaceDirectory ?? workspace.projectRootPath, { projectId: workspace.projectId });
     return lookup(loaded.entries, playbookId)?.playbook?.isolation.mode === "worktree";
