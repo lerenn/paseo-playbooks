@@ -51,11 +51,12 @@ function lookup(entries: Parameters<typeof findEntry>[0], ref: string) {
 import { DEFAULT_SUBAGENT_ARCHIVE_AFTER_MS, subagentWorkspaceRefusal, SubagentArchiveStore } from "./sidekick-archive";
 import { DEFAULT_SIDEKICK_RESTART_TOKENS, DEFAULT_SIDEKICK_SUBAGENT, SIDEKICK_LABEL, SIDEKICK_PROJECT_LABEL, sidekickGateSweep, sidekickHandoffRequest, sidekickKickoff, SIDEKICK_PASEO_TOOLS, SIDEKICK_PLUGIN_TOOLS, SidekickRegistry, sidekickPrompt, sidekickTitle } from "./sidekick";
 import { BusError, EventBus, globToRegExp, type BusEvent, type Notifier, type Subscription } from "./bus";
-import { OversightProducer, registerOversightTypes } from "./oversight-events";
+import { blockedOnGate, MANAGER_WATCH_CHECK_MS, nudgeDue, STUCK_AFTER_NUDGES } from "./manager-watch";
+import { OversightProducer, registerOversightTypes, runFieldsOf } from "./oversight-events";
 import { JOB_TYPES, publicJobEvents } from "./job-events";
 import { FANOUT_TYPES } from "./fanout-events";
 import { gateListing, listAttention, type GateFilter } from "./overseer";
-import { gateChatPrompt, managerLostNotice, gateDeciderPrompt, gateDeciderSystemPrompt, gateDecisionReminder, managerAfterRestart, managerKickoff, managerTakeover, reportReminder, resumeAfterRestart, silenceReminder, singletonKickoff, stepSystemPrompt, withPreamble } from "./prompts";
+import { gateChatPrompt, managerLostNotice, gateDeciderPrompt, gateDeciderSystemPrompt, gateDecisionReminder, managerAfterRestart, managerKickoff, managerTakeover, managerWaitingNudge, reportReminder, resumeAfterRestart, silenceReminder, singletonKickoff, stepSystemPrompt, withPreamble } from "./prompts";
 import { askHumanText, choicesOfGate, waitsForHuman } from "../shared/gates";
 import { PERMISSION_POLICY_BY } from "./engine";
 import { DENY_MESSAGE, describePermission, policyText, type PermissionRequestLike } from "./permissions";
@@ -866,6 +867,7 @@ export class Runtime {
     try {
       await this.producer.scan(this.store.list(), now);
       await this.bus.flush(now);
+      await this.watchManagers(now).catch((error) => console.error("[playbooks] manager watch failed:", errorText(error)));
       if (this.store.list().some((run) => run.gates.some((gate) => gate.kind === "permission" && gate.status === "pending"))) await this.sweepPermissions(false);
       // Fan-out children end in other runs: the scan is what notices them (no tokens, no agent).
       if (this.store.list().some((run) => isActive(run) && Object.values(run.steps).some((state) => state.fanout && state.status === "running"))) await this.tick();
@@ -873,6 +875,129 @@ export class Runtime {
       this.eventsScanning = false;
     }
   }
+
+  private managerWatchAt = 0;
+
+  /**
+   * The manager watchdog (manager.nudge; ADR 2026-11-18-manager-waiting-watchdog), looked at every MANAGER_WATCH_CHECK_MS
+   * from the event scan: for each active, unpaused run with a manager,
+   * - a question or permission request open on the manager for `after` is announced once (`manager.question_pending`);
+   * - a reported step that waited `after` (then 2x, 4x ..., capped at `max_interval`) prompts the manager, only when it is
+   *   idle with no open question and no open gate held by a human or a role; the second prompt without progress emits
+   *   `step.waiting_manager_stuck` (once per report).
+   * The state (prompts sent, when) is in the run (`managerWatch`), so a restart neither forgets nor repeats it.
+   */
+  private async watchManagers(now: number): Promise<void> {
+    if (now - this.managerWatchAt < MANAGER_WATCH_CHECK_MS) return;
+    const runs = this.store.list().filter((run) => isActive(run) && !run.archivedAt && !isPaused(run) && !isPipeline(run) && !isManagerless(run) && run.managerAgentId);
+    if (runs.length === 0) return;
+    this.managerWatchAt = now;
+    const iso = new Date(now).toISOString();
+    const snapshots = new Map<string, { status: string; activeTurn: unknown; pendingPermissions?: Array<PermissionRequestLike & { kind: string }> } | null>();
+    for (const listed of runs) {
+      const runId = listed.id;
+      const managerId = listed.managerAgentId;
+      const policy = listed.playbook.managerNudge;
+      const reportedOf = (run: Run) =>
+        Object.entries(run.steps)
+          .filter(([id, state]) => state.status === "reported" && isStepLive(run, id) && state.attempts.at(-1)?.endedAt)
+          .map(([id, state]) => ({ stepId: id, attempt: state.attempts.at(-1)! }));
+      // Progress (a step moved or reported again) or a watchdog turned off: forget what was counted.
+      const stale = (run: Run) => {
+        const live = policy.enabled ? reportedOf(run) : [];
+        return Object.entries(run.managerWatch.steps).filter(([id, w]) => live.find((entry) => entry.stepId === id)?.attempt.endedAt !== w.reportedAt).map(([id]) => id);
+      };
+      if (stale(listed).length > 0 || (!policy.enabled && listed.managerWatch.question)) {
+        await this.store.mutate(runId, (run) => {
+          for (const id of stale(run)) delete run.managerWatch.steps[id];
+          if (!policy.enabled) run.managerWatch.question = null;
+        });
+      }
+      if (!policy.enabled || this.retiredManagers.has(managerId)) continue;
+      if (!snapshots.has(managerId)) {
+        const current = await this.api().agents.ref(managerId).refresh().catch(() => null);
+        snapshots.set(managerId, current && !current.agent.archivedAt ? (current.agent as never) : null);
+      }
+      const manager = snapshots.get(managerId);
+      if (!manager) continue; // gone: the lost-manager logic handles it
+      const pending = manager.pendingPermissions ?? [];
+      const question = this.store.get(runId)!.managerWatch.question;
+      if (pending.length === 0) {
+        if (question) await this.store.mutate(runId, (run) => void (run.managerWatch.question = null));
+      } else {
+        if (!question) await this.store.mutate(runId, (run) => void (run.managerWatch.question ??= { since: iso, emitted: false }));
+        const since = Date.parse((question ?? { since: iso }).since);
+        if (now - since >= policy.afterMs) {
+          const marked = await this.store.mutate(runId, (run) => {
+            if (!run.managerWatch.question || run.managerWatch.question.emitted) return false;
+            run.managerWatch.question.emitted = true;
+            return true;
+          });
+          if (marked) {
+            const text = describePermission(pending[0]!, "the manager").summary;
+            await this.bus.emit("manager.question_pending", { ...runFieldsOf(listed), managerAgentId: managerId, pendingMs: now - since, question: text }, { runId, source: "runs" });
+          }
+        }
+        continue; // blocked on someone else: a prompt cannot help
+      }
+      if (manager.status === "running" || manager.status === "initializing" || manager.activeTurn || this.busyManagers.has(managerId)) continue;
+      const current = this.store.get(runId)!;
+      if (current.inbox.length > 0 || blockedOnGate(current)) continue;
+      const due = reportedOf(current)
+        .map(({ stepId, attempt }) => {
+          const w = current.managerWatch.steps[stepId];
+          const same = w?.reportedAt === attempt.endedAt;
+          const count = same ? w.count : 0;
+          const from = Date.parse(same && w.lastAt ? w.lastAt : attempt.endedAt!);
+          return { stepId, attempt, count, due: nudgeDue(policy, count, from, now) };
+        })
+        .filter((entry) => entry.due);
+      if (due.length === 0 || this.nudging.has(runId)) continue;
+      this.nudging.add(runId);
+      try {
+        const sent = await this.store.mutate(runId, (run) => {
+          if (isPaused(run)) return [];
+          const out: Array<{ stepId: string; attempt: number; outcome: string; summary: string; waitedMin: number; waitedMs: number; count: number; stuck: boolean }> = [];
+          for (const entry of due) {
+            const state = run.steps[entry.stepId];
+            const live = state?.attempts.at(-1);
+            const endedAt = live?.endedAt;
+            if (state?.status !== "reported" || !live || !endedAt || endedAt !== entry.attempt.endedAt) continue;
+            const w = run.managerWatch.steps[entry.stepId];
+            const mine = w?.reportedAt === endedAt ? w : { reportedAt: endedAt, count: 0, lastAt: null as string | null, stuckEmitted: false };
+            // A second look at the same count (another path nudged meanwhile) must not send again.
+            if (mine.count !== entry.count) continue;
+            mine.count += 1;
+            mine.lastAt = iso;
+            const stuck = mine.count >= STUCK_AFTER_NUDGES && !mine.stuckEmitted;
+            if (stuck) mine.stuckEmitted = true;
+            run.managerWatch.steps[entry.stepId] = mine;
+            const waitedMs = Math.max(0, now - Date.parse(endedAt));
+            out.push({ stepId: entry.stepId, attempt: live.n, outcome: live.report?.outcome ?? live.turnEnd ?? "none", summary: live.report?.summary ?? live.lastMessage ?? "", waitedMin: Math.round(waitedMs / 60_000), waitedMs, count: mine.count, stuck });
+          }
+          return out;
+        });
+        if (sent.length === 0) continue;
+        this.busyManagers.add(managerId);
+        try {
+          await this.api().agents.ref(managerId).send(managerWaitingNudge(runId, sent), { activeTurnBehavior: "steer" });
+          this.wokenManagers.add(managerId);
+        } catch (error) {
+          this.busyManagers.delete(managerId);
+          console.error(`[playbooks] could not prompt manager of ${runId} about its reported steps:`, errorText(error));
+          continue;
+        }
+        for (const entry of sent.filter((item) => item.stuck)) {
+          await this.bus.emit("step.waiting_manager_stuck", { ...runFieldsOf(current), stepId: entry.stepId, attempt: entry.attempt, outcome: entry.outcome, summary: entry.summary.slice(0, 500), waitingMs: entry.waitedMs, nudges: entry.count, managerAgentId: managerId }, { runId, source: "runs" });
+        }
+      } finally {
+        this.nudging.delete(runId);
+      }
+    }
+  }
+
+  /** Run ids with a watchdog prompt in flight: a run never gets two at once. */
+  private readonly nudging = new Set<string>();
 
   /** A page of any agent's timeline, newest first when no cursor is given, else the entries before it. */
   async readTimeline(agentId: string, options: { limit: number; before?: { epoch: string; seq: number } }) {

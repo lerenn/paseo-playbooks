@@ -16,6 +16,7 @@ agent:
 manager:
   mode: default                # the manager never edits files
   compact: { above_tokens: 150000 }   # never | on_step | on_gate_decided | { above_tokens: N }
+  # nudge: { enabled: true, after: 3m, max_interval: 30m }   # prompt an idle manager that leaves a reported step waiting (defaults shown)
 # isolation: worktree          # every run works in its own git worktree, so runs can share a workspace
 # reload_stale_sessions: false   # default true: after a plugin update, reload idle agents' sessions that hold the old tools
 # permissions: { on_request: authorize }   # what the plugin does when a run agent raises a tool permission request: authorize (default) | escalate (a gate) | deny

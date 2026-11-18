@@ -25,7 +25,7 @@ import type {
   VarValue,
   When,
 } from "../shared/types";
-import { AgentSettingsSchema, DEFAULT_EXHAUSTED_FOR_MS, DEFAULT_MANAGER_COMPACT, DEFAULT_MANAGER_MODE, DEFAULT_PERMISSION_POLICY, ManagerCompactSchema, ManagerModeSchema, type ManagerMode, type Isolation, type WakeOn, VarTypeSchema, VarValueSchema } from "../shared/types";
+import { AgentSettingsSchema, DEFAULT_EXHAUSTED_FOR_MS, DEFAULT_MANAGER_COMPACT, DEFAULT_MANAGER_MODE, DEFAULT_MANAGER_NUDGE, DEFAULT_PERMISSION_POLICY, type ManagerNudge, ManagerCompactSchema, ManagerModeSchema, type ManagerMode, type Isolation, type WakeOn, VarTypeSchema, VarValueSchema } from "../shared/types";
 import { BusError, checkTypes, FilterValueSchema } from "./bus";
 import { JOB_TYPES } from "./job-events";
 import { OVERSIGHT_TYPES } from "./oversight-events";
@@ -491,6 +491,33 @@ const RawSlowWarningSchema = z
   })
   .strict();
 
+/** `manager: { nudge }`: the watchdog for a reported step the manager has not acted on. */
+const RawManagerNudgeSchema = z
+  .object({
+    /** `false` turns the watchdog off. Default true. */
+    enabled: z.boolean().optional(),
+    /** How long a step waits, reported, before the manager is prompted (`3m`); also the first interval of the backoff. */
+    after: z.string().optional(),
+    /** The longest interval between two prompts (`30m`). Default 30m. */
+    max_interval: z.string().optional(),
+  })
+  .strict();
+type RawManagerNudge = z.infer<typeof RawManagerNudgeSchema>;
+
+/** The block as partial milliseconds; a bad value is reported through `fail`. */
+function resolveManagerNudge(raw: RawManagerNudge | undefined, where: string, fail: (message: string) => void): Partial<ManagerNudge> {
+  const out: Partial<ManagerNudge> = {};
+  if (!raw) return out;
+  if (raw.enabled !== undefined) out.enabled = raw.enabled;
+  for (const [key, field] of [["after", "afterMs"], ["max_interval", "maxIntervalMs"]] as const) {
+    if (raw[key] === undefined) continue;
+    const ms = parseDuration(raw[key]);
+    if (ms === null) fail(`${where}.${key}: expected a duration such as 3m or 1h`);
+    else out[field] = ms;
+  }
+  return out;
+}
+
 const RawPlaybookSchema = z.object({
     title: z.string().optional(),
     description: z.string().optional(),
@@ -504,6 +531,8 @@ const RawPlaybookSchema = z.object({
         prompt: z.string().optional(),
         /** When the plugin compacts the manager's context. */
         compact: ManagerCompactSchema.optional(),
+        /** The watchdog for a reported step the manager has not acted on. */
+        nudge: RawManagerNudgeSchema.optional(),
         /** `always_on` (default): a Playbook Manager agent drives the run. `none`: no manager, the plugin drives it. */
         mode: z.string().optional(),
       })
@@ -551,7 +580,7 @@ const RawDefaultsSchema = z.object({
     tiers: z.record(z.string(), RawTierSchema).optional(),
     agent: RawAgentSchema.optional(),
     /** `lifecycle` is the repo-wide default of a playbook's `manager.mode` (here `mode` is the manager agent's own permission mode). */
-    manager: RawAgentSchema.extend({ compact: ManagerCompactSchema.optional(), lifecycle: z.string().optional() }).optional(),
+    manager: RawAgentSchema.extend({ compact: ManagerCompactSchema.optional(), nudge: RawManagerNudgeSchema.optional(), lifecycle: z.string().optional() }).optional(),
     workspace: RawWorkspaceSchema.optional(),
     isolation: RawIsolationSchema.optional(),
     permissions: RawPermissionsSchema.optional(),
@@ -608,7 +637,7 @@ const RawDefaultsSchema = z.object({
     silence: z.unknown().optional(),
     archive_agents: z.unknown().optional(),
   });
-type RawDefaults = Omit<z.infer<typeof RawDefaultsSchema>, "tiers"> & { tiers?: Tiers; managerCompact?: ManagerCompact; managerMode?: ManagerMode };
+type RawDefaults = Omit<z.infer<typeof RawDefaultsSchema>, "tiers"> & { tiers?: Tiers; managerCompact?: ManagerCompact; managerNudge?: Partial<ManagerNudge>; managerMode?: ManagerMode };
 
 function formatZodError(file: string, error: z.ZodError): string[] {
   return error.issues.map((issue) => {
@@ -758,8 +787,9 @@ async function loadDefaults(root: string, relDir: string): Promise<{ defaults: R
   const defaults: RawDefaults = { ...parsed.data, tiers };
   if (parsed.data.agent) defaults.agent = resolveAgent(parsed.data.agent, tiers, "agent", fail);
   if (parsed.data.manager) {
-    const { compact, lifecycle, ...settings } = parsed.data.manager;
+    const { compact, nudge, lifecycle, ...settings } = parsed.data.manager;
     defaults.manager = resolveAgent(settings, tiers, "manager", fail);
+    if (nudge !== undefined) defaults.managerNudge = resolveManagerNudge(nudge, "manager.nudge", fail);
     if (compact !== undefined) defaults.managerCompact = compact;
     if (lifecycle !== undefined) {
       const mode = parseManagerMode(lifecycle);
@@ -890,7 +920,7 @@ const RawSidekickSchema = z
   .strict();
 
 /** Event types a Sidekick watches when `sidekick.watch` is not set. */
-export const DEFAULT_SIDEKICK_WATCH = ["gate.escalated", "run.failed", "run.manager_lost"];
+export const DEFAULT_SIDEKICK_WATCH = ["gate.escalated", "run.failed", "run.manager_lost", "step.waiting_manager_stuck", "manager.question_pending"];
 
 export interface SidekickConfig {
   provider?: string;
@@ -2059,6 +2089,12 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     isolation = { ...isolation, mode: "none" };
   }
   if (errors.length > 0) return fail(errors);
+  const nudgeOwn = resolveManagerNudge(pb.manager?.nudge, "manager.nudge", err);
+  const managerNudge: ManagerNudge = { ...DEFAULT_MANAGER_NUDGE, ...defaults.managerNudge, ...nudgeOwn };
+  if (managerNudge.maxIntervalMs < managerNudge.afterMs) {
+    if (nudgeOwn.maxIntervalMs !== undefined || nudgeOwn.afterMs !== undefined) err("manager.nudge.max_interval must not be shorter than manager.nudge.after");
+    else managerNudge.maxIntervalMs = managerNudge.afterMs;
+  }
   let managerMode: ManagerMode = defaults.managerMode ?? DEFAULT_MANAGER_MODE;
   if (pb.manager?.mode !== undefined) {
     const parsedMode = parseManagerMode(pb.manager.mode);
@@ -2082,6 +2118,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     roles,
     manager,
     managerCompact: pb.manager?.compact ?? defaults.managerCompact ?? DEFAULT_MANAGER_COMPACT,
+    managerNudge,
     managerMode,
     exhaustedForMs: (defaults.providers?.exhausted_for ? parseDuration(defaults.providers.exhausted_for) : null) ?? DEFAULT_EXHAUSTED_FOR_MS,
     onExhausted: defaults.providers?.on_exhausted ?? "fail",

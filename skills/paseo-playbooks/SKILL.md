@@ -63,7 +63,7 @@ its tab offers "Create the Sidekick files".
 # sidekick/sidekick.yaml (all fields optional)
 sidekick:
   model: claude-opus-5-5        # provider, model, mode, thinking: as an agent block
-  watch: [gate.escalated, run.failed, run.manager_lost]   # event types or globs, for this project's runs
+  watch: [gate.escalated, run.failed, run.manager_lost, step.waiting_manager_stuck, manager.question_pending]   # event types or globs, for this project's runs
   subagents: { provider: claude, model: claude-sonnet-5-5, mode: acceptEdits, archive_workspace: true, archive_after: 10m }   # what it creates for jobs (default claude / claude-sonnet-5-5; mode defaults to its own); archive_* : the hidden workspace of a finished subagent is archived after the grace period (default true / 10m)
   session: { restart_above_tokens: 300000 }   # hand off and restart when its context grows past this (default 300000)
   runs: { max_concurrent: 5, confirm_bulk: true }   # rules for the runs it starts; max_concurrent unset means unlimited, confirm_bulk defaults to false
@@ -95,6 +95,7 @@ agent:                 # defaults for every step
 manager:               # settings of the manager agent when Start creates a new one
   mode: default
   compact: { above_tokens: 150000 }  # when to /compact the manager: never | on_step | on_gate_decided | { above_tokens: N } (default shown)
+  nudge: { enabled: true, after: 3m, max_interval: 30m }  # prompt an idle manager that leaves a reported step waiting (defaults shown; a playbook's manager.nudge wins)
   # lifecycle: always_on   # repo-wide default of a playbook's `manager: { mode }`: always_on (default) | none (here `mode` is the manager agent's permission mode)
 providers:             # provider failover
   exhausted_for: 1h    # an exhausted provider/model is skipped this long, then tried again (default 1h)
@@ -1260,6 +1261,11 @@ mean duration of its last `runs` (default 10, at least 3) completed runs of the 
 - One run: `get_run { runId }` (compact or full): `slowSteps` on the run and `slow` on each slow step. A slow step
   that already ended is listed there too (`running: false`).
 - Normal `list_runs` rows carry `slowSteps` as well. A step with fewer than 3 completed runs has no baseline and is never slow. Completed steps shorter than 1s are not samples, and a step that has taken less than 10s is never slow.
+- A reported step the manager does not act on: the plugin prompts the idle manager (`manager.nudge`: after `after`, then
+  2x, 4x ..., at most every `max_interval`; never while the manager runs a turn or has a question or permission request
+  open, or while a gate of the run is held by a human or a role). If you are that manager: complete_step it, or route it
+  (nudge_step). After the second prompt without progress `subscribe_events` type `step.waiting_manager_stuck` fires; a
+  manager question open for `after` fires `manager.question_pending` (once per episode each; both are in the Sidekick's default `watch`).
 - `subscribe_events` with type `step.slow` (scoped, like the other step events): one message when a running step
   first goes past the threshold (measured every 30 s; not repeated, and not announced for steps already slow when the
   daemon restarts). A slow step is often stuck: read its agent with `read_agent_conversation` before nudging it.

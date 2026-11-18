@@ -279,6 +279,14 @@ with that tag.
   `list_runs` rows have `slowSteps`, and `list_runs { slow: true }` lists only runs with a step that is slow right
   now; `subscribe_events` type `step.slow` fires once when a running step first goes past the threshold (checked
   every 30 s). See `docs/adrs/2026-11-12-slow-steps-in-tools.md`.
+- Manager watchdog (`manager: { nudge: { enabled: true, after: 3m, max_interval: 30m } }`, in `defaults/main.yaml` or a
+  playbook's `manager:` block): a step that reported (an agent or script step, a success or a failure) and still waits for
+  its manager after `after` gets ONE targeted prompt to the manager (run, step, outcome: complete or route it), then again after
+  2x, 4x, ... `after`, capped at `max_interval`, for as long as it waits. Only an idle manager is prompted: never one running a
+  turn, one with an open question or permission request, a paused or ended run, or a run with an open gate or ask held by a
+  human or a role. The count survives a restart (it is in the run). After the second prompt without progress the plugin emits
+  `step.waiting_manager_stuck`; a manager question or permission request open for `after` emits `manager.question_pending`
+  (once per episode each). The Sidekick's default `watch` includes both. See `docs/adrs/2026-11-18-manager-waiting-watchdog.md`.
 - After a plugin update, idle agents whose session holds the old plugin's tools are reloaded (history
   kept) so they stop failing with "Tool not found"; an agent mid-turn is reloaded when its turn ends,
   never one waiting on a permission or question. Turn off with `reload_stale_sessions: false` in

@@ -212,6 +212,7 @@ function createRun(input: NewRunInput, inputs: Record<string, VarValue>, kind: "
     archivedAt: null,
     seenAt: null,
     pausedAt: null,
+    managerWatch: { steps: {}, question: null },
     steps: Object.fromEntries(
       input.playbook.steps.map((step) => [
         step.id,

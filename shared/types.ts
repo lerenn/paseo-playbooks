@@ -60,6 +60,23 @@ export type ManagerMode = z.infer<typeof ManagerModeSchema>;
 /** Used when neither the playbook nor `defaults/main.yaml` sets `manager.mode`. */
 export const DEFAULT_MANAGER_MODE: ManagerMode = "always_on";
 
+/**
+ * The watchdog for a reported step the manager has not acted on (`manager.nudge`): after `afterMs` of waiting, with the
+ * manager idle, the plugin prompts it; again after twice as long, and so on, up to `maxIntervalMs` between prompts.
+ */
+export const ManagerNudgeSchema = z.object({ enabled: z.boolean(), afterMs: z.number().int().positive(), maxIntervalMs: z.number().int().positive() });
+export type ManagerNudge = z.infer<typeof ManagerNudgeSchema>;
+export const DEFAULT_MANAGER_NUDGE: ManagerNudge = { enabled: true, afterMs: 3 * 60_000, maxIntervalMs: 30 * 60_000 };
+
+/** What the manager watchdog remembers about a run (see `server/manager-watch.ts`); survives a restart. */
+export const ManagerWatchSchema = z.object({
+  /** Per reported step: the report it counts from (the attempt's `endedAt`), the prompts sent since, when the last went out, and whether `step.waiting_manager_stuck` was emitted. */
+  steps: z.record(z.string(), z.object({ reportedAt: z.string(), count: z.number().int().min(0), lastAt: z.string().nullable(), stuckEmitted: z.boolean() })).default({}),
+  /** While the manager has a question or permission request open: since when, and whether `manager.question_pending` was emitted. */
+  question: z.object({ since: z.string(), emitted: z.boolean() }).nullable().default(null),
+});
+export type ManagerWatch = z.infer<typeof ManagerWatchSchema>;
+
 /** Used when neither the playbook nor `defaults/main.yaml` sets `manager.compact`. */
 export const DEFAULT_MANAGER_COMPACT: ManagerCompact = { above_tokens: 150_000 };
 
@@ -413,6 +430,8 @@ export const PlaybookSchema = z.object({
   manager: AgentSettingsSchema,
   /** When the manager is compacted (`manager.compact`). Unset on runs from before it. */
   managerCompact: ManagerCompactSchema.default(DEFAULT_MANAGER_COMPACT),
+  /** `manager.nudge`: the watchdog for reported steps the manager has not acted on. Unset on runs from before it (= the defaults). */
+  managerNudge: ManagerNudgeSchema.default(DEFAULT_MANAGER_NUDGE),
   /** `manager.mode`: `none` = no manager agent, the plugin drives the run. Unset on runs from before it (= always_on). */
   managerMode: ManagerModeSchema.default(DEFAULT_MANAGER_MODE),
   /** How long an exhausted `provider/model` is skipped before it is tried again (`providers.exhausted_for`), in ms. */
@@ -981,6 +1000,8 @@ export const RunSchema = z.object({
   seenAt: z.string().nullable().default(null),
   /** Set while a human has paused the run: no step starts and the manager is not woken until resume. */
   pausedAt: z.string().nullable().default(null),
+  /** The manager watchdog's memory (nudges sent per reported step, the manager's open question). */
+  managerWatch: ManagerWatchSchema.default({ steps: {}, question: null }),
   steps: z.record(z.string(), RunStepSchema),
   /** Times each goto edge fired, keyed "source->target", and extra loops granted at a loop-limit gate. */
   loops: z.record(z.string(), z.number().int()),

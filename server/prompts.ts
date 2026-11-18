@@ -284,6 +284,12 @@ export function reportReminder(stepId: string): string {
   return `[playbooks] Your turn ended without a report for step "${stepId}". If your work is done, call report_step_result now; it is available again even if it was "not found" before. If you are still waiting for something, keep waiting in this turn with a bounded foreground poll (not a Monitor, background command or timer), then call report_step_result.`;
 }
 
+/** Sent to a manager that left reported steps waiting: one line per step (the report it has not acted on). */
+export function managerWaitingNudge(runId: string, steps: Array<{ stepId: string; attempt: number; outcome: string; summary: string; waitedMin: number }>): string {
+  const lines = steps.map((step) => `- step "${step.stepId}" (attempt ${step.attempt}) reported "${step.outcome}" ${step.waitedMin} min ago${step.summary ? `: ${step.summary.slice(0, 300)}` : ""}`);
+  return `[playbooks] ${runId} · still waiting for you:\n${lines.join("\n")}\nComplete or route it as your rules say: complete_step, or nudge_step to have the step go on.`;
+}
+
 /** Sent into a running step agent's turn when it went silent or its timeout is close. */
 export function silenceReminder(stepId: string, silentMin: number, timeoutInMin: number | null): string {
   const why = timeoutInMin !== null ? `The timeout of step "${stepId}" fires in about ${timeoutInMin} min` : `Step "${stepId}" has shown no activity for ${silentMin} min`;

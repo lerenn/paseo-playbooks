@@ -29,6 +29,10 @@ const gateFields = {
   roleDeciding: z.boolean(),
 };
 
+export function runFieldsOf(run: Run) {
+  return { runId: run.id, playbook: run.playbook.id, runName: run.name ?? null, projectId: run.projectId, workspaceDir: run.workspaceDir };
+}
+
 function runName(payload: { runId?: unknown; playbook?: unknown; runName?: unknown }): string {
   return `run ${payload.runId} (${payload.playbook}${payload.runName ? `, "${payload.runName}"` : ""})`;
 }
@@ -112,6 +116,24 @@ export const OVERSIGHT_TYPES: EventTypeDef[] = [
     line: (event) => {
       const p = event.payload as { stepId: string; elapsedMs: number; baselineMs: number; ratio: number };
       return `- step.slow: step ${p.stepId} of ${runName(event.payload)} has run ${formatSlowDuration(p.elapsedMs)}, ${p.ratio}x the usual ${formatSlowDuration(p.baselineMs)}. It may be stuck. Tools: get_run { runId: "${event.runId}" }, read_agent_conversation.`;
+    },
+  },
+  {
+    type: "step.waiting_manager_stuck",
+    description: "A reported step still waits for its manager after the plugin prompted it twice (the manager was idle, with no open question or human gate): stepId, attempt, outcome, summary, waitingMs, nudges. Once per stuck episode (a new report re-arms it).",
+    payload: z.object({ ...stepFields, outcome: z.string(), summary: z.string(), waitingMs: z.number(), nudges: z.number().int(), managerAgentId: z.string() }),
+    line: (event) => {
+      const p = event.payload as { stepId: string; outcome: string; waitingMs: number; nudges: number; managerAgentId: string };
+      return `- step.waiting_manager_stuck: step ${p.stepId} of ${runName(event.payload)} reported ${p.outcome} ${Math.round(p.waitingMs / 60_000)} min ago and its manager (agent ${p.managerAgentId}) did not act after ${p.nudges} prompts. Tools: get_run { runId: "${event.runId}" }, read_agent_conversation { agentId: "${p.managerAgentId}" }.`;
+    },
+  },
+  {
+    type: "manager.question_pending",
+    description: "A run's manager has had a question or permission request open for the nudge delay (manager.nudge.after): the question, once per episode (answering it re-arms it).",
+    payload: z.object({ ...runFields, managerAgentId: z.string(), pendingMs: z.number(), question: z.string() }),
+    line: (event) => {
+      const p = event.payload as { managerAgentId: string; pendingMs: number; question: string };
+      return `- manager.question_pending: the manager (agent ${p.managerAgentId}) of ${runName(event.payload)} has waited ${Math.round(p.pendingMs / 60_000)} min for an answer to: ${p.question} Tools: list_pending_permissions { agentId: "${p.managerAgentId}" }, read_agent_conversation { agentId: "${p.managerAgentId}" }.`;
     },
   },
   {
