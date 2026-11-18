@@ -96,8 +96,8 @@ describe("reloading stale sessions", () => {
     expect((await after.tryReload(paseo, "a")).kind).toBe("busy");
     expect(calls).toBe(1);
     // The scheduled retries run by themselves, then stop.
-    for (let waited = 0; calls < 3 && waited < 3000; waited += 10) await new Promise((resolve) => setTimeout(resolve, 10));
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    // Polled until the chain gives up, not a fixed sleep: a loaded CI runner delays the timers.
+    for (let waited = 0; !/giving up/.test(logs.join("\n")) && waited < 10000; waited += 25) await new Promise((resolve) => setTimeout(resolve, 25));
     expect(calls).toBe(3);
     expect(logs.join("\n")).toMatch(/could not reload.*boom.*retrying/);
     expect(logs.join("\n")).toMatch(/giving up after 3 attempts/);
