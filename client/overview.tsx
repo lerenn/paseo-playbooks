@@ -413,7 +413,7 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
       <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: pad, gap: 18 }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 10, flexWrap: "wrap", zIndex: 50 }}>
           <PreReleaseFlag theme={theme} />
-          <Text style={{ flex: 1, color: theme.colors.foregroundMuted, fontSize: 13 }}>
+          <Text style={{ flex: 1, minWidth: 140, color: theme.colors.foregroundMuted, fontSize: 13 }}>
             <Text style={{ color: theme.colors.statusWarning }}>{counts.needsYou}</Text> {counts.needsYou === 1 ? "needs" : "need"} you ·{" "}
             <Text style={{ color: theme.colors.accent }}>{counts.working}</Text> working
             {counts.paused > 0 ? ` · ${counts.paused} paused` : ""}
@@ -430,7 +430,7 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
               </>
             ) : null}
           </Text>
-          <RunPlaybookButton theme={theme} loading={runState === "loading"} emptyReason={runState === "empty" ? (runProjects.length === 0 ? "No workspaces found" : "No runnable playbooks") : undefined} onPress={() => setRunForm(true)} />
+          <RunPlaybookButton theme={theme} compact={layout.compact} loading={runState === "loading"} emptyReason={runState === "empty" ? (runProjects.length === 0 ? "No workspaces found" : "No runnable playbooks") : undefined} onPress={() => setRunForm(true)} />
           {!layout.compact ? (
             <Pressable
               accessibilityRole="button"
