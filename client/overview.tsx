@@ -112,6 +112,19 @@ interface WorkspaceInfo {
 }
 
 /** The host's workspaces, kept current by an owned list subscription. */
+/** The definitions of the projects are listed this long after the screen opens, so the Sidekick column's own request is served first. */
+const DEFINITIONS_DELAY_MS = 1_200;
+
+/** True once `ms` have passed since the component mounted. */
+function useAfter(ms: number): boolean {
+  const [passed, setPassed] = useState(false);
+  useEffect(() => {
+    const timer = setTimeout(() => setPassed(true), ms);
+    return () => clearTimeout(timer);
+  }, [ms]);
+  return passed;
+}
+
 function useWorkspaces(): WorkspaceInfo[] {
   const paseo = usePaseo();
   const [workspaces, setWorkspaces] = useState<Map<string, WorkspaceInfo>>(new Map());
@@ -332,8 +345,11 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
   // Run Playbook: each project's playbooks are listed from its first workspace (the panel's query, same cache key).
   const listDefinitions = useRpc(listPlaybooks);
   const runProjects = useMemo(() => projectsOf(workspaces), [workspaces]);
+  // The Sidekick column and the runs go first: the definitions of every project (a read of each project's files) start after a short head start.
+  const definitionsReady = useAfter(DEFINITIONS_DELAY_MS);
   const definitions = useQueries({
     queries: runProjects.map((candidate) => ({
+      enabled: definitionsReady,
       queryKey: ["playbooks", "definitions", candidate.workspaceId],
       queryFn: () => listDefinitions({ workspaceId: candidate.workspaceId }),
       refetchInterval: 30_000,
@@ -341,7 +357,7 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
   });
   const runnableOf = new Map(runProjects.map((candidate, index) => [candidate.projectId, runnablePlaybooks(definitions[index]?.data?.entries ?? [])]));
   const runnableProjects = runProjects.filter((candidate) => (runnableOf.get(candidate.projectId)?.length ?? 0) > 0);
-  const runState = runButtonState(runnableProjects.length, definitions.some((query) => query.isLoading));
+  const runState = runButtonState(runnableProjects.length, !definitionsReady || definitions.some((query) => query.isLoading));
   const [runForm, setRunForm] = useState(false);
 
   const byId = useMemo(() => new Map(workspaces.map((workspace) => [workspace.id, workspace])), [workspaces]);

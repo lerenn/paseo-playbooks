@@ -135,9 +135,10 @@ function fakePaseo(roots: Record<string, string>) {
   const created = { workspaces: [] as Array<Record<string, unknown>>, agents: [] as Array<{ workspaceId: string; options: Record<string, any> }> };
   const sent: Array<{ agentId: string; text: string }> = [];
   const state: Record<string, { status: string; used: number }> = {};
+  const latency = { ms: 0 };
   const ref = (agentId: string) => ({
     refresh: async () =>
-      agentId in archivedAt ? { agent: { id: agentId, status: state[agentId]?.status ?? "idle", archivedAt: archivedAt[agentId], lastUsage: { contextWindowUsedTokens: state[agentId]?.used ?? 0 } } } : null,
+      (latency.ms ? await new Promise((done) => setTimeout(done, latency.ms)) : undefined, agentId in archivedAt ? { agent: { id: agentId, status: state[agentId]?.status ?? "idle", archivedAt: archivedAt[agentId], lastUsage: { contextWindowUsedTokens: state[agentId]?.used ?? 0 } } } : null),
     send: async (text: string) => void sent.push({ agentId, text }),
     archive: async () => void (archivedAt[agentId] = new Date().toISOString()),
   });
@@ -168,7 +169,7 @@ function fakePaseo(roots: Record<string, string>) {
       },
     },
   };
-  return { paseo, created, sent, state, archive: (id: string) => (archivedAt[id] = new Date().toISOString()) };
+  return { paseo, created, sent, state, latency, archive: (id: string) => (archivedAt[id] = new Date().toISOString()) };
 }
 
 async function setup(projects: Record<string, boolean>, options: { debounceMs?: number } = {}) {
@@ -255,6 +256,32 @@ describe("a project's Sidekick", () => {
       { projectId: "shop", configured: true, agentId: "agent-1", activeRuns: 0 },
       { projectId: "blog", configured: false, agentId: null, activeRuns: 0 },
     ]);
+  });
+});
+
+describe("the Sidekick column's list", () => {
+  it("asks the projects at once, not one after the other, and keeps the input's order", async () => {
+    const names = Array.from({ length: 30 }, (_, index) => `p${index}`);
+    const { runtime, latency } = await setup(Object.fromEntries(names.map((name) => [name, true])));
+    for (const name of names) await runtime.openSidekick(`ws-${name}`);
+    latency.ms = 20;
+    const started = performance.now();
+    const projects = await runtime.sidekickProjects(names.map((name) => ({ projectId: name, workspaceId: `ws-${name}` })));
+    const took = performance.now() - started;
+    console.log(`[bench] sidekickProjects, 30 projects, 20 ms per agent lookup: ${took.toFixed(0)} ms`);
+    expect(projects.map((project) => project.projectId)).toEqual(names);
+    expect(projects.every((project) => project.agentId !== null)).toBe(true);
+    // One after the other would take 30 x 20 ms.
+    expect(took).toBeLessThan(300);
+  });
+
+  it("leaves out a project whose workspace is gone", async () => {
+    const { runtime } = await setup({ shop: true });
+    const projects = await runtime.sidekickProjects([
+      { projectId: "gone", workspaceId: "ws-gone" },
+      { projectId: "shop", workspaceId: "ws-shop" },
+    ]);
+    expect(projects.map((project) => project.projectId)).toEqual(["shop"]);
   });
 });
 

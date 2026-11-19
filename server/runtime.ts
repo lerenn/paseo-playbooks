@@ -5349,26 +5349,28 @@ export class Runtime {
   /** For each project (given by one of its workspaces): its Sidekick config, agent and active runs. */
   async sidekickProjects(workspaces: Array<{ projectId: string; workspaceId: string }>) {
     const registry = await this.sidekickRegistry.all();
-    const projects = [];
-    for (const { projectId, workspaceId } of workspaces) {
-      const project = await this.projectOf(workspaceId).catch(() => null);
-      if (!project) continue;
-      const load = await loadSidekick(project.root);
-      const record = registry[projectId];
-      const agent = record ? await this.api().agents.ref(record.agentId).refresh().catch(() => null) : null;
-      const open = this.store.list().filter((run) => run.projectId === projectId && !run.archivedAt);
-      projects.push({
-        projectId,
-        workspaceId,
-        label: project.label,
-        configured: load.configured,
-        errors: load.errors,
-        agentId: agent && !agent.agent.archivedAt ? record!.agentId : null,
-        activeRuns: open.filter((run) => !isTerminal(run.status)).length,
-        needYou: open.reduce((count, run) => count + run.gates.filter(waitsForHuman).length, 0),
-      });
-    }
-    return projects;
+    // Independent per project (a workspace lookup, a read of its files, an agent refresh): all at once, in the input's order.
+    const open = this.store.list().filter((run) => !run.archivedAt);
+    const found = await Promise.all(
+      workspaces.map(async ({ projectId, workspaceId }) => {
+        const project = await this.projectOf(workspaceId).catch(() => null);
+        if (!project) return null;
+        const record = registry[projectId];
+        const [load, agent] = await Promise.all([loadSidekick(project.root), record ? this.api().agents.ref(record.agentId).refresh().catch(() => null) : null]);
+        const mine = open.filter((run) => run.projectId === projectId);
+        return {
+          projectId,
+          workspaceId,
+          label: project.label,
+          configured: load.configured,
+          errors: load.errors,
+          agentId: agent && !agent.agent.archivedAt ? record!.agentId : null,
+          activeRuns: mine.filter((run) => !isTerminal(run.status)).length,
+          needYou: mine.reduce((count, run) => count + run.gates.filter(waitsForHuman).length, 0),
+        };
+      }),
+    );
+    return found.filter((project) => project !== null);
   }
 
   private async ensureSidekick(project: { projectId: string; label: string; root: string }) {
