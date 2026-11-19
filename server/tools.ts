@@ -104,6 +104,15 @@ export function runChange(run: Run, stepId?: string) {
   };
 }
 
+function managerView(run: Run) {
+  return {
+    managerAgentId: run.managerAgentId,
+    managerRecovery: run.managerRecoveries.at(-1) ?? null,
+    managerQuotaBlocked: run.managerQuotaBlockedId === run.managerAgentId,
+    managerTakeoverPending: run.managerRecoveryPrompt !== null,
+  };
+}
+
 /** An isolated run's worktree (`isolation: worktree`); nothing for a run in the workspace checkout. */
 function worktreeView(run: Run) {
   return {
@@ -187,6 +196,7 @@ export function runCompact(run: Run, only?: string[], slow: Record<string, SlowI
     playbook: run.playbook.id,
     status: run.status,
     failure: run.failure,
+    ...managerView(run),
     ...runTimes(run, now),
     managerMode: run.playbook.managerMode,
     active: isActive(run),
@@ -236,6 +246,7 @@ export function runFull(run: Run, only?: string[], slow: Record<string, SlowInfo
     playbook: run.playbook.id,
     status: run.status,
     failure: run.failure,
+    ...managerView(run),
     /** True while the main graph or an after-task still runs. */
     active: isActive(run),
     /** True while a human has paused the run: start_step is refused until they resume it. */
@@ -713,7 +724,7 @@ export function runListing(run: Run, slow: Record<string, SlowInfo> = {}) {
     workspaceDir: run.workspaceDir,
     branch: run.branch,
     ...worktreeView(run),
-    managerAgentId: run.managerAgentId,
+    ...managerView(run),
     /** `none`: no manager agent; the plugin drives the run (managerAgentId is empty). */
     managerMode: run.playbook.managerMode,
     createdAt: run.createdAt,
@@ -747,6 +758,15 @@ export function defaultRunToCancel(runs: Run[], agentId: string, workspaceId: st
 /** Tools for every agent except step agents: find runs, cancel, archive and restart them, e.g. when the human asks in any chat. */
 export function runTools(runtime: Runtime): AgentToolDefinition[] {
   return [
+    defineAgentTool({
+      name: "recover_manager",
+      description: "Replace an idle quota-stuck manager of an active run without restarting any steps or changing gates, reports, outputs, jobs, pinned definition or scripts. Requires expectedManagerId (CAS) and a confirmed quota exit in the manager timeline. Uses the run's configured manager tier then providers.fallback, skipping exhausted/usage-blocked targets; model may select only an available configured target. Refuses paused runs and pending agent questions/permissions. Repeating the same completed recovery is idempotent. The old manager is never archived (its children must survive). Returns the exact model and thinking selected, or blocked when no fallback is available.",
+      input: z.object({ runId: IdArg, expectedManagerId: z.string().min(1), reason: z.string().min(1), model: z.string().optional().describe("Optional provider/model from the run's existing fallback chain; no tier or thinking override") }),
+      execute: ({ runId, expectedManagerId, reason, model }) => guard(async () => {
+        const result = await runtime.recoverManager(runId, expectedManagerId, reason, model);
+        return ok(JSON.stringify(result), result);
+      }),
+    }),
     defineAgentTool({
       name: "list_runs",
       description:

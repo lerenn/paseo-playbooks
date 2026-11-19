@@ -172,3 +172,21 @@ describe("checkSubscriptionScope", () => {
     else expect(() => checkSubscriptionScope(types, filter)).toThrow(/runId[\s\S]*workspaceDir[\s\S]*step\.completed/);
   });
 });
+
+describe("manager subscription handoff", () => {
+  it("keeps subscription IDs, filters and pending events when ownership changes, including on reload", async () => {
+    const { bus, root, delivered } = await makeBus({ debounceMs: 1_000_000 });
+    const sub = await bus.subscribe("old", sink("old"), ["a.*"], { color: "red" });
+    await bus.emit("a.one", { color: "red", n: 1 }, meta);
+    await bus.rebindOwner("old", "new");
+    await bus.rebindOwner("old", "new");
+    expect(await bus.list("old")).toEqual([]);
+    expect(await bus.list("new")).toEqual([{ ...sub, owner: "new", sink: sink("new") }]);
+    // Pending queues are keyed by subscription ID, so transferring never rebuilds them.
+    await bus.flush(Date.now() + 2_000_000);
+    expect(delivered).toMatchObject([{ target: "new", seqs: [1] }]);
+    await bus.close();
+    const next = await makeBus({}, root);
+    expect((await next.bus.list("new"))[0]).toMatchObject({ id: sub.id, owner: "new", sink: sink("new"), filter: { color: "red" } });
+  });
+});

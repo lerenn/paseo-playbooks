@@ -1,6 +1,6 @@
 # Provider fallback: a tier may list several providers
 
-Status: Accepted
+Status: Superseded by `2026-11-19-manager-quota-recovery.md` (manager creation-only rule; other decisions retained)
 
 Extends `2026-11-09-model-tiers.md`, whose tiers stay valid.
 

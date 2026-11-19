@@ -153,8 +153,7 @@ to the manager as usual, unless `providers.on_exhausted: wait`: the step then st
 `attempt.waiting { since, until }`, no retry is used, and the plugin restarts the attempt at `until` (the
 earliest end of `exhausted_for`; it waits again if the provider is still out) until `providers.max_wait`
 (default: no limit) is spent. Do not nudge or complete a waiting step. A multi-entry tier cannot be combined with inline `provider`, `model`, `mode`
-or `thinking` on the same `agent` block: define another tier. On `manager` it only picks the first
-entry when a manager is created; the manager never switches mid-run.
+or `thinking` on the same `agent` block: define another tier. On `manager` the first available entry is used at creation; a quota exit can replace the manager during an active run without replaying steps.
 
 Provider usage: before a step agent, gate decider or manager starts, the plugin reads the usage the
 daemon reports (`paseo usage`; host-wide, not per run, cached about 45 s, never forced to refresh) and skips every
@@ -169,11 +168,32 @@ over, waits (`on_exhausted: wait`, until the earliest reset time the provider wi
 or fails as above. `providers: { usage: { check: false } }` turns it off. Because usage is per host, a new run
 also skips a full provider from the start, while `run.exhausted` (failures) stays per run.
 
-`providers.fallback` (a list of `provider/model`) is appended to every step agent's chain, after its
+`providers.fallback` (a list of `provider/model`) is appended to every step agent's and manager's chain, after its
 tier's own entries (duplicates skipped), so a role with a single model still moves on when it runs out.
 A fallback keeps the role's `mode` and `thinking` only on the same provider. Out of tokens is detected
 on a failed turn (its error text) and on a turn that ends on the provider's short notice as its last
 message (Claude Code's "You've hit your weekly limit · resets …"); the patterns are in `server/quota.ts`.
+
+A quota-stuck manager can be recovered with `recover_manager` (`runId`, `expectedManagerId`,
+`reason`, optional `model: provider/model`; system RPC: `runs.recover_manager`). This replaces only the manager of an active run:
+steps, attempts, reports, outputs, jobs, open gates and their deciders, pinned definition and
+scripts stay intact. It checks the expected manager, its idle state and latest quota notice;
+it refuses paused/ended/archived runs and pending agent questions/permissions. Ordinary
+human-held gates stay held: do not decide them to make recovery possible. The old manager
+is never archived because its children must survive. Concurrent/repeated calls with the same
+expected manager create one replacement; a mismatched owner is refused.
+
+Manager quota exits (`completed` with a short provider notice, or `failed` with a quota error)
+use the same path automatically. Selection uses the pinned manager tier then `providers.fallback`,
+skipping exhausted and usage-blocked targets. `model` can select only an available target in
+that chain; there is no thinking override or tier upgrade. The result reports `target` and
+`thinking` (null means provider default, not a known effort level). API prices do not predict
+subscription quota consumption. Configure a lower-cost target in the existing tier if wanted;
+recovery does not rewrite profile mappings. With no target available the manager stays durably
+blocked, preserving its inbox, without a background retry loop; retry `recover_manager` when
+a configured target is available. The takeover brief and pending inbox are durable until sent,
+and event subscriptions and their queued notices transfer to the replacement. Startup repairs
+only committed handoffs; already-stuck managers need an explicit recovery after inspection.
 
 The manager can pick a model for one attempt: `start_step`, `nudge_step` and `restart_run` take
 `model: provider/model` (checked against the provider's models, as `list_models` shows them) and

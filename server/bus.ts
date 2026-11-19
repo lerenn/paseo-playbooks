@@ -391,6 +391,20 @@ export class EventBus {
     return this.subscriptions.filter((subscription) => subscription.owner === owner);
   }
 
+  /** Transfers a manager's subscriptions without changing IDs or dropping pending events. Idempotent after a crash. */
+  async rebindOwner(previous: string, replacement: string): Promise<void> {
+    await this.ready();
+    let changed = false;
+    for (const subscription of this.subscriptions) {
+      if (subscription.owner === previous) { subscription.owner = replacement; changed = true; }
+      if (subscription.sink.kind === "agent" && subscription.sink.target === previous) {
+        subscription.sink.target = replacement;
+        changed = true;
+      }
+    }
+    if (changed) await this.write(this.files.subscriptions, this.subscriptions);
+  }
+
   /** Drops every subscription owned by, or delivered to, this target (an archived or lost agent). */
   async dropOwner(owner: string): Promise<void> {
     await this.ready();

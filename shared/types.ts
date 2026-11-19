@@ -1053,6 +1053,15 @@ export const RunSchema = z.object({
   projectId: z.string(),
   branch: z.string().nullable(),
   managerAgentId: z.string(),
+  /** Durable manager-only handoffs; no step or gate is restarted. */
+  managerRecoveries: z.array(z.object({
+    from: z.string(), to: z.string(), target: z.string(), thinking: z.string().nullable(),
+    reason: z.string(), at: z.string(),
+  })).default([]),
+  /** Suppresses wake-ups while this manager is quota-blocked, including across daemon restarts. */
+  managerQuotaBlockedId: z.string().nullable().default(null),
+  /** Takeover brief persisted before sending, separately from the existing inbox. */
+  managerRecoveryPrompt: z.string().nullable().default(null),
   /** What the manager's agent spent while this run was its active one. */
   managerUsage: UsageSchema.nullable().optional(),
   /** Usage is recorded as per-turn deltas (v0.66.1+). Runs without it hold a cumulative-summed, inflated `managerUsage`, which analytics ignores. */

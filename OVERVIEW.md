@@ -50,7 +50,9 @@ steps:
   restarts. See [how it works](https://playbooks.paseo.lerenn.dev/how-it-works.html).
 - **Provider fallback**: a tier in `defaults/main.yaml` may list several providers. When a
   step agent runs out of tokens, the same attempt restarts on the next one, and the exhausted
-  provider is tried again after `providers: { exhausted_for }` (1h by default).
+  provider is tried again after `providers: { exhausted_for }` (1h by default). A quota-stuck
+  manager also moves to its configured fallback without replaying steps or changing gates;
+  `recover_manager` repairs an already-stuck idle manager with an expected-owner check.
 - **Live graph**: the Playbooks panel in the workspace sidebar shows each run as it goes.
   From it you can start, pause, resume or cancel a run, or restart it from a step.
 - **Every run on one screen**: a Playbooks entry in Paseo's left sidebar, badged with the

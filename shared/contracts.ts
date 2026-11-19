@@ -206,6 +206,16 @@ export const restartRunRpc = defineRpc({
   output: z.object({ status: z.string() }),
 });
 
+/** Manager-only quota recovery, also available as the recover_manager agent tool. */
+export const recoverManagerRpc = defineRpc({
+  name: "runs.recover_manager",
+  input: z.object({ runId: z.string(), expectedManagerId: z.string().min(1), reason: z.string().min(1), model: z.string().optional() }),
+  output: z.object({
+    changed: z.boolean(), blocked: z.boolean().optional(), from: z.string(), to: z.string(),
+    target: z.string(), thinking: z.string().nullable(), reason: z.string(), at: z.string(), takeoverPending: z.boolean(),
+  }),
+});
+
 /**
  * For the Playbooks screen: a summary of the runs of every workspace on this host that are not
  * archived, whatever their status. Summaries, not runs: see RunSummarySchema.

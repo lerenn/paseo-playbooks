@@ -399,6 +399,17 @@ export class Runtime {
   private readonly wokenManagers = new Set<string>();
   /** Managers of a run where a gate was decided since they were last checked for compaction. */
   private readonly gateManagers = new Set<string>();
+  /** Serializes manager delivery and recovery, including sends already in flight. */
+  private readonly recoveringManagers = new Set<string>();
+  private readonly managerOperations = new Map<string, Promise<unknown>>();
+  private managerOperation<T>(runId: string, fn: () => Promise<T>): Promise<T> {
+    const next = (this.managerOperations.get(runId) ?? Promise.resolve()).then(fn);
+    const settled = next.catch(() => undefined);
+    this.managerOperations.set(runId, settled);
+    return next.finally(() => {
+      if (this.managerOperations.get(runId) === settled) this.managerOperations.delete(runId);
+    });
+  }
   /**
    * Managers of a stage's previous batch: archived once their turn ends, and never woken
    * again (sending to an archived agent brings it back).
@@ -518,6 +529,9 @@ export class Runtime {
     return {
       deliver: async (subscription: Subscription, _events: BusEvent[], text: string) => {
         const id = subscription.sink.target;
+        const managerRun = this.store.list().find((run) => run.managerAgentId === id || run.managerRecoveries.some((entry) => entry.from === id));
+        const suppressed = () => managerRun && (this.store.get(managerRun.id)?.managerAgentId !== id || this.store.get(managerRun.id)?.managerQuotaBlockedId === id);
+        if (suppressed()) return "held";
         const steer = subscription.delivery === "steer";
         if (!steer && this.busyManagers.has(id)) return "held";
         const agent = await this.api().agents.ref(id).refresh().catch(() => null);
@@ -531,7 +545,14 @@ export class Runtime {
         }
         if (!steer) this.busyManagers.add(id);
         try {
-          await this.api().agents.ref(id).send(text, { activeTurnBehavior: "steer" });
+          if (managerRun) {
+            const delivered = await this.managerOperation(managerRun.id, async () => {
+              if (suppressed()) return false;
+              await this.api().agents.ref(id).send(text, { activeTurnBehavior: "steer" });
+              return true;
+            });
+            if (!delivered) return "held";
+          } else await this.api().agents.ref(id).send(text, { activeTurnBehavior: "steer" });
         } catch (error) {
           if (!steer) this.busyManagers.delete(id);
           throw error;
@@ -543,11 +564,18 @@ export class Runtime {
 
   // ---------------------------------------------------------------- lifecycle
 
+  /** Repairs only committed handoffs; startup never guesses that a live manager needs replacement. */
+  private async reconcileManagerSubscriptions(): Promise<void> {
+    for (const run of this.store.list()) {
+      for (const recovery of run.managerRecoveries) await this.bus.rebindOwner(recovery.from, run.managerAgentId);
+    }
+  }
+
   /** Every hook, tool and RPC context hands us the daemon API; the first one triggers reconcile. */
   attach(paseo: PaseoApi): Promise<void> {
     this.paseo ??= paseo;
     if (!this.reconciled) {
-      this.reconciledRuns = this.reconcileRuns().catch((error) => console.error("[playbooks] reconcile failed:", error));
+      this.reconciledRuns = this.reconcileManagerSubscriptions().then(() => this.reconcileRuns()).catch((error) => console.error("[playbooks] reconcile failed:", error));
       this.reconciled = this.reconciledRuns
         .then(() => this.reconcileSweeps())
         .catch((error) => console.error("[playbooks] reconcile failed:", error))
@@ -1123,7 +1151,7 @@ export class Runtime {
           if (!policy.enabled) run.managerWatch.question = null;
         });
       }
-      if (!policy.enabled || this.retiredManagers.has(managerId)) continue;
+      if (!policy.enabled || this.retiredManagers.has(managerId) || listed.managerQuotaBlockedId === managerId) continue;
       if (!snapshots.has(managerId)) {
         const current = await this.api().agents.ref(managerId).refresh().catch(() => null);
         snapshots.set(managerId, current && !current.agent.archivedAt ? (current.agent as never) : null);
@@ -1190,7 +1218,11 @@ export class Runtime {
         if (sent.length === 0) continue;
         this.busyManagers.add(managerId);
         try {
-          await this.api().agents.ref(managerId).send(managerWaitingNudge(runId, sent), { activeTurnBehavior: "steer" });
+          await this.managerOperation(runId, async () => {
+            const live = this.store.get(runId)!;
+            if (live.managerAgentId !== managerId || live.managerQuotaBlockedId === managerId) return;
+            await this.api().agents.ref(managerId).send(managerWaitingNudge(runId, sent), { activeTurnBehavior: "steer" });
+          });
           this.wokenManagers.add(managerId);
         } catch (error) {
           this.busyManagers.delete(managerId);
@@ -1241,6 +1273,7 @@ export class Runtime {
     const run = runId ? this.store.get(runId) : this.activeRunOfManager(managerId) ?? this.runsOfManager(managerId)[0];
     if (!run) throw new UserError(runId ? `unknown run "${runId}"` : "you have no run; call start_playbook first");
     if (isManagerless(run)) throw new UserError(`run ${run.id} has no Playbook Manager (manager.mode: none): the plugin starts its steps, applies the reports, opens the gates and stops the run on a failure by itself. Nothing to start, complete, nudge or request; a human decides its gates in the panel`);
+    if (this.recoveringManagers.has(managerId)) throw new UserError("manager recovery is in progress; retry after ownership is settled");
     if (run.managerAgentId !== managerId) throw new UserError(`run ${run.id} belongs to another manager`);
     return run;
   }
@@ -1259,26 +1292,29 @@ export class Runtime {
 
   /** Sends queued wake-ups to the manager when it is idle, merged into one prompt. A paused run keeps them until resume. */
   async deliver(runId: string): Promise<void> {
+    return this.managerOperation(runId, () => this.deliverManager(runId));
+  }
+
+  private async deliverManager(runId: string): Promise<void> {
     const run = this.store.get(runId);
     // A pipeline has no manager: nothing to wake.
-    if (!run || !run.managerAgentId || isManagerless(run) || run.inbox.length === 0 || isPaused(run) || this.busyManagers.has(run.managerAgentId)) return;
+    if (!run || !run.managerAgentId || isManagerless(run) || (run.inbox.length === 0 && !run.managerRecoveryPrompt) || run.managerQuotaBlockedId === run.managerAgentId || isPaused(run) || this.busyManagers.has(run.managerAgentId)) return;
     if (this.retiredManagers.has(run.managerAgentId)) return;
-    const text = await this.store.mutate(runId, (current) => {
-      const merged = current.inbox.join("\n\n");
-      current.inbox = [];
-      return merged;
-    });
+    const inbox = [...run.inbox];
+    const takeover = run.managerRecoveryPrompt;
+    const text = [takeover, ...inbox].filter(Boolean).join("\n\n");
     if (!text) return;
     try {
       this.busyManagers.add(run.managerAgentId);
       await this.api().agents.ref(run.managerAgentId).send(text, { activeTurnBehavior: "steer" });
       this.wokenManagers.add(run.managerAgentId);
+      await this.store.mutate(runId, (current) => {
+        if (current.managerRecoveryPrompt === takeover) current.managerRecoveryPrompt = null;
+        if (inbox.every((line, index) => current.inbox[index] === line)) current.inbox.splice(0, inbox.length);
+      });
     } catch (error) {
       this.busyManagers.delete(run.managerAgentId);
       console.error(`[playbooks] could not wake manager of ${runId}:`, errorText(error));
-      await this.store.mutate(runId, (current) => {
-        current.inbox.unshift(text);
-      });
     }
   }
 
@@ -1332,8 +1368,12 @@ export class Runtime {
         const used = current?.agent.lastUsage?.contextWindowUsedTokens ?? 0;
         if (used <= policy.above_tokens) return;
       }
-      this.busyManagers.add(agentId);
-      await this.api().agents.ref(agentId).send("/compact");
+      await this.managerOperation(runs[0]!.id, async () => {
+        const live = this.store.get(runs[0]!.id)!;
+        if (live.managerAgentId !== agentId || live.managerQuotaBlockedId === agentId) return;
+        this.busyManagers.add(agentId);
+        await this.api().agents.ref(agentId).send("/compact");
+      });
     } catch (error) {
       this.busyManagers.delete(agentId);
       console.error(`[playbooks] could not compact manager ${agentId}:`, errorText(error));
@@ -4378,6 +4418,101 @@ export class Runtime {
       });
   }
 
+  /** Read-only quota proof: never infer quota from a generic failed/canceled turn. */
+  private async managerQuota(agentId: string, outcome?: string) {
+    const handle = this.api().agents.ref(agentId);
+    const snapshot = await handle.refresh();
+    if (!snapshot || snapshot.agent.archivedAt) throw new UserError("manager is missing or archived");
+    const agent = snapshot.agent;
+    if (agent.status === "running" || agent.status === "initializing" || agent.activeTurn || agent.pendingPermissions?.length) {
+      throw new UserError("manager is active or has an open question/permission; recovery refused");
+    }
+    const page = await handle.timeline.refetch({ direction: "tail", limit: 30 });
+    // Only the latest turn's final assistant/error item is evidence. Older quota errors
+    // in the same page must not turn a later ordinary failure into a quota exit.
+    const entries = page.entries as unknown as Array<{ item?: Record<string, unknown> }>;
+    let reason = "";
+    let error = false;
+    for (const { item } of [...entries].reverse()) {
+      if (!item || typeof item.type !== "string") continue;
+      if (item.type === "user_message") break;
+      if (item.type === "assistant_message" || /error|fail/i.test(item.type)) {
+        error = item.type !== "assistant_message";
+        reason = error ? failureText([{ item }]) : typeof item.text === "string" ? item.text : "";
+        break;
+      }
+    }
+    if (!(error && outcome !== "completed" ? isQuotaError(reason) : isQuotaMessage(reason))) return null;
+    return { agent, reason };
+  }
+
+  /** A manager-only CAS handoff. Creation is unprompted until the binding is durable. */
+  async recoverManager(runId: string, expectedManagerId: string, reason: string, target?: string, outcome?: string) {
+    return this.managerOperation(runId, async () => {
+      this.recoveringManagers.add(expectedManagerId);
+      let result;
+      try {
+        result = await this.store.mutate(runId, async (run) => {
+          if (run.managerAgentId !== expectedManagerId) {
+            const prior = run.managerRecoveries.find((entry) => entry.from === expectedManagerId && entry.to === run.managerAgentId);
+            if (prior && (!target || target === prior.target)) return { changed: false, ...prior };
+            throw new UserError("manager changed: expectedManagerId does not match; recovery refused");
+          }
+          if (!isActive(run) || run.archivedAt || isPipeline(run) || isManagerless(run) || run.batch) throw new UserError("recovery requires an active, unarchived playbook run with a manager");
+          if (isPaused(run)) throw new UserError("run is paused; recovery refused");
+          if (run.gates.some((gate) => gate.status === "pending" && (gate.kind === "manager_question" || gate.kind === "permission"))) {
+            throw new UserError("an open question/permission must keep its original agent; recovery refused");
+          }
+          const proof = await this.managerQuota(expectedManagerId, outcome);
+          if (!proof) throw new UserError("manager has no confirmed provider quota exit; recovery refused");
+          if (!proof.agent.provider || !proof.agent.model) throw new UserError("manager provider/model is unknown; recovery refused");
+          if (this.runsOfManager(expectedManagerId).filter(isActive).length !== 1) throw new UserError("manager owns multiple active runs; recovery refused");
+          if (target && !this.managerTargets(run.playbook).some((candidate) => `${candidate.provider}/${candidate.model}` === target)) {
+            throw new UserError("model is not in the run's configured manager fallback chain; recovery refused");
+          }
+          const exhausted = `${proof.agent.provider}/${proof.agent.model}`;
+          engine.markTarget(run, exhausted, nowIso());
+          run.managerQuotaBlockedId = expectedManagerId;
+          const skips = await this.managerSkips(run.playbook, engine.activeExhausted(run));
+          const candidates = this.managerTargets(run.playbook).filter((candidate) => candidate.model && !skips.includes(`${candidate.provider}/${candidate.model}`));
+          const chosen = target ? candidates.find((candidate) => `${candidate.provider}/${candidate.model}` === target) : candidates[0];
+          // Commit the quota block even if there is no available fallback: no futile wake-up loop.
+          if (!chosen) return { changed: false, blocked: true as const, from: expectedManagerId, to: expectedManagerId, target: exhausted, thinking: null, reason: "no configured fallback is available", at: nowIso() };
+          const config: AgentConfig = { provider: `${chosen.provider}/${chosen.model}` };
+          if (chosen.target.mode) config.modeId = chosen.target.mode;
+          if (chosen.target.thinking) config.thinkingOptionId = chosen.target.thinking;
+          preapprove(config, chosen.provider, MANAGER_TOOL_NAMES);
+          const replacement = await this.api().workspaces.ref(run.workspaceId).agents.create({ config, title: `Playbook Manager · ${run.playbook.title}`, labels: { [MANAGER_LABEL]: "true" } }).catch((error: unknown) => ({ error }));
+          if ("error" in replacement) return { changed: false, blocked: true as const, from: expectedManagerId, to: expectedManagerId, target: exhausted, thinking: null, reason: `replacement creation failed: ${errorText(replacement.error)}`, at: nowIso() };
+          // A human may have started the old manager while creation was in flight.
+          const stillIdle = await this.managerQuota(expectedManagerId, outcome).catch(() => null);
+          if (!stillIdle || stillIdle.agent.provider !== proof.agent.provider || stillIdle.agent.model !== proof.agent.model) {
+            // The unused replacement has never been prompted and owns no run/children.
+            await this.api().agents.ref(replacement.id).archive().catch(() => undefined);
+            return { changed: false, blocked: true as const, from: expectedManagerId, to: expectedManagerId, target: exhausted, thinking: null, reason: "manager changed or became active during recovery; recovery refused", at: nowIso() };
+          }
+          const record = { from: expectedManagerId, to: replacement.id, target: config.provider!, thinking: config.thinkingOptionId ?? null, reason: reason.trim() || proof.reason, at: nowIso() };
+          engine.replaceManager(run, replacement.id, record.reason, record.at);
+          run.managerRecoveries.push(record);
+          run.managerQuotaBlockedId = null;
+          run.managerRecoveryPrompt = `${managerTakeover(run, [], "after its previous manager hit provider quota")}\nRead get_run with view full before acting. Preserve all existing attempts, reports, outputs, local commits, jobs and gates. Do not restart steps or decide a human/role gate. Respect blockers in reports/lastMessage: a blocked or unimplemented report is not success just to fit an outcome schema. Do not retry blocked work until its documented prerequisites and required checks pass.\nRecovery reason: ${record.reason}\nCurrent state: ${JSON.stringify({ status: run.status, steps: Object.fromEntries(Object.entries(run.steps).map(([id, state]) => [id, state.status])), gates: run.gates, queue: run.inbox })}`;
+          return { changed: true, ...record };
+        });
+      } finally {
+        this.recoveringManagers.delete(expectedManagerId);
+      }
+      if (!("blocked" in result)) await this.bus.rebindOwner(expectedManagerId, result.to);
+      if (result.changed) {
+        this.busyManagers.delete(expectedManagerId);
+        this.wokenManagers.delete(expectedManagerId);
+        this.gateManagers.delete(expectedManagerId);
+      }
+      // Never archive the old manager: Paseo cascades archival to its children.
+      if (!("blocked" in result)) await this.deliverManager(runId);
+      return { ...result, takeoverPending: this.store.get(runId)!.managerRecoveryPrompt !== null };
+    });
+  }
+
   /**
    * Paseo archives an agent's children with it, so archiving a Coordinator that created the
    * manager (create_agent) also archives the manager and its step agents. That was not a
@@ -4842,6 +4977,21 @@ export class Runtime {
       await this.handOff(agentId, handoff, false);
       return;
     }
+    const managerRun = this.activeRunOfManager(agentId);
+    if (managerRun && outcome !== "canceled") {
+      const quota = await this.managerQuota(agentId, outcome).catch(() => undefined);
+      if (quota) {
+        this.busyManagers.delete(agentId);
+        await this.recoverManager(managerRun.id, agentId, "provider quota", undefined, outcome).catch((error) =>
+          console.error(`[playbooks] manager recovery of ${managerRun.id}:`, errorText(error)));
+        return;
+      }
+      if (quota === null && outcome === "completed" && managerRun.managerQuotaBlockedId === agentId) {
+        await this.store.mutate(managerRun.id, (run) => {
+          if (run.managerAgentId === agentId) run.managerQuotaBlockedId = null;
+        });
+      }
+    }
     await this.onManagerTurnEnded(agentId);
     await this.askGatesInChat().catch((error) => console.error("[playbooks] gate question failed:", errorText(error)));
     await this.cleanupEndedWorktrees().catch((error) => console.error("[playbooks] worktree cleanup failed:", errorText(error)));
@@ -5163,10 +5313,16 @@ export class Runtime {
   /** The manager's targets (its tier, primary first) with their resolved provider and model. */
   private managerTargets(playbook: Playbook) {
     const targets: AgentSettings[] = [playbook.manager, ...(playbook.manager.fallback ?? [])];
-    return targets.map((target) => {
+    const own = targets.map((target) => {
       const provider = target.provider ?? DEFAULT_PROVIDER;
       return { target, provider, model: target.model ?? (provider === DEFAULT_PROVIDER ? DEFAULT_MODEL : undefined) };
     });
+    const seen = new Set(own.map((candidate) => `${candidate.provider}/${candidate.model}`));
+    const extra = (playbook.fallback ?? []).filter((entry) => !seen.has(entry) && seen.add(entry)).map((entry) => {
+      const [provider, model] = splitTarget(entry);
+      return { target: inheritTarget({ ...own[0]!.target, provider: own[0]!.provider }, provider, model), provider, model };
+    });
+    return [...own, ...extra];
   }
 
   /** `exhausted` plus the manager targets whose provider's usage is at the threshold: what a new manager skips. */
@@ -5176,7 +5332,7 @@ export class Runtime {
   }
 
   private managerConfig(playbook: Playbook, exhausted: string[] = []): AgentConfig {
-    // A multi-entry tier: the first target not out of tokens (nor at the usage threshold) at creation (the manager never switches mid-run).
+    // A multi-entry tier: the first target not out of tokens (nor at the usage threshold) at creation (recovery uses the same configured chain).
     const resolved = this.managerTargets(playbook);
     const { target, provider, model } = resolved.find((candidate) => candidate.model && !exhausted.includes(`${candidate.provider}/${candidate.model}`)) ?? resolved[0]!;
     if (!model) throw new UserError(`no model for the manager on provider "${provider}"; set manager.model in defaults/main.yaml`);

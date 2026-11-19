@@ -34,6 +34,7 @@ import {
   restartSidekickRpc,
   saveSidekickAttachmentRpc,
   restartRunRpc,
+  recoverManagerRpc,
   retryStepRpc,
   startAfterTaskRpc,
   startRun,
@@ -92,7 +93,7 @@ export default function contribute(server: PluginServerContext) {
 
   // Tools: report_step_result for step agents; manager tools for agents whose workspace has
   // playbooks (or that already manage a run); validate_playbooks, list_runs, cancel_run, start_after_task and
-  // restart_run for every other agent, so a human can stop, wrap up or restart a run from any chat.
+  // restart_run and recover_manager for every other agent, so a human can stop, wrap up or restart a run from any chat.
   const tools = { manager: managerTools(runtime), common: [validateTool(runtime), ...runTools(runtime), resumeGateTool(runtime)], step: stepTool(runtime), answerGate: answerGateTool(runtime), sidekick: sidekickTool(runtime), sidekickStart: sidekickStartTools(runtime), gate: gateTool(runtime) };
   server.before("agent.session_open", async ({ request }, context) => {
     if (request.purpose === "history") return;
@@ -228,6 +229,7 @@ export default function contribute(server: PluginServerContext) {
     const run = await runtime.startAfterTask(runId, taskId);
     return { status: run.after[taskId]?.status ?? "pending" };
   });
+  handle(recoverManagerRpc, async ({ runId, expectedManagerId, reason, model }) => runtime.recoverManager(runId, expectedManagerId, reason, model));
   handle(restartRunRpc, async ({ runId, stepId, comment, hostLabel }) => ({
     status: (await runtime.restartRun(runId, stepId, comment?.trim() || null, hostLabel)).run.status,
   }));
