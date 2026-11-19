@@ -1,5 +1,5 @@
 import { Icon, Markdown, ScrollView, TextInput, useToast } from "@getpaseo/plugin/client/ui";
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { Image, Pressable, Text, View } from "react-native";
 import { formatSize } from "../../shared/attachments";
 import type { Theme } from "../theme";
@@ -10,6 +10,7 @@ import { describePermission, humanizeTool, toolIcon, toolSummary } from "./descr
 import { pluginMessage } from "./instructions";
 import type { Item, PermissionRequest } from "./reduce";
 import { useSidekickChat, type PermissionResponse } from "./use-chat";
+import { isPrepend, isStuck, offsetAfterPrepend, shouldLoadOlder } from "./window";
 
 interface Props {
   theme: Theme;
@@ -41,14 +42,35 @@ export function SidekickChat(props: Props) {
   const [sending, setSending] = useState(false);
   const composer = useRef<unknown>(null);
   const attachments = useAttachments(composer, (message) => toast.error(message));
-  const scroller = useRef<{ scrollToEnd?: (options?: { animated?: boolean }) => void } | null>(null);
+  const scroller = useRef<{ scrollToEnd?: (options?: { animated?: boolean }) => void; scrollTo?: (options: { y: number; animated?: boolean }) => void } | null>(null);
   // Follow new text only while the reader is at the bottom; reading earlier text must not move.
   const stuck = useRef(true);
+  // The last scroll position and content height seen, to keep the reader's place when older entries are added above.
+  const metrics = useRef({ offsetY: 0, height: 0 });
+  const anchor = useRef<{ height: number; offsetY: number } | null>(null);
+  const loadOlder = chat.loadOlder;
+  const older = state.older;
   const onScroll = (event: { nativeEvent: { contentOffset: { y: number }; contentSize: { height: number }; layoutMeasurement: { height: number } } }) => {
     const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
-    stuck.current = contentSize.height - (contentOffset.y + layoutMeasurement.height) <= 40;
+    metrics.current = { offsetY: contentOffset.y, height: contentSize.height };
+    stuck.current = isStuck(contentSize.height, contentOffset.y, layoutMeasurement.height);
+    if (shouldLoadOlder({ offsetY: contentOffset.y, hasMore: older.hasMore, loading: older.loading })) void loadOlder();
   };
+  const onContentSizeChange = (_width: number, height: number) => {
+    const before = anchor.current;
+    anchor.current = null;
+    if (before) scroller.current?.scrollTo?.({ y: offsetAfterPrepend(before, height), animated: false });
+    metrics.current = { ...metrics.current, height };
+  };
+  const shown = useRef<Item[]>([]);
   useEffect(() => {
+    const previous = shown.current;
+    shown.current = state.items;
+    // Older entries added above: keep the reader where they are (the size change moves the view back), never jump to the end.
+    if (isPrepend(previous, state.items)) {
+      anchor.current = { ...metrics.current };
+      return;
+    }
     if (stuck.current) scroller.current?.scrollToEnd?.({ animated: false });
   }, [state.items, state.permissions.length]);
 
@@ -125,10 +147,14 @@ export function SidekickChat(props: Props) {
         </View>
       ) : null}
 
-      <ScrollView ref={scroller as never} onScroll={onScroll as never} scrollEventThrottle={50} style={{ flex: 1 }} contentContainerStyle={{ padding: 14, gap: 18 }}>
+      <ScrollView ref={scroller as never} onScroll={onScroll as never} onContentSizeChange={onContentSizeChange} scrollEventThrottle={50} style={{ flex: 1 }} contentContainerStyle={{ padding: 14, gap: 18 }}>
         {status.loading ? <Text style={{ color: muted }}>Starting the Sidekick…</Text> : null}
         {status.error ? <Text style={{ color: theme.colors.statusDanger }}>{status.error}</Text> : null}
         {state.connection === "error" && state.error ? <Text style={{ color: theme.colors.statusWarning }}>Reconnecting… {state.error}</Text> : null}
+        {/* A fixed-height slot: its text appears without moving the items below it. */}
+        {older.epoch !== null && state.items.length > 0 ? (
+          <Text style={{ color: muted, fontSize: 11, textAlign: "center", height: 16 }}>{older.loading ? "Loading older…" : older.hasMore ? "" : "Start of the conversation"}</Text>
+        ) : null}
         {state.items.map((item) => (
           <ItemView key={item.key} theme={theme} item={item} />
         ))}
@@ -208,7 +234,8 @@ function ColumnButton(props: { theme: Theme; label: string; onPress: () => void;
   );
 }
 
-function ItemView({ theme, item }: { theme: Theme; item: Item }) {
+/** One item of the chat. Memoized: a streaming event changes one item, the others keep their identity and are not rendered again. */
+const ItemView = memo(function ItemView({ theme, item }: { theme: Theme; item: Item }) {
   const muted = theme.colors.foregroundMuted;
   switch (item.kind) {
     case "user":
@@ -228,7 +255,7 @@ function ItemView({ theme, item }: { theme: Theme; item: Item }) {
     case "tool":
       return <ToolCard theme={theme} item={item} />;
   }
-}
+});
 
 /** The agent's reasoning: one closed line that opens on click, so thoughts do not crowd out the answers. */
 function ReasoningLine({ theme, text, streaming }: { theme: Theme; text: string; streaming: boolean }) {

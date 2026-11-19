@@ -3,7 +3,8 @@ import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { promptWithFiles } from "../../shared/attachments";
 import { saveSidekickAttachmentRpc } from "../../shared/contracts";
 import type { Pending } from "./attach";
-import { initialState, reduce, type PermissionRequest, type RawItem } from "./reduce";
+import { initialState, reduce, type PermissionRequest, type RawItem, type WindowInfo } from "./reduce";
+import { FIRST_PAGE, OLDER_PAGE, RELOAD_PAGE } from "./window";
 
 export type PermissionResponse =
   | { behavior: "allow"; updatedInput?: Record<string, unknown>; updatedPermissions?: Record<string, unknown>[] }
@@ -12,6 +13,10 @@ export type PermissionResponse =
 export interface AgentInfo {
   model: string | null;
   mode: string | null;
+}
+
+function windowOf(page: { epoch: string; startCursor?: { epoch: string; seq: number } | null; hasOlder: boolean }): WindowInfo {
+  return { epoch: page.epoch, startCursor: page.startCursor ?? null, hasOlder: page.hasOlder };
 }
 
 /**
@@ -23,6 +28,11 @@ export function useSidekickChat(agentId: string | null) {
   const [state, dispatch] = useReducer(reduce, undefined, initialState);
   const [info, setInfo] = useState<AgentInfo>({ model: null, mode: null });
   const generation = useRef(0);
+  const handleRef = useRef<ReturnType<typeof paseo.agents.ref> | null>(null);
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  // The page being read (one at a time, never the same cursor twice).
+  const olderInFlight = useRef(false);
   const saveAttachment = useRpc(saveSidekickAttachmentRpc);
 
   useEffect(() => {
@@ -31,13 +41,18 @@ export function useSidekickChat(agentId: string | null) {
     const mine = ++generation.current;
     const stale = () => generation.current !== mine;
     const handle = paseo.agents.ref(agentId);
+    handleRef.current = handle;
+    olderInFlight.current = false;
     let release: (() => void | Promise<void>) | null = null;
     let retry: ReturnType<typeof setTimeout> | null = null;
 
+    let loadedOnce = false;
     const load = async () => {
-      const page = await handle.timeline.refetch({ direction: "tail", limit: 200 });
+      // A small first page for a fast first paint; a re-read (after a reconnect) is wide enough to cover what was missed.
+      const page = await handle.timeline.refetch({ direction: "tail", limit: loadedOnce ? RELOAD_PAGE : FIRST_PAGE });
       if (stale()) return;
-      dispatch({ type: "refetch", items: page.entries.map((entry) => ({ key: `seq:${entry.seqStart}`, item: entry.item as unknown as RawItem })) });
+      loadedOnce = true;
+      dispatch({ type: "refetch", items: page.entries.map((entry) => ({ key: `seq:${entry.seqStart}`, item: entry.item as unknown as RawItem })), span: windowOf(page) });
       const snapshot = await handle.refresh();
       if (stale() || !snapshot) return;
       const agent = snapshot.agent as unknown as { status?: string; activeTurn?: unknown; pendingPermissions?: PermissionRequest[]; currentModeId?: string | null; model?: string | null; provider?: string };
@@ -92,6 +107,29 @@ export function useSidekickChat(agentId: string | null) {
     };
   }, [agentId, paseo]);
 
+  /** Reads the page of entries before the oldest one shown. Called when the reader nears the top. */
+  const loadOlder = useCallback(async () => {
+    const current = stateRef.current.older;
+    const handle = handleRef.current;
+    if (!handle || olderInFlight.current || !current.hasMore || !current.cursor) return;
+    olderInFlight.current = true;
+    const mine = generation.current;
+    dispatch({ type: "older_start" });
+    try {
+      const page = await handle.timeline.refetch({ direction: "before", cursor: current.cursor, limit: OLDER_PAGE });
+      if (generation.current !== mine) return;
+      if (page.staleCursor || page.reset) {
+        dispatch({ type: "older_failed" });
+        return;
+      }
+      dispatch({ type: "older", items: page.entries.map((entry) => ({ key: `seq:${entry.seqStart}`, item: entry.item as unknown as RawItem })), from: current.cursor.seq, span: windowOf(page) });
+    } catch {
+      if (generation.current === mine) dispatch({ type: "older_failed" });
+    } finally {
+      olderInFlight.current = false;
+    }
+  }, []);
+
   /**
    * Sends a message. Images go as image content blocks, like Paseo's own composer; any other file is
    * saved on the host and its path is added to the text.
@@ -124,5 +162,5 @@ export function useSidekickChat(agentId: string | null) {
     [agentId, paseo],
   );
 
-  return { state, info, send, stop, respond };
+  return { state, info, send, stop, respond, loadOlder };
 }

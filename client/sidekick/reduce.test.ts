@@ -97,3 +97,86 @@ describe("sidekick chat reducer", () => {
     expect(reduce(initialState(), { type: "steer_sent" }).steering).toBe(false);
   });
 });
+
+describe("sidekick windowed history", () => {
+  const win = (hasOlder: boolean, seq = 10, epoch = "e1") => ({ epoch, startCursor: hasOlder ? { epoch, seq } : null, hasOlder });
+  const msg = (seq: number, text = `m${seq}`) => ({ key: `seq:${seq}`, item: { type: "assistant_message", text } });
+  const keys = (state: ChatState) => state.items.map((item) => item.key);
+
+  it("records where the window starts from the first page", () => {
+    const state = run([{ type: "refetch", items: [msg(10), msg(11)], span: win(true) }]);
+    expect(state.older).toEqual({ epoch: "e1", cursor: { epoch: "e1", seq: 10 }, hasMore: true, loading: false });
+    expect(run([{ type: "refetch", items: [msg(1)], span: win(false, 1) }]).older.hasMore).toBe(false);
+  });
+
+  it("prepends an older page in order, moves the cursor and ends at the start", () => {
+    let state = run([{ type: "refetch", items: [msg(10), msg(11)], span: win(true) }, { type: "older_start" }]);
+    expect(state.older.loading).toBe(true);
+    state = reduce(state, { type: "older", items: [msg(5), msg(6)], from: 10, span: win(true, 5) });
+    expect(keys(state)).toEqual(["seq:5", "seq:6", "seq:10", "seq:11"]);
+    expect(state.older).toMatchObject({ hasMore: true, loading: false, cursor: { seq: 5 } });
+    state = run([{ type: "older_start" }, { type: "older", items: [msg(1)], from: 5, span: win(false, 1) }], state);
+    expect(keys(state)[0]).toBe("seq:1");
+    expect(state.older).toMatchObject({ hasMore: false, cursor: null });
+    // Nothing more to read: no new read starts.
+    expect(reduce(state, { type: "older_start" }).older.loading).toBe(false);
+  });
+
+  it("never reads a page twice: a second start while loading, or a page from an old cursor, changes nothing", () => {
+    const base = run([{ type: "refetch", items: [msg(10)], span: win(true) }, { type: "older_start" }]);
+    expect(reduce(base, { type: "older_start" })).toBe(base);
+    const merged = reduce(base, { type: "older", items: [msg(5)], from: 10, span: win(true, 5) });
+    const again = reduce(merged, { type: "older", items: [msg(5), msg(6)], from: 10, span: win(true, 5) });
+    expect(keys(again)).toEqual(["seq:5", "seq:10"]);
+  });
+
+  it("drops entries already shown and a tool call that the newer page already has", () => {
+    const tool = (seq: number, status: "running" | "completed") => ({ key: `seq:${seq}`, item: { type: "tool_call", callId: "c1", name: "Read", status } });
+    const base = run([{ type: "refetch", items: [tool(10, "completed"), msg(11)], span: win(true) }]);
+    const state = reduce(base, { type: "older", items: [msg(8), tool(9, "running"), msg(11, "again")], from: 10, span: win(false, 8) });
+    expect(keys(state)).toEqual(["seq:8", "seq:10", "seq:11"]);
+    expect(state.items[2]).toMatchObject({ text: "m11" });
+  });
+
+  it("ignores an older page of another epoch", () => {
+    const base = run([{ type: "refetch", items: [msg(10)], span: win(true) }]);
+    const state = reduce(base, { type: "older", items: [msg(5)], from: 10, span: win(true, 5, "e2") });
+    expect(keys(state)).toEqual(["seq:10"]);
+  });
+
+  it("a failed read can be tried again", () => {
+    const state = run([{ type: "refetch", items: [msg(10)], span: win(true) }, { type: "older_start" }, { type: "older_failed" }]);
+    expect(state.older).toMatchObject({ loading: false, hasMore: true });
+  });
+
+  it("keeps older pages already read when the tail is re-read, and the live items too", () => {
+    let state = run([{ type: "refetch", items: [msg(10), msg(11)], span: win(true) }, { type: "older", items: [msg(5), msg(6)], from: 10, span: win(true, 5) }, timeline({ type: "assistant_message", text: "streaming now" })]);
+    state = reduce(state, { type: "refetch", items: [msg(10), msg(11), msg(12)], span: win(true) });
+    expect(keys(state)).toEqual(["seq:5", "seq:6", "seq:10", "seq:11", "live:1", "seq:12"]);
+    expect(state.older.cursor).toEqual({ epoch: "e1", seq: 5 });
+  });
+
+  it("resets cleanly when the tail no longer overlaps what is shown, or the epoch changed", () => {
+    const base = run([{ type: "refetch", items: [msg(10), msg(11)], span: win(true) }, { type: "older", items: [msg(5), msg(6)], from: 10, span: win(true, 5) }]);
+    const gap = reduce(base, { type: "refetch", items: [msg(30), msg(31)], span: win(true, 30) });
+    expect(keys(gap)).toEqual(["seq:30", "seq:31"]);
+    expect(gap.older.cursor?.seq).toBe(30);
+    const replaced = reduce(base, { type: "refetch", items: [msg(1), msg(2)], span: win(false, 1, "e2") });
+    expect(keys(replaced)).toEqual(["seq:1", "seq:2"]);
+    expect(replaced.older).toMatchObject({ epoch: "e2", hasMore: false });
+  });
+
+  it("keeps the identity of items that did not change, on a re-read and a streaming event", () => {
+    const first = run([{ type: "refetch", items: [msg(10), { key: "seq:11", item: { type: "tool_call", callId: "c", name: "Bash", status: "completed", detail: { output: "x" } } }], span: win(true) }]);
+    const second = reduce(first, { type: "refetch", items: [msg(10), { key: "seq:11", item: { type: "tool_call", callId: "c", name: "Bash", status: "completed", detail: { output: "x" } } }, msg(12)], span: win(true) });
+    expect(second.items[0]).toBe(first.items[0]);
+    expect(second.items[1]).toBe(first.items[1]);
+    const done = reduce(first, { type: "refetch", items: [msg(10), { key: "seq:11", item: { type: "tool_call", callId: "c", name: "Bash", status: "failed", detail: { output: "x" } } }], span: win(true) });
+    expect(done.items[0]).toBe(first.items[0]);
+    expect(done.items[1]).not.toBe(first.items[1]);
+    const streaming = run([{ type: "event", event: { type: "turn_started" } }, timeline({ type: "assistant_message", text: "a" })], second);
+    const next = reduce(streaming, timeline({ type: "assistant_message", text: "b" }));
+    const changedCount = next.items.filter((entry, index) => entry !== streaming.items[index]).length;
+    expect(changedCount).toBe(1);
+  });
+});

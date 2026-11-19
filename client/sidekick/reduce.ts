@@ -5,6 +5,7 @@
  */
 
 import { markInstructions } from "./instructions";
+import { seqOf } from "./window";
 
 export interface PermissionRequest {
   id: string;
@@ -24,8 +25,19 @@ export type Item =
   | { kind: "tool"; key: string; callId: string; name: string; status: "running" | "completed" | "failed" | "canceled"; detail: Record<string, unknown> | null; error: string | null }
   | { kind: "notice"; key: string; level: "info" | "warning" | "error"; text: string };
 
+/** Where the span stands: what is above the oldest entry read, and the page being read. */
+export interface OlderState {
+  /** The timeline's epoch the items come from: a page of another epoch is not merged. */
+  epoch: string | null;
+  /** Where to read the entries before the oldest one shown; null when none remain. */
+  cursor: { epoch: string; seq: number } | null;
+  hasMore: boolean;
+  loading: boolean;
+}
+
 export interface ChatState {
   items: Item[];
+  older: OlderState;
   nextSeq: number;
   running: boolean;
   /** Our own steer is in flight on a running turn: the cancel it causes is not a user stop. */
@@ -51,15 +63,27 @@ export interface RawItem {
 
 export type ChatAction =
   | { type: "reset" }
-  | { type: "refetch"; items: { key: string; item: RawItem }[] }
+  | { type: "refetch"; items: { key: string; item: RawItem }[]; span?: WindowInfo }
+  | { type: "older_start" }
+  | { type: "older_failed" }
+  | { type: "older"; items: { key: string; item: RawItem }[]; /** The seq of the cursor the page was read from. */ from: number; span: WindowInfo }
   | { type: "event"; event: { type: string; item?: RawItem; request?: PermissionRequest; requestId?: string; error?: string; reason?: string } }
   | { type: "steer_sent" }
   | { type: "snapshot"; running: boolean; permissions: PermissionRequest[] }
   | { type: "permission_resolved"; requestId: string }
   | { type: "connection"; status: ChatState["connection"]; error?: string | null };
 
+/** What a page says about where it sits in the timeline. */
+export interface WindowInfo {
+  epoch: string;
+  startCursor: { epoch: string; seq: number } | null;
+  hasOlder: boolean;
+}
+
+const noOlder = (): OlderState => ({ epoch: null, cursor: null, hasMore: false, loading: false });
+
 export function initialState(): ChatState {
-  return { items: [], nextSeq: 1, running: false, steering: false, permissions: [], connection: "connecting", error: null };
+  return { items: [], older: noOlder(), nextSeq: 1, running: false, steering: false, permissions: [], connection: "connecting", error: null };
 }
 
 const errorText = (error: unknown): string | null => (error == null ? null : typeof error === "string" ? error : ((error as { message?: string }).message ?? JSON.stringify(error)));
@@ -130,10 +154,10 @@ function inPage(item: Item, page: Item[]): boolean {
  * showed (tool calls, a notice, a message not yet in the page). Those stay, each placed after the item that
  * preceded it.
  */
-function keepLiveItems(live: Item[], page: Item[]): Item[] {
+function keepLiveItems(live: Item[], page: Item[], skip: (item: Item) => boolean = () => false): Item[] {
   const out = page.slice();
   live.forEach((item, index) => {
-    if (inPage(item, page)) return;
+    if (skip(item) || inPage(item, page)) return;
     let after = -1;
     for (let back = index - 1; back >= 0 && after < 0; back--) {
       const prev = live[back]!;
@@ -144,30 +168,98 @@ function keepLiveItems(live: Item[], page: Item[]): Item[] {
   return out;
 }
 
+/** A tool call appears once per status change in a page: keep the last of each. */
+function dedupeTools(items: Item[]): Item[] {
+  const seen = new Map<string, number>();
+  const out: Item[] = [];
+  for (const item of items) {
+    if (item.kind === "tool") {
+      const at = seen.get(item.callId);
+      if (at !== undefined) {
+        out[at] = item;
+        continue;
+      }
+      seen.set(item.callId, out.length);
+    }
+    out.push(item);
+  }
+  return out;
+}
+
+const sameItem = (a: Item, b: Item): boolean => {
+  if (a.kind !== b.kind || a.key !== b.key) return false;
+  switch (a.kind) {
+    case "user":
+      return a.text === (b as typeof a).text && a.instructions === (b as typeof a).instructions;
+    case "assistant":
+    case "reasoning":
+      return a.text === (b as typeof a).text && a.streaming === (b as typeof a).streaming;
+    case "notice":
+      return a.level === (b as typeof a).level && a.text === (b as typeof a).text;
+    case "tool": {
+      const other = b as typeof a;
+      return a.callId === other.callId && a.name === other.name && a.status === other.status && a.error === other.error && JSON.stringify(a.detail) === JSON.stringify(other.detail);
+    }
+  }
+};
+
+/** An item that did not change keeps its identity, so a memoized view of it does not render again. */
+function reuse(previous: Item[], next: Item[]): Item[] {
+  const byKey = new Map(previous.map((item) => [item.key, item]));
+  return next.map((item) => {
+    const before = byKey.get(item.key);
+    return before && sameItem(before, item) ? before : item;
+  });
+}
+
 export function reduce(state: ChatState, action: ChatAction): ChatState {
   switch (action.type) {
     case "reset":
       return initialState();
     case "refetch": {
-      const items = action.items.flatMap(({ key, item }) => {
+      const page = dedupeTools(action.items.flatMap(({ key, item }) => {
         const converted = toItem(item, key, false);
         return converted ? [converted] : [];
+      }));
+      const span = action.span;
+      const pageMin = Math.min(...page.map((item) => seqOf(item.key) ?? Infinity));
+      // Older pages already read stay when the page overlaps what is shown (nothing was missed in between).
+      const sameEpoch = !span || state.older.epoch === null || state.older.epoch === span.epoch;
+      const overlaps = state.items.some((item) => {
+        const seq = seqOf(item.key);
+        return seq !== null && seq >= pageMin;
       });
-      // A tool call appears once per status change in a page: keep the last of each.
-      const seen = new Map<string, number>();
-      const deduped: Item[] = [];
-      for (const item of items) {
-        if (item.kind === "tool") {
-          const at = seen.get(item.callId);
-          if (at !== undefined) {
-            deduped[at] = item;
-            continue;
-          }
-          seen.set(item.callId, deduped.length);
-        }
-        deduped.push(item);
-      }
-      return { ...state, items: markInstructions(keepLiveItems(state.items, deduped)) };
+      const keepOlder = sameEpoch && overlaps && state.older.epoch !== null;
+      const older = keepOlder ? state.items.filter((item) => (seqOf(item.key) ?? Infinity) < pageMin) : [];
+      // The page is the truth for every entry it covers; only what the live events showed (no sequence number) is kept besides.
+      const merged = [...older, ...reuse(state.items, keepLiveItems(state.items, page, span ? (item) => seqOf(item.key) !== null : undefined))];
+      const nextOlder: OlderState = !span
+        ? state.older
+        : keepOlder && older.length > 0
+          ? { ...state.older, loading: false }
+          : { epoch: span.epoch, cursor: span.hasOlder ? span.startCursor : null, hasMore: span.hasOlder && span.startCursor !== null, loading: false };
+      return { ...state, items: markInstructions(merged), older: nextOlder };
+    }
+    case "older_start":
+      return state.older.loading || !state.older.hasMore ? state : { ...state, older: { ...state.older, loading: true } };
+    case "older_failed":
+      return state.older.loading ? { ...state, older: { ...state.older, loading: false } } : state;
+    case "older": {
+      // A page of another epoch, or read from a cursor that is no longer the oldest, is dropped: never merged twice.
+      if (state.older.epoch !== action.span.epoch || state.older.cursor?.seq !== action.from) return { ...state, older: { ...state.older, loading: false } };
+      const keys = new Set(state.items.map((item) => item.key));
+      const calls = new Set(state.items.flatMap((item) => (item.kind === "tool" ? [item.callId] : [])));
+      const fresh = dedupeTools(
+        action.items.flatMap(({ key, item }) => {
+          const converted = keys.has(key) ? null : toItem(item, key, false);
+          return converted ? [converted] : [];
+        }),
+      ).filter((item) => item.kind !== "tool" || !calls.has(item.callId));
+      return {
+        ...state,
+        items: markInstructions([...fresh, ...state.items]),
+        older: { epoch: action.span.epoch, cursor: action.span.hasOlder ? action.span.startCursor : null, hasMore: action.span.hasOlder && action.span.startCursor !== null, loading: false },
+      };
     }
     case "event": {
       const event = action.event;
