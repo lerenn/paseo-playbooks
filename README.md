@@ -414,6 +414,15 @@ request, or a multi-select, are listed with their text but answered in the manag
 button on the run opens it). A tool request is not duplicated: under `permissions.on_request: escalate` it is the `permission`
 gate, not a question gate. See `docs/adrs/2026-11-18-manager-questions-as-gates.md`.
 
+New Playbook-created Codex managers, step agents and gate deciders receive question guidance: offer 2–4 meaningful
+alternatives within the native tool's limit, put the advised answer first with `(Recommended)` and a short rationale,
+and keep the UI's Other/free-text answer. Truly open-ended requests may stay free-form; existing playbook gates retain
+exactly their declared choices. Claude prompts are unchanged. This is provider-scoped prompting, not native tool
+validation: the plugin cannot guarantee Codex follows it, rewrite a pending question safely, or control the provider's
+free-text UI. The panel continues to mirror the submitted options and descriptions. Existing agents are not retrofitted;
+no run restart is needed or performed. See `docs/adrs/2026-11-19-codex-question-guidance.md`.
+
+
 ## Runs with no Playbook Manager
 
 `manager: { mode: none }` in a playbook (default `always_on`; repo-wide default `manager: { lifecycle: none }` in

@@ -59,7 +59,7 @@ import { OversightProducer, registerOversightTypes, runFieldsOf } from "./oversi
 import { JOB_TYPES, publicJobEvents } from "./job-events";
 import { FANOUT_TYPES } from "./fanout-events";
 import { gateListing, listAttention, type GateFilter } from "./overseer";
-import { gateChatPrompt, managerLostNotice, gateDeciderPrompt, gateDeciderSystemPrompt, gateDecisionReminder, managerAfterRestart, managerKickoff, managerTakeover, managerWaitingNudge, reportReminder, resumeAfterRestart, silenceReminder, singletonKickoff, stepSystemPrompt, withPreamble } from "./prompts";
+import { withCodexQuestionGuidance, gateChatPrompt, managerLostNotice, gateDeciderPrompt, gateDeciderSystemPrompt, gateDecisionReminder, managerAfterRestart, managerKickoff, managerTakeover, managerWaitingNudge, reportReminder, resumeAfterRestart, silenceReminder, singletonKickoff, stepSystemPrompt, withPreamble } from "./prompts";
 import { askHumanText, choicesOfGate, managerQuestionAnswer, waitsForHuman } from "../shared/gates";
 import { PERMISSION_POLICY_BY } from "./engine";
 import { DENY_MESSAGE, describePermission, describeQuestion, policyText, type PermissionRequestLike } from "./permissions";
@@ -100,7 +100,7 @@ export const STEP_TOOL_NAMES = ["report_step_result", "validate_playbooks"];
 export const MANAGERLESS_STEP_TOOL_NAMES = [...STEP_TOOL_NAMES, "answer_gate"];
 export const GATE_TOOL_NAMES = ["report_gate_decision"];
 
-type AgentConfig = { provider: string; modeId?: string; thinkingOptionId?: string; options?: { allowedTools: string[] } };
+type AgentConfig = { provider: string; systemPrompt?: string; modeId?: string; thinkingOptionId?: string; options?: { allowedTools: string[] } };
 
 /** Pre-approves our own tools so unattended agents in `default` mode are not blocked on them. */
 /** A model the manager picks for one step attempt: `provider/model`, and optionally a thinking option. */
@@ -1456,7 +1456,7 @@ export class Runtime {
     const agent = await this.api()
       .workspaces.ref(run.workspaceId)
       .agents.create({
-        config: { ...config, systemPrompt: gateDeciderSystemPrompt(run.playbook, gate, role, choices, run) },
+        config: withCodexQuestionGuidance({ ...config, systemPrompt: gateDeciderSystemPrompt(run.playbook, gate, role, choices, run) }),
         ...(run.managerAgentId ? { parent: run.managerAgentId } : {}),
         title: `${run.playbook.title} · ${role.title} · ${gate.id}`,
         labels: { [RUN_LABEL]: run.id, [GATE_LABEL]: gate.id },
@@ -3760,7 +3760,7 @@ export class Runtime {
     const agent = await this.api()
       .workspaces.ref(run.workspaceId)
       .agents.create({
-        config: { ...config, systemPrompt: stepSystemPrompt(run.playbook, step, role, run) },
+        config: withCodexQuestionGuidance({ ...config, systemPrompt: stepSystemPrompt(run.playbook, step, role, run) }),
         ...(managerId ? { parent: managerId } : {}),
         title: `${run.playbook.title} · ${role.title} #${attemptNo}`,
         labels: { [RUN_LABEL]: run.id, [STEP_LABEL]: stepId, "playbooks/attempt": String(attemptNo) },
@@ -4213,7 +4213,7 @@ export class Runtime {
     const agent = await this.api()
       .workspaces.ref(run.workspaceId)
       .agents.create({
-        config: { ...config, systemPrompt: stepSystemPrompt(run.playbook, step, role, run) },
+        config: withCodexQuestionGuidance({ ...config, systemPrompt: stepSystemPrompt(run.playbook, step, role, run) }),
         ...(run.managerAgentId ? { parent: run.managerAgentId } : {}),
         title: `${run.playbook.title} · ${role.title} #${attempt.n}`,
         labels: { [RUN_LABEL]: run.id, [STEP_LABEL]: stepId, "playbooks/attempt": String(attempt.n) },
@@ -4482,7 +4482,7 @@ export class Runtime {
           if (chosen.target.mode) config.modeId = chosen.target.mode;
           if (chosen.target.thinking) config.thinkingOptionId = chosen.target.thinking;
           preapprove(config, chosen.provider, MANAGER_TOOL_NAMES);
-          const replacement = await this.api().workspaces.ref(run.workspaceId).agents.create({ config, title: `Playbook Manager · ${run.playbook.title}`, labels: { [MANAGER_LABEL]: "true" } }).catch((error: unknown) => ({ error }));
+          const replacement = await this.api().workspaces.ref(run.workspaceId).agents.create({ config: withCodexQuestionGuidance(config), title: `Playbook Manager · ${run.playbook.title}`, labels: { [MANAGER_LABEL]: "true" } }).catch((error: unknown) => ({ error }));
           if ("error" in replacement) return { changed: false, blocked: true as const, from: expectedManagerId, to: expectedManagerId, target: exhausted, thinking: null, reason: `replacement creation failed: ${errorText(replacement.error)}`, at: nowIso() };
           // A human may have started the old manager while creation was in flight.
           const stillIdle = await this.managerQuota(expectedManagerId, outcome).catch(() => null);
@@ -4838,7 +4838,7 @@ export class Runtime {
       agent = await this.api()
         .workspaces.ref(run.workspaceId)
         .agents.create({
-          config: { ...config, systemPrompt: stepSystemPrompt(run.playbook, step, role, probe) },
+          config: withCodexQuestionGuidance({ ...config, systemPrompt: stepSystemPrompt(run.playbook, step, role, probe) }),
           parent: run.managerAgentId,
           title: `${run.playbook.title} · ${role.title} #${attempt.n}`,
           labels: { [RUN_LABEL]: run.id, [STEP_LABEL]: stepId, "playbooks/attempt": String(attempt.n) },
@@ -5340,7 +5340,7 @@ export class Runtime {
     if (target.mode) config.modeId = target.mode;
     if (target.thinking) config.thinkingOptionId = target.thinking;
     preapprove(config, provider, MANAGER_TOOL_NAMES);
-    return config;
+    return withCodexQuestionGuidance(config);
   }
 
   /**

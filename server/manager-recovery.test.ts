@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { GateSchema } from "../shared/types";
 import { completeStep, endTurn, newRun, recordReport, startAttempt } from "./engine";
 import { loadPlaybooks } from "./loader";
+import { CODEX_QUESTION_RULE } from "./prompts";
 import { Runtime } from "./runtime";
 import { RunStore } from "./store";
 
@@ -54,7 +55,7 @@ steps:
   await store.create(run);
   const manager = { status: "idle", activeTurn: null as unknown, pendingPermissions: [] as unknown[], provider: "claude", model: "claude-haiku-5-5", archivedAt: null };
   let entries: Array<{ item: Record<string, unknown> }> = [{ item: options.error ? { type: "error", message: "quota exceeded" } : { type: "assistant_message", text: "You've hit your weekly limit" } }];
-  const created: Array<{ config: { provider?: string; thinkingOptionId?: string } }> = [];
+  const created: Array<{ config: { provider?: string; thinkingOptionId?: string; systemPrompt?: string } }> = [];
   const sent: Array<{ id: string; text: string }> = [];
   const archived: string[] = [];
   const controls = { failSend: false, createWait: null as Promise<void> | null, sendWait: null as Promise<void> | null, createStarted: null as (() => void) | null };
@@ -97,7 +98,7 @@ describe("state-preserving manager recovery", () => {
       expect(after[key], key).toEqual(before[key]);
     }
     expect(f.created).toHaveLength(1);
-    expect(f.created[0]!.config).toMatchObject({ provider: "codex/gpt-5-mini", thinkingOptionId: "low" });
+    expect(f.created[0]!.config).toMatchObject({ provider: "codex/gpt-5-mini", thinkingOptionId: "low", systemPrompt: CODEX_QUESTION_RULE });
     expect(f.archived).toEqual([]);
     expect(f.sent).toHaveLength(1);
     expect(f.sent[0]).toMatchObject({ id: "replacement-1" });
@@ -105,6 +106,15 @@ describe("state-preserving manager recovery", () => {
     expect(f.sent[0]!.text).toContain("Read get_run with view full before acting");
     expect(after.inbox).toEqual([]);
     expect(after.managerRecoveryPrompt).toBeNull();
+  });
+
+  it("applies guidance to the selected manager provider, including fallback, without changing Claude", async () => {
+    const f = await setup();
+    const run = f.store.get("run_x")!;
+    const configs = f.runtime as unknown as { managerConfig: (playbook: typeof run.playbook, exhausted?: string[]) => { provider: string; systemPrompt?: string } };
+    expect(configs.managerConfig(run.playbook)).toMatchObject({ provider: "claude/claude-haiku-5-5" });
+    expect(configs.managerConfig(run.playbook).systemPrompt).toBeUndefined();
+    expect(configs.managerConfig(run.playbook, ["claude/claude-haiku-5-5"])).toMatchObject({ provider: "codex/gpt-5-mini", systemPrompt: CODEX_QUESTION_RULE });
   });
 
   for (const by of ["human", "manager", "role"] as const) {

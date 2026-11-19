@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { newRun, startAttempt } from "./engine";
 import { loadPlaybooks } from "./loader";
+import { CODEX_QUESTION_RULE } from "./prompts";
 import { Runtime } from "./runtime";
 import { RunStore } from "./store";
 
@@ -32,7 +33,7 @@ steps:
 /** The daemon API a failover touches: agents are created, briefed and archived; the failed one's timeline holds `errorText`. */
 function fakePaseo(errorText: string) {
   const sent: Array<{ agentId: string; text: string }> = [];
-  const created: Array<{ config: { provider?: string }; title: string }> = [];
+  const created: Array<{ config: { provider?: string; systemPrompt?: string }; title: string }> = [];
   const archived: string[] = [];
   const ref = (agentId: string) => ({
     refresh: async () => ({ agent: { id: agentId, status: agentId === "m" ? "idle" : "running", provider: "claude", model: null, archivedAt: null } }),
@@ -42,7 +43,7 @@ function fakePaseo(errorText: string) {
   });
   const workspace = {
     agents: {
-      create: async (input: { config: { provider?: string }; title: string }) => {
+      create: async (input: { config: { provider?: string; systemPrompt?: string }; title: string }) => {
         created.push(input);
         return { id: `step-${created.length + 1}`, send: async (text: string) => void sent.push({ agentId: `step-${created.length + 1}`, text }) };
       },
@@ -80,6 +81,7 @@ describe("provider fallback", () => {
     await runtime.onTurnEnded("step-1", "failed");
     expect(created).toHaveLength(1);
     expect(created[0]!.config.provider).toBe("codex/gpt-5-mini");
+    expect(created[0]!.config.systemPrompt).toContain(CODEX_QUESTION_RULE);
     const run = store.get("run_x")!;
     const state = run.steps.release!;
     expect(state.status).toBe("running");

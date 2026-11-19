@@ -2,6 +2,20 @@ import type { Gate, GateChoice, Playbook, Role, Run, Step, VarValue } from "../s
 import { jobsText } from "./engine";
 import { replaceRefs } from "../shared/vars";
 
+/** Prompt guidance only: the provider owns the native question tool and its validation. */
+export const CODEX_QUESTION_RULE = `Human questions (Codex): use your native structured question tool (request_user_input or request_user_input_async, whichever is available) when you need the human's answer.
+- For a decision with meaningful alternatives, offer 2–4 substantive, distinct choices, within the tool's option limit. Each label must name an actual answer or action, not a placeholder such as "Answer (confirm sequencing and name the owner)" or "Respond".
+- Put your advised choice first, suffix its label with "(Recommended)", and briefly explain why in its description (or in the question text if the tool has no option descriptions). Describe the tradeoff of each alternative. Do not recommend a choice without enough evidence.
+- Keep the UI's automatic Other/free-text answer available; do not duplicate Other as a listed option or force the human to pick a preset. A preselected choice is not an answer or approval.
+- Ask one focused question at a time when practical, so a manager's question can be answered in the Playbooks panel. For genuinely open-ended information (a name, URL, or text you cannot infer), ask a true free-form question using the tool's supported form; do not invent meaningless choices just to fill the list. If the tool requires choices, use its free-text path and explain what information is needed.
+- When asking about an existing playbook gate, use exactly its declared choices, one option per choice: never add alternatives, change choice ids, or infer approval from free text. You may mark an advised label "(Recommended)" and explain why, while retaining the mapping to the original choice id. The gate's declared choices take precedence over the 2–4 guidance.`;
+
+/** Apply after resolving the actual provider, including fallbacks; other providers stay byte-identical. */
+export function withCodexQuestionGuidance<T extends { provider: string; systemPrompt?: string }>(config: T): T & { systemPrompt?: string } {
+  if (config.provider.split("/")[0] !== "codex") return config;
+  return { ...config, systemPrompt: [config.systemPrompt, CODEX_QUESTION_RULE].filter(Boolean).join("\n\n") };
+}
+
 /** Keeps tool permission requests rare: Claude Code asks about compound or destructive-looking shell commands even in Bypass mode. */
 export const COMMAND_RULE = `Shell commands: run simple, separate commands (one \`cd <dir> && <command>\` at most). Do not chain \`cd && sed -i && ... ; rm -rf\`, do not \`rm -rf\` a glob (name the exact path), and edit files with the file tools (Read, Edit, Write), not \`sed -i\` or redirections. Compound or destructive-looking commands can raise a permission request that stalls the run.`;
 

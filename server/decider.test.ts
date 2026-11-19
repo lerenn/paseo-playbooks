@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { loadPlaybooks } from "./loader";
+import { CODEX_QUESTION_RULE } from "./prompts";
 import { GATE_LABEL, Runtime } from "./runtime";
 import { RunStore } from "./store";
 
@@ -121,6 +122,19 @@ describe("gate deciders: a role", () => {
     const decider = ctx.created.find((agent) => agent.labels[GATE_LABEL] === gate.id)!;
     return { ...ctx, run, gate, decider };
   }
+
+  it("adds question guidance when a role decider uses Codex", async () => {
+    const ctx = await setup({ "main.yaml": ROLE_GATE });
+    const run = await ctx.runtime.startPlaybook(manager, "main", {});
+    await ctx.store.mutate(run.id, (current) => {
+      const reviewer = current.playbook.roles.reviewer!;
+      reviewer.agent = { provider: "codex", model: "gpt-5-mini" };
+    });
+    const gate = await ctx.runtime.requestGate("m", run.id, "approve", "Ready.", "");
+    const decider = ctx.created.find((agent) => agent.labels[GATE_LABEL] === gate.id)!;
+    expect(decider.systemPrompt).toContain("report_gate_decision");
+    expect(decider.systemPrompt).toContain(CODEX_QUESTION_RULE);
+  });
 
   it("starts an agent with the role when the gate opens, and records its decision", async () => {
     const { store, runtime, run, gate, decider, sent, archived } = await openRoleGate();
