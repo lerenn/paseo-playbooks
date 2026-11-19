@@ -1101,7 +1101,7 @@ export function validateTool(runtime: Runtime): AgentToolDefinition {
     description:
       'Validate the playbooks in <workspace>/.paseo/plugins/playbooks/ and <workspace>/.paseo/playbooks/ (or in the given workspace folder) with the same checks as the Playbooks panel. Writes nothing. Compact by default (results[]: id, valid, errors); view "full" returns every playbook in detail (can exceed the tool-result limit: use playbookId with it).',
     input: z.object({
-      path: z.string().optional().describe("Workspace folder to check; defaults to yours"),
+      path: z.string().optional().describe("Workspace folder to check; defaults to yours. Changes only the root; active profiles still come from your workspace project"),
       view: PlaybookViewSchema,
       playbookId: z.string().optional().describe("Only this playbook"),
     }),
@@ -1125,6 +1125,11 @@ export function validateTool(runtime: Runtime): AgentToolDefinition {
         return ok(`${head}${sidekickLine}\n${JSON.stringify(results, null, 2)}`, { exists: true, results, sidekick: { configured: sidekick.configured, errors: sidekick.errors } });
       }),
   });
+}
+
+/** Step sessions share only the read-only validator with managers, never run controls. */
+export function stepTools(runtime: Runtime, managerless: boolean): AgentToolDefinition[] {
+  return [stepTool(runtime), validateTool(runtime), ...(managerless ? [answerGateTool(runtime)] : [])];
 }
 
 export function stepTool(runtime: Runtime): AgentToolDefinition {

@@ -249,6 +249,13 @@ branch is still `playbooks/<playbook>-<id>`. The same title is available to agen
 lists load). The per-workspace Playbooks tab has no such button: its cards offer "Start in a new workspace", which
 has the same workspace name field.
 
+Step agents (including managerless implementers and reviewers) receive the read-only
+`validate_playbooks` tool alongside `report_step_result`. It defaults to the caller’s working
+folder and resolves active profiles from the caller’s workspace project. An optional `path`
+changes only the folder to inspect, so it does not select another project’s profiles. Check
+that the returned results include the intended playbooks: an empty list is not a validation
+pass for them. Step agents receive no additional manager controls.
+
 ## Release
 
 The version lives in `package.json`, and `package-lock.json` must carry the same one. A pull

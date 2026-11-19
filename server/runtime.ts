@@ -95,7 +95,7 @@ export const MANAGER_TOOL_NAMES = [
   "settle_job",
   "record_followup",
 ];
-export const STEP_TOOL_NAMES = ["report_step_result"];
+export const STEP_TOOL_NAMES = ["report_step_result", "validate_playbooks"];
 /** A run with no manager also lets its step agents put a human gate's question in their conversation. */
 export const MANAGERLESS_STEP_TOOL_NAMES = [...STEP_TOOL_NAMES, "answer_gate"];
 export const GATE_TOOL_NAMES = ["report_gate_decision"];
