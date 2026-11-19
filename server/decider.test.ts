@@ -127,8 +127,7 @@ describe("gate deciders: a role", () => {
     const ctx = await setup({ "main.yaml": ROLE_GATE });
     const run = await ctx.runtime.startPlaybook(manager, "main", {});
     await ctx.store.mutate(run.id, (current) => {
-      const reviewer = current.playbook.roles.reviewer!;
-      reviewer.agent = { provider: "codex", model: "gpt-5-mini" };
+      current.playbook.steps.find((step) => step.id === "approve")!.decider!.agent = { provider: "codex", model: "gpt-5-mini" };
     });
     const gate = await ctx.runtime.requestGate("m", run.id, "approve", "Ready.", "");
     const decider = ctx.created.find((agent) => agent.labels[GATE_LABEL] === gate.id)!;
