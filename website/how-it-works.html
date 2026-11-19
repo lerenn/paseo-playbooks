@@ -81,7 +81,7 @@
 <h3 id="tools-other">Step, gate and Sidekick</h3>
 <ul>
 <li>Step agents get only <code>report_step_result</code>. Gate agents get only <code>report_gate_decision</code>. In a run with <a href="reference.html#manager-mode">no manager</a>, step agents also get <code>answer_gate</code>.</li>
-<li>The Sidekick gets <code>sidekick_handoff</code>, which saves its decision ledger and notes; with <code>restart: true</code> a fresh session replaces it when its turn ends.</li>
+<li>The Sidekick gets <code>sidekick_handoff</code>, which saves its decision ledger and notes; with <code>restart: true</code> its conversation is compacted when its turn ends (same agent; the plugin gives the ledger back). It is replaced by a new agent only as a safety net, the old one archived first.</li>
 </ul>
 
 <h2 id="state">Run state</h2>

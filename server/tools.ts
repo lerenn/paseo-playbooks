@@ -1173,15 +1173,15 @@ export function resumeGateTool(runtime: Runtime): AgentToolDefinition {
   });
 }
 
-/** The Sidekick's own tool: saves its decision ledger, and hands the session over to a fresh one when its context is large. */
+/** The Sidekick's own tool: saves its decision ledger, and asks for a compaction when its context is large. */
 export function sidekickTool(runtime: Runtime): AgentToolDefinition {
   return defineAgentTool({
     name: "sidekick_handoff",
     description:
-      "Save your short decision ledger and hand-off notes (decisions taken and why, rules applied, subagents and pull requests in flight, open questions, what to check next); the next session of you starts from them. With restart: true, end your turn right after: the plugin replaces you by a new session with this summary, to keep your context small. Only a Sidekick can call it.",
+      "Save your short decision ledger and hand-off notes (decisions taken and why, rules applied, subagents and pull requests in flight, open questions, what to check next); the plugin keeps them through a compaction of your conversation and gives them back to you after (and to a new session, if you are ever replaced). With restart: true, end your turn right after: the plugin compacts your conversation now, as the same agent, to keep your context small. Only a Sidekick can call it.",
     input: z.object({
       summary: z.string().min(1).max(8000).describe("The ledger and hand-off notes, short and self-contained"),
-      restart: z.boolean().default(false).describe("Also restart as a new session when your turn ends"),
+      restart: z.boolean().default(false).describe("Also have your conversation compacted when your turn ends (you stay the same agent; the plugin gives the ledger back after)"),
     }),
     execute: ({ summary, restart }, { agent }) => guard(async () => ok(await runtime.sidekickHandoff(agent.id, summary, restart))),
   });

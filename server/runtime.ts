@@ -50,7 +50,7 @@ function lookup(entries: Parameters<typeof findEntry>[0], ref: string) {
   return "entry" in found ? found.entry : undefined;
 }
 import { DEFAULT_SUBAGENT_ARCHIVE_AFTER_MS, subagentWorkspaceRefusal, SubagentArchiveStore } from "./sidekick-archive";
-import { DEFAULT_SIDEKICK_RESTART_TOKENS, DEFAULT_SIDEKICK_SUBAGENT, SIDEKICK_LABEL, SIDEKICK_PROJECT_LABEL, sidekickGateSweep, sidekickHandoffRequest, sidekickKickoff, SIDEKICK_PASEO_TOOLS, SIDEKICK_PLUGIN_TOOLS, SidekickRegistry, sidekickPrompt, sidekickTitle } from "./sidekick";
+import { DEFAULT_SIDEKICK_SUBAGENT, SIDEKICK_LABEL, SIDEKICK_PROJECT_LABEL, sidekickGateSweep, sidekickCompactCommand, sidekickCompactedNote, sidekickLimits, sidekickKickoff, SIDEKICK_PASEO_TOOLS, SIDEKICK_PLUGIN_TOOLS, SidekickRegistry, sidekickPrompt, sidekickTitle } from "./sidekick";
 import { BusError, EventBus, globToRegExp, type BusEvent, type Notifier, type Subscription } from "./bus";
 import { blockedOnGate, MANAGER_WATCH_CHECK_MS, nudgeDue, STUCK_AFTER_NUDGES } from "./manager-watch";
 import { diffFindings, gateOpenCandidates, loopCandidates, managerBlockedCandidates, slowCandidates, staleDefinitionCandidate, WARDEN_CHECK_MS, WARDEN_MAX_RUNS_PER_PASS, wardenSummary, type Act, type Candidate, type WardenIo } from "./warden";
@@ -453,9 +453,13 @@ export class Runtime {
 
   private readonly usageLedger: UsageLedger;
   private readonly sidekickRegistry: SidekickRegistry;
-  /** Sidekick agents that handed off and restart when their turn ends; those already asked to hand off; finish notices held for a busy Sidekick. */
-  private readonly sidekickRolling = new Set<string>();
-  private readonly sidekickAsked = new Set<string>();
+  /** Sidekick agents that asked for a compaction (`sidekick_handoff` with `restart`) once their turn ends; those being compacted now (a `/compact` is running); finish notices held for a busy Sidekick. */
+  private readonly sidekickCompactNext = new Set<string>();
+  private readonly sidekickCompacting = new Set<string>();
+  /** The context size a Sidekick was left at by its last compaction when that was still above the threshold: it is not compacted again until it grows well past that. */
+  private readonly sidekickCompactedAt = new Map<string, number>();
+  /** Per project: the chain of Sidekick creations, restarts and replacements, so two of them never overlap (at most one live Sidekick per project). */
+  private readonly sidekickChains = new Map<string, Promise<unknown>>();
   /** Gates (runId:gateId) already put to each Sidekick by an end-of-turn sweep, so a gate left for the human is not repeated every turn. */
   private readonly sidekickSwept = new Map<string, Set<string>>();
   private readonly sidekickHeld = new Map<string, string[]>();
@@ -549,6 +553,8 @@ export class Runtime {
         .catch((error) => console.error("[playbooks] reconcile failed:", error))
         .then(() => this.reloadStaleSessions())
         .catch((error) => console.error("[playbooks] stale session reload failed:", errorText(error)))
+        .then(() => this.reconcileSidekicks())
+        .catch((error) => console.error("[playbooks] Sidekick duplicate check failed:", errorText(error)))
         .then(() => this.rearmSubagentArchives())
         .catch((error) => console.error("[playbooks] could not re-arm the pending subagent workspace archives:", errorText(error)));
     }
@@ -5287,7 +5293,7 @@ export class Runtime {
     return this.withProject(workspaceId, async (project) => {
       const pending = this.sidekickOpening.get(project.projectId);
       if (pending) return pending;
-      const creation = this.ensureSidekick(project).finally(() => this.sidekickOpening.delete(project.projectId));
+      const creation = this.serialSidekick(project.projectId, () => this.ensureSidekick(project)).finally(() => this.sidekickOpening.delete(project.projectId));
       this.sidekickOpening.set(project.projectId, creation);
       return creation;
     });
@@ -5300,24 +5306,38 @@ export class Runtime {
    */
   restartSidekick(workspaceId: string): Promise<{ projectId: string; workspaceId: string; agentId: string; created: boolean }> {
     return this.withProject(workspaceId, async (project) => {
-      const pending = this.sidekickOpening.get(project.projectId);
-      if (pending) await pending.catch(() => undefined);
-      const restart = (async () => {
+      const restart = this.serialSidekick(project.projectId, async () => {
         const known = await this.sidekickRegistry.read(project.projectId);
         if (!known) return this.ensureSidekick(project);
         const load = await loadSidekick(project.root);
         if (!load.configured) throw new UserError(`this project has no Sidekick: add a sidekick/ folder to its playbooks folder (see "Create the Sidekick files")`);
         if (!load.config) throw new UserError(`the Sidekick files have errors:\n${load.errors.join("\n")}`);
-        this.sidekickRolling.delete(known.agentId);
-        this.sidekickAsked.delete(known.agentId);
-        this.sidekickHeld.delete(known.agentId);
-        this.sidekickHeldAgents.delete(known.agentId);
+        this.forgetSidekick(known.agentId);
         await this.api().agents.ref(known.agentId).archive().catch(() => undefined);
         return this.launchSidekick(project, load, known, known.handoff);
-      })().finally(() => this.sidekickOpening.delete(project.projectId));
+      }).finally(() => this.sidekickOpening.delete(project.projectId));
       this.sidekickOpening.set(project.projectId, restart);
       return restart;
     });
+  }
+
+  /** Runs a Sidekick creation, restart or replacement after the ones before it for the same project. */
+  private serialSidekick<T>(projectId: string, fn: () => Promise<T>): Promise<T> {
+    const next = (this.sidekickChains.get(projectId) ?? Promise.resolve()).catch(() => undefined).then(fn);
+    const tail = next.catch(() => undefined);
+    this.sidekickChains.set(projectId, tail);
+    void tail.then(() => this.sidekickChains.get(projectId) === tail && this.sidekickChains.delete(projectId));
+    return next;
+  }
+
+  /** What the plugin remembers about a Sidekick agent in memory, dropped when the agent is replaced. */
+  private forgetSidekick(agentId: string): void {
+    this.sidekickCompactNext.delete(agentId);
+    this.sidekickCompacting.delete(agentId);
+    this.sidekickCompactedAt.delete(agentId);
+    this.sidekickSwept.delete(agentId);
+    this.sidekickHeld.delete(agentId);
+    this.sidekickHeldAgents.delete(agentId);
   }
 
   /** The workspace's project: id, label and root directory. */
@@ -5366,6 +5386,7 @@ export class Runtime {
           errors: load.errors,
           agentId: agent && !agent.agent.archivedAt ? record!.agentId : null,
           activeRuns: mine.filter((run) => !isTerminal(run.status)).length,
+          compacting: Boolean(agent && !agent.agent.archivedAt && this.sidekickCompacting.has(record!.agentId)),
           needYou: mine.reduce((count, run) => count + run.gates.filter(waitsForHuman).length, 0),
         };
       }),
@@ -5417,7 +5438,49 @@ export class Runtime {
     await this.subscribeEvents(agent.id, settings.watch, { projectId: project.projectId }, "idle").catch((error) =>
       console.error("[playbooks] could not subscribe the Sidekick:", errorText(error)),
     );
+    // Whatever the path that got here, the new agent is the project's only live Sidekick.
+    await this.archiveOtherSidekicks(project.projectId, agent.id);
     return { projectId: project.projectId, ...record, created: true };
+  }
+
+  /** Archives every live Sidekick agent of the project but `keep` (found by labels, not by the registry). Returns the ones archived. */
+  private async archiveOtherSidekicks(projectId: string, keep: string): Promise<string[]> {
+    const listed = await this.api().agents.list({}).catch(() => null);
+    if (!listed) return [];
+    const extra = listed.entries.map(({ agent }) => agent).filter((agent) => agent.labels?.[SIDEKICK_LABEL] !== undefined && agent.labels?.[SIDEKICK_PROJECT_LABEL] === projectId && !agent.archivedAt && agent.id !== keep);
+    const archived: string[] = [];
+    for (const agent of extra) {
+      try {
+        await this.api().agents.ref(agent.id).archive();
+        this.forgetSidekick(agent.id);
+        archived.push(agent.id);
+        console.warn(`[playbooks] a second live Sidekick of project ${projectId} (${agent.id}) was archived; the project keeps ${keep}`);
+      } catch (error) {
+        console.error(`[playbooks] could not archive the duplicate Sidekick ${agent.id}:`, errorText(error));
+      }
+    }
+    return archived;
+  }
+
+  /**
+   * After a start or a reload: a project with several live Sidekicks (a replacement that was cut short, an old plugin) keeps
+   * one, the one its record names if it is alive, else the newest, and the others are archived.
+   */
+  private async reconcileSidekicks(): Promise<void> {
+    const listed = await this.api().agents.list({});
+    const live = listed.entries.map(({ agent }) => agent).filter((agent) => agent.labels?.[SIDEKICK_LABEL] !== undefined && agent.labels?.[SIDEKICK_PROJECT_LABEL] !== undefined && !agent.archivedAt);
+    const byProject = new Map<string, typeof live>();
+    for (const agent of live) byProject.set(agent.labels![SIDEKICK_PROJECT_LABEL]!, [...(byProject.get(agent.labels![SIDEKICK_PROJECT_LABEL]!) ?? []), agent]);
+    for (const [projectId, agents] of byProject) {
+      if (agents.length < 2) continue;
+      await this.serialSidekick(projectId, async () => {
+        const record = await this.sidekickRegistry.read(projectId);
+        const newest = [...agents].sort((a, b) => String((b as { createdAt?: string }).createdAt ?? "").localeCompare(String((a as { createdAt?: string }).createdAt ?? "")))[0]!;
+        const keep = agents.find((agent) => agent.id === record?.agentId) ?? newest;
+        if (record && record.agentId !== keep.id) await this.sidekickRegistry.write(projectId, { ...record, agentId: keep.id });
+        await this.archiveOtherSidekicks(projectId, keep.id);
+      }).catch((error) => console.error(`[playbooks] could not clean up the Sidekicks of project ${projectId}:`, errorText(error)));
+    }
   }
 
   /**
@@ -5458,32 +5521,61 @@ export class Runtime {
     return false;
   }
 
-  /** `sidekick_handoff`: saves the Sidekick's ledger; with `restart`, it is replaced by a new session when its turn ends. */
+  /** `sidekick_handoff`: saves the Sidekick's ledger; with `restart`, its conversation is compacted when its turn ends (the same agent: no new one). */
   async sidekickHandoff(agentId: string, summary: string, restart: boolean): Promise<string> {
     const found = await this.sidekickRegistry.findByAgent(agentId);
     if (!found) throw new UserError("only a Sidekick can hand off");
     await this.sidekickRegistry.write(found.projectId, { ...found.record, handoff: summary });
-    if (!restart) return "Saved. The next session of the Sidekick starts from it.";
-    this.sidekickRolling.add(agentId);
-    return "Saved. End your turn now: the plugin starts a new session that continues from it.";
+    if (!restart) return "Saved. The plugin keeps it through a compaction of your conversation and gives it back to you after.";
+    this.sidekickCompactNext.add(agentId);
+    return "Saved. End your turn now: the plugin compacts your conversation (you stay the same agent) and gives you the ledger back.";
   }
 
-  /** Replaces a Sidekick by a new agent that starts from its saved hand-off; the old one is archived (its subscriptions end with it). */
-  private async rollSidekick(projectId: string, record: { workspaceId: string; agentId: string; handoff?: string | undefined }): Promise<void> {
-    this.sidekickRolling.delete(record.agentId);
-    this.sidekickAsked.delete(record.agentId);
-    this.sidekickSwept.delete(record.agentId);
-    const project = { ...(await this.projectOf(record.workspaceId)), projectId };
-    const load = await loadSidekick(project.root);
-    if (!load.config) return;
-    await this.api().agents.ref(record.agentId).archive();
-    await this.launchSidekick(project, load, record, record.handoff);
+  /**
+   * The safety net: replaces a Sidekick by a new agent that starts from its saved hand-off. The old agent is archived
+   * first, and only when that worked is the new one created, all under the project's lock: never two live Sidekicks.
+   */
+  private replaceSidekick(projectId: string, record: { workspaceId: string; agentId: string; handoff?: string | undefined }, why: string): Promise<unknown> {
+    return this.serialSidekick(projectId, async () => {
+      const current = await this.sidekickRegistry.read(projectId);
+      // Already replaced by someone else (a restart, a concurrent trigger): nothing to do.
+      if (!current || current.agentId !== record.agentId) return;
+      this.forgetSidekick(record.agentId);
+      const project = { ...(await this.projectOf(record.workspaceId)), projectId };
+      const load = await loadSidekick(project.root);
+      if (!load.config) return;
+      console.warn(`[playbooks] Sidekick ${record.agentId} of project ${projectId} is replaced by a new agent: ${why}`);
+      await this.api().agents.ref(record.agentId).archive();
+      await this.launchSidekick(project, load, current, current.handoff);
+    });
+  }
+
+  /**
+   * Sends `/compact` to an idle Sidekick (like the managers': a message the provider runs as a command), with its saved
+   * ledger in the instructions. Returns true when the compaction started or the agent was replaced; false when there is
+   * nothing to do. When the send fails (no compaction for this provider) the agent is replaced instead, safely.
+   */
+  private async compactSidekick(projectId: string, record: { workspaceId: string; agentId: string; handoff?: string | undefined }, used: number): Promise<boolean> {
+    const agentId = record.agentId;
+    this.sidekickCompacting.add(agentId);
+    this.busyManagers.add(agentId);
+    try {
+      await this.api().agents.ref(agentId).send(sidekickCompactCommand(record.handoff));
+      console.log(`[playbooks] Sidekick ${agentId} of project ${projectId} is compacting its conversation (${used} tokens)`);
+      return true;
+    } catch (error) {
+      this.sidekickCompacting.delete(agentId);
+      this.busyManagers.delete(agentId);
+      console.error(`[playbooks] could not compact Sidekick ${agentId}:`, errorText(error));
+      await this.replaceSidekick(projectId, record, "compaction is not available");
+      return true;
+    }
   }
 
   /**
    * A Sidekick's own turn ended, or a subagent of one did. Subagents' finish notices wait until the
    * Sidekick is idle (so they never cut into a question to the human); a Sidekick past its context
-   * threshold is asked to hand off, then restarted.
+   * threshold is compacted (the same agent), and replaced only as a safety net (see replaceSidekick).
    */
   private async onSidekickTurnEnded(agentId: string, parentAgentId: string | null, outcome: string): Promise<boolean> {
     if (parentAgentId) {
@@ -5504,28 +5596,31 @@ export class Runtime {
     if (!own) return false;
     // Its turn is over: not busy any more (an end-of-turn send below starts a new one), and held event notices can go out.
     this.busyManagers.delete(agentId);
-    if (this.sidekickRolling.has(agentId)) {
-      await this.rollSidekick(own.projectId, own.record);
-      await this.bus.flush();
-      return true;
-    }
     const project = await this.projectOf(own.record.workspaceId).catch(() => null);
-    const limit = (project ? (await loadSidekick(project.root)).config?.restartAboveTokens : undefined) ?? DEFAULT_SIDEKICK_RESTART_TOKENS;
+    const limits = sidekickLimits(project ? (await loadSidekick(project.root)).config : null);
+    // A zero (or missing) reading is the one right after a compaction: not a size.
     const used = (await this.api().agents.ref(agentId).refresh().catch(() => null))?.agent.lastUsage?.contextWindowUsedTokens ?? 0;
+    let afterCompaction = false;
+    if (this.sidekickCompacting.delete(agentId)) {
+      // The turn that just ended is the compaction.
+      if (outcome === "failed" || used > limits.hard) {
+        await this.replaceSidekick(own.projectId, own.record, outcome === "failed" ? "its compaction failed" : `its context is still ${used} tokens after the compaction (hard limit ${limits.hard})`);
+        await this.bus.flush();
+        return true;
+      }
+      if (used > limits.compact) this.sidekickCompactedAt.set(agentId, used);
+      else this.sidekickCompactedAt.delete(agentId);
+      this.sidekickSwept.delete(agentId);
+      afterCompaction = outcome === "completed";
+    } else if (outcome === "completed" && (this.sidekickCompactNext.delete(agentId) || used > Math.max(limits.compact, (this.sidekickCompactedAt.get(agentId) ?? 0) * 1.25))) {
+      // Idle and past the threshold: compact this same agent; held notices wait for the end of the compaction.
+      if (await this.compactSidekick(own.projectId, own.record, used)) return true;
+    }
     const parts = this.sidekickHeld.get(agentId) ?? [];
     const toldAbout = this.sidekickHeldAgents.get(agentId) ?? [];
     this.sidekickHeld.delete(agentId);
     this.sidekickHeldAgents.delete(agentId);
-    if (used > limit) {
-      // Asked once; if it still has not handed off after its next turn, restart it from the last saved ledger.
-      if (this.sidekickAsked.has(agentId)) {
-        await this.rollSidekick(own.projectId, own.record);
-        await this.bus.flush();
-        return true;
-      }
-      this.sidekickAsked.add(agentId);
-      parts.push(sidekickHandoffRequest(used));
-    }
+    if (afterCompaction) parts.unshift(sidekickCompactedNote((await this.sidekickRegistry.read(own.projectId))?.handoff));
     // End-of-turn sweep: open gates waiting for a human that this Sidekick was not yet told about.
     const swept = this.sidekickSwept.get(agentId) ?? new Set<string>();
     this.sidekickSwept.set(agentId, swept);

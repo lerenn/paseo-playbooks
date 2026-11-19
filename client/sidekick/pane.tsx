@@ -201,6 +201,7 @@ export function SidekickPane(props: Props) {
           theme={theme}
           agentId={agentId}
           projectId={current.projectId}
+          compacting={current.compacting}
           status={{ loading: opening?.projectId === current.projectId && !opening.error, error: opening?.projectId === current.projectId ? opening.error : null }}
           onRestart={async () => {
             try {

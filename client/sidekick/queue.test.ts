@@ -27,3 +27,16 @@ describe("queued message", () => {
     expect(mergeQueued(a, { text: "two", attachments: [] }).text).toBe("one\n\ntwo");
   });
 });
+
+describe("while the conversation is compacted", () => {
+  it("queues every message (even a plain Enter) and says it is compacting", async () => {
+    const { shouldQueue, workLabel } = await import("./queue");
+    expect(shouldQueue(false, { running: true, compacting: false })).toBe(false);
+    expect(shouldQueue(true, { running: true, compacting: false })).toBe(true);
+    expect(shouldQueue(false, { running: true, compacting: true })).toBe(true);
+    expect(shouldQueue(true, { running: false, compacting: false })).toBe(false);
+    expect(workLabel({ running: true, compacting: true })).toMatch(/^Compacting/);
+    expect(workLabel({ running: true, compacting: false })).toBe("Working…");
+    expect(workLabel({ running: false, compacting: false })).toBeNull();
+  });
+});

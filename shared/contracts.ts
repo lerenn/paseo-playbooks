@@ -250,6 +250,8 @@ export const SidekickProjectSchema = z.object({
   activeRuns: z.number(),
   /** Open gates of the project's runs that wait for a human (absent from an older plugin). */
   needYou: z.number().default(0),
+  /** The Sidekick's conversation is being compacted right now (absent from an older plugin). */
+  compacting: z.boolean().default(false),
 });
 export type SidekickProject = z.infer<typeof SidekickProjectSchema>;
 

@@ -72,8 +72,7 @@ mode id such as `default`, `acceptEdits`, `plan`, `auto` or `bypassPermissions`,
 inherit the Sidekick's own `sidekick.mode`, and if that is unset too the plugin sends none and Paseo's default mode
 for the provider applies; a value that is not a mode id is ignored with a warning); their finish notices wait
 until it is idle. It can answer an open human gate of its project with `resume_gate` (also available to any agent outside the runs; set `gates: { on_behalf: deny }` in `defaults/main.yaml` to turn it off), only with the human's own answer given through its question tool; `gate.decided` shows `decidedBy: "agent <name> on behalf of the human"`. It saves a short decision ledger with `sidekick_handoff`. When its context passes
-`sidekick.session.restart_above_tokens` (default 300000) it is asked to hand off and is replaced by a new
-session that starts from the ledger.
+`sidekick.session.compact_above_tokens` (default 300000; its older name `restart_above_tokens` still works) its own conversation is compacted (`/compact`, sent while it is idle, with the ledger in the instructions and repeated to it afterwards): it stays the same agent, tab and chat, and the column shows "Compacting…". Only if compaction fails, or leaves it above `session.hard_limit_tokens` (default 1.5× the threshold), is it replaced by a new agent from the ledger, the old one archived first. A project never has two live Sidekicks (duplicates found at startup are archived).
 
 A subagent that needs a place of its own gets a new hidden worktree workspace (the Sidekick creates it first with
 `create_workspace { isolation: worktree, background: true }`; it never calls `create_agent` without a `workspaceId`,

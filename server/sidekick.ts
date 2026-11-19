@@ -13,8 +13,17 @@ export const SIDEKICK_TITLE = "Playbooks Sidekick";
 /** Label with the project id on the Sidekick agent: with `playbooks/sidekick`, `paseo ls -g` finds a project's Sidekick for any agent. */
 export const SIDEKICK_PROJECT_LABEL = "playbooks/project";
 
-/** Context size (tokens) above which a Sidekick is restarted with a hand-off summary, unless `sidekick.session.restart_above_tokens` says otherwise. */
-export const DEFAULT_SIDEKICK_RESTART_TOKENS = 300_000;
+/** Context size (tokens) above which a Sidekick is compacted, unless `sidekick.session.compact_above_tokens` (or its older name `restart_above_tokens`) says otherwise. */
+export const DEFAULT_SIDEKICK_COMPACT_TOKENS = 300_000;
+
+/** The hard limit is this many times the compaction threshold unless `sidekick.session.hard_limit_tokens` says otherwise. */
+export const SIDEKICK_HARD_LIMIT_FACTOR = 1.5;
+
+/** The two thresholds of a Sidekick's context: compact above `compact`; replace it by a new agent above `hard` (when compaction fails or leaves it there). */
+export function sidekickLimits(config: { restartAboveTokens?: number | undefined; compactAboveTokens?: number | undefined; hardLimitTokens?: number | undefined } | null | undefined): { compact: number; hard: number } {
+  const compact = config?.compactAboveTokens ?? config?.restartAboveTokens ?? DEFAULT_SIDEKICK_COMPACT_TOKENS;
+  return { compact, hard: Math.max(config?.hardLimitTokens ?? Math.round(compact * SIDEKICK_HARD_LIMIT_FACTOR), compact) };
+}
 
 /** Provider and model of the Sidekick's subagents unless `sidekick.subagents` says otherwise. */
 export const DEFAULT_SIDEKICK_SUBAGENT = { provider: "claude", model: "claude-sonnet-5-5" };
@@ -121,8 +130,8 @@ You are a coordinator, not a worker. You have no workspace of your own, and you 
 - Create them with create_agent: provider ${(project.subagent ?? DEFAULT_SIDEKICK_SUBAGENT).provider}, model ${(project.subagent ?? DEFAULT_SIDEKICK_SUBAGENT).model}${project.subagent?.mode ? `, settings: { modeId: "${project.subagent.mode}" }` : ""}, a workspaceId chosen by the rules below, and notifyOnFinish: false. The plugin tells you when one finishes, as a message once you are idle, so a finish notice never interrupts a question to the human. Tell each subagent to report once, at the end, in a few lines.
 
 **Memory**
-- Keep a short decision ledger (at most 20 lines): decisions the human took and why, rules you applied, subagents and pull requests in flight, what you wait for. Save it with sidekick_handoff (summary) whenever it changes; the plugin gives it back to you at the start of the next session.
-- Keep your context small: read conversations in small pages, do not paste large outputs. When the plugin asks you to hand off because your context is large, call sidekick_handoff with restart: true and a summary that lets a new session continue (ledger, open questions, subagents, what to check next), then end your turn.
+- Keep a short decision ledger (at most 20 lines): decisions the human took and why, rules you applied, subagents and pull requests in flight, what you wait for. Save it with sidekick_handoff (summary) whenever it changes; the plugin keeps it through a compaction of your conversation and gives it back to you afterwards (and to a new session, if you are ever replaced).
+- Keep your context small: read conversations in small pages, do not paste large outputs. When your context grows large the plugin compacts this conversation while you are idle, then repeats your ledger to you: after a "[playbooks] Context compacted" message, continue from that ledger. You are never replaced by a second agent while you run.
 
 **Work**
 - Where to create a subagent (its workspaceId): (1) a job about a specific run (a failure, a stuck step, something a run's manager or a release batch is doing) goes to a subagent created in THAT run's workspace, the run's workspaceId from get_run or list_runs; that workspace is visible in Paseo, so the human can follow the work there. (2) A job about the project's playbooks, roles or scripts goes to a visible existing workspace of this project (list_workspaces) whose checkout holds the playbooks; never create a new hidden workspace for it. (3) A job that needs a place of its own and concerns no run (a one-off investigation, a change in a fresh checkout): first create a new hidden workspace with create_workspace { isolation: "worktree", background: true, path: "${project.root}" } (it is a worktree on a new branch, off the project's checkout), then create the subagent in it with that workspaceId. (4) NEVER call create_agent without a workspaceId: Paseo then puts the subagent in the project's own checkout, a workspace that must never be archived or edited by a subagent. (5) Never create a subagent in your own hidden workspace: you have none to use, and the human cannot see it.${subagentWorkspaceRule(project.subagentWorkspace)} In a run's workspace the manager may be working, so tell the subagent not to disturb the run's branch or files: for a change it creates its own git worktree on a new branch off the freshly fetched default branch, and opens the pull request from there.
@@ -150,9 +159,17 @@ export function sidekickGateSweep(gates: Array<{ runId: string; gateId: string; 
   return `[playbooks] Open gates wait for a human in your project:\n${list}\nTreat them now: read each with list_gates and get_run, decide the ones your rules let you decide, and put the others to the human. Then end your turn; the plugin will not repeat a gate it has already listed to you.`;
 }
 
-/** Sent to a Sidekick whose context grew past the threshold. */
-export function sidekickHandoffRequest(tokens: number): string {
-  return `[playbooks] Your context is about ${Math.round(tokens / 1000)}k tokens. Hand off now: call sidekick_handoff with restart: true and a summary for a new session (your decision ledger, open questions, subagents and pull requests in flight, what to check next), then end your turn. The plugin restarts you with it.`;
+/** The `/compact` command sent to a Sidekick whose context grew past the threshold: what the summary must keep, with the saved ledger. */
+export function sidekickCompactCommand(ledger: string | undefined): string {
+  const keep = "Keep the Playbooks Sidekick's rules, the open questions to the human, the subagents and pull requests in flight, and what to check next.";
+  return ledger ? `/compact ${keep} Keep this decision ledger verbatim:\n${ledger}` : `/compact ${keep}`;
+}
+
+/** Sent to a Sidekick right after its conversation was compacted: its saved decision ledger, so it continues from it. */
+export function sidekickCompactedNote(ledger: string | undefined): string {
+  return ledger
+    ? `[playbooks] Context compacted. Your saved decision ledger, to continue from (update it with sidekick_handoff when it changes):\n${ledger}\nContinue with what was open; do not greet the human again.`
+    : "[playbooks] Context compacted. You had saved no decision ledger: write one now with sidekick_handoff (decisions the human took and why, subagents and pull requests in flight, what you wait for), then continue with what was open.";
 }
 
 const RecordSchema = z.object({ workspaceId: z.string(), agentId: z.string(), /** Last saved hand-off (ledger): given to the next session. */ handoff: z.string().optional() });
@@ -221,7 +238,7 @@ sidekick:
   #   max_concurrent: 5            # at most this many runs of the project active at once (default: unlimited)
   #   confirm_bulk: true           # ask the human before launching more than one run in a batch (default: false)
   # session:
-  #   restart_above_tokens: 300000   # restart it with a hand-off summary when its context grows past this
+  #   compact_above_tokens: 300000   # compact its conversation (a /compact, when it is idle) when its context grows past this
 `,
   "sidekick/instructions.md": `Rules of this repository for the Sidekick. They add to its built-in rules, never replace them.
 

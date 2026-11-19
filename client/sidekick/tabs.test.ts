@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { SidekickProject } from "../../shared/contracts";
 import { statusLine, visibleTabs } from "./tabs";
 
-const project = (projectId: string, over: Partial<SidekickProject> = {}): SidekickProject => ({ projectId, workspaceId: `ws-${projectId}`, label: projectId, configured: false, errors: [], agentId: null, activeRuns: 0, needYou: 0, ...over });
+const project = (projectId: string, over: Partial<SidekickProject> = {}): SidekickProject => ({ projectId, workspaceId: `ws-${projectId}`, label: projectId, configured: false, errors: [], agentId: null, activeRuns: 0, needYou: 0, compacting: false, ...over });
 
 describe("visibleTabs", () => {
   it("shows projects with active runs or a Sidekick, and those added, most active first", () => {

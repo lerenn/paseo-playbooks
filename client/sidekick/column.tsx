@@ -5,7 +5,7 @@ import { formatSize } from "../../shared/attachments";
 import type { Theme } from "../theme";
 import { useAttachments } from "./attach";
 import { sidekickUi, useSidekickUi } from "./ui-state";
-import { isQueueKey, mergeQueued, queueAction, shouldFlush, IDLE_SETTLE_MS } from "./queue";
+import { isQueueKey, mergeQueued, shouldFlush, shouldQueue, workLabel, IDLE_SETTLE_MS } from "./queue";
 import { describePermission, humanizeTool, toolIcon, toolSummary } from "./describe";
 import { pluginMessage } from "./instructions";
 import type { Item, PermissionRequest } from "./reduce";
@@ -18,6 +18,8 @@ interface Props {
   onOpenTab?: (() => void) | undefined;
   /** Restarts the Sidekick as a new session (asks first). */
   onRestart?: (() => Promise<void>) | undefined;
+  /** The Sidekick's conversation is being compacted: shown as a notice, messages are queued. */
+  compacting?: boolean | undefined;
   /** The project tab: its unsent message is kept in the UI store. */
   projectId: string;
   /** Set while the Sidekick is being created or its RPC failed. */
@@ -30,6 +32,7 @@ export function SidekickChat(props: Props) {
   const chat = useSidekickChat(agentId);
   const toast = useToast();
   const { state } = chat;
+  const compacting = props.compacting === true;
   const ui = useSidekickUi();
   const draft = ui.drafts[props.projectId] ?? "";
   const queued = ui.queued[props.projectId];
@@ -52,7 +55,7 @@ export function SidekickChat(props: Props) {
   const submit = (queue = false) => {
     const text = draft.trim();
     if ((!text && attachments.items.length === 0) || sending) return;
-    if (queue && queueAction(state.running) === "queue") {
+    if (shouldQueue(queue, { running: state.running, compacting })) {
       sidekickUi.setQueued(props.projectId, mergeQueued(queued, { text, attachments: attachments.items }));
       setDraft("");
       attachments.clear();
@@ -129,7 +132,7 @@ export function SidekickChat(props: Props) {
         {state.items.map((item) => (
           <ItemView key={item.key} theme={theme} item={item} />
         ))}
-        {state.running ? <Text style={{ color: muted, fontSize: 12 }}>Working…</Text> : null}
+        {workLabel({ running: state.running, compacting }) ? <Text style={{ color: muted, fontSize: 12 }}>{workLabel({ running: state.running, compacting })}</Text> : null}
         {state.permissions.map((request) => (
           <PermissionView key={request.id} theme={theme} request={request} onRespond={(response) => respond(request.id, response)} />
         ))}
@@ -166,7 +169,7 @@ export function SidekickChat(props: Props) {
         <TextInput
           value={draft}
           onChangeText={setDraft}
-          placeholder={agentId ? (state.running ? "Enter sends into the running turn, ⌘/Ctrl+Enter queues" : "Message the Sidekick (paste or drop files)") : "Starting…"}
+          placeholder={agentId ? (compacting ? "Compacting: your message is queued and sent after" : state.running ? "Enter sends into the running turn, ⌘/Ctrl+Enter queues" : "Message the Sidekick (paste or drop files)") : "Starting…"}
           placeholderTextColor={muted}
           editable={agentId !== null}
           multiline

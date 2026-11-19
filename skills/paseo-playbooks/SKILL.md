@@ -65,7 +65,7 @@ sidekick:
   model: claude-opus-5-5        # provider, model, mode, thinking: as an agent block
   watch: [gate.escalated, run.failed, run.manager_lost, step.waiting_manager_stuck, manager.question_pending]   # event types or globs, for this project's runs
   subagents: { provider: claude, model: claude-sonnet-5-5, mode: acceptEdits, archive_workspace: true, archive_after: 10m }   # what it creates for jobs (default claude / claude-sonnet-5-5; mode defaults to its own); archive_* : the hidden workspace of a finished subagent is archived after the grace period (default true / 10m)
-  session: { restart_above_tokens: 300000 }   # hand off and restart when its context grows past this (default 300000)
+  session: { compact_above_tokens: 300000, hard_limit_tokens: 450000 }   # compact its conversation (same agent) past the first; replace it by a new agent only when compaction fails or it stays above the second (defaults 300000 and 1.5x; restart_above_tokens is the old name of the first)
   runs: { max_concurrent: 5, confirm_bulk: true }   # rules for the runs it starts; max_concurrent unset means unlimited, confirm_bulk defaults to false
 ```
 

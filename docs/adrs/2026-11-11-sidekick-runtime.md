@@ -1,6 +1,6 @@
 # Sidekick runtime: relay, subagent notices, ledger and session restart
 
-Status: Accepted
+Status: Accepted (its "Session hygiene" rule is superseded by `2026-11-19-sidekick-compaction.md`)
 
 Extends `2026-11-10-sidekick-per-project.md` (it stays the definition of a Sidekick).
 

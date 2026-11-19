@@ -1018,7 +1018,8 @@ const RawSidekickSchema = z
           })
           .strict()
           .optional(),
-        session: z.object({ restart_above_tokens: z.number().int().positive().optional() }).strict().optional(),
+        /** `compact_above_tokens` (default 300000; `restart_above_tokens` is its older name) compacts the agent; `hard_limit_tokens` (default 1.5x that) replaces it by a new one when compaction fails or leaves it above. */
+        session: z.object({ restart_above_tokens: z.number().int().positive().optional(), compact_above_tokens: z.number().int().positive().optional(), hard_limit_tokens: z.number().int().positive().optional() }).strict().optional(),
         /** Rules for the runs the Sidekick starts. Enforced by its prompt only. */
         runs: z
           .object({
@@ -1046,6 +1047,8 @@ export interface SidekickConfig {
   watch: string[];
   /** Context size above which the Sidekick is restarted with a hand-off; default 300000. */
   restartAboveTokens?: number;
+  compactAboveTokens?: number;
+  hardLimitTokens?: number;
   subagents?: { provider?: string; model?: string; mode?: string; archiveWorkspace?: boolean; archiveAfterMs?: number };
   /** `sidekick.runs`: rules for the runs it starts; unset means unlimited and no confirmation. */
   runs?: { maxConcurrent?: number; confirmBulk?: boolean };
@@ -1110,6 +1113,8 @@ export async function loadSidekick(workspaceDir: string): Promise<SidekickLoad> 
             watch: watch ?? DEFAULT_SIDEKICK_WATCH,
             ...(subagents && Object.keys(subagents).length > 0 ? { subagents: Object.fromEntries(Object.entries(subagents).filter(([, value]) => value !== undefined)) } : {}),
             ...(session?.restart_above_tokens ? { restartAboveTokens: session.restart_above_tokens } : {}),
+            ...(session?.compact_above_tokens ? { compactAboveTokens: session.compact_above_tokens } : {}),
+            ...(session?.hard_limit_tokens ? { hardLimitTokens: session.hard_limit_tokens } : {}),
             ...(runs && (runs.max_concurrent !== undefined || runs.confirm_bulk !== undefined)
               ? { runs: { ...(runs.max_concurrent !== undefined ? { maxConcurrent: runs.max_concurrent } : {}), ...(runs.confirm_bulk !== undefined ? { confirmBulk: runs.confirm_bulk } : {}) } }
               : {}),
