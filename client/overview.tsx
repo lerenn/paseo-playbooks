@@ -14,6 +14,7 @@ import { laneTone } from "./lane-tone";
 import { AnalyticsView } from "./analytics";
 import { useReduceMotion } from "./graph";
 import { LABEL_WIDTH, labelLayout, ROW_HEIGHT } from "./layout";
+import { needsYouRowKey } from "./overview-row-key";
 import { useOverview, type OverviewStore } from "./overview-store";
 import { GETTING_STARTED_URL } from "./panel";
 import { PreReleaseFlag } from "./pre-release";
@@ -539,7 +540,7 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
             <SectionTitle theme={theme} icon="CircleDot" iconColor={theme.colors.statusWarning} title="Needs you" count={needs.length} />
             <View style={{ borderRadius: 10, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface1, overflow: "hidden" }}>
               {needs.map(({ run, gate }, index) => (
-                <NeedsYouRow key={gate.id} theme={theme} run={run} gate={gate} first={index === 0} workspace={names.get(run.workspaceId) ?? run.workspaceId} hostLabel={props.host.label} compact={layout.compact} onOpenWorkspace={onOpenWorkspace} onOpenAgent={onOpenAgent} />
+                <NeedsYouRow key={needsYouRowKey(run.id, gate.id)} theme={theme} run={run} gate={gate} first={index === 0} workspace={names.get(run.workspaceId) ?? run.workspaceId} hostLabel={props.host.label} compact={layout.compact} onOpenWorkspace={onOpenWorkspace} onOpenAgent={onOpenAgent} />
               ))}
             </View>
           </View>
