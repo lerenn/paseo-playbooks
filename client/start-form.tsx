@@ -333,18 +333,19 @@ export function RunPlaybookForm(props: {
 /** The Run Playbook button, in the panel and the overview. Disabled while the playbook lists load. */
 export function RunPlaybookButton(props: { theme: Theme; loading?: boolean; emptyReason?: string; compact?: boolean; onPress(): void }) {
   const { theme } = props;
-  const disabled = props.loading === true || props.emptyReason !== undefined;
+  const reason = props.loading ? "Loading playbooks" : props.emptyReason;
+  const disabled = reason !== undefined;
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={props.emptyReason ? `Run Playbook unavailable: ${props.emptyReason}` : "Run Playbook: start a playbook in a new workspace"}
+      accessibilityLabel={reason !== undefined ? `Run Playbook unavailable: ${reason}` : "Run Playbook: start a playbook in a new workspace"}
       accessibilityState={{ disabled }}
       disabled={disabled}
       onPress={props.onPress}
-      style={{ flexDirection: "row", alignItems: "center", gap: 6, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6, borderWidth: 1, borderColor: theme.colors.accent, backgroundColor: theme.colors.accent, opacity: disabled ? 0.5 : 1 }}
+      style={{ flexDirection: "row", flexShrink: 1, maxWidth: "100%", alignItems: "center", gap: 6, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6, borderWidth: 1, borderColor: theme.colors.accent, backgroundColor: theme.colors.accent, opacity: disabled ? 0.5 : 1 }}
     >
       <Icon name="Play" size={13} color={theme.colors.accentForeground} />
-      <Text style={{ color: theme.colors.accentForeground, fontSize: 13, fontWeight: "600" }}>{props.emptyReason && !props.compact ? `Run Playbook · ${props.emptyReason}` : "Run Playbook"}</Text>
+      <Text style={{ flexShrink: 1, color: theme.colors.accentForeground, fontSize: 13, fontWeight: "600" }}>{reason !== undefined ? `Run Playbook${props.compact ? "\n" : " · "}${reason}` : "Run Playbook"}</Text>
     </Pressable>
   );
 }
