@@ -586,6 +586,16 @@ steps:
 event_core: { log: true, parity: warn }</code></pre>
 
 <h2 id="sidekick">Sidekick</h2>
+<pre><code># profiles/personal/defaults/main.yaml
+tiers:
+  worker:
+    - { provider: claude, model: claude-sonnet-5-5, mode: bypassPermissions }
+    - { provider: codex, model: gpt-6.1-sol, mode: full-access }
+# profiles/personal/sidekick/sidekick.yaml
+sidekick: { tier: worker, subagents: { tier: worker } }</code></pre>
+
+<p>A Sidekick can live in <code>profiles/&lt;id&gt;/sidekick/</code>. Active profiles are searched alphabetically before the top-level folder; ignored folders produce warnings. Write <code>sidekick: { tier: worker, subagents: { tier: worker } }</code> to use the containing repository/profile's tiers and provider fallback policy. Multi-entry tiers cannot be combined with inline agent overrides. Profile agent rules apply to the coordinator and its subagent briefs. Quota failures replace the Sidekick using its saved ledger and the next available target; restarts and compaction replacements use the same selection. Exhaustion lasts <code>providers.exhausted_for</code> in memory until reload. When all targets are exhausted the failed agent stays visible, without automatic retries. Subagent fallback is prompt-enforced by the Sidekick.</p>
+
 <p>A project may have a Sidekick: a coordinator agent in a column beside the Playbooks screen, one tab per project. It is defined by a <code>sidekick/</code> folder next to the playbooks. The folder never takes a playbook id: a playbook <code>sidekick.yaml</code> and <code>sidekick/sidekick.yaml</code> coexist. Without the folder the project has no Sidekick, and its tab offers <strong>Create the Sidekick files</strong>.</p>
 <pre><code>.paseo/plugins/playbooks/sidekick/
 ├── sidekick.yaml          # optional

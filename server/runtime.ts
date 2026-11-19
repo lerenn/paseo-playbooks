@@ -10,7 +10,7 @@ import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 type PaseoApi = PluginHandlerContext["paseo"];
 import type { AdmissionStatus, ScriptOutput } from "../shared/types";
 import type { AgentSettings, AgentTarget, Attempt, FanoutChild as FanoutChildState, PoolPass as PoolPassState, Gate, Job, Playbook, Run, RunDefinition, RunWorktree, Step, VarValue, WardenFinding } from "../shared/types";
-import { addUsage, DEFAULT_PERMISSION_POLICY } from "../shared/types";
+import { addUsage, DEFAULT_EXHAUSTED_FOR_MS, DEFAULT_PERMISSION_POLICY } from "../shared/types";
 import { UsageLedger } from "./usage-ledger";
 import { analyze, type Analytics } from "../shared/analytics";
 import {
@@ -41,7 +41,7 @@ import { workspaceTitle } from "../shared/workspace-name";
 import { createWorktree, diskUsedFraction, dirtyPaths, purgeScratch, linkedSubmodules, listWorktreeDirs, pruneWorktrees, unpushedCommits, removeWorktree, repoOfWorktree, worktreeBranch, worktreePath } from "./worktree";
 import { chooseDefinition, definitionMismatch, isAdoptable, readAtRef, shortReason, workspaceWarning } from "./fresh";
 import { runWorktreeTeardown } from "./teardown";
-import { gatesOnBehalfSetting, loadPlaybooks, loadSidekick } from "./loader";
+import { gatesOnBehalfSetting, loadPlaybooks, loadSidekick, type SidekickConfig, type SidekickProviders } from "./loader";
 import { findEntry } from "../shared/repos";
 
 /** The entry a stored or typed playbook id means: bare ids resolve to the one namespaced entry (and the reverse); ambiguity or absence gives undefined. */
@@ -136,8 +136,8 @@ function inheritTarget(base: AgentTarget, provider: string, model: string): Agen
 }
 
 /** Provider, model and mode of `sidekick.subagents`: the archive options are not agent settings. */
-function pickAgentSettings(subagents: { provider?: string; model?: string; mode?: string } | undefined) {
-  return { ...(subagents?.provider ? { provider: subagents.provider } : {}), ...(subagents?.model ? { model: subagents.model } : {}), ...(subagents?.mode ? { mode: subagents.mode } : {}) };
+function pickAgentSettings(subagents: { provider?: string; model?: string; mode?: string; thinking?: string } | undefined) {
+  return { ...(subagents?.provider ? { provider: subagents.provider } : {}), ...(subagents?.model ? { model: subagents.model } : {}), ...(subagents?.mode ? { mode: subagents.mode } : {}), ...(subagents?.thinking ? { thinking: subagents.thinking } : {}) };
 }
 
 function preapprove(config: AgentConfig, provider: string, tools: string[]): AgentConfig {
@@ -5309,7 +5309,7 @@ export class Runtime {
       const restart = this.serialSidekick(project.projectId, async () => {
         const known = await this.sidekickRegistry.read(project.projectId);
         if (!known) return this.ensureSidekick(project);
-        const load = await loadSidekick(project.root);
+        const load = await loadSidekick(project.root, { projectId: project.projectId });
         if (!load.configured) throw new UserError(`this project has no Sidekick: add a sidekick/ folder to its playbooks folder (see "Create the Sidekick files")`);
         if (!load.config) throw new UserError(`the Sidekick files have errors:\n${load.errors.join("\n")}`);
         this.forgetSidekick(known.agentId);
@@ -5376,7 +5376,7 @@ export class Runtime {
         const project = await this.projectOf(workspaceId).catch(() => null);
         if (!project) return null;
         const record = registry[projectId];
-        const [load, agent] = await Promise.all([loadSidekick(project.root), record ? this.api().agents.ref(record.agentId).refresh().catch(() => null) : null]);
+        const [load, agent] = await Promise.all([loadSidekick(project.root, { projectId }), record ? this.api().agents.ref(record.agentId).refresh().catch(() => null) : null]);
         const mine = open.filter((run) => run.projectId === projectId);
         return {
           projectId,
@@ -5395,7 +5395,7 @@ export class Runtime {
   }
 
   private async ensureSidekick(project: { projectId: string; label: string; root: string }) {
-    const load = await loadSidekick(project.root);
+    const load = await loadSidekick(project.root, { projectId: project.projectId });
     if (!load.configured) throw new UserError(`this project has no Sidekick: add a sidekick/ folder to its playbooks folder (see "Create the Sidekick files")`);
     if (!load.config) throw new UserError(`the Sidekick files have errors:\n${load.errors.join("\n")}`);
     const known = await this.sidekickRegistry.read(project.projectId);
@@ -5406,15 +5406,70 @@ export class Runtime {
     return this.launchSidekick(project, load, known, known?.handoff);
   }
 
+  /** Targets (`provider/model`) of the Sidekick's agents found out of tokens, with the time they come back (ms). In memory: a restart forgets them. */
+  private readonly sidekickExhausted = new Map<string, number>();
+
+  /**
+   * The chain of a Sidekick agent (or its subagents): the written target, the rest of its tier, then `providers.fallback`.
+   * `available` are the ones not marked out of tokens and not at their provider's usage threshold; same rules as a role's chain.
+   */
+  private async sidekickCandidates(primary: AgentTarget, fallback: AgentTarget[] | undefined, providers: SidekickProviders | undefined) {
+    const own = [primary, ...(fallback ?? [])].map((target) => {
+      const provider = target.provider ?? DEFAULT_PROVIDER;
+      return { target, provider, model: target.model ?? (provider === DEFAULT_PROVIDER ? DEFAULT_MODEL : undefined) };
+    });
+    const seen = new Set(own.map((candidate) => `${candidate.provider}/${candidate.model}`));
+    const extra = (providers?.fallback ?? [])
+      .filter((entry) => !seen.has(entry) && seen.add(entry))
+      .map((entry) => {
+        const [provider, model] = splitTarget(entry);
+        return { target: inheritTarget({ ...own[0]!.target, provider: own[0]!.provider }, provider, model), provider, model: model as string | undefined };
+      });
+    const all = [...own, ...extra];
+    const blocks = providers ? await this.usageBlocks({ usageCheck: providers.usageCheck, usageThreshold: providers.usageThreshold }, all) : new Map<string, UsageBlock>();
+    const now = Date.now();
+    const available = all.filter((candidate) => candidate.model && !((this.sidekickExhausted.get(`${candidate.provider}/${candidate.model}`) ?? 0) > now) && !blocks.has(`${candidate.provider}/${candidate.model}`));
+    return { all, available };
+  }
+
+  /** The first available target of a chain; the primary when every one is out (it is tried anyway, as a step's is). */
+  private async sidekickTarget(primary: AgentTarget, fallback: AgentTarget[] | undefined, providers: SidekickProviders | undefined) {
+    const { all, available } = await this.sidekickCandidates(primary, fallback, providers);
+    return available[0] ?? all[0]!;
+  }
+
+  /**
+   * A Sidekick's turn ended on its provider's out-of-tokens notice: that target is marked out for `providers.exhausted_for`,
+   * and when another target of its chain is available the agent is replaced by a new one on it (same hand-off, as after a
+   * failed compaction). True for a recognized quota ending, including when no target remains (it stays visible without a retry).
+   */
+  private async failOverSidekick(own: { projectId: string; record: { workspaceId: string; agentId: string; handoff?: string | undefined } }, config: SidekickConfig | null, outcome: string): Promise<boolean> {
+    if (!config || (outcome !== "failed" && outcome !== "completed")) return false;
+    const chain = (config.fallback?.length ?? 0) > 0 || (config.providers?.fallback.length ?? 0) > 0;
+    if (!chain) return false;
+    const agent = (await this.api().agents.ref(own.record.agentId).refresh().catch(() => null))?.agent;
+    const page = agent ? await this.api().agents.ref(own.record.agentId).timeline.refetch({ direction: "tail", limit: 30 }).catch(() => null) : null;
+    if (!agent || !page) return false;
+    const reason = outcome === "failed" ? failureText(page.entries as never) : lastAssistantText(page.entries as never);
+    if (!(outcome === "failed" ? isQuotaError(reason) : isQuotaMessage(reason))) return false;
+    const current = agent.model ? `${agent.provider}/${agent.model}` : agent.provider;
+    this.sidekickExhausted.set(current, Date.now() + (config.providers?.exhaustedForMs ?? DEFAULT_EXHAUSTED_FOR_MS));
+    const { available } = await this.sidekickCandidates({ provider: config.provider, model: config.model, mode: config.mode, thinking: config.thinking }, config.fallback, config.providers);
+    if (available.length === 0) return true; // Recognized quota ending: leave it visible, including when compaction failed.
+    await this.replaceSidekick(own.projectId, own.record, `${current} is out of tokens; moving to ${available[0]!.provider}/${available[0]!.model}`);
+    await this.bus.flush();
+    return true;
+  }
+
   /** Creates the Sidekick agent (in its hidden workspace, made if it is gone), saves it, and subscribes it to its events. */
   private async launchSidekick(project: { projectId: string; label: string; root: string }, load: Awaited<ReturnType<typeof loadSidekick>>, known: { workspaceId: string } | null, handoff: string | undefined) {
     const settings = load.config!;
-    const provider = settings.provider ?? DEFAULT_PROVIDER;
-    const model = settings.model ?? (provider === DEFAULT_PROVIDER ? DEFAULT_MODEL : undefined);
+    // The tier's first available target (a provider out of tokens, or at its usage threshold, is passed over); without a tier, the one written.
+    const { target, provider, model } = await this.sidekickTarget({ provider: settings.provider, model: settings.model, mode: settings.mode, thinking: settings.thinking }, settings.fallback, settings.providers);
     if (!model) throw new UserError(`no model for the Sidekick on provider "${provider}"; set sidekick.model in sidekick/sidekick.yaml`);
     const config: AgentConfig = { provider: `${provider}/${model}` };
-    if (settings.mode) config.modeId = settings.mode;
-    if (settings.thinking) config.thinkingOptionId = settings.thinking;
+    if (target.mode) config.modeId = target.mode;
+    if (target.thinking) config.thinkingOptionId = target.thinking;
     preapprove(config, provider, SIDEKICK_PLUGIN_TOOLS);
     if (config.options) {
       config.options.allowedTools.push(...SIDEKICK_PASEO_TOOLS.map((tool) => `mcp__paseo__${tool}`));
@@ -5426,21 +5481,25 @@ export class Runtime {
       ? this.api().workspaces.ref(workspaceId)
       : await this.createWorkspace({ title: sidekickTitle(project.label), source: { kind: "directory", path: project.root }, background: true });
     for (const warning of load.warnings) console.warn(`[playbooks] ${warning}`);
-    const subagent = { ...DEFAULT_SIDEKICK_SUBAGENT, ...(settings.mode ? { mode: settings.mode } : {}), ...pickAgentSettings(settings.subagents) };
+    const subs = settings.subagents;
+    const subChain = settings.providers || subs?.fallback ? await this.sidekickCandidates({ provider: subs?.provider ?? DEFAULT_SIDEKICK_SUBAGENT.provider, model: subs?.model ?? (subs?.provider ? undefined : DEFAULT_SIDEKICK_SUBAGENT.model), ...(subs?.mode ? { mode: subs.mode } : {}), ...(subs?.thinking ? { thinking: subs.thinking } : {}) }, subs?.fallback, settings.providers) : null;
+    const subPick = subChain?.available[0] ?? subChain?.all[0] ?? null;
+    const subagent = { ...DEFAULT_SIDEKICK_SUBAGENT, ...(!subPick && settings.mode ? { mode: settings.mode } : {}), ...pickAgentSettings(subPick && subPick.model ? { provider: subPick.provider, model: subPick.model, ...(subPick.target.mode ? { mode: subPick.target.mode } : {}), ...(subPick.target.thinking ? { thinking: subPick.target.thinking } : {}) } : subs) };
+    const subFallback = subChain && subPick ? subChain.all.slice(subChain.all.indexOf(subPick) + 1).filter((candidate) => candidate.model).map((candidate) => ({ provider: candidate.provider, model: candidate.model!, ...(candidate.target.mode ? { mode: candidate.target.mode } : {}), ...(candidate.target.thinking ? { thinking: candidate.target.thinking } : {}) })) : [];
     const agent = await workspace.agents.create({
       config,
       title: sidekickTitle(project.label),
       labels: { [SIDEKICK_LABEL]: "true", [SIDEKICK_PROJECT_LABEL]: project.projectId },
-      prompt: `${sidekickPrompt({ projectId: project.projectId, label: project.label, root: project.root, watch: settings.watch, subagent, subagentWorkspace: this.subagentArchiveSetting(settings), ...(settings.runs ? { runs: settings.runs } : {}) }, load.instructions)}\n\n${sidekickKickoff(handoff)}`,
+      prompt: `${sidekickPrompt({ projectId: project.projectId, label: project.label, root: project.root, watch: settings.watch, subagent, ...(subFallback.length > 0 ? { subagentFallback: subFallback } : {}), ...(settings.agentRules?.length ? { agentRules: settings.agentRules } : {}), subagentWorkspace: this.subagentArchiveSetting(settings), ...(settings.runs ? { runs: settings.runs } : {}) }, load.instructions)}\n\n${sidekickKickoff(handoff)}`,
     });
-    const record = { workspaceId: workspaceId ?? workspace.id, agentId: agent.id };
+    const record = { workspaceId: workspaceId ?? workspace.id, agentId: agent.id, ...(handoff ? { handoff } : {}) };
     await this.sidekickRegistry.write(project.projectId, record);
     await this.subscribeEvents(agent.id, settings.watch, { projectId: project.projectId }, "idle").catch((error) =>
       console.error("[playbooks] could not subscribe the Sidekick:", errorText(error)),
     );
     // Whatever the path that got here, the new agent is the project's only live Sidekick.
     await this.archiveOtherSidekicks(project.projectId, agent.id);
-    return { projectId: project.projectId, ...record, created: true };
+    return { projectId: project.projectId, workspaceId: record.workspaceId, agentId: record.agentId, created: true };
   }
 
   /** Archives every live Sidekick agent of the project but `keep` (found by labels, not by the registry). Returns the ones archived. */
@@ -5542,7 +5601,7 @@ export class Runtime {
       if (!current || current.agentId !== record.agentId) return;
       this.forgetSidekick(record.agentId);
       const project = { ...(await this.projectOf(record.workspaceId)), projectId };
-      const load = await loadSidekick(project.root);
+      const load = await loadSidekick(project.root, { projectId });
       if (!load.config) return;
       console.warn(`[playbooks] Sidekick ${record.agentId} of project ${projectId} is replaced by a new agent: ${why}`);
       await this.api().agents.ref(record.agentId).archive();
@@ -5597,7 +5656,9 @@ export class Runtime {
     // Its turn is over: not busy any more (an end-of-turn send below starts a new one), and held event notices can go out.
     this.busyManagers.delete(agentId);
     const project = await this.projectOf(own.record.workspaceId).catch(() => null);
-    const limits = sidekickLimits(project ? (await loadSidekick(project.root)).config : null);
+    const sidekickConfig = project ? (await loadSidekick(project.root, { projectId: own.projectId })).config : null;
+    if (outcome !== "canceled" && (await this.failOverSidekick(own, sidekickConfig, outcome))) return true;
+    const limits = sidekickLimits(sidekickConfig);
     // A zero (or missing) reading is the one right after a compaction: not a size.
     const used = (await this.api().agents.ref(agentId).refresh().catch(() => null))?.agent.lastUsage?.contextWindowUsedTokens ?? 0;
     let afterCompaction = false;
@@ -5658,7 +5719,7 @@ export class Runtime {
    */
   private async scheduleSubagentArchive(subagentId: string, projectId: string, record: { workspaceId: string }): Promise<void> {
     const project = await this.projectOf(record.workspaceId).catch(() => null);
-    const setting = this.subagentArchiveSetting(project ? (await loadSidekick(project.root)).config : null);
+    const setting = this.subagentArchiveSetting(project ? (await loadSidekick(project.root, { projectId })).config : null);
     if (!setting.archive) return;
     const subagent = (await this.api().agents.ref(subagentId).refresh().catch(() => null))?.agent;
     if (!subagent?.workspaceId || subagent.archivedAt) return;
@@ -5706,7 +5767,7 @@ export class Runtime {
     if (!sidekick) return keep("the project has no Sidekick any more");
     const project = await this.projectOf(sidekick.workspaceId).catch(() => null);
     if (!project) return keep("the Sidekick's workspace is gone, so the project root is unknown");
-    if (!this.subagentArchiveSetting((await loadSidekick(project.root)).config).archive) return keep("sidekick.subagents.archive_workspace is off");
+    if (!this.subagentArchiveSetting((await loadSidekick(project.root, { projectId: entry.projectId })).config).archive) return keep("sidekick.subagents.archive_workspace is off");
     const subagent = (await this.api().agents.ref(entry.agentId).refresh().catch(() => null))?.agent;
     if (subagent && (subagent as { parentAgentId?: string | null }).parentAgentId !== sidekick.agentId) return keep("the agent is not a subagent of the project's Sidekick");
     if (subagent && subagent.workspaceId !== entry.workspaceId) return keep("the agent is not in the recorded workspace any more");

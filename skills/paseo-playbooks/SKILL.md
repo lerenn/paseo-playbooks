@@ -59,6 +59,18 @@ It is defined by the `sidekick/` folder (a folder, so it never takes a playbook 
 `sidekick.yaml` and `sidekick/sidekick.yaml` coexist). Without that folder the project has no Sidekick, and
 its tab offers "Create the Sidekick files".
 
+A Sidekick may also live in `profiles/<id>/sidekick/`. Only active profiles participate; the first
+alphabetically wins, ahead of the top-level folder, with warnings for ignored folders. Use
+`sidekick: { tier: worker, subagents: { tier: worker } }` to resolve targets from the containing
+repository/profile's `defaults/main.yaml`. Multi-entry tiers cannot have inline agent overrides.
+Profile `agent_rules` apply to the Sidekick and its subagent briefs. The Sidekick skips targets at
+the configured provider usage threshold and, on quota failure, moves through its tier followed by
+`providers.fallback`, preserving its saved ledger and archiving the old agent first. Exhaustion is
+remembered for `providers.exhausted_for` until plugin reload. Restarts and compaction replacements
+use the same selection. When every target is exhausted, the failed agent remains visible without
+an automatic retry. Subagent fallback is instructed through the Sidekick's prompt; the plugin does
+not automatically replace those subagents.
+
 ```yaml
 # sidekick/sidekick.yaml (all fields optional)
 sidekick:

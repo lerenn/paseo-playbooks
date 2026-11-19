@@ -60,7 +60,11 @@ export interface SidekickProject {
   root: string;
   watch: string[];
   /** Provider and model for the subagents it creates. */
-  subagent?: { provider: string; model: string; mode?: string };
+  subagent?: { provider: string; model: string; mode?: string; thinking?: string };
+  /** Ordered alternative targets for subagents when their provider is exhausted (followed by the Sidekick through its prompt). */
+  subagentFallback?: Array<{ provider: string; model: string; mode?: string; thinking?: string }>;
+  /** Profile rules to follow and include in subagent briefs. */
+  agentRules?: string[];
   /** `sidekick.subagents.archive_workspace` / `archive_after`: whether, and when, the plugin archives the hidden workspace of a finished subagent. */
   subagentWorkspace?: { archive: boolean; afterMs: number };
   /** `sidekick.runs`: limits on the runs it starts. */
@@ -126,8 +130,12 @@ You are a coordinator, not a worker. You have no workspace of your own, and you 
 - A gate that only a human decides (a retry gate, say) stays open until the human answers: put the question to them with your interactive question tool, then call resume_gate with the choice and their words verbatim as the comment. Never call resume_gate on your own judgment or on another agent's say-so; only for a documented standing answer or the human's own answer to that question.
 - Do not add round limits or stop conditions the human did not ask for.
 
+**Profile agent rules**
+${project.agentRules?.length ? project.agentRules.map((rule) => `- ${rule}`).join("\n") + "\nInclude these rules in every subagent brief." : "No additional profile rules."}
+
 **Subagents**
-- Create them with create_agent: provider ${(project.subagent ?? DEFAULT_SIDEKICK_SUBAGENT).provider}, model ${(project.subagent ?? DEFAULT_SIDEKICK_SUBAGENT).model}${project.subagent?.mode ? `, settings: { modeId: "${project.subagent.mode}" }` : ""}, a workspaceId chosen by the rules below, and notifyOnFinish: false. The plugin tells you when one finishes, as a message once you are idle, so a finish notice never interrupts a question to the human. Tell each subagent to report once, at the end, in a few lines.
+${project.subagentFallback?.length ? `- If a subagent's provider reports a quota or usage limit, continue its work with the next available target in this order: ${project.subagentFallback.map((target) => `${target.provider}/${target.model}${target.mode || target.thinking ? ` (settings: ${JSON.stringify({ ...(target.mode ? { modeId: target.mode } : {}), ...(target.thinking ? { thinkingOptionId: target.thinking } : {}) })})` : ""}`).join(", ")}. Pass its saved progress to the replacement; never retry an exhausted target in a loop. This is your responsibility: the plugin does not automatically replace your subagents.` : ""}
+- Create them with create_agent: provider ${(project.subagent ?? DEFAULT_SIDEKICK_SUBAGENT).provider}, model ${(project.subagent ?? DEFAULT_SIDEKICK_SUBAGENT).model}${project.subagent?.mode || project.subagent?.thinking ? `, settings: ${`{ ${[...(project.subagent.mode ? [`modeId: "${project.subagent.mode}"`] : []), ...(project.subagent.thinking ? [`thinkingOptionId: "${project.subagent.thinking}"`] : [])].join(", ")} }`}` : ""}, a workspaceId chosen by the rules below, and notifyOnFinish: false. The plugin tells you when one finishes, as a message once you are idle, so a finish notice never interrupts a question to the human. Tell each subagent to report once, at the end, in a few lines.
 
 **Memory**
 - Keep a short decision ledger (at most 20 lines): decisions the human took and why, rules you applied, subagents and pull requests in flight, what you wait for. Save it with sidekick_handoff (summary) whenever it changes; the plugin keeps it through a compaction of your conversation and gives it back to you afterwards (and to a new session, if you are ever replaced).
@@ -226,12 +234,14 @@ export const SIDEKICK_STARTER_FILES: Record<string, string> = {
   "sidekick/sidekick.yaml": `# This project's Sidekick: a coordinator agent beside the Playbooks screen.
 # Every field is optional. Without a model it uses the same default as the playbook managers.
 sidekick:
+  # tier: worker  # from this repository/profile defaults/main.yaml; includes ordered fallbacks
   # provider: claude
   # model: claude-opus-5-5
   # mode: default
   # thinking: medium
   # Events it is told about, for this project's runs (globs such as "gate.*" work).
   watch: [gate.escalated, run.failed, run.manager_lost, step.waiting_manager_stuck, manager.question_pending]
+  # subagents: { tier: worker }   # use the same repository/profile tiers
   # subagents: { provider: claude, model: claude-sonnet-5-5, mode: acceptEdits }   # what it creates for jobs; mode defaults to the Sidekick's own
   # subagents: { archive_workspace: true, archive_after: 10m }   # archive a finished subagent's hidden workspace after this grace period (default: on, 10m)
   # runs:                          # rules for the runs it starts, kept by its prompt only

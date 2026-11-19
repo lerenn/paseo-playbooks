@@ -25,7 +25,7 @@ import type {
   VarValue,
   When,
 } from "../shared/types";
-import { AgentSettingsSchema, DEFAULT_EXHAUSTED_FOR_MS, DEFAULT_MANAGER_COMPACT, DEFAULT_MANAGER_MODE, DEFAULT_MANAGER_NUDGE, DEFAULT_PERMISSION_POLICY, DEFAULT_WARDEN, WARDEN_ACTIONS, type WardenConfig, type ManagerNudge, ManagerCompactSchema, ManagerModeSchema, type ManagerMode, type Isolation, type WakeOn, VarTypeSchema, VarValueSchema } from "../shared/types";
+import { AgentSettingsSchema, type AgentTarget, DEFAULT_EXHAUSTED_FOR_MS, DEFAULT_MANAGER_COMPACT, DEFAULT_MANAGER_MODE, DEFAULT_MANAGER_NUDGE, DEFAULT_PERMISSION_POLICY, DEFAULT_WARDEN, WARDEN_ACTIONS, type WardenConfig, type ManagerNudge, ManagerCompactSchema, ManagerModeSchema, type ManagerMode, type Isolation, type WakeOn, VarTypeSchema, VarValueSchema } from "../shared/types";
 import { BusError, checkTypes, FilterValueSchema } from "./bus";
 import { JOB_TYPES } from "./job-events";
 import { OVERSIGHT_TYPES } from "./oversight-events";
@@ -999,6 +999,8 @@ const RawSidekickSchema = z
   .object({
     sidekick: z
       .object({
+        /** A tier of the profile's `defaults/main.yaml` (its fallback chain included); provider/model/mode/thinking here override a single-entry tier. */
+        tier: z.string().min(1).optional(),
         provider: z.string().optional(),
         model: z.string().optional(),
         mode: z.string().optional(),
@@ -1008,6 +1010,8 @@ const RawSidekickSchema = z
         /** Provider and model of the subagents the Sidekick creates (default: claude / claude-sonnet-5-5). */
         subagents: z
           .object({
+            /** A tier of the profile's `defaults/main.yaml`; the subagents start on its first available target and move down its chain. */
+            tier: z.string().min(1).optional(),
             provider: z.string().min(1).optional(),
             model: z.string().min(1).optional(),
             mode: z.unknown().optional(),
@@ -1039,26 +1043,57 @@ const RawSidekickSchema = z
 /** Event types a Sidekick watches when `sidekick.watch` is not set. */
 export const DEFAULT_SIDEKICK_WATCH = ["gate.escalated", "run.failed", "run.manager_lost", "step.waiting_manager_stuck", "manager.question_pending"];
 
+/** What the Sidekick's start needs from the defaults of the repository that holds it: the failover settings of `providers`. */
+export interface SidekickProviders {
+  /** `providers.fallback`: `provider/model` targets after the tier's own chain. */
+  fallback: string[];
+  exhaustedForMs: number;
+  usageCheck: boolean;
+  usageThreshold: number;
+}
+
 export interface SidekickConfig {
   provider?: string;
   model?: string;
   mode?: string;
   thinking?: string;
+  /** The tier it was written with, if any (the provider and model above are its first target). */
+  tier?: string;
+  /** The targets tried, in order, after provider/model when that provider is out of tokens (the rest of a multi-entry tier). */
+  fallback?: AgentTarget[];
+  /** Failover settings of the profile's defaults; set when the Sidekick is in a profile or uses a tier. */
+  providers?: SidekickProviders;
+  /** The profile's `agent_rules`, added to the Sidekick's prompt and passed on to its subagents; absent when there are none. */
+  agentRules?: string[];
   watch: string[];
   /** Context size above which the Sidekick is restarted with a hand-off; default 300000. */
   restartAboveTokens?: number;
   compactAboveTokens?: number;
   hardLimitTokens?: number;
-  subagents?: { provider?: string; model?: string; mode?: string; archiveWorkspace?: boolean; archiveAfterMs?: number };
+  subagents?: SidekickSubagents;
   /** `sidekick.runs`: rules for the runs it starts; unset means unlimited and no confirmation. */
   runs?: { maxConcurrent?: number; confirmBulk?: boolean };
 }
 
+export interface SidekickSubagents {
+  provider?: string;
+  model?: string;
+  mode?: string;
+  thinking?: string;
+  tier?: string;
+  /** Targets after provider/model, for when that provider is out of tokens (the rest of a multi-entry tier). */
+  fallback?: AgentTarget[];
+  archiveWorkspace?: boolean;
+  archiveAfterMs?: number;
+}
+
 export interface SidekickLoad {
-  /** A `sidekick/` folder exists in a playbooks folder. Without it the project has no Sidekick. */
+  /** A `sidekick/` folder exists in a profile of the project or in a playbooks folder. Without it the project has no Sidekick. */
   configured: boolean;
-  /** Folder of the Sidekick, relative to the workspace (`.paseo/plugins/playbooks/sidekick`). */
+  /** Folder of the Sidekick, relative to the workspace (`.paseo/plugins/playbooks/sidekick`, or `.../profiles/<id>/sidekick`). */
   dir: string | null;
+  /** The profile whose `sidekick/` was read (its defaults apply); null for the playbooks folder itself. */
+  profile: string | null;
   config: SidekickConfig | null;
   /** `sidekick/instructions.md`, trimmed; null when there is none. */
   instructions: string | null;
@@ -1067,23 +1102,52 @@ export interface SidekickLoad {
   warnings: string[];
 }
 
-const NO_SIDEKICK: SidekickLoad = { configured: false, dir: null, config: null, instructions: null, errors: [], warnings: [] };
+const NO_SIDEKICK: SidekickLoad = { configured: false, dir: null, profile: null, config: null, instructions: null, errors: [], warnings: [] };
 
 /** A Paseo agent mode id (`default`, `acceptEdits`, `plan`, `auto`, `bypassPermissions`, a provider's own). */
 const MODE_ID = /^[A-Za-z][A-Za-z0-9_:.-]*$/;
 
+export interface SidekickLoadOptions {
+  /** The project whose active profiles (user config) are searched for a `sidekick/`. */
+  projectId?: string;
+  /** Profiles to search instead of the project's setting. */
+  activeProfiles?: string[];
+}
+
 /**
- * The Sidekick of a project: `sidekick/sidekick.yaml` and `sidekick/instructions.md` in the first playbooks
- * folder that has a `sidekick/` directory. A directory, so it never takes the id of a playbook (`sidekick.yaml`
- * in the folder itself is a playbook and coexists with it).
+ * The Sidekick of a project: `sidekick/sidekick.yaml` and `sidekick/instructions.md`. Looked for in the project's ACTIVE
+ * profiles first (`profiles/<id>/sidekick/`, ids sorted alphabetically: the first wins, the others are named in a warning), then in the
+ * first playbooks folder that has a `sidekick/` directory (the legacy location, read as before). The profile that holds
+ * it supplies its tiers, `agent_rules` and `providers`. A directory, so it never takes the id of a playbook.
  */
-export async function loadSidekick(workspaceDir: string): Promise<SidekickLoad> {
-  for (const relDir of PLAYBOOKS_DIRS) {
-    const dir = path.join(workspaceDir, relDir, "sidekick");
-    if ((await listFolder(dir)) === null) continue;
+export async function loadSidekick(workspaceDir: string, options: SidekickLoadOptions = {}): Promise<SidekickLoad> {
+  const profilesRel = `${PLAYBOOKS_DIRS[0]}/${PROFILES_DIR}`;
+  const requested = options.activeProfiles ?? (options.projectId ? await readProjectProfiles(options.projectId) : []);
+  const inProfiles: string[] = [];
+  for (const { name, root } of (await scanProfiles(workspaceDir)).found) {
+    if (requested.includes(name) && (await listFolder(path.join(root, "sidekick"))) !== null) inProfiles.push(name);
+  }
+  const legacy: string[] = [];
+  for (const relDir of PLAYBOOKS_DIRS) if ((await listFolder(path.join(workspaceDir, relDir, "sidekick"))) !== null) legacy.push(relDir);
+  const notes: string[] = [];
+  if (inProfiles.length > 0) {
+    const [first, ...others] = inProfiles;
+    if (others.length > 0) notes.push(`${profilesRel}/${first}/sidekick is the project's Sidekick: the active profiles ${others.map((name) => `\`${name}\``).join(", ")} also have a sidekick/ folder, which is ignored (turn those profiles off, or remove the folder)`);
+    if (legacy.length > 0) notes.push(`${legacy[0]}/sidekick is ignored: the active profile \`${first}\` has its own sidekick/ folder`);
+    return readSidekickDir(`${profilesRel}/${first}`, path.join(workspaceDir, profilesRel, first!), first!, notes);
+  }
+  if (legacy.length > 0) return readSidekickDir(legacy[0]!, path.join(workspaceDir, legacy[0]!), null, notes);
+  return NO_SIDEKICK;
+}
+
+/** Reads `<repoRel>/sidekick/` of one repository (a profile, or a playbooks folder); `profile` is the profile id or null. */
+async function readSidekickDir(repoRel: string, repoRoot: string, profile: string | null, notes: string[]): Promise<SidekickLoad> {
+  const relDir = repoRel;
+  const dir = path.join(repoRoot, "sidekick");
+  {
     const rel = `${relDir}/sidekick`;
     const errors: string[] = [];
-    const warnings: string[] = [];
+    const warnings: string[] = [...notes];
     let config: SidekickConfig = { watch: DEFAULT_SIDEKICK_WATCH };
     if ((await readText(path.join(dir, "sidekick.yaml"))) !== null) {
       const raw = await readYaml(path.join(dir, "sidekick.yaml"), `${rel}/sidekick.yaml`);
@@ -1092,11 +1156,25 @@ export async function loadSidekick(workspaceDir: string): Promise<SidekickLoad> 
         const parsed = RawSidekickSchema.safeParse(raw.value);
         if (!parsed.success) errors.push(...formatZodError(`${rel}/sidekick.yaml`, parsed.error));
         else {
-          const { watch, session, runs, subagents: rawSubagents, ...settings } = parsed.data.sidekick ?? {};
-          let subagents: { provider?: string; model?: string; mode?: string; archiveWorkspace?: boolean; archiveAfterMs?: number } | undefined;
+          const { watch, session, runs, subagents: rawSubagents, tier: ownTier, ...settings } = parsed.data.sidekick ?? {};
+          const usesTier = ownTier !== undefined || rawSubagents?.tier !== undefined;
+          // The defaults of the repository that holds the Sidekick: a profile's always (rules, providers), the playbooks folder's only for its tiers.
+          const loadedDefaults = profile !== null || usesTier ? await loadDefaults(repoRoot, relDir) : null;
+          if (loadedDefaults && (profile !== null || usesTier)) errors.push(...loadedDefaults.errors);
+          const tiers = loadedDefaults?.defaults.tiers ?? {};
+          const fail = (message: string) => errors.push(`${rel}/sidekick.yaml: ${message}`);
+          const own = resolveAgent({ ...(ownTier !== undefined ? { tier: ownTier } : {}), ...settings }, tiers, "sidekick", fail) ?? {};
+          const { fallback: ownFallback, ...ownFields } = own;
+          let subagents: SidekickSubagents | undefined;
           if (rawSubagents) {
-            const { mode, archive_workspace, archive_after, ...rest } = rawSubagents;
-            subagents = rest;
+            const { mode, archive_workspace, archive_after, tier: subTier, provider: subProvider, model: subModel, ...restSub } = rawSubagents;
+            void restSub;
+            const resolved = resolveAgent({ ...(subTier !== undefined ? { tier: subTier } : {}), ...(subProvider !== undefined ? { provider: subProvider } : {}), ...(subModel !== undefined ? { model: subModel } : {}), ...(typeof mode === "string" && MODE_ID.test(mode) ? { mode } : {}) }, tiers, "sidekick.subagents", fail) ?? {};
+            const { fallback: subFallback, mode: tierMode, ...subFields } = resolved;
+            subagents = { ...subFields };
+            if (subTier !== undefined) subagents.tier = subTier;
+            if (subFallback && subFallback.length > 0) subagents.fallback = subFallback;
+            if (tierMode !== undefined) subagents.mode = tierMode;
             if (archive_workspace !== undefined) subagents.archiveWorkspace = archive_workspace;
             if (archive_after !== undefined) {
               const ms = parseDuration(archive_after);
@@ -1108,8 +1186,22 @@ export async function loadSidekick(workspaceDir: string): Promise<SidekickLoad> 
               else warnings.push(`${rel}/sidekick.yaml: sidekick.subagents.mode must be a mode id such as default, acceptEdits, plan, auto or bypassPermissions; ignored`);
             }
           }
+          const providers = loadedDefaults?.defaults.providers;
           config = {
-            ...Object.fromEntries(Object.entries(settings).filter(([, value]) => value !== undefined)),
+            ...Object.fromEntries(Object.entries(ownFields).filter(([, value]) => value !== undefined)),
+            ...(ownTier !== undefined ? { tier: ownTier } : {}),
+            ...(ownFallback && ownFallback.length > 0 ? { fallback: ownFallback } : {}),
+            ...(loadedDefaults && (profile !== null || usesTier)
+              ? {
+                  providers: {
+                    fallback: providers?.fallback ?? [],
+                    exhaustedForMs: (providers?.exhausted_for ? parseDuration(providers.exhausted_for) : null) ?? DEFAULT_EXHAUSTED_FOR_MS,
+                    usageCheck: providers?.usage?.check ?? true,
+                    usageThreshold: providers?.usage?.threshold ?? 100,
+                  },
+                }
+              : {}),
+            ...(profile !== null && (loadedDefaults?.defaults.agentRules ?? []).length > 0 ? { agentRules: loadedDefaults!.defaults.agentRules! } : {}),
             watch: watch ?? DEFAULT_SIDEKICK_WATCH,
             ...(subagents && Object.keys(subagents).length > 0 ? { subagents: Object.fromEntries(Object.entries(subagents).filter(([, value]) => value !== undefined)) } : {}),
             ...(session?.restart_above_tokens ? { restartAboveTokens: session.restart_above_tokens } : {}),
@@ -1121,6 +1213,16 @@ export async function loadSidekick(workspaceDir: string): Promise<SidekickLoad> 
           };
         }
       }
+    } else if (profile !== null) {
+      // No sidekick.yaml, but the profile's defaults still apply (rules, providers).
+      const loadedDefaults = await loadDefaults(repoRoot, relDir);
+      errors.push(...loadedDefaults.errors);
+      const providers = loadedDefaults.defaults.providers;
+      config = {
+        ...config,
+        providers: { fallback: providers?.fallback ?? [], exhaustedForMs: (providers?.exhausted_for ? parseDuration(providers.exhausted_for) : null) ?? DEFAULT_EXHAUSTED_FOR_MS, usageCheck: providers?.usage?.check ?? true, usageThreshold: providers?.usage?.threshold ?? 100 },
+        ...((loadedDefaults.defaults.agentRules ?? []).length > 0 ? { agentRules: loadedDefaults.defaults.agentRules! } : {}),
+      };
     }
     let instructions: string | null = null;
     const text = await readText(path.join(dir, "instructions.md"));
@@ -1128,9 +1230,8 @@ export async function loadSidekick(workspaceDir: string): Promise<SidekickLoad> 
       if (text.trim() === "") errors.push(`${rel}/instructions.md: empty`);
       else instructions = text.trim();
     }
-    return { configured: true, dir: rel, config: errors.length > 0 ? null : config, instructions, errors, warnings };
+    return { configured: true, dir: rel, profile, config: errors.length > 0 ? null : config, instructions, errors, warnings };
   }
-  return NO_SIDEKICK;
 }
 
 /** True when the workspace has at least one playbook file in any playbook folder. */
@@ -1330,7 +1431,7 @@ export async function loadPlaybooks(workspaceDir: string, options: LoadOptions =
     const repos = new Set(group.map((entry) => entry.repo));
     if (repos.size > 1) diagnostics.push(`playbook id "${id}" exists in ${[...repos].map((repo) => `\`${repo}\``).join(" and ")}: refer to it as ${group.map((entry) => `\`${qualified(entry)}\``).join(" or ")} (a bare "${id}" is ambiguous)`);
   }
-  return { roots, exists: roots.length > 0 || profiles.length > 0, entries, sidekick: await loadSidekick(workspaceDir), profiles, defaultActive, diagnostics };
+  return { roots, exists: roots.length > 0 || profiles.length > 0, entries, sidekick: await loadSidekick(workspaceDir, { ...(options.projectId ? { projectId: options.projectId } : {}), ...(options.activeProfiles ? { activeProfiles: options.activeProfiles } : {}) }), profiles, defaultActive, diagnostics };
 }
 
 /**

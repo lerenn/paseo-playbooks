@@ -85,6 +85,59 @@ describe("loading the Sidekick files", () => {
   });
 });
 
+describe("profile Sidekick tiers", () => {
+  const defaults = `tiers:
+  worker:
+    - { provider: claude, model: primary, mode: bypassPermissions }
+    - { provider: codex, model: backup, mode: full-access }
+providers: { usage: { check: false }, exhausted_for: 2h }
+agent_rules: ["Keep changes focused."]
+`;
+
+  it("uses only active profiles, alphabetically, ahead of the legacy folder and loads profile rules", async () => {
+    const dir = await tempDir("sk-profiles-");
+    await write(dir, `${PLAYBOOKS}/sidekick/instructions.md`, "Legacy.");
+    for (const id of ["alice", "bob"]) {
+      await write(dir, `${PLAYBOOKS}/profiles/${id}/defaults/main.yaml`, defaults);
+      await write(dir, `${PLAYBOOKS}/profiles/${id}/sidekick/sidekick.yaml`, "sidekick: { tier: worker, subagents: { tier: worker } }");
+    }
+    expect((await loadSidekick(dir)).profile).toBeNull();
+    const load = await loadSidekick(dir, { activeProfiles: ["bob", "alice"] });
+    expect(load).toMatchObject({ profile: "alice", errors: [], config: {
+      tier: "worker", provider: "claude", model: "primary", mode: "bypassPermissions",
+      fallback: [{ provider: "codex", model: "backup", mode: "full-access" }],
+      subagents: { tier: "worker", provider: "claude", model: "primary", fallback: [{ provider: "codex", model: "backup", mode: "full-access" }] },
+      providers: { usageCheck: false, exhaustedForMs: 7200000 }, agentRules: ["Keep changes focused."],
+    } });
+    expect(load.warnings.join("\n")).toContain("bob");
+    expect(load.warnings.join("\n")).toContain("ignored");
+    expect((await loadPlaybooks(dir, { activeProfiles: ["bob"] })).sidekick.profile).toBe("bob");
+  });
+
+  it("resolves top-level tiers and rejects unknown tiers, conflicts and misplaced tier fields", async () => {
+    const dir = await tempDir("sk-tier-errors-");
+    await write(dir, `${PLAYBOOKS}/defaults/main.yaml`, defaults);
+    for (const yaml of ["sidekick: { tier: absent }", "sidekick: { tier: worker, model: override }", "sidekick: { subagents: { tier: worker, mode: plan } }", "tier: worker", "sidekick: { session: { tier: worker } }"]) {
+      await write(dir, `${PLAYBOOKS}/sidekick/sidekick.yaml`, yaml);
+      expect((await loadSidekick(dir)).errors.length, yaml).toBeGreaterThan(0);
+    }
+    await write(dir, `${PLAYBOOKS}/sidekick/sidekick.yaml`, "sidekick: { tier: worker }");
+    expect(await loadSidekick(dir)).toMatchObject({ errors: [], profile: null, config: { model: "primary" } });
+    await write(dir, `${PLAYBOOKS}/defaults/main.yaml`, "tiers: { worker: { provider: codex, model: small } }");
+    await write(dir, `${PLAYBOOKS}/sidekick/sidekick.yaml`, "sidekick: { tier: worker, model: large }");
+    expect(await loadSidekick(dir)).toMatchObject({ errors: [], config: { provider: "codex", model: "large" } });
+  });
+
+  it("applies defaults even with no sidekick.yaml and reports invalid profile defaults", async () => {
+    const dir = await tempDir("sk-profile-defaults-");
+    await write(dir, `${PLAYBOOKS}/profiles/alice/sidekick/instructions.md`, "Rules.");
+    await write(dir, `${PLAYBOOKS}/profiles/alice/defaults/main.yaml`, defaults);
+    expect(await loadSidekick(dir, { activeProfiles: ["alice"] })).toMatchObject({ errors: [], config: { agentRules: ["Keep changes focused."] } });
+    await write(dir, `${PLAYBOOKS}/profiles/alice/defaults/main.yaml`, "providers: { exhausted_for: invalid }");
+    expect((await loadSidekick(dir, { activeProfiles: ["alice"] })).config).toBeNull();
+  });
+});
+
 describe("the Sidekick prompt", () => {
   it("is scoped to the project, lists what it watches and ends with the repository's instructions", () => {
     const text = sidekickPrompt({ projectId: "p1", label: "Shop", root: "/work/shop", watch: ["gate.escalated"] }, "Never merge on Friday.");
@@ -132,6 +185,9 @@ describe("the Sidekick prompt", () => {
 
 function fakePaseo(roots: Record<string, string>) {
   const archivedAt: Record<string, string | null> = {};
+  const targets: Record<string, { provider: string; model: string }> = {};
+  const timeline: Record<string, any[]> = {};
+  const usageData: { providers: any[] } = { providers: [] };
   const created = { workspaces: [] as Array<Record<string, unknown>>, agents: [] as Array<{ workspaceId: string; options: Record<string, any> }> };
   const sent: Array<{ agentId: string; text: string }> = [];
   const state: Record<string, { status: string; used: number }> = {};
@@ -141,7 +197,8 @@ function fakePaseo(roots: Record<string, string>) {
   const live = { count: 0, max: 0 };
   const ref = (agentId: string) => ({
     refresh: async () =>
-      (latency.ms ? await new Promise((done) => setTimeout(done, latency.ms)) : undefined, agentId in archivedAt ? { agent: { id: agentId, status: state[agentId]?.status ?? "idle", archivedAt: archivedAt[agentId], lastUsage: { contextWindowUsedTokens: state[agentId]?.used ?? 0 } } } : null),
+      (latency.ms ? await new Promise((done) => setTimeout(done, latency.ms)) : undefined, agentId in archivedAt ? { agent: { id: agentId, ...targets[agentId], status: state[agentId]?.status ?? "idle", archivedAt: archivedAt[agentId], lastUsage: { contextWindowUsedTokens: state[agentId]?.used ?? 0 } } } : null),
+    timeline: { refetch: async () => ({ entries: timeline[agentId] ?? [] }) },
     send: async (text: string) => {
       if (failSend.on) throw new Error("no compaction here");
       sent.push({ agentId, text });
@@ -161,6 +218,8 @@ function fakePaseo(roots: Record<string, string>) {
         created.agents.push({ workspaceId: id, options });
         const agentId = `agent-${created.agents.length}`;
         archivedAt[agentId] = null;
+        const [provider, ...model] = options.config.provider.split("/");
+        targets[agentId] = { provider, model: model.join("/") };
         labels[agentId] = options.labels;
         // A Sidekick never starts while another one of the project is alive.
         live.count = Object.keys(labels).filter((id) => archivedAt[id] === null).length;
@@ -170,6 +229,7 @@ function fakePaseo(roots: Record<string, string>) {
     },
   });
   const paseo = {
+    providers: { listUsage: async () => usageData },
     agents: { ref, list: async () => ({ entries: Object.keys(labels).map((id) => ({ agent: { id, labels: labels[id], archivedAt: archivedAt[id], createdAt: `2026-01-01T00:00:${String(id.replace(/\D/g, "") || 0).padStart(2, "0")}Z` } })) }) },
     workspaces: {
       ref: (id: string) => workspace(id),
@@ -179,7 +239,7 @@ function fakePaseo(roots: Record<string, string>) {
       },
     },
   };
-  return { paseo, created, sent, state, latency, labels, failSend, live, archivedAt, archive: (id: string) => (archivedAt[id] = new Date().toISOString()) };
+  return { paseo, created, sent, state, timeline, usageData, latency, labels, failSend, live, archivedAt, archive: (id: string) => (archivedAt[id] = new Date().toISOString()) };
 }
 
 async function setup(projects: Record<string, boolean>, options: { debounceMs?: number } = {}) {
@@ -365,6 +425,84 @@ describe("a Sidekick's session", () => {
     expect(await run("sidekick: { mode: bypassPermissions }\n")).toContain('settings: { modeId: "bypassPermissions" }');
     expect(await run("sidekick: { mode: bypassPermissions, subagents: { mode: plan } }\n")).toContain('settings: { modeId: "plan" }');
     expect(await run("sidekick: { model: claude-sonnet-5-5 }\n")).not.toContain("modeId");
+  });
+
+  describe("tier failover", () => {
+    const configure = async () => {
+      const made = await setup({ shop: true });
+      await write(made.roots.shop!, `${PLAYBOOKS}/defaults/main.yaml`, `tiers:
+  worker:
+    - { provider: claude, model: first, mode: bypassPermissions }
+    - { provider: codex, model: second, mode: full-access }
+    - { provider: backup, model: third, mode: default }
+providers: { usage: { check: false }, exhausted_for: 2h }
+`);
+      await write(made.roots.shop!, `${PLAYBOOKS}/sidekick/sidekick.yaml`, "sidekick: { tier: worker, subagents: { tier: worker } }");
+      await made.runtime.openSidekick("ws-shop");
+      await made.runtime.sidekickHandoff("agent-1", "Continue task 42.", false);
+      return made;
+    };
+
+    it("moves through the ordered chain on quota failures, preserves the ledger, and keeps the target on restart", async () => {
+      const { runtime, created, timeline, live } = await configure();
+      timeline["agent-1"] = [{ item: { type: "error", message: "out of tokens" } }];
+      await runtime.onTurnEnded("agent-1", "failed");
+      expect(created.agents[1]!.options.config).toMatchObject({ provider: "codex/second", modeId: "full-access" });
+      expect(created.agents[1]!.options.prompt).toContain("Continue task 42.");
+      expect(created.agents[1]!.options.prompt).toContain("provider codex, model second");
+      expect(created.agents[1]!.options.prompt).toContain("backup/third");
+      await runtime.restartSidekick("ws-shop");
+      expect(created.agents[2]!.options.config.provider).toBe("codex/second");
+      timeline["agent-3"] = [{ item: { type: "assistant_message", text: "You've hit your weekly limit" } }];
+      await runtime.onTurnEnded("agent-3", "completed");
+      expect(created.agents[3]!.options.config.provider).toBe("backup/third");
+      timeline["agent-4"] = [{ item: { type: "error", message: "out of credits" } }];
+      await runtime.onTurnEnded("agent-4", "failed");
+      expect(created.agents).toHaveLength(4);
+      expect(live.max).toBe(1);
+    });
+
+    it("skips usage-blocked targets at launch and compaction replacement, then uses providers.fallback", async () => {
+      const { runtime, roots, created, usageData, failSend, state } = await setup({ shop: true });
+      await write(roots.shop!, `${PLAYBOOKS}/defaults/main.yaml`, `tiers:
+  worker:
+    - { provider: claude, model: first, mode: bypassPermissions }
+    - { provider: codex, model: second, mode: full-access }
+providers: { fallback: [backup/third], usage: { threshold: 90 } }
+`);
+      await write(roots.shop!, `${PLAYBOOKS}/sidekick/sidekick.yaml`, "sidekick: { tier: worker, session: { compact_above_tokens: 1000 } }");
+      usageData.providers = [
+        { providerId: "claude", status: "available", windows: [{ id: "weekly", usedPct: 95 }] },
+        { providerId: "codex", status: "available", windows: [{ id: "weekly", usedPct: 100 }] },
+      ];
+      await runtime.openSidekick("ws-shop");
+      expect(created.agents[0]!.options.config).toEqual({ provider: "backup/third" });
+      await runtime.sidekickHandoff("agent-1", "Keep this through compaction failure.", false);
+      state["agent-1"] = { status: "idle", used: 2000 };
+      failSend.on = true;
+      await runtime.onTurnEnded("agent-1", "completed");
+      expect(created.agents[1]!.options.config).toEqual({ provider: "backup/third" });
+      expect(created.agents[1]!.options.prompt).toContain("Keep this through compaction failure.");
+    });
+
+    it("fails over when compaction ends on quota instead of retrying the exhausted provider", async () => {
+      const { runtime, created, timeline } = await configure();
+      await runtime.sidekickHandoff("agent-1", "Ledger during compaction.", true);
+      await runtime.onTurnEnded("agent-1", "completed");
+      timeline["agent-1"] = [{ item: { type: "error", message: "out of tokens" } }];
+      await runtime.onTurnEnded("agent-1", "failed");
+      expect(created.agents[1]!.options.config.provider).toBe("codex/second");
+      expect(created.agents[1]!.options.prompt).toContain("Ledger during compaction.");
+    });
+
+    it("does not fail over on other errors or cancelled turns", async () => {
+      const { runtime, created, timeline } = await configure();
+      timeline["agent-1"] = [{ item: { type: "error", message: "connection closed" } }];
+      await runtime.onTurnEnded("agent-1", "failed");
+      timeline["agent-1"] = [{ item: { type: "error", message: "out of tokens" } }];
+      await runtime.onTurnEnded("agent-1", "canceled");
+      expect(created.agents).toHaveLength(1);
+    });
   });
 
   describe("context compaction", () => {

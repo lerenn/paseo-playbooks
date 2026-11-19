@@ -1,3 +1,4 @@
+# Optional: use sidekick: { tier: worker, subagents: { tier: worker } } with tiers in this repository defaults/main.yaml.
 # The Sidekick of this repository (lerenn/paseo-playbooks): a coordinator that reads and delegates.
 sidekick:
   provider: claude

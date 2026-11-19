@@ -64,6 +64,18 @@ could be automated, and sends subagents to change the playbooks in pull requests
 forbids it to edit files or run commands itself. A project without the folder shows a short tutorial and a button that writes
 starter files. The `sidekick/` folder is not a playbook, so a playbook named `sidekick` still works.
 
+A Sidekick may also live in `profiles/<id>/sidekick/`. Only active profiles participate; the first
+alphabetically wins, ahead of the top-level folder, with warnings for ignored folders. Use
+`sidekick: { tier: worker, subagents: { tier: worker } }` to resolve targets from the containing
+repository/profile's `defaults/main.yaml`. Multi-entry tiers cannot have inline agent overrides.
+Profile `agent_rules` apply to the Sidekick and its subagent briefs. The Sidekick skips targets at
+the configured provider usage threshold and, on quota failure, moves through its tier followed by
+`providers.fallback`, preserving its saved ledger and archiving the old agent first. Exhaustion is
+remembered for `providers.exhausted_for` until plugin reload. Restarts and compaction replacements
+use the same selection. When every target is exhausted, the failed agent remains visible without
+an automatic retry. Subagent fallback is instructed through the Sidekick's prompt; the plugin does
+not automatically replace those subagents.
+
 The Sidekick is long-lived and found by its labels: `playbooks/sidekick` and `playbooks/project=<project id>`
 (`paseo ls -g` lists them), so any agent can send it a prompt. It relays the human's answers to managers
 (`send_agent_prompt`, `respond_to_permission`) and checks the gate moved, and creates its subagents on
