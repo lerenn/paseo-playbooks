@@ -4,6 +4,16 @@ import { managerQuestionAnswer, managerQuestionChoices } from "../shared/gates";
 import { describeQuestion } from "./permissions";
 
 describe("Codex human question guidance", () => {
+  it("makes decision choices, recommendation, and the open-text route explicit for all Codex questions", () => {
+    expect(CODEX_QUESTION_RULE).toContain("ordinary clarification questions");
+    expect(CODEX_QUESTION_RULE).toContain("options: []");
+    expect(CODEX_QUESTION_RULE).toContain("2–3 substantive, distinct choices");
+    expect(CODEX_QUESTION_RULE).toContain("(Recommended)");
+    expect(CODEX_QUESTION_RULE).toContain("Keep the UI's automatic Other/free-text answer available");
+    expect(CODEX_QUESTION_RULE).toContain("keep the question open-text");
+    expect(CODEX_QUESTION_RULE).toContain("declared choices");
+  });
+
   it("preserves role instructions and config while adding the question policy", () => {
     const config = { provider: "codex/gpt-5-mini", systemPrompt: "Read-only reviewer.", modeId: "default", thinkingOptionId: "low" };
     expect(withCodexQuestionGuidance(config)).toEqual({ ...config, systemPrompt: `Read-only reviewer.\n\n${CODEX_QUESTION_RULE}` });

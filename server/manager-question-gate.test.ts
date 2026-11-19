@@ -109,6 +109,23 @@ describe("manager questions as gates", () => {
     expect(listed!.choices.map((choice) => choice.label)).toEqual(["staging", "production", "Something else"]);
   });
 
+  it("preserves recommendation labels and descriptions, and exposes a typed Other answer", async () => {
+    const choices = [
+      { label: "Use staging (Recommended)", description: "Verify there before production." },
+      { label: "Use production", description: "Skip the staging check." },
+    ];
+    const { runtime, run, gate, answers } = await asked(asking("q-rec", [{ question: "Which environment?", options: choices }]));
+    expect(gate.question?.options).toEqual(choices);
+    const listed = runtime.attention().gates.find((item) => item.gateId === gate.id);
+    expect(listed?.choices).toEqual([
+      { id: "option-1", label: "Use staging (Recommended)", comment: "none" },
+      { id: "option-2", label: "Use production", comment: "none" },
+      { id: "other", label: "Something else", comment: "required" },
+    ]);
+    await runtime.decideGate(run.id, gate.id, { decision: "other", comment: "use preview", by: null, via: "panel", now: now() });
+    expect(answers[0]).toMatchObject({ behavior: "allow", updatedInput: { answers: { "Which environment?": "use preview" } } });
+  });
+
   it("answering an option from the panel delivers it once to the manager's question and clears the gate", async () => {
     const { runtime, store, run, gate, answers } = await asked();
     await runtime.decideGate(run.id, gate.id, { decision: "option-1", comment: null, by: "Louis", via: "panel", now: now() });

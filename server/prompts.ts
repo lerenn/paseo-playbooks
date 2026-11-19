@@ -3,11 +3,11 @@ import { jobsText } from "./engine";
 import { replaceRefs } from "../shared/vars";
 
 /** Prompt guidance only: the provider owns the native question tool and its validation. */
-export const CODEX_QUESTION_RULE = `Human questions (Codex): use your native structured question tool (request_user_input or request_user_input_async, whichever is available) when you need the human's answer.
-- For a decision with meaningful alternatives, offer 2–4 substantive, distinct choices, within the tool's option limit. Each label must name an actual answer or action, not a placeholder such as "Answer (confirm sequencing and name the owner)" or "Respond".
-- Put your advised choice first, suffix its label with "(Recommended)", and briefly explain why in its description (or in the question text if the tool has no option descriptions). Describe the tradeoff of each alternative. Do not recommend a choice without enough evidence.
+export const CODEX_QUESTION_RULE = `Human questions (Codex): use your native structured question tool (request_user_input or request_user_input_async, whichever is available) when you need the human's answer. These instructions apply to ordinary clarification questions and questions that will be mirrored as Playbooks manager-question gates.
+- For a decision with meaningful, mutually exclusive alternatives, offer 2–3 substantive, distinct choices, within the tool's option limit. Every label must state a concrete answer or action; never submit options: [] or a lone generic "Answer"/"Other" option for a decision question.
+- If and only if evidence supports a recommendation, put it first, suffix that exact option label with "(Recommended)", and give the reason in its description. Describe the meaningful tradeoff of each alternative. Do not invent alternatives, recommend without evidence, or use placeholders such as "Answer (confirm sequencing and name the owner)" or "Respond".
 - Keep the UI's automatic Other/free-text answer available; do not duplicate Other as a listed option or force the human to pick a preset. A preselected choice is not an answer or approval.
-- Ask one focused question at a time when practical, so a manager's question can be answered in the Playbooks panel. For genuinely open-ended information (a name, URL, or text you cannot infer), ask a true free-form question using the tool's supported form; do not invent meaningless choices just to fill the list. If the tool requires choices, use its free-text path and explain what information is needed.
+- Ask one focused question at a time, so a manager's question can be answered in the Playbooks panel. For genuinely open-ended information (a name, URL, or text you cannot infer), keep the question open-text and explain what information is needed; do not fabricate domain-specific choices to fill the list. If the native tool requires choices, use its free-text path and explain the limitation.
 - When asking about an existing playbook gate, use exactly its declared choices, one option per choice: never add alternatives, change choice ids, or infer approval from free text. You may mark an advised label "(Recommended)" and explain why, while retaining the mapping to the original choice id. The gate's declared choices take precedence over the 2–4 guidance.`;
 
 /** Apply after resolving the actual provider, including fallbacks; other providers stay byte-identical. */
@@ -75,7 +75,8 @@ How to run a playbook:
    160 characters, e.g. "PR #3 is green and ready to merge.") and details for the human
    (what was done, links as plain URLs, risks, follow-ups). Then ask the human in chat with
    your tool for asking the user a question (AskUserQuestion, request_user_input or the
-   like), one option per gate choice: this flags the workspace as needing input. Call
+   like), one option per gate choice. Keep recommendation labels and descriptions intact
+   when they map to the declared gate choices: this flags the workspace as needing input. Call
    resume with their answer. The same goes for loop-limit and ask gates. The human may
    decide in the Paseo panel instead: your question is then dismissed with the decision;
    end your turn and you are woken with what comes next. If a decision reaches you by
