@@ -97,7 +97,7 @@ export async function createWorktree(input: { workspaceDir: string; worktreesDir
 async function existingBranch(repo: string, branch: string): Promise<"local" | "origin" | null> {
   const has = (ref: string) => git(repo, ["rev-parse", "--verify", "--quiet", ref]).then(() => true, () => false);
   if (await has(`refs/heads/${branch}`)) return "local";
-  await git(repo, ["fetch", "--quiet", "origin", branch]).catch(() => undefined);
+  await git(repo, ["fetch", "--quiet", "origin", "--", branch]).catch(() => undefined);
   return (await has(`refs/remotes/origin/${branch}`)) ? "origin" : null;
 }
 

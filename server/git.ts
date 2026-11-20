@@ -120,7 +120,7 @@ export async function freshRef(cwd: string, branch: string): Promise<string> {
 export async function freshRefInfo(cwd: string, branch: string): Promise<{ ref: string; fetchError: string | null }> {
   let fetchError: string | null = null;
   try {
-    await git(cwd, ["fetch", "--quiet", "origin", branch]);
+    await git(cwd, ["fetch", "--quiet", "origin", "--", branch]);
   } catch (error) {
     // Offline or no origin: whatever the remote-tracking ref already holds, if any.
     fetchError = (error instanceof Error ? error.message : String(error)).split("\n").find((line) => line.trim() && !line.startsWith("Command failed"))?.trim() ?? "git fetch failed";
@@ -159,7 +159,7 @@ export async function exportPaths(cwd: string, ref: string, paths: readonly stri
 /** Best effort: fetches `branch` from origin and fast-forwards the checkout to it. Never fails. */
 export async function fastForward(cwd: string, branch: string): Promise<void> {
   try {
-    await git(cwd, ["fetch", "--quiet", "origin", branch]);
+    await git(cwd, ["fetch", "--quiet", "origin", "--", branch]);
     await git(cwd, ["merge", "--ff-only", "--quiet", `origin/${branch}`]);
   } catch {
     // Offline, no origin, or not a fast-forward: keep the checkout as it is.
