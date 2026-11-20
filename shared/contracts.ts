@@ -187,6 +187,13 @@ export const resumeRunRpc = defineRpc({
   output: z.object({ pausedAt: z.string().nullable() }),
 });
 
+/** "Continue anyway": for a limited time, steps of runs that use the provider start despite the quota pacing (ADR 2026-11-20-rate-limiting). Does not lift the global step or playbook limits. */
+export const overrideQuotaRpc = defineRpc({
+  name: "rate_limits.override_quota",
+  input: z.object({ provider: z.string(), minutes: z.number().int().min(1).max(1440).optional() }),
+  output: z.object({ until: z.string() }),
+});
+
 /** Hides a finished run from the panel. Its saved state and its agents (manager and steps) are kept. */
 export const archiveRunRpc = defineRpc({
   name: "runs.archive",

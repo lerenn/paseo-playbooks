@@ -5,7 +5,7 @@ import { Icon, ScrollView, useToast } from "@getpaseo/plugin/client/ui";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Animated, Pressable, Text, View } from "react-native";
-import { archiveRunRpc, cancelRunRpc, createExampleRpc, listPlaybooks, listRuns, pauseRunRpc, resumeRunRpc } from "../shared/contracts";
+import { archiveRunRpc, cancelRunRpc, createExampleRpc, listPlaybooks, listRuns, overrideQuotaRpc, pauseRunRpc, resumeRunRpc } from "../shared/contracts";
 import { isActive, isPaused, isPipeline, isTerminal, type Playbook, type PlaybookEntry, type Run } from "../shared/types";
 import { slowView } from "../shared/slow";
 import { useSlowSteps } from "./slow";
@@ -534,6 +534,7 @@ function RunChip(props: { theme: Theme; run: Run; label?: string | undefined; se
   const archive = useRpc(archiveRunRpc);
   const pause = useRpc(pauseRunRpc);
   const resume = useRpc(resumeRunRpc);
+  const overrideQuota = useRpc(overrideQuotaRpc);
   const toast = useToast();
   const [menu, setMenu] = useState<"closed" | "open" | "confirm">("closed");
   const paused = isPaused(run);
@@ -550,7 +551,7 @@ function RunChip(props: { theme: Theme; run: Run; label?: string | undefined; se
       <View style={{ flexDirection: "row", borderRadius: 10, borderWidth: 1, borderColor: border, backgroundColor: selected ? color : "transparent", overflow: "hidden" }}>
         <Pressable
           accessibilityRole="tab"
-          accessibilityLabel={`${props.label ?? runLabel(run)}, ${runStatusLabel(run.status)}${wrapping ? ", wrapping up" : ""}${paused ? ", paused" : ""}`}
+          accessibilityLabel={`${props.label ?? runLabel(run)}, ${runStatusLabel(run.status)}${wrapping ? ", wrapping up" : ""}${paused ? ", paused" : ""}${run.rateHold ? ", on hold" : ""}`}
           accessibilityState={{ selected }}
           onPress={props.onSelect}
           style={{ paddingLeft: 8, paddingRight: 6, paddingVertical: 2 }}
@@ -560,6 +561,7 @@ function RunChip(props: { theme: Theme; run: Run; label?: string | undefined; se
             {props.label ?? runLabel(run)}
             {wrapping ? " · wrapping up" : ""}
             {paused ? " · paused" : ""}
+            {run.rateHold ? " · on hold" : ""}
           </Text>
         </Pressable>
         {(
@@ -608,6 +610,24 @@ function RunChip(props: { theme: Theme; run: Run; label?: string | undefined; se
                   <Text selectable style={{ flex: 1, color: theme.colors.foreground, fontSize: 12 }}>{value}</Text>
                 </View>
               ))}
+              {run.rateHold ? (
+                <View style={{ gap: 4 }}>
+                  <Text selectable style={{ color: theme.colors.foreground, fontSize: 12 }}>
+                    {`On hold (${run.rateHold.kind === "quota" ? "provider quota" : run.rateHold.kind === "steps" ? "step limit" : "playbook limit"}): ${run.rateHold.reason}`}
+                    {run.rateHold.retryAt ? `. The plugin looks again at ${new Date(run.rateHold.retryAt).toLocaleTimeString()}` : ". It resumes by itself when a run ends or the limit rises"}
+                  </Text>
+                  {run.rateHold.kind === "quota" && run.rateHold.provider ? (
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={`Continue anyway on ${run.rateHold.provider} for one hour`}
+                      onPress={() => void overrideQuota({ provider: run.rateHold!.provider!, minutes: 60 })}
+                      style={{ paddingVertical: 4 }}
+                    >
+                      <Text style={{ color: theme.colors.accent, fontSize: 12 }}>{`Continue anyway on ${run.rateHold.provider} for 1 hour`}</Text>
+                    </Pressable>
+                  ) : null}
+                </View>
+              ) : null}
               {Object.keys(run.inputs).length > 0 ? (
                 <>
                   <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>Inputs</Text>

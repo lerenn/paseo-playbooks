@@ -3,7 +3,7 @@
 sidekick:
   mode: plan
   # Events it is told about, for this project's runs.
-  watch: [gate.escalated, run.failed, run.manager_lost, step.waiting_manager_stuck, manager.question_pending]
+  watch: [gate.escalated, run.failed, run.manager_lost, step.waiting_manager_stuck, manager.question_pending, run.held, run.released]
   # Subagents it creates for jobs, and the context size that restarts it with a hand-off summary.
   # subagents: { provider: claude, model: claude-sonnet-5-5, mode: acceptEdits }
   # session: { restart_above_tokens: 300000 }

@@ -3,6 +3,7 @@ import path from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { pluginDataDir } from "./data-dir";
 import { DEFAULT_REPO } from "../shared/repos";
+import { parseDuration } from "../shared/vars";
 
 /** `<plugin data dir>/config.yaml` (data-dir.ts): the user's settings (profile activation is per project). */
 export function userConfigFile(): string {
@@ -88,5 +89,50 @@ export async function readEventCoreConfig(file: string = userConfigFile()): Prom
   return {
     log: typeof block.log === "boolean" ? block.log : DEFAULT_EVENT_CORE.log,
     parity: block.parity === "off" ? "off" : DEFAULT_EVENT_CORE.parity,
+  };
+}
+
+/** `rate_limits` of the user config (ADR 2026-11-20-rate-limiting): global limits and quota pacing of playbook steps. Everything is off by default. */
+export interface RateLimitsConfig {
+  /** Most steps running at once across all projects; null = no limit. */
+  steps: number | null;
+  /** Most runs admitted at once across all projects; null = no limit. */
+  playbooks: number | null;
+  quota: {
+    /** Pace new steps against each provider's usage windows. */
+    pacing: boolean;
+    /** Percentage of a window the playbooks may use (the rest is a reserve). */
+    usablePercent: number;
+    /** A reading younger than this is used as is; an older one is refreshed in the background (ms). */
+    refreshMs: number;
+    /** A reading older than this is unusable: new steps are held as "quota data unavailable" (ms). */
+    maxAgeMs: number;
+  };
+}
+
+export const DEFAULT_RATE_LIMITS: RateLimitsConfig = { steps: null, playbooks: null, quota: { pacing: false, usablePercent: 97, refreshMs: 5 * 60_000, maxAgeMs: 30 * 60_000 } };
+
+function positiveInt(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null;
+}
+
+function durationMs(value: unknown, fallback: number): number {
+  return typeof value === "string" ? (parseDuration(value) ?? fallback) : fallback;
+}
+
+/**
+ * `rate_limits: { steps: 4, playbooks: 2, quota: { pacing: true, usable_percent: 97, refresh_interval: 5m, max_age: 30m } }`.
+ * Anything missing or malformed falls back to the default (off): a bad config never blocks loading. Read when needed, so a
+ * change applies without a reload.
+ */
+export async function readRateLimitsConfig(file: string = userConfigFile()): Promise<RateLimitsConfig> {
+  const block = asRecord((await readConfig(file)).rate_limits);
+  const quota = asRecord(block.quota);
+  const usable = typeof quota.usable_percent === "number" && quota.usable_percent > 0 && quota.usable_percent <= 100 ? quota.usable_percent : DEFAULT_RATE_LIMITS.quota.usablePercent;
+  const refreshMs = durationMs(quota.refresh_interval, DEFAULT_RATE_LIMITS.quota.refreshMs);
+  return {
+    steps: positiveInt(block.steps),
+    playbooks: positiveInt(block.playbooks),
+    quota: { pacing: quota.pacing === true, usablePercent: usable, refreshMs, maxAgeMs: Math.max(refreshMs, durationMs(quota.max_age, DEFAULT_RATE_LIMITS.quota.maxAgeMs)) },
   };
 }

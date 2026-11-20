@@ -218,6 +218,26 @@ and `job.escalated`. Payload: `runId` (the pipeline), `playbook` (the singleton'
 `jobId`, `label`, `stage`, `batchRunId`, `outcome`, plus `via`, `nextStages`, `rides`/`retries`, `summary` or `reason`
 per type. `filter` matches them by equality, e.g. `{ playbook: "release_trains", stage: "stg" }`. Deprecated until 2027-02-12 (ADR 2026-11-12-stage-batch-rename): `station`/`trainRunId`/`nextStations` are sent next to `stage`/`batchRunId`/`nextStages`, `job.boarded` next to `job.joined`, `PLAYBOOK_STATION` next to `PLAYBOOK_STAGE`, and `riding`/`stations` next to `batches`/`stages` in the tools' output.
 
+### Rate limits
+
+Off by default. Global limits and a quota pace for playbook steps, in the user config
+(`$PASEO_HOME/plugin-data/lerenn/paseo-playbooks/config.yaml`, applied without a reload; ADR `docs/adrs/2026-11-20-rate-limiting.md`):
+
+```yaml
+rate_limits:
+  steps: 4          # most agent and script steps running at once, across all projects
+  playbooks: 2      # most runs admitted at once; the oldest keep their place, the others are held between steps
+  quota:
+    pacing: true            # pace new steps against each provider's usage windows
+    usable_percent: 97      # a 100 h window then allows 0.97 points an hour; the rest is a reserve
+    refresh_interval: 5m    # a reading younger than this is used as is
+    max_age: 30m            # an older reading holds new steps ("quota data unavailable") until a refresh succeeds
+```
+
+A running step is never interrupted: only new steps are held (between steps and at admission), and the plugin resumes the held run by
+itself. `get_run` shows why in `rateHold`, the manager and the Sidekick are told (`run.held`, `run.released`), and the run's tab says
+"on hold" with the provider, window and retry time, plus a "Continue anyway" button for a quota hold (one hour, per provider).
+
 ### Profiles
 
 A profile is an extra, opt-in repository of playbooks, with the same layout as the playbooks folder

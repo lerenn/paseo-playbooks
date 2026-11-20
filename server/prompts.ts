@@ -112,6 +112,12 @@ How to run a playbook:
 10. Pause: a human may pause the run from the panel. While it is paused, start_step and
    nudge_step are refused and you are not woken; running steps finish their turn. End your
    turn. On resume you are woken with the ready steps and the reports that came in meanwhile.
+   Rate limits: the plugin may hold the run's new steps (a global limit of running steps or of
+   admitted runs, or a provider's quota pace). You are told when it starts and when it ends, and
+   get_run shows it as rateHold (kind, reason, provider, window, retryAt). While it lasts
+   start_step is refused with the reason; running steps finish. The plugin starts the ready
+   steps itself once capacity or quota returns: do not retry, restart, cancel or work around it.
+   Tell the human only if they ask. End your turn.
 
 11. Overseeing: get_run reads any run, not only yours (writes stay with the run's manager).
    list_gates shows every open gate and ask across runs and who holds each; with

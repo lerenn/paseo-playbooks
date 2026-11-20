@@ -12,6 +12,7 @@ import {
   createExampleRpc,
   pauseRunRpc,
   resumeRunRpc,
+  overrideQuotaRpc,
   decideGateRpc,
   deferGateRpc,
   returnGateRpc,
@@ -250,6 +251,7 @@ export default function contribute(server: PluginServerContext) {
   handle(saveSidekickAttachmentRpc, async (input) => ({ path: await saveAttachment(input) }));
   handle(createSidekickFilesRpc, async ({ workspaceId }) => ({ files: await createSidekickStarter(await runtime.projectRootOf(workspaceId)) }));
   handle(pauseRunRpc, async ({ runId }) => ({ pausedAt: (await runtime.pauseRun(runId)).pausedAt }));
+  handle(overrideQuotaRpc, async ({ provider, minutes }) => runtime.overrideQuota(provider, minutes));
   handle(resumeRunRpc, async ({ runId }) => ({ pausedAt: (await runtime.resumeRun(runId)).pausedAt }));
   handle(nudgeStepRpc, async ({ runId, stepId, message }) => {
     await runtime.nudgeStep(runId, stepId, message, true);

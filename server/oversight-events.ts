@@ -111,6 +111,18 @@ export const OVERSIGHT_TYPES: EventTypeDef[] = [
     line: (event) => failedLine(event, "run.manager_lost"),
   },
   {
+    type: "run.held",
+    description: "Rate limiting holds a run's new steps (step limit, playbook limit or provider quota pacing): kind, reason, provider, window and when it is looked at again. Running steps finish; the plugin resumes the run by itself.",
+    payload: z.object({ ...runFields, kind: z.enum(["steps", "playbooks", "quota"]), reason: z.string(), provider: z.string().nullable(), window: z.string().nullable(), retryAt: z.string().nullable() }),
+    line: (event) => `- run.held: ${runName(event.payload)} is on hold (${event.payload.kind}): ${event.payload.reason}.${event.payload.retryAt ? ` Looked at again at ${event.payload.retryAt}.` : ""} The plugin resumes it by itself: nothing to do. Tools: get_run { runId: "${event.runId}" }.`,
+  },
+  {
+    type: "run.released",
+    description: "A rate limit hold on a run ended (capacity or quota returned): the plugin starts its ready steps by itself.",
+    payload: z.object({ ...runFields }),
+    line: (event) => `- run.released: ${runName(event.payload)} is no longer on hold; its steps continue. Tools: get_run { runId: "${event.runId}" }.`,
+  },
+  {
     type: "step.started",
     description: "A step attempt started (agent and script steps; each attempt of a retried or looped step again): stepId and attempt number.",
     payload: z.object(stepFields),
@@ -310,6 +322,11 @@ export class OversightProducer {
         const outcome = branch ? (run.steps[entry.stepId]?.branch ?? entry.detail) : entry.type === "step_outcome" ? entry.detail.split(" (")[0]! : entry.detail;
         const attempt = branch ? null : (this.attempts.get(key) ?? run.steps[entry.stepId]?.attempts.at(-1)?.n ?? null) || null;
         await this.bus.emit("step.completed", { ...base, stepId: entry.stepId, attempt, outcome }, meta);
+      } else if (entry.type === "run_held") {
+        const hold = run.rateHold;
+        await this.bus.emit("run.held", { ...base, kind: hold?.kind ?? "quota", reason: entry.detail, provider: hold?.provider ?? null, window: hold?.window ?? null, retryAt: hold?.retryAt ?? null }, meta);
+      } else if (entry.type === "run_released") {
+        await this.bus.emit("run.released", base, meta);
       } else if (entry.type === "run_completed") {
         await this.bus.emit("run.completed", base, meta);
       } else if (entry.type === "run_canceled") {

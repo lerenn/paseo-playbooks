@@ -7,7 +7,7 @@ import { record } from "./event-core";
 import { blockEntrySteps, blockStepIds, holdsBlock, innermostBlock } from "../shared/slots";
 import { ADMISSION_CHOICES, PERMISSION_CHOICES, askChoices, askHumanText, askTransitionOf, choicesOfGate, GATE_SUMMARY_MAX, outcomeTransition, isDeferred, waitsForHuman } from "../shared/gates";
 import { parse as parseYaml, stringify as toYaml } from "yaml";
-import type { GateWaitCondition, PoolPass, AfterTask, AskChoice, Attempt, AttemptAgent, FanoutChild, FanoutState, Gate, GateDecider, Job, Playbook, Run, RunDefinition, RunStep, RunWorktree, Step, Transition, VarValue, When } from "../shared/types";
+import type { GateWaitCondition, PoolPass, AfterTask, AskChoice, Attempt, AttemptAgent, FanoutChild, FanoutState, Gate, GateDecider, Job, Playbook, RateHold, Run, RunDefinition, RunStep, RunWorktree, Step, Transition, VarValue, When } from "../shared/types";
 import { isActive, isAgentlessAttempt, isFanoutAttempt, isManagerless, MAX_FANOUT_PAST, MAX_POOL_PASSES, isPaused, isPipeline, isStepDone, isStepLive, isTerminal, restartBlocker, runningAfterTasks } from "../shared/types";
 import { coerceValue, formatValue, type ListItem, lookup, parseDuration, parseList, renderTemplate, replaceRefs, resolveValue, singleRef, templateRefs } from "../shared/vars";
 
@@ -218,6 +218,7 @@ function createRun(input: NewRunInput, inputs: Record<string, VarValue>, kind: "
     archivedAt: null,
     seenAt: null,
     pausedAt: null,
+    rateHold: null,
     managerWatch: { steps: {}, question: null },
     warden: { findings: {} },
     steps: Object.fromEntries(
@@ -1763,6 +1764,27 @@ export function resumeRun(run: Run, now: string): boolean {
   run.pausedAt = null;
   log(run, now, "run_resumed", null, "resumed by a human");
   return true;
+}
+
+/**
+ * Records that rate limiting holds (or no longer holds) the run's new steps. A change of kind, provider or window is a new
+ * hold (`run_held`); a changed reason or retry time alone only updates the state. Returns "held", "released" or null.
+ */
+export function setRateHold(run: Run, hold: { kind: RateHold["kind"]; reason: string; provider: string | null; window: string | null; retryAt: string | null } | null, now: string): "held" | "released" | null {
+  const current = run.rateHold;
+  if (!hold) {
+    if (!current) return null;
+    run.rateHold = null;
+    log(run, now, "run_released", null, `rate limit hold lifted (was: ${current.reason})`);
+    return "released";
+  }
+  if (current && current.kind === hold.kind && current.provider === hold.provider && current.window === hold.window) {
+    run.rateHold = { ...current, reason: hold.reason, retryAt: hold.retryAt };
+    return null;
+  }
+  run.rateHold = { ...hold, since: now };
+  log(run, now, "run_held", null, hold.reason);
+  return "held";
 }
 
 /** Marks a failed or timed-out readonly check on the current attempt. */

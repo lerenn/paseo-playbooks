@@ -247,6 +247,12 @@ function isMoving(tone: Tone): boolean {
 
 const LIVE = new Set(["running", "waiting", "reported", "queued", "ready", "failed"]);
 
+/** "On hold: <why>, retries 14:05": what the panel says of a run rate limiting holds (new steps only; running ones finish). */
+export function holdText(hold: { reason: string; retryAt: string | null }): string {
+  const retry = hold.retryAt ? new Date(hold.retryAt) : null;
+  return `On hold: ${hold.reason}${retry && Number.isFinite(retry.getTime()) ? `, retries ${retry.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : ""}`;
+}
+
 /**
  * Where a run stands on its line: the column of its furthest live step (Done once completed),
  * the columns of every live step, and its tone.
@@ -270,6 +276,8 @@ function progress(run: RunSummary): { position: number; marks: number[]; tone: T
   if (gates.length > 0) return { position, marks, tone: "waiting", status: `Ready for you: ${gates.map((gate) => stepTitleOf(run.playbook, gate.stepId)).join(", ")}` };
   const named = (status: string) => steps.filter((step) => run.steps[step.id]?.status === status).map(stepTitle);
   const running = named("running");
+  // Rate limiting holds only new steps: running ones finish. A human gate (above) is never hidden by a hold.
+  if (run.rateHold) return { position, marks, tone: running.length > 0 ? "running" : "paused", status: `${running.length > 0 ? `Working: ${running.join(", ")}; ` : ""}${holdText(run.rateHold)}` };
   if (running.length > 0) return { position, marks, tone: "running", status: `Working: ${running.join(", ")}` };
   const queued = named("queued");
   if (queued.length > 0) return { position, marks, tone: "waiting", status: `Waiting for a free slot: ${queued.join(", ")}` };

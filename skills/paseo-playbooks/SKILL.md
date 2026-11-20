@@ -75,7 +75,7 @@ not automatically replace those subagents.
 # sidekick/sidekick.yaml (all fields optional)
 sidekick:
   model: claude-opus-5-5        # provider, model, mode, thinking: as an agent block
-  watch: [gate.escalated, run.failed, run.manager_lost, step.waiting_manager_stuck, manager.question_pending]   # event types or globs, for this project's runs
+  watch: [gate.escalated, run.failed, run.manager_lost, step.waiting_manager_stuck, manager.question_pending, run.held, run.released]   # event types or globs, for this project's runs
   subagents: { provider: claude, model: claude-sonnet-5-5, mode: acceptEdits, archive_workspace: true, archive_after: 10m }   # what it creates for jobs (default claude / claude-sonnet-5-5; mode defaults to its own); archive_* : the hidden workspace of a finished subagent is archived after the grace period (default true / 10m)
   session: { compact_above_tokens: 300000, hard_limit_tokens: 450000 }   # compact its conversation (same agent) past the first; replace it by a new agent only when compaction fails or it stays above the second (defaults 300000 and 1.5x; restart_above_tokens is the old name of the first)
   runs: { max_concurrent: 5, confirm_bulk: true }   # rules for the runs it starts; max_concurrent unset means unlimited, confirm_bulk defaults to false
@@ -1326,6 +1326,13 @@ such a run. A fan-out child uses its own playbook's mode.
 With no manager, a human gate is shown in the panel and also put to the human in the conversation of the step agent just before it, when
 that agent is still alive (`role: { archive_agents: false }`, idle): the plugin asks it to use `AskUserQuestion`, then `answer_gate`
 (a tool only those step agents have). Answering in the panel or in the conversation closes the gate; the other surface is dismissed.
+
+## Rate limits
+
+Off by default; set in the user config (`rate_limits: { steps, playbooks, quota: { pacing, usable_percent, refresh_interval, max_age } }`).
+The plugin may hold a run's new steps (global step limit, global playbook limit, provider quota pace). `get_run` shows `rateHold`
+(kind, reason, provider, window, retryAt); `run.held` / `run.released` are events. A held run needs nothing from an agent: running steps finish, the
+plugin starts the ready steps itself when capacity or quota returns. Never start, retry, restart or cancel because of a hold.
 
 ## Slow steps
 

@@ -69,8 +69,17 @@ import { StaleSessions } from "./stale-sessions";
 import { fetchAllWorkspaces, WorkspaceLookup } from "./workspace-lookup";
 import type { RunStore } from "./store";
 import { holdsBlock, planAdmissions, slotHolders } from "../shared/slots";
+import { DEFAULT_RATE_LIMITS, readRateLimitsConfig, type RateLimitsConfig } from "./config";
+import { limitVerdict, QuotaPacer, runProviders, type HoldVerdict } from "./rate-limit";
 
 export class UserError extends Error {}
+
+/** A step could not start because rate limiting holds the run (ADR 2026-11-20-rate-limiting): not a failure, the plugin starts the step itself once the hold is lifted. */
+export class RateHeldError extends UserError {
+  constructor(readonly hold: HoldVerdict) {
+    super(`rate limit: ${hold.reason}${hold.retryAt ? ` (the plugin looks again at ${hold.retryAt})` : ""}. The step stays ready and the plugin starts it by itself when capacity or quota returns; do not start it, retry or restart anything.`);
+  }
+}
 
 /** How often a batch's manager is reminded of detached jobs without a follow-up before the plugin stops holding it. */
 const FOLLOW_UP_REMINDERS = 3;
@@ -591,6 +600,13 @@ export class Runtime {
       this.eventsTimer = setInterval(() => void this.watchEvents().catch((error) => console.error("[playbooks] event watch failed:", errorText(error))), this.options.pollMs ?? 2000);
       (this.eventsTimer as unknown as { unref?: () => void }).unref?.();
     }
+    if (!this.limitTimer) {
+      // Held runs are looked at again while any is held (a quota ceiling catches up with time, a backoff ends).
+      this.limitTimer = setInterval(() => {
+        if (this.store.list().some((run) => run.rateHold)) void this.tick().catch((error) => console.error("[playbooks] tick for held runs failed:", errorText(error)));
+      }, 15_000);
+      (this.limitTimer as unknown as { unref?: () => void }).unref?.();
+    }
     return this.reconciled;
   }
 
@@ -616,6 +632,13 @@ export class Runtime {
 
   /** Provider usage of the host (`providers.listUsage`): shared by every run, read at most once at a time and reused for a short while. */
   private readonly usage = new UsageCache(async () => (await this.api().providers.listUsage()) as unknown as UsageSnapshot);
+  /** Quota pacing of playbook steps: provider usage readings with their freshness, backoff and "continue anyway" overrides. */
+  private readonly pacer = new QuotaPacer(
+    async () => (await this.api().providers.listUsage()) as unknown as UsageSnapshot,
+    () => void this.tick().catch((error) => console.error("[playbooks] tick after a quota read failed:", errorText(error))),
+  );
+  private rateConfig: { at: number; value: RateLimitsConfig } | null = null;
+  private limitTimer: ReturnType<typeof setInterval> | null = null;
   /** Usage skips already written to a run's log (`run|target|window|reset`), so a skip is logged once. */
   private readonly usageLogged = new Set<string>();
   /** Workspace lookups by id: one fetch of the daemon's list serves every id (the SDK's `ref().refresh()` fetched it per call). */
@@ -2079,6 +2102,7 @@ export class Runtime {
       do {
         this.tickAgain = false;
         await this.tickPhase("releaseDelayed", () => this.releaseDelayed());
+        await this.tickPhase("releaseHolds", () => this.releaseHolds());
         await this.tickPhase("driveManagerless", () => this.driveManagerless());
         await this.tickPhase("settleGateChats", () => this.settleGateChats());
         await this.tickPhase("askGatesInChat", () => this.askGatesInChat());
@@ -2102,6 +2126,84 @@ export class Runtime {
     }
   }
 
+
+  // ---------------------------------------------------------------- rate limiting (ADR 2026-11-20-rate-limiting)
+
+  /** `rate_limits` of config.yaml, re-read at most every 5 s so a change applies without a reload. */
+  private async rateLimits(): Promise<RateLimitsConfig> {
+    const now = Date.now();
+    if (!this.rateConfig || now - this.rateConfig.at > 5_000) this.rateConfig = { at: now, value: await readRateLimitsConfig().catch(() => DEFAULT_RATE_LIMITS) };
+    return this.rateConfig.value;
+  }
+
+  /** Steps being started right now (agent created, attempt not yet running), other than `exceptKey`: they count against the step limit. */
+  private reservedStarts(exceptKey: string): number {
+    let count = 0;
+    for (const key of this.startingSteps) {
+      if (key === exceptKey) continue;
+      const [runId, stepId] = key.split("/");
+      if (this.store.get(runId!)?.steps[stepId!]?.status !== "running") count += 1;
+    }
+    return count;
+  }
+
+  /**
+   * Whether rate limiting holds `run` from starting a step now: the verdict (also recorded in the run, announced when it changes)
+   * or null, which also lifts a hold the run had. Only agent and script steps count and are held; a gate, a hand-off or a
+   * fan-out is never held (a fan-out's own step would deadlock the runs it started).
+   */
+  private async rateCheck(run: Run, exceptKey = "", quota = true): Promise<HoldVerdict | null> {
+    const config = await this.rateLimits();
+    let verdict: HoldVerdict | null = null;
+    if (config.steps !== null || config.playbooks !== null) verdict = limitVerdict(run, this.store.list(), config, this.reservedStarts(exceptKey));
+    if (!verdict && quota && config.quota.pacing) verdict = this.pacer.check(runProviders(run, DEFAULT_PROVIDER), config.quota);
+    await this.applyHold(run.id, verdict);
+    return verdict;
+  }
+
+  /** Records a hold (or its end) in the run and tells the manager when it starts and when it ends. */
+  private async applyHold(runId: string, verdict: HoldVerdict | null): Promise<void> {
+    const before = this.store.get(runId)?.rateHold ?? null;
+    if (!verdict && !before) return;
+    if (verdict && before && before.kind === verdict.kind && before.provider === verdict.provider && before.window === verdict.window && before.reason === verdict.reason && before.retryAt === verdict.retryAt) return;
+    let change: "held" | "released" | null = null;
+    await this.store.mutate(runId, (run) => void (change = engine.setRateHold(run, verdict, nowIso())));
+    const run = this.store.get(runId);
+    if (!run) return;
+    if (change === "held" && verdict) {
+      await this.enqueue(runId, [`Rate limit: this run is on hold (${verdict.reason}${verdict.retryAt ? `; the plugin looks again at ${verdict.retryAt}` : ""}). Running steps finish; no new step starts until then. The plugin resumes the run by itself: do not start, retry or restart steps, and do not cancel the run.`]);
+      await this.deliver(runId);
+    } else if (change === "released") {
+      const ready = engine.readyForManager(run);
+      await this.enqueue(runId, [`Rate limit lifted: the run continues.${ready.length > 0 ? ` Ready for you: ${ready.join(", ")}.` : " The plugin starts the ready steps by itself."}`]);
+      await this.deliver(runId);
+    }
+  }
+
+  /** Lifts, by itself, every hold that no longer applies (capacity or quota returned, the run ended); runs again from the timer while any run is held. */
+  private async releaseHolds(): Promise<void> {
+    for (const listed of this.store.list()) {
+      if (!listed.rateHold) continue;
+      if (!isActive(listed) || isPaused(listed)) {
+        if (!isActive(listed)) await this.applyHold(listed.id, null);
+        continue;
+      }
+      await this.rateCheck(listed);
+    }
+  }
+
+  /** The global limits and pacing for the panel: the settings, running steps, the overrides and every held run. */
+  async rateLimitStatus(): Promise<{ config: RateLimitsConfig; overrides: Record<string, string>; held: Array<{ runId: string; hold: NonNullable<Run["rateHold"]> }> }> {
+    return { config: await this.rateLimits(), overrides: this.pacer.activeOverrides(), held: this.store.list().flatMap((run) => (run.rateHold && isActive(run) ? [{ runId: run.id, hold: run.rateHold }] : [])) };
+  }
+
+  /** "Continue anyway": steps whose run uses `provider` start despite the quota pacing for `minutes` (default 60, at most 1440). */
+  async overrideQuota(provider: string, minutes?: number): Promise<{ until: string }> {
+    const until = this.pacer.override(provider, minutes === undefined ? undefined : minutes * 60_000);
+    await this.tick();
+    return { until };
+  }
+
   /**
    * Every ready agent step the plugin starts by itself (all but `manage.auto_start: false` and held ones) is started, with
    * the rendered prompt and inputs and an empty brief, as start_playbook's autoStart does. Idempotent: a step is started
@@ -2121,6 +2223,8 @@ export class Runtime {
         try {
           await this.startStep(run.managerAgentId, run.id, stepId, "");
         } catch (error) {
+          // Held by rate limiting: the step stays ready and the plugin starts it when the hold is lifted.
+          if (error instanceof RateHeldError) break;
           // Started by someone else meanwhile: nothing failed.
           if (this.store.get(run.id)?.steps[stepId]?.status !== "ready" || this.startingSteps.has(key)) continue;
           this.autoStartFailed.set(key, errorText(error));
@@ -2210,6 +2314,7 @@ export class Runtime {
           try {
             await this.startStep("", runId, stepId, "");
           } catch (error) {
+            if (error instanceof RateHeldError) break;
             await this.stopRunByPlugin(runId, `step "${stepId}" could not start: ${errorText(error)}`);
           }
         }
@@ -3209,6 +3314,7 @@ export class Runtime {
     for (const run of this.store.list()) {
       if (!isActive(run) || isPaused(run)) continue;
       for (const stepId of engine.readyScripts(run)) {
+        if (await this.rateCheck(this.store.get(run.id) ?? run, "", false)) break;
         const started = await this.store.mutate(run.id, (current) => {
           if (current.steps[stepId]!.status !== "ready" || isPaused(current)) return null;
           const feedback = current.steps[stepId]!.feedback;
@@ -3737,6 +3843,8 @@ export class Runtime {
     if (this.startingSteps.has(startKey)) throw new UserError(`step "${stepId}" is being started right now (the plugin starts ready agent steps by itself)`);
     this.startingSteps.add(startKey);
     try {
+      const held = await this.rateCheck(run, startKey);
+      if (held) throw new RateHeldError(held);
       return await this.startStepNow(managerId, run, step, brief, model);
     } finally {
       this.startingSteps.delete(startKey);

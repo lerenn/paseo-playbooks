@@ -585,6 +585,11 @@ steps:
 # config.yaml in the plugin data folder
 event_core: { log: true, parity: warn }</code></pre>
 
+<h2 id="rate-limits">Rate limits</h2>
+<p>Off by default. In the user config (<code>config.yaml</code> in the plugin data folder, applied without a reload): <code>steps</code> (most agent and script steps running at once, all projects), <code>playbooks</code> (most runs admitted at once; the oldest keep their place) and <code>quota</code> (<code>pacing</code>, <code>usable_percent</code> default 97, <code>refresh_interval</code> default 5m, <code>max_age</code> default 30m). New steps are held between steps, never a running one, and the plugin resumes the run by itself. <code>get_run</code> shows <code>rateHold</code> (kind, reason, provider, window, retryAt); <code>run.held</code> and <code>run.released</code> are emitted. Quota pacing allows <code>usable_percent</code> &times; elapsed / window length of each provider window; older data than <code>max_age</code> holds new steps as "quota data unavailable".</p>
+<p class="file">Example: config.yaml</p>
+<pre><code>rate_limits: { steps: 4, playbooks: 2, quota: { pacing: true, usable_percent: 97, refresh_interval: 5m, max_age: 30m } }</code></pre>
+
 <h2 id="sidekick">Sidekick</h2>
 <pre><code># profiles/personal/defaults/main.yaml
 tiers:
