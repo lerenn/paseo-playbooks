@@ -20,6 +20,7 @@ beforeEach(() => void (process.env.PASEO_HOME = ""));
 
 const PLAYBOOK = `
 title: Work
+rate_limit: { estimate: 5 }
 steps:
   - id: a
     role: { name: implementer, agent: { provider: claude, model: m } }
@@ -34,7 +35,7 @@ const HOUR = 3_600_000;
 /** A weekly window with `used` points, 50 of 168 hours gone: the pace ceiling is 28.87 points at 97 usable. */
 const weekly = (used: number) => ({ id: "weekly", label: "weekly", usedPct: used, resetsAt: new Date(Date.now() + 118 * HOUR).toISOString() });
 
-async function setup(rateLimits: string, usage: { current: unknown } = { current: { providers: [] } }) {
+async function setup(rateLimits: string, usage: { current: unknown } = { current: { providers: [] } }, options: { estimate?: boolean } = {}) {
   const dir = await mkdtemp(path.join(tmpdir(), "rl-runtime-"));
   temps.push(dir);
   process.env.PASEO_HOME = dir;
@@ -44,7 +45,7 @@ async function setup(rateLimits: string, usage: { current: unknown } = { current
   await mkdir(path.join(root, "roles/implementer"), { recursive: true });
   await writeFile(path.join(root, "roles/implementer/role.yaml"), "title: Implementer\n");
   await writeFile(path.join(root, "roles/implementer/instructions.md"), "Do it.\n");
-  await writeFile(path.join(root, "work.yaml"), PLAYBOOK);
+  await writeFile(path.join(root, "work.yaml"), options.estimate === false ? PLAYBOOK.replace("rate_limit: { estimate: 5 }\n", "") : PLAYBOOK);
   const entry = (await loadPlaybooks(path.join(dir, "repo"))).entries.find((candidate) => candidate.id === "work")!;
   expect(entry.errors).toEqual([]);
   const store = new RunStore(path.join(dir, "runs"));
@@ -104,7 +105,7 @@ describe("rate limiting in the runtime", () => {
 });
 
 describe("dynamic capacity from quota headroom", () => {
-  const pacing = (mode: string, extra = "") => `rate_limits: { mode: ${mode}, ${extra} quota: { pacing: true, default_share: 5, refresh_interval: 1h, max_age: 2h } }`;
+  const pacing = (mode: string, extra = "") => `rate_limits: { mode: ${mode}, ${extra} quota: { pacing: true, refresh_interval: 1h, max_age: 2h } }`;
   const claude = (used: number) => ({ providers: [{ providerId: "claude", status: "available", windows: [weekly(used)] }] });
 
   it("playbook mode admits a whole run when the headroom covers its estimated cost, holds the next, and reserves the first's cost", async () => {
@@ -185,6 +186,21 @@ describe("dynamic capacity from quota headroom", () => {
     expect(store.get("r1")!.rateHold).toBeNull();
     expect(store.get("r1")!.rateNote).toContain("claude");
     expect(store.get("r1")!.rateNote).toContain("not paced");
+  });
+
+  it("a playbook with no estimate and no history yet is not paced by cost, and learns from its first measure", async () => {
+    // Same config but a playbook without estimate: both runs start although the headroom (8.87) could not hold two 10-point runs.
+    const { runtime, store, internals, read } = await setup(pacing("playbook"), { current: claude(20) }, { estimate: false });
+    await read();
+    await runtime.startStep("m", "r0", "a", "go");
+    await runtime.startStep("m", "r1", "a", "go");
+    expect(store.get("r1")!.rateHold).toBeNull();
+    const now = Date.now();
+    for (const id of ["r0", "r1"]) await store.mutate(id, (run) => void ((run.steps.a!.attempts[0]!.endedAt = new Date(now).toISOString()), (run.steps.a!.status = "completed")));
+    const window = (used: number) => ({ id: "weekly", label: "weekly", usedPct: used, resetsAt: weekly(0).resetsAt });
+    internals.observeUsage([{ provider: "claude", before: { entry: { providerId: "claude", windows: [window(20)] }, at: now - 60_000 }, after: { entry: { providerId: "claude", windows: [window(24)] }, at: now } }]);
+    // Two steps shared 4 points: 2 each. From now on the estimate comes from history.
+    expect(internals.costs.stepCost("work", "claude", "weekly")).toBeCloseTo(2, 1);
   });
 
   it("learns what a playbook's steps cost from the usage readings", async () => {

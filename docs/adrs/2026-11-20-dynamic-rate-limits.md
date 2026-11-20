@@ -17,8 +17,9 @@ work costs.
    covers its estimated cost; the rest is held. The parallelism is the result, not a setting. `steps` and `playbooks` stay only as
    optional hard caps on top (unset = none). A window above `usable_percent` holds as a quota hold until it resets, as before.
 2. **Cost estimate.** Quota points (percent of the window) per agent step, per playbook, provider and window: the average over the
-   playbook's finished steps, kept in `rate-history.json` in the plugin data folder; `rate_limits.quota.default_share` (default 2) per step while there is
-   no history. A run costs steps remaining × per-step cost, capped at `usable_percent` so a big run is still admitted some day. Each
+   playbook's finished steps, kept in `rate-history.json` in the plugin data folder, or the playbook's manual `rate_limit: { estimate: N }` (points per
+   step), which wins over history. With neither (no measure yet) the playbook is **not paced by cost**: it starts without a headroom check and reserves 0, while the
+   hard cap (`usable_percent`) and the "quota data unavailable" hold still apply; there is no default share. A run costs steps remaining × per-step cost, capped at `usable_percent` so a big run is still admitted some day. Each
    usage reading's increase on a window is shared among the agent attempts running on that provider in the interval, by overlap in
    time (usage from outside the plugin lands on them too: a known imprecision).
 3. **Reservation.** Work that starts reserves its estimated cost; the part not yet seen in the readings (estimate minus the increase
@@ -27,7 +28,7 @@ work costs.
    cost; an admitted run is never evicted for a higher-priority one and is held between steps only when its quota is exhausted (a window at
    `usable_percent`) or its data is unavailable. `step`: runs are held between steps; whenever the headroom covers one step, held runs are
    released by priority, then oldest first, so runs may interleave.
-5. **Priority.** `rate_limit: { priority: N }` (a whole number, default 0) on the playbook or in `defaults/main.yaml`, overridden
+5. **Priority.** `rate_limit: { priority: N, estimate: N }` (priority a whole number, default 0; estimate optional, see 2) on the playbook or in `defaults/main.yaml`, overridden
    per run by `start_playbook`'s `priority` (stored on the run). Higher first, ties oldest first, in both modes and for the optional
    playbook cap (which also keeps runs already started ahead). Waiting work is taken in that order and each takes its cost from the headroom;
    one that does not fit blocks lower work on the same provider, so a large run is not starved by small ones.
@@ -40,7 +41,7 @@ work costs.
 ## Consequences
 
 - With pacing off nothing is paced; the caps still work as before (with priority order).
-- Estimates start rough (the default share) and improve with history, so early on a run may be held longer, or admitted earlier, than its true cost warrants.
+- A playbook's first runs are not paced by cost (the first measure comes from them), so they may overshoot the pace; set `rate_limit.estimate` to avoid that.
 - Attribution by time overlap is approximate when several steps run at once or the user also spends the quota.
 - An admitted run keeps its unused estimate reserved until it ends, so it can hold back others for a while.
-- Format: one new playbook block, `rate_limit`, and one new `start_playbook` argument; run files get `priority` and `rateNote` with defaults, so older ones load.
+- Format: one new playbook block, `rate_limit` (`priority`, `estimate`), and one new `start_playbook` argument; run files get `priority` and `rateNote` with defaults, so older ones load.

@@ -2271,8 +2271,10 @@ export class Runtime {
       config,
       probe: (provider) => this.pacer.probe(provider, config.quota),
       stepCost: (run, provider, windowId) => {
+        const manual = run.playbook.rateLimit.estimate;
+        if (manual !== null) return { cost: manual, source: "override" as const };
         const known = this.costs.stepCost(run.playbook.id, provider, windowId);
-        return known === null ? { cost: config.quota.defaultShare, fromHistory: false } : { cost: known, fromHistory: true };
+        return known === null ? null : { cost: known, source: "history" as const };
       },
       reserved: (provider, windowId) => {
         const key = windowKey(provider, windowId);

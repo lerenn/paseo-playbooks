@@ -32,7 +32,7 @@ async function mk(count: number, header = ""): Promise<Run[]> {
 /** 50 of 168 hours gone, 97 usable: the pace ceiling is 28.9 points; usage `used` leaves 28.9 - used of headroom. */
 function ctxOf(used: number | null, extra: Partial<PlanContext> = {}, reserved: Record<string, number> = {}): PlanContext {
   const probe = (): Probe => (used === null ? { state: "unreported" } : { state: "ok", rooms: windowRooms({ providerId: "claude", windows: [usage(used)] }, 97, NOW) });
-  return { now: NOW, config: DEFAULT_RATE_LIMITS, probe, stepCost: () => ({ cost: 2, fromHistory: false }), reserved: (provider, id) => reserved[windowKey(provider, id)] ?? 0, ...extra };
+  return { now: NOW, config: DEFAULT_RATE_LIMITS, probe, stepCost: () => ({ cost: 2, source: "override" }), reserved: (provider, id) => reserved[windowKey(provider, id)] ?? 0, ...extra };
 }
 const want = (run: Run, steps = 1, priority = 0): Candidate => ({ run, priority, demand: new Map([["claude", steps]]) });
 
@@ -45,7 +45,7 @@ describe("headroom plan", () => {
     expect(plan.holds.get("r1")).toMatchObject({ kind: "headroom", provider: "claude", window: "weekly", position: 1, estimatedCost: 4 });
     expect(plan.holds.get("r1")!.headroom).toBeCloseTo((97 * 50) / 168 - 26, 4);
     expect(plan.holds.get("r1")!.reason).toContain("insufficient quota headroom");
-    expect(plan.holds.get("r1")!.reason).toContain("default estimate");
+    expect(plan.holds.get("r1")!.reason).toContain("estimated");
     expect(plan.holds.get("r2")).toMatchObject({ position: 2 });
     expect(plan.admitted.get("r0")).toEqual({ [windowKey("claude", "weekly")]: 4 });
   });
@@ -66,14 +66,14 @@ describe("headroom plan", () => {
     expect(planHeadroom([want(runs[0]!)], ctxOf(22, {}, { [key]: 4 })).holds.size).toBe(0);
   });
 
-  it("uses history for the cost when there is some, else the default share", async () => {
+  it("uses history for the cost when there is some, else not paced by cost", async () => {
     const runs = await mk(2);
     const history = new CostHistory();
     history.add("work", "claude", { weekly: 1 });
     history.add("work", "claude", { weekly: 2 });
     expect(history.stepCost("work", "claude", "weekly")).toBe(1.5);
     expect(history.stepCost("other", "claude", "weekly")).toBeNull();
-    const ctx = ctxOf(25, { stepCost: (run, provider, id) => (history.stepCost(run.playbook.id, provider, id) === null ? { cost: 2, fromHistory: false } : { cost: history.stepCost(run.playbook.id, provider, id)!, fromHistory: true }) });
+    const ctx = ctxOf(25, { stepCost: (run, provider, id) => (history.stepCost(run.playbook.id, provider, id) === null ? null : { cost: history.stepCost(run.playbook.id, provider, id)!, source: "history" as const }) });
     // 3.9 free: two 1.5-point steps fit, a third (4.5) does not.
     const plan = planHeadroom([want(runs[0]!, 2), want(runs[1]!, 1)], ctx);
     expect(plan.holds.get("r1")!.reason).toContain("from history");
@@ -101,6 +101,16 @@ describe("headroom plan", () => {
     expect(planHeadroom([want(runs[0]!)], none).holds.get("r0")!.reason).toContain("unavailable");
   });
 
+  it("does not pace by cost a playbook with no estimate and no history yet: it reserves nothing, but the hard cap still holds", async () => {
+    const runs = await mk(2);
+    const none = (used: number) => ctxOf(used, { stepCost: () => null });
+    // Usage far ahead of the pace (40 of a 28.9 ceiling): still starts, and takes nothing from the headroom.
+    const plan = planHeadroom(runs.map((run) => want(run, 9)), none(40));
+    expect(plan.holds.size).toBe(0);
+    expect(plan.admitted.get("r0")).toEqual({ [windowKey("claude", "weekly")]: 0 });
+    expect(planHeadroom(runs.map((run) => want(run)), none(98)).holds.get("r0")).toMatchObject({ kind: "quota" });
+  });
+
   it("does not pace a provider with no usage report and says which", async () => {
     const runs = await mk(2);
     const plan = planHeadroom(runs.map((run) => want(run, 9)), ctxOf(null));
@@ -117,7 +127,7 @@ describe("headroom plan", () => {
 
   it("caps an estimate at what the window can ever hold, so a big run is still admitted at some point", async () => {
     const runs = await mk(1);
-    const plan = planHeadroom([want(runs[0]!, 100)], ctxOf(0, { stepCost: () => ({ cost: 5, fromHistory: true }) }));
+    const plan = planHeadroom([want(runs[0]!, 100)], ctxOf(0, { stepCost: () => ({ cost: 5, source: "history" }) }));
     expect(plan.holds.get("r0")!.estimatedCost).toBe(97);
   });
 });
@@ -130,6 +140,11 @@ describe("priority", () => {
     const { runPriority } = await import("./rate-limit");
     expect(runPriority(runs[0]!, runs)).toBe(7);
     expect(runPriority(runs[1]!, runs)).toBe(-3);
+  });
+
+  it("reads rate_limit.estimate (points per step) next to priority", async () => {
+    const runs = await mk(1, "rate_limit: { priority: 1, estimate: 3 }\n");
+    expect(runs[0]!.playbook.rateLimit).toEqual({ priority: 1, estimate: 3 });
   });
 
   it("orders the optional playbook cap, and never takes a place from a run that already started", async () => {

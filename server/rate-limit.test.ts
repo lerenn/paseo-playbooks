@@ -58,7 +58,7 @@ describe("pace ceiling", () => {
 });
 
 describe("quota cache", () => {
-  const config = { pacing: true, usablePercent: 97, refreshMs: 5 * 60_000, maxAgeMs: 30 * 60_000, defaultShare: 2 };
+  const config = { pacing: true, usablePercent: 97, refreshMs: 5 * 60_000, maxAgeMs: 30 * 60_000 };
   const MIN = 60_000;
   function pacer(results: Array<UsageSnapshot | Error>) {
     let now = NOW;
@@ -208,11 +208,11 @@ describe("rate_limits config", () => {
 
   it("is off by default", async () => {
     expect(await read(null)).toEqual(DEFAULT_RATE_LIMITS);
-    expect(DEFAULT_RATE_LIMITS).toMatchObject({ mode: "playbook", steps: null, playbooks: null, quota: { pacing: false, usablePercent: 97, defaultShare: 2 } });
+    expect(DEFAULT_RATE_LIMITS).toMatchObject({ mode: "playbook", steps: null, playbooks: null, quota: { pacing: false, usablePercent: 97 } });
   });
 
   it("reads the block and falls back on malformed values", async () => {
-    expect(await read("rate_limits: { mode: step, steps: 4, playbooks: 2, quota: { pacing: true, usable_percent: 90, refresh_interval: 2m, max_age: 10m, default_share: 3.5 } }")).toEqual({ mode: "step", steps: 4, playbooks: 2, quota: { pacing: true, usablePercent: 90, refreshMs: 120_000, maxAgeMs: 600_000, defaultShare: 3.5 } });
-    expect(await read("rate_limits: { mode: sometimes, steps: 0, playbooks: x, quota: { pacing: yes, usable_percent: 400, max_age: soon, default_share: -1 } }")).toEqual(DEFAULT_RATE_LIMITS);
+    expect(await read("rate_limits: { mode: step, steps: 4, playbooks: 2, quota: { pacing: true, usable_percent: 90, refresh_interval: 2m, max_age: 10m } }")).toEqual({ mode: "step", steps: 4, playbooks: 2, quota: { pacing: true, usablePercent: 90, refreshMs: 120_000, maxAgeMs: 600_000 } });
+    expect(await read("rate_limits: { mode: sometimes, steps: 0, playbooks: x, quota: { pacing: yes, usable_percent: 400, max_age: soon } }")).toEqual(DEFAULT_RATE_LIMITS);
   });
 });

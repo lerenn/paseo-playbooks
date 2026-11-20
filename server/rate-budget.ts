@@ -85,8 +85,8 @@ export interface PlanContext {
   now: number;
   config: RateLimitsConfig;
   probe: (provider: string) => Probe;
-  /** Points one step of the run's playbook is expected to use on the window: history, else the default share. */
-  stepCost: (run: Run, provider: string, windowId: string) => { cost: number; fromHistory: boolean };
+  /** Points one step of the run's playbook is expected to use on the window: the playbook's `rate_limit.estimate`, else its measured history; null while there is neither (not paced by estimate). */
+  stepCost: (run: Run, provider: string, windowId: string) => { cost: number; source: "override" | "history" } | null;
   /** Points started work still has to use on the window (reservations not yet visible in the readings). */
   reserved: (provider: string, windowId: string) => number;
 }
@@ -103,9 +103,9 @@ export interface Plan {
 const pts = (value: number) => `${Math.round(value * 10) / 10}`;
 
 /** The estimated cost of a candidate on one window: steps × per-step cost, never above what the window can ever hold. */
-export function candidateCost(candidate: Candidate, room: WindowRoom, ctx: PlanContext, count: number): { cost: number; fromHistory: boolean } {
+export function candidateCost(candidate: Candidate, room: WindowRoom, ctx: PlanContext, count: number): { cost: number; estimated: boolean } {
   const unit = ctx.stepCost(candidate.run, room.provider, room.id);
-  return { cost: Math.min(count * unit.cost, room.usable), fromHistory: unit.fromHistory };
+  return unit ? { cost: Math.min(count * unit.cost, room.usable), estimated: true } : { cost: 0, estimated: false };
 }
 
 /**
@@ -142,12 +142,17 @@ export function planHeadroom(candidates: Candidate[], ctx: PlanContext): Plan {
         continue;
       }
       for (const room of probe.rooms) {
-        const { cost } = candidateCost(candidate, room, ctx, count);
+        const { cost, estimated } = candidateCost(candidate, room, ctx, count);
         const free = available(room);
         if (room.used >= room.usable) {
           const until = room.resetsAt ?? ctx.now + 15 * 60_000;
           const verdict: HoldVerdict = { kind: "quota", reason: `${provider} ${room.name} is at ${pts(room.used)}%, above the usable ${pts(room.usable)}%`, provider, window: room.id, retryAt: new Date(until).toISOString() };
           if (!hold || until > Date.parse(hold.retryAt ?? "")) hold = verdict;
+          continue;
+        }
+        // No estimate yet (no measure, no override): not paced by cost, only by the hard cap above; it reserves nothing.
+        if (!estimated) {
+          takes.push({ room, cost: 0 });
           continue;
         }
         if (free + 1e-9 >= cost && !blocked.has(provider)) {
@@ -176,7 +181,7 @@ export function planHeadroom(candidates: Candidate[], ctx: PlanContext): Plan {
         hold.position = position;
         hold.priority = candidate.priority;
         const unit = hold.window ? ctx.stepCost(candidate.run, hold.provider!, hold.window) : null;
-        hold.reason = `insufficient quota headroom on ${hold.provider} ${hold.window}: ${pts(hold.headroom ?? 0)} points free, ${pts(hold.estimatedCost ?? 0)} estimated for ${candidate.demand.size > 0 ? "this work" : "it"}${unit?.fromHistory ? " (from history)" : " (default estimate: no history yet)"}; priority ${candidate.priority}, ${position === 1 ? "next in the queue" : `position ${position} in the queue`}`;
+        hold.reason = `insufficient quota headroom on ${hold.provider} ${hold.window}: ${pts(hold.headroom ?? 0)} points free, ${pts(hold.estimatedCost ?? 0)} estimated for ${candidate.demand.size > 0 ? "this work" : "it"}${unit?.source === "override" ? " (the playbook's rate_limit.estimate)" : " (from history)"}; priority ${candidate.priority}, ${position === 1 ? "next in the queue" : `position ${position} in the queue`}`;
         for (const provider of candidate.demand.keys()) blocked.add(provider);
       }
       holds.set(candidate.run.id, hold);
