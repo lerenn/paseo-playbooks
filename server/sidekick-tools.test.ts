@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { SIDEKICK_PLUGIN_TOOLS } from "./sidekick";
-import { managerTools, resumeGateTool, runTools, sidekickStartTools, sidekickTool, validateTool } from "./tools";
+import { deferGateTool, managerTools, resumeGateTool, returnGateTool, runTools, sidekickStartTools, sidekickTool, validateTool } from "./tools";
 import type { Runtime } from "./runtime";
 
 const runtime = {} as Runtime;
 
 describe("the Sidekick's tools", () => {
-  const given = [...sidekickStartTools(runtime), ...runTools(runtime), validateTool(runtime), sidekickTool(runtime), resumeGateTool(runtime)].map((tool) => tool.name);
+  const given = [...sidekickStartTools(runtime), ...runTools(runtime), validateTool(runtime), sidekickTool(runtime), resumeGateTool(runtime), deferGateTool(runtime), returnGateTool(runtime)].map((tool) => tool.name);
 
   it("gets start_playbook and list_playbooks, and no other manager tool", () => {
     expect(sidekickStartTools(runtime).map((tool) => tool.name).sort()).toEqual(["list_playbooks", "start_playbook"]);

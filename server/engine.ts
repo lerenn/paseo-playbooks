@@ -5,9 +5,9 @@
 import { descendantsOf } from "../shared/graph";
 import { record } from "./event-core";
 import { blockEntrySteps, blockStepIds, holdsBlock, innermostBlock } from "../shared/slots";
-import { ADMISSION_CHOICES, PERMISSION_CHOICES, askChoices, askHumanText, askTransitionOf, choicesOfGate, GATE_SUMMARY_MAX, outcomeTransition } from "../shared/gates";
+import { ADMISSION_CHOICES, PERMISSION_CHOICES, askChoices, askHumanText, askTransitionOf, choicesOfGate, GATE_SUMMARY_MAX, outcomeTransition, isDeferred, waitsForHuman } from "../shared/gates";
 import { parse as parseYaml, stringify as toYaml } from "yaml";
-import type { PoolPass, AfterTask, AskChoice, Attempt, AttemptAgent, FanoutChild, FanoutState, Gate, GateDecider, Job, Playbook, Run, RunDefinition, RunStep, RunWorktree, Step, Transition, VarValue, When } from "../shared/types";
+import type { GateWaitCondition, PoolPass, AfterTask, AskChoice, Attempt, AttemptAgent, FanoutChild, FanoutState, Gate, GateDecider, Job, Playbook, Run, RunDefinition, RunStep, RunWorktree, Step, Transition, VarValue, When } from "../shared/types";
 import { isActive, isAgentlessAttempt, isFanoutAttempt, isManagerless, MAX_FANOUT_PAST, MAX_POOL_PASSES, isPaused, isPipeline, isStepDone, isStepLive, isTerminal, restartBlocker, runningAfterTasks } from "../shared/types";
 import { coerceValue, formatValue, type ListItem, lookup, parseDuration, parseList, renderTemplate, replaceRefs, resolveValue, singleRef, templateRefs } from "../shared/vars";
 
@@ -1467,6 +1467,54 @@ export function escalateGate(run: Run, ref: string, reason: string, now: string)
   gate.details = [gate.details, note].filter(Boolean).join("\n\n");
   gate.message = [gate.message, note].filter(Boolean).join("\n\n");
   log(run, now, "gate_escalated", gate.stepId, `${gate.id}: ${gate.escalated}`);
+  return true;
+}
+
+export interface DeferInput {
+  reason: string;
+  condition: GateWaitCondition;
+  remindAt?: string | null;
+  by: string;
+}
+
+function validIso(value: string, what: string): number {
+  const ms = Date.parse(value);
+  if (!Number.isFinite(ms)) throw new EngineError(`${what} "${value}" is not a date (ISO 8601, e.g. 2026-12-01T09:00:00Z)`);
+  return ms;
+}
+
+/**
+ * Sets an open human gate aside in Waiting, with a reason and what it waits for (gate deferral, ADR 2026-11-20-deferred-gates).
+ * The gate stays pending: its choices, its decider and every decision rule are untouched, and it can still be decided.
+ * Only the "needs review" classification changes. Never infers anything: the caller states the condition.
+ */
+export function deferGate(run: Run, ref: string, input: DeferInput, now: string): Gate {
+  const gate = findGate(run, ref);
+  if (!gate) throw new EngineError(`no gate "${ref}" in run ${run.id}`);
+  if (gate.status !== "pending") throw new EngineError(`gate "${gate.id}" is not open (${gate.status}): nothing to defer`);
+  if (!waitsForHuman(gate)) throw new EngineError(`gate "${gate.id}" is held by a role decider, not waiting for a human: nothing to defer`);
+  const reason = input.reason.trim();
+  if (!reason) throw new EngineError("a reason is required: why is this not decided now?");
+  const nowMs = Date.parse(now);
+  const condition = input.condition;
+  if (condition.kind === "date" && validIso(condition.at, "the date") <= nowMs) throw new EngineError("the date is not in the future");
+  if (condition.kind === "run_ended" && condition.runId === run.id) throw new EngineError("a gate cannot wait for the end of its own run: it ends only once the gate is decided");
+  if (condition.kind === "gate_decided" && condition.runId === run.id && (findGate(run, condition.gateId)?.id === gate.id)) throw new EngineError("a gate cannot wait for its own decision");
+  const remindAt = input.remindAt ?? null;
+  if (remindAt !== null && validIso(remindAt, "the reminder date") <= nowMs) throw new EngineError("the reminder date is not in the future");
+  gate.deferral = { reason, condition, remindAt, deferredAt: now, deferredBy: input.by, returnedAt: null, returnedBy: null, returnNote: null };
+  log(run, now, "gate_deferred", gate.stepId, `${gate.id}: ${reason}`);
+  return gate;
+}
+
+/** Brings a deferred gate back to review (by hand, by an agent, or because what it waited for happened). False when it is not deferred. */
+export function returnGate(run: Run, ref: string, by: string, note: string | null, now: string): boolean {
+  const gate = findGate(run, ref);
+  if (!gate || !isDeferred(gate) || !gate.deferral) return false;
+  gate.deferral.returnedAt = now;
+  gate.deferral.returnedBy = by;
+  gate.deferral.returnNote = note;
+  log(run, now, "gate_returned", gate.stepId, `${gate.id}: back to review (${by})${note ? `: ${note}` : ""}`);
   return true;
 }
 

@@ -98,6 +98,36 @@ export function waitsForHuman(gate: Gate): boolean {
   return gate.status === "pending" && !(gate.decider?.by === "role" && gate.escalated === null);
 }
 
+/** An open gate a human set aside with a reason and a waiting condition (Waiting, not Needs you). It can still be decided. */
+export function isDeferred(gate: Gate): boolean {
+  return gate.status === "pending" && gate.deferral != null && gate.deferral.returnedAt == null;
+}
+
+/** An open gate a human is asked to decide now: counted in Needs you. */
+export function needsReview(gate: Gate): boolean {
+  return waitsForHuman(gate) && !isDeferred(gate);
+}
+
+/** The gates of Waiting: open, awaiting a human, deferred. */
+export function isWaiting(gate: Gate): boolean {
+  return waitsForHuman(gate) && isDeferred(gate);
+}
+
+/** Whether the plugin itself tracks a condition (it returns the gate to review on its own). */
+export function isTracked(condition: NonNullable<Gate["deferral"]>["condition"]): boolean {
+  return condition.kind !== "manual";
+}
+
+export function describeCondition(deferral: NonNullable<Gate["deferral"]>): string {
+  const c = deferral.condition;
+  const base =
+    c.kind === "manual" ? `Manual: nothing tracks this${c.note ? ` (${c.note})` : ""}; bring it back yourself` :
+    c.kind === "date" ? `Tracked: back to review at ${c.at}` :
+    c.kind === "run_ended" ? `Tracked: back when run ${c.runId} ends` :
+    `Tracked: back when gate ${c.gateId} of run ${c.runId} is decided`;
+  return deferral.remindAt && c.kind !== "date" ? `${base}; reminder ${deferral.remindAt}` : base;
+}
+
 export function askHumanText(gate: Gate, choices: GateChoice[]): string {
   const options = choices
     .map((choice) => `"${choice.id}" (${choice.label}${choice.comment === "required" ? ", needs a comment" : ""})`)

@@ -2,7 +2,7 @@ import { SlowIndex, slowEntries, slowEntry } from "./slow";
 import { elapsedMs, type SlowInfo } from "../shared/slow";
 import { checkSubscriptionScope } from "./bus";
 import { defineAgentTool, type AgentToolDefinition, type AgentToolResult } from "@getpaseo/plugin/server";
-import { askHumanText, choicesOfGate, GATE_SUMMARY_MAX, waitsForHuman } from "../shared/gates";
+import { askHumanText, choicesOfGate, describeCondition, GATE_SUMMARY_MAX, waitsForHuman } from "../shared/gates";
 import { z } from "zod";
 import type { PlaybookEntry, Run, When } from "../shared/types";
 import { repairReport } from "./malformed";
@@ -53,7 +53,7 @@ function runningSteps(run: Run): string[] {
 
 /** A gate without its details, its comment clipped like a step summary. */
 function compactGate(gate: Run["gates"][number]) {
-  return { id: gate.id, kind: gate.kind, ...(gate.jobId ? { jobId: gate.jobId } : {}), stepId: gate.stepId, status: gate.status, waitingForHuman: waitsForHuman(gate), summary: gate.summary, comment: clip(gate.comment), decidedBy: gate.decidedBy };
+  return { id: gate.id, kind: gate.kind, ...(gate.jobId ? { jobId: gate.jobId } : {}), stepId: gate.stepId, status: gate.status, waitingForHuman: waitsForHuman(gate), ...(gate.deferral ? { deferral: gate.deferral } : {}), summary: gate.summary, comment: clip(gate.comment), decidedBy: gate.decidedBy };
 }
 
 /** A batch's (or pipeline's) jobs: id, where from, status and outcome (inputs with view "full"). */
@@ -1194,6 +1194,50 @@ export function resumeGateTool(runtime: Runtime): AgentToolDefinition {
       guard(async () => {
         const { gate, run } = await runtime.resumeGateOnBehalf(agent, input);
         return ok(`Gate ${gate.id} decided: ${gate.status}, by you on behalf of the human. Run is ${run.status}. Ready: ${engine.readyList(run, engine.readySteps(run)) || "none"}.`, runChange(run, gate.stepId));
+      }),
+  });
+}
+
+const ConditionArg = z
+  .discriminatedUnion("kind", [
+    z.object({ kind: z.literal("manual"), note: z.string().default("").describe("What the human waits for, in their words (nothing tracks it)") }),
+    z.object({ kind: z.literal("date"), at: z.string().describe("ISO 8601 date-time in the future: the gate returns to review then") }),
+    z.object({ kind: z.literal("run_ended"), runId: IdArg.describe("Another run of the same project: the gate returns when it completes, fails or is canceled") }),
+    z.object({ kind: z.literal("gate_decided"), runId: IdArg, gateId: z.string().describe("The gate whose decision brings this one back") }),
+  ])
+  .describe("What the gate waits for. Only these are tracked by the plugin; anything else (a PR merge, a message, a deploy) is kind manual with a note, optionally with remindAt");
+
+/** For the Sidekick or a coordinator: sets an open human gate aside in Waiting, at the human's request. */
+export function deferGateTool(runtime: Runtime): AgentToolDefinition {
+  return defineAgentTool({
+    name: "defer_gate",
+    description:
+      "Set an open human gate aside in Waiting: the human reviewed it and does not decide now. Records the reason and what it waits for. The gate stays open and can still be decided by the same rules (the panel, resume_gate with the human's answer); nothing is approved or rejected. It leaves the Needs you count until it returns. Tracked conditions: kind date, run_ended (another run of the project), gate_decided; they bring it back by themselves and notify (gate.returned). Anything else (a PR merge, an outside reply) is kind manual: the plugin cannot see it, so say so to the human, put what they wait for in note, and set remindAt if they want a reminder; it only returns when someone brings it back or the reminder date comes. Use it only when the human asked to defer: never to make a gate disappear. Same scope as resume_gate (agents outside the runs; a Sidekick only in its project; refused with gates: { on_behalf: deny }). Do not infer the condition from chat: use what the human stated.",
+    input: z.object({
+      runId: IdArg,
+      gateId: z.string().describe("Gate id (list_gates)"),
+      reason: z.string().min(1).describe("Why it is not decided now, in the human's words"),
+      condition: ConditionArg,
+      remindAt: z.string().optional().describe("Optional ISO 8601 future date-time: back to review then even if the condition has not happened"),
+    }),
+    execute: (input, { agent }) =>
+      guard(async () => {
+        const gate = await runtime.deferGateOnBehalf(agent, input);
+        return ok(`Gate ${gate.id} is deferred to Waiting: ${gate.deferral ? describeCondition(gate.deferral) : ""}. It is still open and decidable.`, { gateId: gate.id, deferral: gate.deferral });
+      }),
+  });
+}
+
+/** Brings a deferred gate back to Needs you. */
+export function returnGateTool(runtime: Runtime): AgentToolDefinition {
+  return defineAgentTool({
+    name: "return_gate",
+    description: "Bring a deferred gate back to review (Needs you), e.g. because the human says what it waited for happened or they want to look again. Does not decide it. Same scope as defer_gate. Returns whether it was deferred.",
+    input: z.object({ runId: IdArg, gateId: z.string().describe("Gate id"), note: z.string().optional().describe("Why it is back") }),
+    execute: (input, { agent }) =>
+      guard(async () => {
+        const done = await runtime.returnGateOnBehalf(agent, input);
+        return ok(done ? `Gate ${input.gateId} is back in Needs you.` : `Gate ${input.gateId} was not deferred: nothing changed.`);
       }),
   });
 }

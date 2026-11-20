@@ -1,6 +1,6 @@
 import { overviewSettings } from "./shared/overview-settings";
 import path from "node:path";
-import { waitsForHuman } from "./shared/gates";
+import { needsReview } from "./shared/gates";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 
 /** The daemon API handed to plugin handlers (typed via the SDK, so the build needs no @getpaseo/client). */
@@ -13,6 +13,8 @@ import {
   pauseRunRpc,
   resumeRunRpc,
   decideGateRpc,
+  deferGateRpc,
+  returnGateRpc,
   headerStateRpc,
   needsYouRpc,
   overviewStateRpc,
@@ -49,7 +51,7 @@ import { SIDEKICK_LABEL } from "./server/sidekick";
 import { createSidekickStarter, createStarter } from "./server/starter";
 import { migrateDataDir } from "./server/data-dir";
 import { defaultRunsDir, RunStore } from "./server/store";
-import { gateTool, managerTools, resumeGateTool, runTools, sidekickStartTools, sidekickTool, stepTools, validateTool } from "./server/tools";
+import { deferGateTool, returnGateTool, gateTool, managerTools, resumeGateTool, runTools, sidekickStartTools, sidekickTool, stepTools, validateTool } from "./server/tools";
 
 let safetyNet = false;
 /** One bad call (a refused result, a failed timer) must not take every run's tools down: log it and keep serving. */
@@ -94,7 +96,7 @@ export default function contribute(server: PluginServerContext) {
   // Tools: report_step_result and read-only validate_playbooks for step agents; manager tools for agents whose workspace has
   // playbooks (or that already manage a run); validate_playbooks, list_runs, cancel_run, start_after_task and
   // restart_run and recover_manager for every other agent, so a human can stop, wrap up or restart a run from any chat.
-  const tools = { manager: managerTools(runtime), common: [validateTool(runtime), ...runTools(runtime), resumeGateTool(runtime)], step: (managerless: boolean) => stepTools(runtime, managerless), sidekick: sidekickTool(runtime), sidekickStart: sidekickStartTools(runtime), gate: gateTool(runtime) };
+  const tools = { manager: managerTools(runtime), common: [validateTool(runtime), ...runTools(runtime), resumeGateTool(runtime), deferGateTool(runtime), returnGateTool(runtime)], step: (managerless: boolean) => stepTools(runtime, managerless), sidekick: sidekickTool(runtime), sidekickStart: sidekickStartTools(runtime), gate: gateTool(runtime) };
   server.before("agent.session_open", async ({ request }, context) => {
     if (request.purpose === "history") return;
     // Only the store is needed here. Do not wait for reconcile: its own sends (resume a step, wake a
@@ -196,7 +198,7 @@ export default function contribute(server: PluginServerContext) {
     const withPlaybooks = await withPlaybooksOf(workspaceIds);
     const waiting = store
       .list()
-      .filter((run) => !run.archivedAt && run.gates.some(waitsForHuman) && workspaceIds.includes(run.workspaceId))
+      .filter((run) => !run.archivedAt && run.gates.some(needsReview) && workspaceIds.includes(run.workspaceId))
       .map((run) => run.workspaceId);
     return { withPlaybooks, waiting: [...new Set(waiting)] };
   });
@@ -209,7 +211,7 @@ export default function contribute(server: PluginServerContext) {
   handle(scriptOutputRpc, async ({ runId, stepId }) => runtime.scriptOutput(runId, stepId));
   handle(markRunSeenRpc, async ({ runId }) => ({ seenAt: await runtime.markSeen(runId) }));
   handle(needsYouRpc, async () => ({
-    count: store.list().reduce((count, run) => count + (run.archivedAt ? 0 : run.gates.filter(waitsForHuman).length), 0),
+    count: store.list().reduce((count, run) => count + (run.archivedAt ? 0 : run.gates.filter(needsReview).length), 0),
   }));
   handle(listWorkspaceAgents, async ({ workspaceId }) => ({ agents: await runtime.workspaceAgents(workspaceId) }));
   handle(decideGateRpc, async ({ runId, gateId, decision, comment, hostLabel }) => {
@@ -222,6 +224,11 @@ export default function contribute(server: PluginServerContext) {
     });
     return { alreadyDecided: result.alreadyDecided, decision: result.gate.status };
   });
+  handle(deferGateRpc, async ({ runId, gateId, reason, condition, remindAt, hostLabel }) => {
+    await runtime.deferGate(runId, gateId, { reason, condition, remindAt: remindAt ?? null }, hostLabel);
+    return { deferred: true };
+  });
+  handle(returnGateRpc, async ({ runId, gateId, note, hostLabel }) => ({ returned: await runtime.returnGate(runId, gateId, hostLabel, note?.trim() || null, "human") }));
   handle(cancelRunRpc, async ({ runId, reason }) => ({
     status: (await runtime.cancelRun(runId, reason?.trim() || "canceled from the panel", "from the panel")).status,
   }));

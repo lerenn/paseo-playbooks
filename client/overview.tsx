@@ -4,7 +4,8 @@ import { useQueries, useQueryClient } from "@tanstack/react-query";
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { Animated, Easing, Pressable, Text, View } from "react-native";
 import { archiveRunRpc, listPlaybooks, markRunSeenRpc } from "../shared/contracts";
-import { gateText, waitsForHuman } from "../shared/gates";
+import { gateText, isWaiting, needsReview, waitsForHuman } from "../shared/gates";
+import { BringBack, DeferForm, WaitingInfo } from "./defer";
 import { overviewSettings } from "../shared/overview-settings";
 import { DEFAULT_PLAYBOOK_SORT, PLAYBOOK_SORTS, sortPlaybooks, type PlaybookSort } from "../shared/sort";
 import { isActive, isPaused, isPipeline, isTerminal, type Gate, type RunSummary, type StepSummary } from "../shared/types";
@@ -393,10 +394,13 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
     }));
   }, [runs, playbookSort]);
   // Same order as the groups below, so "Needs you" does not jump either.
-  const needs = groups.flatMap((group) => group.runs.flatMap((run) => pendingGates(run).map((gate) => ({ run, gate }))));
+  const needs = groups.flatMap((group) => group.runs.flatMap((run) => run.gates.filter(needsReview).map((gate) => ({ run, gate }))));
+  // Deferred after a review: still open and decidable, but not asked for now.
+  const waiting = groups.flatMap((group) => group.runs.flatMap((run) => run.gates.filter(isWaiting).map((gate) => ({ run, gate }))));
 
   const counts = {
     needsYou: needs.length,
+    waiting: waiting.length,
     // A live pipeline stays running while it exists, idle or not: only its batches count.
     working: runs.filter((run) => !isPipeline(run) && isActive(run) && !isPaused(run) && pendingGates(run).length === 0).length,
     paused: runs.filter((run) => isPaused(run)).length,
@@ -417,6 +421,7 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
           <Text style={{ flex: 1, minWidth: 140, color: theme.colors.foregroundMuted, fontSize: 13 }}>
             <Text style={{ color: theme.colors.statusWarning }}>{counts.needsYou}</Text> {counts.needsYou === 1 ? "needs" : "need"} you ·{" "}
             <Text style={{ color: theme.colors.accent }}>{counts.working}</Text> working
+            {counts.waiting > 0 ? ` · ${counts.waiting} waiting` : ""}
             {counts.paused > 0 ? ` · ${counts.paused} paused` : ""}
             {counts.failed > 0 ? (
               <>
@@ -540,7 +545,18 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
             <SectionTitle theme={theme} icon="CircleDot" iconColor={theme.colors.statusWarning} title="Needs you" count={needs.length} />
             <View style={{ borderRadius: 10, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface1, overflow: "hidden" }}>
               {needs.map(({ run, gate }, index) => (
-                <NeedsYouRow key={needsYouRowKey(run.id, gate.id)} theme={theme} run={run} gate={gate} first={index === 0} workspace={names.get(run.workspaceId) ?? run.workspaceId} hostLabel={props.host.label} compact={layout.compact} onOpenWorkspace={onOpenWorkspace} onOpenAgent={onOpenAgent} />
+                <NeedsYouRow key={needsYouRowKey(run.id, gate.id)} allRuns={runs} theme={theme} run={run} gate={gate} first={index === 0} workspace={names.get(run.workspaceId) ?? run.workspaceId} hostLabel={props.host.label} compact={layout.compact} onOpenWorkspace={onOpenWorkspace} onOpenAgent={onOpenAgent} />
+              ))}
+            </View>
+          </View>
+        ) : null}
+
+        {waiting.length > 0 ? (
+          <View style={{ gap: 8 }}>
+            <SectionTitle theme={theme} icon="Clock" iconColor={theme.colors.foregroundMuted} title="Waiting" count={waiting.length} description="Reviewed and set aside: still open, not counted in Needs you" />
+            <View style={{ borderRadius: 10, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface1, overflow: "hidden" }}>
+              {waiting.map(({ run, gate }, index) => (
+                <WaitingRow key={needsYouRowKey(run.id, gate.id)} theme={theme} run={run} gate={gate} first={index === 0} workspace={names.get(run.workspaceId) ?? run.workspaceId} hostLabel={props.host.label} compact={layout.compact} onOpenWorkspace={onOpenWorkspace} onOpenAgent={onOpenAgent} />
               ))}
             </View>
           </View>
@@ -631,7 +647,7 @@ function chipsOf(runs: RunSummary[], key: (run: RunSummary) => string, label: (r
   for (const run of runs) {
     const id = key(run);
     const chip = chips.get(id) ?? { id, label: label(run), needsYou: 0 };
-    chip.needsYou += pendingGates(run).length;
+    chip.needsYou += run.gates.filter(needsReview).length;
     chips.set(id, chip);
   }
   return [...chips.values()].sort((a, b) => a.label.localeCompare(b.label));
@@ -700,6 +716,7 @@ function SectionTitle(props: { theme: Theme; title: string; count?: number; icon
 /** A pending gate: what it asks, where it is, and Review, which opens the gate's choices in place. */
 function NeedsYouRow(props: {
   theme: Theme;
+  allRuns: RunSummary[];
   run: RunSummary;
   gate: Gate;
   first: boolean;
@@ -711,6 +728,7 @@ function NeedsYouRow(props: {
 }) {
   const { theme, run, gate } = props;
   const [open, setOpen] = useState(false);
+  const [deferring, setDeferring] = useState(false);
   const refresh = useStoreRefresh();
   const warning = theme.colors.statusWarning;
   const summary = gateText(gate).summary.split("\n")[0] || `${stepTitleOf(run.playbook, gate.stepId)} is waiting`;
@@ -745,6 +763,57 @@ function NeedsYouRow(props: {
       </View>
       {open ? (
         <View style={{ paddingHorizontal: 12, paddingBottom: 12, paddingLeft: props.compact ? 12 : 116, maxWidth: 760 }}>
+          <GateActions theme={theme} run={run} gate={gate} hostLabel={props.hostLabel} onDecided={refresh} />
+          {gate.kind === "permission" ? null : (
+            <View style={{ gap: 8, marginTop: 10 }}>
+              <Pressable accessibilityRole="button" accessibilityState={{ expanded: deferring }} accessibilityLabel="Defer: set aside in Waiting without deciding" onPress={() => setDeferring(!deferring)} style={{ alignSelf: "flex-start", borderRadius: 7, borderWidth: 1, borderColor: theme.colors.border, paddingHorizontal: 12, paddingVertical: 6 }}>
+                <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12, fontWeight: "600" }}>{deferring ? "Cancel defer" : "Defer…"}</Text>
+              </Pressable>
+              {deferring ? <DeferForm theme={theme} run={run} gate={gate} hostLabel={props.hostLabel} others={props.allRuns} onDone={() => { setDeferring(false); setOpen(false); refresh(); }} /> : null}
+            </View>
+          )}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+/** A deferred gate: why it waits and for what (tracked by the plugin, or by hand), Bring back, and Decide (the gate can still be decided). */
+function WaitingRow(props: {
+  theme: Theme;
+  run: RunSummary;
+  gate: Gate;
+  first: boolean;
+  workspace: string;
+  hostLabel: string;
+  compact: boolean;
+  onOpenWorkspace?: (workspaceId: string) => void;
+  onOpenAgent?: (agentId: string) => void;
+}) {
+  const { theme, run, gate } = props;
+  const [open, setOpen] = useState(false);
+  const refresh = useStoreRefresh();
+  const summary = gateText(gate).summary.split("\n")[0] || `${stepTitleOf(run.playbook, gate.stepId)} is waiting`;
+  return (
+    <View style={{ borderTopWidth: props.first ? 0 : 1, borderTopColor: theme.colors.border }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 12, paddingVertical: 10 }}>
+        <View style={{ flex: 1, gap: 2 }}>
+          <Text numberOfLines={open ? undefined : 1} style={{ color: theme.colors.foreground, fontSize: 13, fontWeight: "500" }}>
+            {summary} <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>{shortId(run)}</Text>
+          </Text>
+          <Text numberOfLines={1} style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>
+            {run.playbook.title} › {stepTitleOf(run.playbook, gate.stepId)} · {props.workspace} · {runTitle(run)}
+          </Text>
+          <WaitingInfo theme={theme} gate={gate} />
+        </View>
+        <BringBack theme={theme} run={run} gate={gate} hostLabel={props.hostLabel} />
+        <Pressable accessibilityRole="button" accessibilityState={{ expanded: open }} accessibilityLabel={`${open ? "Close" : "Decide"} ${summary}`} onPress={() => setOpen(!open)} style={{ borderRadius: 7, paddingHorizontal: 12, paddingVertical: 6, backgroundColor: theme.colors.surface2 }}>
+          <Text style={{ color: theme.colors.foreground, fontSize: 12, fontWeight: "600" }}>{open ? "Close" : "Decide"}</Text>
+        </Pressable>
+        <RunActions theme={theme} run={run} workspace={props.workspace} compact={props.compact} onOpenAgent={props.onOpenAgent} onOpenWorkspace={props.onOpenWorkspace} />
+      </View>
+      {open ? (
+        <View style={{ paddingHorizontal: 12, paddingBottom: 12, maxWidth: 760 }}>
           <GateActions theme={theme} run={run} gate={gate} hostLabel={props.hostLabel} onDecided={refresh} />
         </View>
       ) : null}

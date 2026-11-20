@@ -1,7 +1,7 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 import { AnalyticsSchema } from "./analytics";
-import { AdmissionStatusSchema, PlaybookEntrySchema, ProfileInfoSchema, RoleSchema, RunSchema, StepSchema, RunSummarySchema, ScriptOutputSchema, VarValueSchema } from "./types";
+import { AdmissionStatusSchema, PlaybookEntrySchema, ProfileInfoSchema, RoleSchema, RunSchema, GateWaitConditionSchema, StepSchema, RunSummarySchema, ScriptOutputSchema, VarValueSchema } from "./types";
 
 export const listPlaybooks = defineRpc({
   name: "playbooks.list",
@@ -144,6 +144,27 @@ export const decideGateRpc = defineRpc({
     hostLabel: z.string(),
   }),
   output: z.object({ alreadyDecided: z.boolean(), decision: z.string() }),
+});
+
+/** Sets an open gate aside in Waiting with a reason and what it waits for. The gate stays open and decidable. */
+export const deferGateRpc = defineRpc({
+  name: "gates.defer",
+  input: z.object({
+    runId: z.string(),
+    gateId: z.string(),
+    reason: z.string(),
+    condition: GateWaitConditionSchema,
+    remindAt: z.string().nullable().optional(),
+    hostLabel: z.string(),
+  }),
+  output: z.object({ deferred: z.boolean() }),
+});
+
+/** Brings a deferred gate back to Needs you. */
+export const returnGateRpc = defineRpc({
+  name: "gates.return",
+  input: z.object({ runId: z.string(), gateId: z.string(), note: z.string().optional(), hostLabel: z.string() }),
+  output: z.object({ returned: z.boolean() }),
 });
 
 export const cancelRunRpc = defineRpc({

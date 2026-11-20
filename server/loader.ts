@@ -1041,7 +1041,7 @@ const RawSidekickSchema = z
   .strict();
 
 /** Event types a Sidekick watches when `sidekick.watch` is not set. */
-export const DEFAULT_SIDEKICK_WATCH = ["gate.escalated", "run.failed", "run.manager_lost", "step.waiting_manager_stuck", "manager.question_pending"];
+export const DEFAULT_SIDEKICK_WATCH = ["gate.escalated", "gate.returned", "run.failed", "run.manager_lost", "step.waiting_manager_stuck", "manager.question_pending"];
 
 /** What the Sidekick's start needs from the defaults of the repository that holds it: the failover settings of `providers`. */
 export interface SidekickProviders {

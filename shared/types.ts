@@ -858,6 +858,36 @@ export const RunStepSchema = z.object({
 });
 export type RunStep = z.infer<typeof RunStepSchema>;
 
+/**
+ * What a deferred gate waits for. `manual`: nothing is tracked, a human or the Sidekick brings it back (an optional `remindAt` only
+ * reminds). `date`: back at `at`. `run_ended`: back when another run `runId` is completed, failed or canceled.
+ * `gate_decided`: back when gate `gateId` of run `runId` is decided. Only these are tracked by the plugin, from run state, never from chat.
+ */
+export const GateWaitConditionSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("manual"), note: z.string().default("") }),
+  z.object({ kind: z.literal("date"), at: z.string() }),
+  z.object({ kind: z.literal("run_ended"), runId: z.string() }),
+  z.object({ kind: z.literal("gate_decided"), runId: z.string(), gateId: z.string() }),
+]);
+export type GateWaitCondition = z.infer<typeof GateWaitConditionSchema>;
+
+/** A gate a human reviewed and set aside. It stays open (decisions work unchanged); it only leaves the "needs review" count. */
+export const GateDeferralSchema = z.object({
+  /** Why it is not decided now: required. */
+  reason: z.string(),
+  condition: GateWaitConditionSchema,
+  /** A reminder date (any condition): back to review at that time. Null: none. */
+  remindAt: z.string().nullable().default(null),
+  deferredAt: z.string(),
+  deferredBy: z.string(),
+  /** Set when it came back to review; null while deferred. */
+  returnedAt: z.string().nullable().default(null),
+  /** "human" (brought back by hand), "agent" (the Sidekick), or what tracked it: "date", "reminder", "run_ended", "gate_decided". */
+  returnedBy: z.string().nullable().default(null),
+  returnNote: z.string().nullable().default(null),
+});
+export type GateDeferral = z.infer<typeof GateDeferralSchema>;
+
 export const GateSchema = z.object({
   id: z.string(),
   kind: z.enum(["gate", "loop_limit", "ask", "admission", "permission", "manager_question"]),
@@ -902,6 +932,8 @@ export const GateSchema = z.object({
   chatAgentId: z.string().nullable().optional(),
   /** Set once the gate is closed and that conversation was told (its open question dismissed when the panel decided). */
   chatClosed: z.boolean().optional(),
+  /** Deferred to Waiting (or back from it: `returnedAt`); null on a gate never deferred. */
+  deferral: GateDeferralSchema.nullable().optional(),
   decidedAt: z.string().nullable(),
 });
 export type Gate = z.infer<typeof GateSchema>;

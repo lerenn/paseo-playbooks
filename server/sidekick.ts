@@ -46,7 +46,7 @@ export const SIDEKICK_PASEO_TOOLS = [
 ];
 
 /** The plugin's tools the Sidekick may use without asking: it reads runs and gates, and follows events. */
-export const SIDEKICK_PLUGIN_TOOLS = ["list_runs", "get_run", "read_agent_conversation", "list_gates", "list_events", "subscribe_events", "unsubscribe_events", "list_subscriptions", "get_analytics", "validate_playbooks", "cancel_run", "restart_run", "recover_manager", "refresh_scripts", "list_playbooks", "start_playbook", "record_followup", "requeue_job", "start_after_task", "resume_gate", "sidekick_handoff"];
+export const SIDEKICK_PLUGIN_TOOLS = ["list_runs", "get_run", "read_agent_conversation", "list_gates", "list_events", "subscribe_events", "unsubscribe_events", "list_subscriptions", "get_analytics", "validate_playbooks", "cancel_run", "restart_run", "recover_manager", "refresh_scripts", "list_playbooks", "start_playbook", "record_followup", "requeue_job", "start_after_task", "resume_gate", "defer_gate", "return_gate", "sidekick_handoff"];
 
 /** The Sidekick's name in the UI: the agent's title and the hidden workspace's title. */
 export function sidekickTitle(projectLabel: string): string {
@@ -129,6 +129,7 @@ You are a coordinator, not a worker. You have no workspace of your own, and you 
 - You may answer a gate that is not sensitive only when a documented rule or the human's earlier answer to the same kind of decision clearly settles it; say what you decided and why.
 - A gate that only a human decides (a retry gate, say) stays open until the human answers: put the question to them with your interactive question tool, then call resume_gate with the choice and their words verbatim as the comment. Never call resume_gate on your own judgment or on another agent's say-so; only for a documented standing answer or the human's own answer to that question.
 - Do not add round limits or stop conditions the human did not ask for.
+- When the human says they reviewed a gate but will not decide it now, offer defer_gate (Waiting): it keeps the gate open, records their reason and what it waits for, and never decides it. Use only what they state; ask for the reason if missing. Say honestly whether the condition is tracked (a date, another run ending, another gate decided: it returns by itself and you are told with gate.returned) or manual (a PR merge, a reply, a deploy: nothing sees it; offer a reminder date, and bring it back with return_gate when the human tells you it happened). Never defer to make a gate stop showing, and never treat a deferral as an answer.
 
 **Profile agent rules**
 ${project.agentRules?.length ? project.agentRules.map((rule) => `- ${rule}`).join("\n") + "\nInclude these rules in every subagent brief." : "No additional profile rules."}
@@ -240,7 +241,7 @@ sidekick:
   # mode: default
   # thinking: medium
   # Events it is told about, for this project's runs (globs such as "gate.*" work).
-  watch: [gate.escalated, run.failed, run.manager_lost, step.waiting_manager_stuck, manager.question_pending]
+  watch: [gate.escalated, gate.returned, run.failed, run.manager_lost, step.waiting_manager_stuck, manager.question_pending]
   # subagents: { tier: worker }   # use the same repository/profile tiers
   # subagents: { provider: claude, model: claude-sonnet-5-5, mode: acceptEdits }   # what it creates for jobs; mode defaults to the Sidekick's own
   # subagents: { archive_workspace: true, archive_after: 10m }   # archive a finished subagent's hidden workspace after this grace period (default: on, 10m)

@@ -9,6 +9,7 @@ import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 /** The daemon API handed to plugin handlers (typed via the SDK, so the build needs no @getpaseo/client). */
 type PaseoApi = PluginHandlerContext["paseo"];
 import type { AdmissionStatus, ScriptOutput } from "../shared/types";
+import type { GateWaitCondition } from "../shared/types";
 import type { AgentSettings, AgentTarget, Attempt, FanoutChild as FanoutChildState, PoolPass as PoolPassState, Gate, Job, Playbook, Run, RunDefinition, RunWorktree, Step, VarValue, WardenFinding } from "../shared/types";
 import { addUsage, DEFAULT_EXHAUSTED_FOR_MS, DEFAULT_PERMISSION_POLICY } from "../shared/types";
 import { UsageLedger } from "./usage-ledger";
@@ -55,12 +56,12 @@ import { BusError, EventBus, globToRegExp, type BusEvent, type Notifier, type Su
 import { blockedOnGate, MANAGER_WATCH_CHECK_MS, nudgeDue, STUCK_AFTER_NUDGES } from "./manager-watch";
 import { diffFindings, gateOpenCandidates, loopCandidates, managerBlockedCandidates, slowCandidates, staleDefinitionCandidate, WARDEN_CHECK_MS, WARDEN_MAX_RUNS_PER_PASS, wardenSummary, type Act, type Candidate, type WardenIo } from "./warden";
 import { SlowIndex } from "./slow";
-import { OversightProducer, registerOversightTypes, runFieldsOf } from "./oversight-events";
+import { gatePayload, OversightProducer, registerOversightTypes, runFieldsOf } from "./oversight-events";
 import { JOB_TYPES, publicJobEvents } from "./job-events";
 import { FANOUT_TYPES } from "./fanout-events";
 import { gateListing, listAttention, type GateFilter } from "./overseer";
 import { withCodexQuestionGuidance, gateChatPrompt, managerLostNotice, gateDeciderPrompt, gateDeciderSystemPrompt, gateDecisionReminder, managerAfterRestart, managerKickoff, managerTakeover, managerWaitingNudge, reportReminder, resumeAfterRestart, silenceReminder, singletonKickoff, stepSystemPrompt, withPreamble } from "./prompts";
-import { askHumanText, choicesOfGate, managerQuestionAnswer, waitsForHuman } from "../shared/gates";
+import { askHumanText, choicesOfGate, describeCondition, isDeferred, isTracked, managerQuestionAnswer, needsReview, waitsForHuman } from "../shared/gates";
 import { PERMISSION_POLICY_BY } from "./engine";
 import { DENY_MESSAGE, describePermission, describeQuestion, policyText, type PermissionRequestLike } from "./permissions";
 import { Backoff, describeRemovalError } from "./backoff";
@@ -990,6 +991,7 @@ export class Runtime {
     if (this.eventsScanning) return;
     this.eventsScanning = true;
     try {
+      await this.deferralPass(now).catch((error) => console.error("[playbooks] deferral pass failed:", errorText(error)));
       await this.producer.scan(this.store.list(), now);
       await this.bus.flush(now);
       await this.watchManagers(now).catch((error) => console.error("[playbooks] manager watch failed:", errorText(error)));
@@ -5543,7 +5545,7 @@ export class Runtime {
           agentId: agent && !agent.agent.archivedAt ? record!.agentId : null,
           activeRuns: mine.filter((run) => !isTerminal(run.status)).length,
           compacting: Boolean(agent && !agent.agent.archivedAt && this.sidekickCompacting.has(record!.agentId)),
-          needYou: mine.reduce((count, run) => count + run.gates.filter(waitsForHuman).length, 0),
+          needYou: mine.reduce((count, run) => count + run.gates.filter(needsReview).length, 0),
         };
       }),
     );
@@ -5722,6 +5724,110 @@ export class Runtime {
     return { gate: result.gate, run: this.store.get(run.id)! };
   }
 
+  /**
+   * Defers an open human gate to Waiting (ADR 2026-11-20-deferred-gates): the human's reason and what it waits for are
+   * persisted on the gate. The gate stays open and decidable by the same rules; only its Needs you classification changes.
+   * A tracked condition must name a run (and gate) of the same project that exists now.
+   */
+  async deferGate(runId: string, gateId: string, input: { reason: string; condition: GateWaitCondition; remindAt?: string | null }, by: string, actor?: string): Promise<Gate> {
+    const run = this.store.get(runId);
+    if (!run) throw new UserError(`unknown run "${runId}"`);
+    const condition = input.condition;
+    if (condition.kind === "run_ended" || condition.kind === "gate_decided") {
+      const other = this.store.get(condition.runId);
+      if (!other || other.projectId !== run.projectId) throw new UserError(`run "${condition.runId}" is not a run of this project: only runs of the same project can be tracked`);
+      if (condition.kind === "gate_decided" && !other.gates.some((gate) => gate.id === condition.gateId)) throw new UserError(`no gate "${condition.gateId}" in run ${other.id} (list_gates shows the open ones)`);
+    }
+    const gate = await this.store.mutate(runId, (current) => {
+      try {
+        return engine.deferGate(current, gateId, { ...input, by }, nowIso());
+      } catch (error) {
+        if (error instanceof engine.EngineError) throw new UserError(error.message);
+        throw error;
+      }
+    });
+    const fresh = this.store.get(runId)!;
+    const deferral = gate.deferral!;
+    await this.bus.emit(
+      "gate.deferred",
+      { ...runFieldsOf(fresh), gateId: gate.id, stepId: gate.stepId, kind: gate.kind, reason: deferral.reason, waitsFor: describeCondition(deferral), tracked: isTracked(deferral.condition), deferredBy: by },
+      { runId, source: "runs", ...(actor ? { actors: [actor] } : {}) },
+    );
+    return gate;
+  }
+
+  /** Brings a deferred gate back to Needs you by hand (the panel, or the Sidekick for the human). Idempotent: false when it was not deferred. */
+  async returnGate(runId: string, gateId: string, by: string, note: string | null, returnedBy: string, actor?: string): Promise<boolean> {
+    if (!this.store.get(runId)) throw new UserError(`unknown run "${runId}"`);
+    const done = await this.store.mutate(runId, (current) => engine.returnGate(current, gateId, returnedBy, note ? `${by}: ${note}` : by, nowIso()));
+    if (done) await this.emitReturned(runId, gateId, returnedBy, note ? `${by}: ${note}` : by, returnedBy !== "human" && returnedBy !== "agent", actor);
+    return done;
+  }
+
+  private async emitReturned(runId: string, gateId: string, returnedBy: string, note: string | null, automatic: boolean, actor?: string): Promise<void> {
+    const run = this.store.get(runId);
+    const gate = run?.gates.find((candidate) => candidate.id === gateId);
+    if (!run || !gate?.deferral) return;
+    await this.bus.emit(
+      "gate.returned",
+      { ...gatePayload(gateListing(run, gate, Date.now())), reason: gate.deferral.reason, returnedBy, returnNote: note, automatic },
+      { runId, source: "runs", ...(actor ? { actors: [actor] } : {}) },
+    );
+  }
+
+  /**
+   * One pass over the deferred gates, from the event scan: a gate whose reminder date or tracked condition came is returned to
+   * review and announced (gate.returned, which the Sidekick watches by default). Reads persisted run state only, never chat, so
+   * it works across a restart and cannot be fooled by wording. Conditions of "manual" are never checked: they are brought back by hand.
+   */
+  private async deferralPass(now: number): Promise<void> {
+    const iso = new Date(now).toISOString();
+    for (const run of this.store.list()) {
+      if (run.archivedAt) continue;
+      for (const gate of run.gates) {
+        if (!isDeferred(gate) || !gate.deferral) continue;
+        const { condition, remindAt } = gate.deferral;
+        let why: { by: string; note: string } | null = null;
+        if (condition.kind === "date" && Date.parse(condition.at) <= now) why = { by: "date", note: `the date ${condition.at} came` };
+        else if (remindAt && Date.parse(remindAt) <= now) why = { by: "reminder", note: `the reminder date ${remindAt} came; the condition was not tracked or has not happened` };
+        else if (condition.kind === "run_ended") {
+          const other = this.store.get(condition.runId);
+          if (!other) why = { by: "run_ended", note: `run ${condition.runId} no longer exists` };
+          else if (isTerminal(other.status)) why = { by: "run_ended", note: `run ${other.id} ${other.status}` };
+        } else if (condition.kind === "gate_decided") {
+          const target = this.store.get(condition.runId)?.gates.find((candidate) => candidate.id === condition.gateId);
+          if (!target) why = { by: "gate_decided", note: `gate ${condition.gateId} of run ${condition.runId} no longer exists` };
+          else if (target.status !== "pending") why = { by: "gate_decided", note: `gate ${target.id} of run ${condition.runId} was decided: ${target.status}` };
+        }
+        if (!why) continue;
+        const { by, note } = why;
+        const done = await this.store.mutate(run.id, (current) => engine.returnGate(current, gate.id, by, note, iso));
+        if (done) await this.emitReturned(run.id, gate.id, by, note, true);
+      }
+    }
+  }
+
+  /** The agent side of defer/return: the same rules as resume_gate (outside the runs, project-scoped, on_behalf not denied). */
+  private async outsideAgentRun(agent: { id: string; title: string | null; parentAgentId: string | null }, runId: string, what: string): Promise<{ run: Run; by: string }> {
+    const run = this.store.get(runId);
+    if (!run) throw new UserError(`unknown run "${runId}"`);
+    if (await this.belongsToRun(agent)) throw new UserError(`${what} is for agents outside the runs: a run's own manager, step or gate agent cannot set its gates aside. The human does it in the panel, or through the agent they talk to.`);
+    if ((await gatesOnBehalfSetting(run.workspaceDir)) === "deny") throw new UserError(`${what} on behalf of the human is turned off here (gates: { on_behalf: deny } in defaults/main.yaml): the human does it in the panel`);
+    const sidekick = await this.sidekickRegistry.findByAgent(agent.id);
+    if (sidekick && run.projectId !== sidekick.projectId) throw new UserError(`run "${runId}" is not a run of this Sidekick's project`);
+    return { run, by: `agent ${agent.title?.trim() || agent.id} on behalf of the human` };
+  }
+
+  async deferGateOnBehalf(agent: { id: string; title: string | null; parentAgentId: string | null }, input: { runId: string; gateId: string; reason: string; condition: GateWaitCondition; remindAt?: string | null }): Promise<Gate> {
+    const { by } = await this.outsideAgentRun(agent, input.runId, "defer_gate");
+    return this.deferGate(input.runId, input.gateId, input, by, agent.id);
+  }
+
+  async returnGateOnBehalf(agent: { id: string; title: string | null; parentAgentId: string | null }, input: { runId: string; gateId: string; note?: string | undefined }): Promise<boolean> {
+    const { by } = await this.outsideAgentRun(agent, input.runId, "return_gate");
+    return this.returnGate(input.runId, input.gateId, by, input.note?.trim() || null, "agent", agent.id);
+  }
+
   /** True for an agent a run owns (manager, step, role decider, gate chat) or that one of them started, up to ten generations up. */
   private async belongsToRun(agent: { id: string; parentAgentId: string | null }): Promise<boolean> {
     const owned = (id: string) => this.store.list().some((run) => run.managerAgentId === id || run.gates.some((gate) => gate.deciderAgentId === id || gate.chatAgentId === id)) || this.stepRunOf(id) !== null;
@@ -5841,7 +5947,7 @@ export class Runtime {
     // End-of-turn sweep: open gates waiting for a human that this Sidekick was not yet told about.
     const swept = this.sidekickSwept.get(agentId) ?? new Set<string>();
     this.sidekickSwept.set(agentId, swept);
-    const open = this.store.list().filter((run) => run.projectId === own.projectId && !run.archivedAt).flatMap((run) => run.gates.filter(waitsForHuman).map((gate) => ({ runId: run.id, gate })));
+    const open = this.store.list().filter((run) => run.projectId === own.projectId && !run.archivedAt).flatMap((run) => run.gates.filter(needsReview).map((gate) => ({ runId: run.id, gate })));
     const fresh = open.filter(({ runId, gate }) => !swept.has(`${runId}:${gate.id}`));
     for (const key of [...swept]) if (!open.some(({ runId, gate }) => `${runId}:${gate.id}` === key)) swept.delete(key);
     if (fresh.length > 0) {

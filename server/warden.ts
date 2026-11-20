@@ -1,5 +1,6 @@
 import type { Run, WardenAction, WardenCheck, WardenFinding } from "../shared/types";
 import { slowDetail, type SlowInfo } from "../shared/slow";
+import { isDeferred } from "../shared/gates";
 import { gateListing, gateHolder } from "./overseer";
 
 /**
@@ -44,7 +45,7 @@ export function slowCandidates(run: Run, slow: Record<string, SlowInfo>, action:
 /** Gates open for `afterMs` or more (the same age as gate.stale: gateListing's). */
 export function gateOpenCandidates(run: Run, afterMs: number, now: number, action: Act): Candidate[] {
   return run.gates
-    .filter((gate) => gate.status === "pending")
+    .filter((gate) => gate.status === "pending" && !isDeferred(gate))
     .flatMap((gate) => {
       const age = gateListing(run, gate, now).ageMinutes;
       return age !== null && age * 60_000 >= afterMs ? [{ check: "gate_open" as const, subject: gate.id, signature: gate.id, detail: `gate ${gate.id} (${gate.kind}) of step ${gate.stepId} has been open ${age} min, held by ${gateHolder(gate).heldBy}`, action }] : [];

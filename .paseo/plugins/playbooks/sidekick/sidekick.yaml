@@ -10,4 +10,4 @@ sidekick:
   # Triage of a failed run or a gate is short reasoning; keep it cheap.
   thinking: medium
   # The three escalation events: a gate nobody answered, a failed run, a lost manager.
-  watch: [gate.escalated, run.failed, run.manager_lost, step.waiting_manager_stuck, manager.question_pending]
+  watch: [gate.escalated, gate.returned, run.failed, run.manager_lost, step.waiting_manager_stuck, manager.question_pending]

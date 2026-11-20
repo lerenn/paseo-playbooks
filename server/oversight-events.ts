@@ -4,6 +4,7 @@ import { isActive } from "../shared/types";
 import { type BusEvent, type EventBus, type EventTypeDef } from "./bus";
 import { formatSlowDuration } from "../shared/slow";
 import { slowEntry, SlowIndex } from "./slow";
+import { isDeferred } from "../shared/gates";
 import { failedListing, gateListing, type GateListing } from "./overseer";
 
 /** The first producers of the bus: gates opening, waiting too long and being decided, and runs failing. */
@@ -74,6 +75,18 @@ export const OVERSIGHT_TYPES: EventTypeDef[] = [
       const label = gateLabel(p.kind);
       return `- gate.escalated: ${before} left the ${label} at step ${p.stepId} of ${runName(p)} in ${p.workspaceDir} to a human: ${p.reason} Question: ${p.question} Choices: ${choices}. Now waiting for a human. Tools: list_gates { runId: "${event.runId}" }, get_run { runId: "${event.runId}", view: "full" }.`;
     },
+  },
+  {
+    type: "gate.deferred",
+    description: "A human (or the Sidekick for them) deferred an open gate to Waiting: its reason and what it waits for. The gate stays open and decidable.",
+    payload: z.object({ ...runFields, gateId: z.string(), stepId: z.string(), kind: z.enum(["gate", "ask", "loop_limit", "admission", "permission", "manager_question"]), reason: z.string(), waitsFor: z.string(), tracked: z.boolean(), deferredBy: z.string() }),
+    line: (event) => `- gate.deferred: ${gateLabel(String(event.payload.kind))} ${event.payload.gateId} at step ${event.payload.stepId} of ${runName(event.payload)} was deferred by ${event.payload.deferredBy}: ${event.payload.reason} ${event.payload.waitsFor}. Still open; not in Needs you until it returns.`,
+  },
+  {
+    type: "gate.returned",
+    description: "A deferred gate is back in Needs you (a human or the Sidekick brought it back, or its tracked condition or reminder date came): returnedBy (human, agent, date, reminder, run_ended, gate_decided) and why.",
+    payload: z.object({ ...gateFields, reason: z.string(), returnedBy: z.string(), returnNote: z.string().nullable(), automatic: z.boolean() }),
+    line: (event) => `- gate.returned: ${gateBody(event)} It is back to review (${event.payload.returnedBy}${event.payload.returnNote ? `: ${event.payload.returnNote}` : ""}); it was deferred because: ${event.payload.reason}. Tools: list_gates { runId: "${event.runId}" }, get_run { runId: "${event.runId}", view: "full" }.`,
   },
   {
     type: "gate.decided",
@@ -172,7 +185,7 @@ function failedLine(event: BusEvent, label: string): string {
   return `- ${label}: ${runName(event.payload)} in ${p.workspaceDir} failed${p.failure ? `: ${p.failure}` : ""}; restartable from: ${p.restartableFrom.join(", ") || "nowhere"}. Tools: get_run { runId: "${event.runId}" }, list_runs { all: true }.`;
 }
 
-function gatePayload(listing: GateListing) {
+export function gatePayload(listing: GateListing) {
   return { ...listing, deciderBy: listing.decider };
 }
 
@@ -229,6 +242,7 @@ export class OversightProducer {
         if (gate.status === "pending") {
           if (!isActive(run)) continue;
           open.add(key);
+          const deferred = isDeferred(gate);
           const listing = gateListing(run, gate, now);
           if (!this.known.has(key)) {
             this.known.set(key, true);
@@ -237,7 +251,7 @@ export class OversightProducer {
           await this.escalation(run, gate, key, listing);
           for (const threshold of thresholds) {
             const mark = `${key}/${threshold}`;
-            if (this.staleDone.has(mark) || (listing.ageMinutes ?? 0) < threshold) continue;
+            if (deferred || this.staleDone.has(mark) || (listing.ageMinutes ?? 0) < threshold) continue;
             this.staleDone.add(mark);
             await this.bus.emit("gate.stale", { ...gatePayload(listing), ageMinutes: listing.ageMinutes ?? threshold, thresholdMinutes: threshold }, { runId: run.id, source: SOURCE });
           }

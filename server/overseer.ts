@@ -1,4 +1,4 @@
-import { choicesOfGate, gateText, waitsForHuman } from "../shared/gates";
+import { choicesOfGate, describeCondition, gateText, isDeferred, needsReview, waitsForHuman } from "../shared/gates";
 import type { Gate, Run } from "../shared/types";
 import { isActive, restartBlocker } from "../shared/types";
 import { stepDef } from "./engine";
@@ -40,6 +40,10 @@ export function gateListing(run: Run, gate: Gate, now: number) {
     heldBy: holder.heldBy,
     roleDeciding: holder.roleDeciding,
     waitingForHuman: waitsForHuman(gate),
+    /** Open and to be decided now (Needs you); false while deferred to Waiting (still open, still decidable). */
+    needsReview: needsReview(gate),
+    deferred: isDeferred(gate),
+    deferral: gate.deferral ? { ...gate.deferral, condition: gate.deferral.condition, waitsFor: describeCondition(gate.deferral) } : null,
     escalatedAt: gate.escalated !== null ? gate.escalatedAt ?? null : null,
     escalationReason: gate.escalated,
     openedAt: gate.requestedAt,

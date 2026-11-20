@@ -1114,6 +1114,12 @@ on:
   the gate lacks, and an empty comment; a Sidekick is held to its project. Recorded as `decidedBy:
   "agent <name> on behalf of the human"`, so `gate.decided` shows it; no new field. Turn it off
   with `gates: { on_behalf: deny }` in `defaults/main.yaml`. No Sidekick is needed.
+  A human who reviewed a gate but will not decide now can **defer** it (panel "Defer…", or `defer_gate { runId,
+  gateId, reason, condition, remindAt? }` for the same kind of caller, at the human's request): it moves from Needs you to
+  Waiting with a required reason and a condition, stays open and decidable by the same rules, and never counts as an answer.
+  Conditions `date`, `run_ended` (another run of the project) and `gate_decided` (another gate of the project) are tracked
+  from run state (they return the gate to review and emit `gate.returned`); `manual` is not tracked (a PR merge, a reply):
+  say so, and bring it back with `return_gate` or let `remindAt` do it. Do not guess a condition from chat.
 - `by: manager`: the manager may decide alone (`resume` with `byManager: true` and its reason
   as comment, shown as "by the manager"), or call `escalate_gate` with its reason and ask a human as
   for a human gate (this tells agents subscribed to `gate.escalated`).

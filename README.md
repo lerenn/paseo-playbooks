@@ -239,6 +239,16 @@ seen) or **Start time** (the playbook with the newest run first). The choice is 
 "Needs you" follows the same order. Playbooks never leave the list because of the sort, only their order changes (and, with
 Last activity or Status, as runs change). The Runs sort inside each playbook is separate and unchanged.
 
+**Waiting (deferred gates).** "Needs you" lists only the gates to decide now. On a Needs you row, **Defer…** sets a gate you
+reviewed aside in **Waiting** with a required reason and what it waits for. The gate stays open and can still be decided
+there (**Decide**), by the same rules; deferring is not an answer. What it waits for is *tracked* when it is a date, the end
+of another run of the project, or the decision of another gate of the project: the gate then returns to Needs you by itself
+(count, header dot, and a `gate.returned` event the Sidekick is told about). Anything else (a PR merge, a reply, a deploy)
+is *manual*: the plugin cannot see it, the row says so, and it returns when you press **Bring back** (or the Sidekick
+calls `return_gate`) or on an optional reminder date. The Sidekick can record a deferral with `defer_gate` at your request,
+under the same scope as `resume_gate`; `list_gates` keeps listing deferred gates (`needsReview: false`, `deferral`). Tracking
+reads run state only, never chat; there is no push or Slack notification. See `docs/adrs/2026-11-20-deferred-gates.md`.
+
 The **Run Playbook** button in the header of the overview screen (the one with the Runs, Analytics and Profiles tabs,
 next to Sidekick) opens a form to start any valid playbook of a project in a new workspace: a project dropdown
 (preselected to the project chip selected on the screen; with "All projects" you choose one), a workspace name (optional; empty keeps the default title, the playbook title and the

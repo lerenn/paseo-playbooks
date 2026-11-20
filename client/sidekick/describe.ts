@@ -48,6 +48,8 @@ const KNOWN: Record<string, { sentence: string; keys: string[] }> = {
   get_run: { sentence: "read a run", keys: ["runId"] },
   list_gates: { sentence: "list the gates", keys: [] },
   resume_gate: { sentence: "answer a gate", keys: ["runId", "gateId", "choice"] },
+  defer_gate: { sentence: "set a gate aside in Waiting", keys: ["runId", "gateId", "reason"] },
+  return_gate: { sentence: "bring a gate back to review", keys: ["runId", "gateId"] },
   validate_playbooks: { sentence: "validate the playbooks", keys: [] },
   Bash: { sentence: "run a shell command", keys: ["command"] },
   Edit: { sentence: "edit a file", keys: ["file_path"] },
