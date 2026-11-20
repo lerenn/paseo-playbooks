@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -42,6 +42,20 @@ describe("freshRef", () => {
 
   it("keep the branch itself without an origin", async () => {
     expect(await freshRef(await repo(), "main")).toBe("main");
+  });
+
+  it("reads a branch that starts with - as a ref, not as a fetch option", async () => {
+    const origin = await repo();
+    const clone = await mkdtemp(path.join(tmpdir(), "git-"));
+    temps.push(clone);
+    await git(clone, "clone", "-q", origin, ".");
+    const bin = await mkdtemp(path.join(tmpdir(), "git-"));
+    temps.push(bin);
+    const uploadPack = path.join(bin, "upload-pack");
+    await writeFile(uploadPack, `#!/bin/sh\ntouch ${path.join(bin, "ran")}\n`);
+    await chmod(uploadPack, 0o755);
+    await freshRef(clone, `--upload-pack=${uploadPack}`);
+    await expect(stat(path.join(bin, "ran"))).rejects.toThrow(/ENOENT/);
   });
 });
 
