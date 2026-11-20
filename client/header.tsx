@@ -1,11 +1,10 @@
-import type { PluginButtonIconProps, PluginButtonRegistration, PluginClientContext } from "@getpaseo/plugin/client";
+import type { PluginButtonIconProps, PluginButtonRegistration, PluginClientContext, PluginText } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/ui";
 import { View } from "react-native";
 import { headerStateRpc } from "../shared/contracts";
+import { messages } from "./i18n";
 import { isHidden, onVisible } from "./visibility";
 
-const TITLE = "Playbooks";
-const WAITING_TITLE = "Playbooks: a run is waiting for your decision";
 /** How often the buttons refresh which workspaces have playbooks or a waiting gate. */
 const POLL_MS = 10_000;
 /**
@@ -44,7 +43,7 @@ function WaitingIcon(props: PluginButtonIconProps) {
  * Playbooks tab and shows a dot while a run there waits for a gate decision.
  */
 export function contributeHeaderButtons(client: PluginClientContext): () => void {
-  type Button = { registration: PluginButtonRegistration; visible: boolean; waiting: boolean };
+  type Button = { registration: PluginButtonRegistration<PluginText>; visible: boolean; waiting: boolean };
   const buttons = new Map<string, Button>();
   const lifetime = new AbortController();
 
@@ -54,7 +53,7 @@ export function contributeHeaderButtons(client: PluginClientContext): () => void
       id: "open-playbooks",
       workspaceId,
       button: {
-        title: TITLE,
+        title: messages.message("title"),
         icon: "Workflow",
         visible: false,
         behavior: {
@@ -89,7 +88,7 @@ export function contributeHeaderButtons(client: PluginClientContext): () => void
       const visible = withPlaybooks.has(workspaceId);
       const isWaiting = waiting.has(workspaceId);
       if (visible === button.visible && isWaiting === button.waiting) continue;
-      button.registration.update({ visible, icon: isWaiting ? WaitingIcon : "Workflow", title: isWaiting ? WAITING_TITLE : TITLE });
+      button.registration.update({ visible, icon: isWaiting ? WaitingIcon : "Workflow", title: isWaiting ? messages.message("headerWaiting") : messages.message("title") });
       button.visible = visible;
       button.waiting = isWaiting;
     }

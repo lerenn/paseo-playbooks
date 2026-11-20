@@ -167,6 +167,17 @@ While the Sidekick works, **Enter** sends the message into the running turn (ste
 an x to cancel, and is sent when the turn ends. When the Sidekick is idle, Cmd+Enter just sends. The queue is
 kept by the column (per project, this session only), not by the daemon.
 
+## Panel languages
+
+The panel follows the Paseo app language: English, French (`fr`) and Simplified Chinese
+(`zh-CN`), with English as the fallback for any other language or any string not yet
+translated. The messages live in `client/i18n.ts` (`defineTranslations` from `@getpaseo/plugin`).
+The panel chrome, the Start and Run Playbook forms and the registration titles are translated so
+far; run cards, statuses, the graph, analytics and the Sidekick follow in later steps. A new
+user-facing string in a translated component goes into all three languages in the same pull
+request. Playbook text written by authors is shown as written. See
+`docs/adrs/2026-11-20-panel-ui-translations.md`.
+
 ## Develop
 
 ```bash
