@@ -682,6 +682,30 @@ manager:
 <tr><td><code>slow</code></td><td>a running step slower than its baseline (<code>slow_warning</code>)</td><td>reuses <code>step.slow</code></td></tr>
 <tr><td><code>gate_open</code></td><td>a gate open longer than <code>after</code> (default 30m)</td><td>reuses <code>gate.stale</code></td></tr></tbody></table>
 <p>A finding is reported once, not again while it is unchanged, again after <code>cooldown</code> (default <code>1h</code>) if still true, and anew if it clears and returns. Findings are in the run's panel header, in <code>get_run</code> (<code>warden</code>: check, subject, detail, since, reportedAt) and <code>list_events</code> (<code>warden.finding</code>). A running Sidekick gets one message per pass with the new findings only; none without a Sidekick.</p>
+<h3>PR checks</h3>
+<p>Opt-in checks over the project's open pull requests, in <code>defaults/main.yaml</code> only (<code>warden.pr_checks</code>; refused in a playbook). A check is on only when its block is set, and it needs <code>warden.enabled</code>, a project with a Sidekick and the <code>gh</code> CLI signed in. Logins, patterns and commands are yours: none is built in. A PR belongs to a run when the run's branch is the PR's head or the PR URL appears in the run's state. Each finding carries the run id (if any), the PR, the cause and a proposed action, as text: the warden takes none. It reaches the Sidekick in the warden summary, deduplicated like the others.</p>
+<table><thead><tr><th>Block</th><th>Finding</th></tr></thead><tbody>
+<tr><td><code>no_reviewer: { required: [...] }</code></td><td><code>pr_no_reviewer</code>: none of the logins is requested or has reviewed (drafts excepted)</td></tr>
+<tr><td><code>conflicting: {}</code></td><td><code>pr_conflicting</code>: GitHub reports merge conflicts; proposes routing to <code>fix_step</code></td></tr>
+<tr><td><code>review_bot: { author, receipt, retrigger }</code> and <code>review_stale: { after }</code></td><td><code>pr_review_stale</code>: the bot's last comment or review matching <code>receipt</code> is older than the head commit by more than <code>after</code>; proposes <code>retrigger</code></td></tr>
+<tr><td><code>required_checks: { names, dispatch }</code></td><td><code>pr_required_checks</code>: a named check or workflow has not run on the head commit; proposes <code>dispatch</code> ({name} {sha} {branch} {pr}) on the exact head</td></tr>
+<tr><td><code>review_findings: {}</code> (needs <code>review_bot</code>, <code>fix_step</code>)</td><td><code>pr_review_findings</code>: the bot's latest review requests changes and the run's <code>fix_step</code> is not running</td></tr>
+<tr><td><code>unowned: {}</code></td><td><code>pr_unowned</code>: no run owns the open PR</td></tr>
+<tr><td><code>draft_idle: { after }</code></td><td><code>pr_draft_idle</code>: a draft not updated for <code>after</code> (<code>7d</code>, <code>48h</code>)</td></tr></tbody></table>
+<p class="file">Example: warden PR checks</p>
+<pre><code># defaults/main.yaml
+warden:
+  enabled: true
+  pr_checks:
+    fix_step: fix
+    review_bot: { author: some-bot, receipt: "^Reviewed", retrigger: "comment `/review` on PR {pr}" }
+    no_reviewer: { required: [alice, bob] }
+    conflicting: {}
+    review_stale: { after: 30m }
+    required_checks: { names: [build, lint], dispatch: "your-dispatch-command {name} --ref {branch} --sha {sha}" }
+    review_findings: {}
+    unowned: {}
+    draft_idle: { after: 7d }</code></pre>
 <p class="file">Example: warden</p>
 <pre><code># defaults/main.yaml
 warden:

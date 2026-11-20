@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { Gate, Run } from "../shared/types";
-import { isActive } from "../shared/types";
+import { isActive, WARDEN_RUN_CHECKS } from "../shared/types";
 import { type BusEvent, type EventBus, type EventTypeDef } from "./bus";
 import { formatSlowDuration } from "../shared/slow";
 import { slowEntry, SlowIndex } from "./slow";
@@ -164,7 +164,7 @@ export const OVERSIGHT_TYPES: EventTypeDef[] = [
   {
     type: "warden.finding",
     description: "The warden (warden.enabled) found something that may need action, once per finding (until it clears or changes; again after warden.cooldown): check (stale_definition, manager_blocked or loops; slow and gate_open findings reuse step.slow and gate.stale), subject (the gate or edge; null for the run), detail, since.",
-    payload: z.object({ ...runFields, check: z.enum(["stale_definition", "manager_blocked", "loops", "slow", "gate_open"]), subject: z.string().nullable(), detail: z.string(), since: z.string() }),
+    payload: z.object({ ...runFields, check: z.enum(WARDEN_RUN_CHECKS), subject: z.string().nullable(), detail: z.string(), since: z.string() }),
     line: (event) => `- warden.finding: ${runName(event.payload)} in ${String(event.payload.workspaceDir)}, ${String(event.payload.check)}: ${String(event.payload.detail)}. Tools: get_run { runId: "${event.runId}" }.`,
   },
   {

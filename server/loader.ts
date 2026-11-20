@@ -25,7 +25,7 @@ import type {
   VarValue,
   When,
 } from "../shared/types";
-import { AgentSettingsSchema, type AgentTarget, DEFAULT_EXHAUSTED_FOR_MS, DEFAULT_MANAGER_COMPACT, DEFAULT_MANAGER_MODE, DEFAULT_MANAGER_NUDGE, DEFAULT_PERMISSION_POLICY, DEFAULT_WARDEN, WARDEN_ACTIONS, type WardenConfig, type ManagerNudge, ManagerCompactSchema, ManagerModeSchema, type ManagerMode, type Isolation, type WakeOn, VarTypeSchema, VarValueSchema } from "../shared/types";
+import { AgentSettingsSchema, type AgentTarget, DEFAULT_EXHAUSTED_FOR_MS, DEFAULT_MANAGER_COMPACT, DEFAULT_MANAGER_MODE, DEFAULT_MANAGER_NUDGE, DEFAULT_PERMISSION_POLICY, DEFAULT_WARDEN, WARDEN_ACTIONS, type WardenConfig, type WardenPrConfig, type ManagerNudge, ManagerCompactSchema, ManagerModeSchema, type ManagerMode, type Isolation, type WakeOn, VarTypeSchema, VarValueSchema } from "../shared/types";
 import { BusError, checkTypes, FilterValueSchema } from "./bus";
 import { JOB_TYPES } from "./job-events";
 import { OVERSIGHT_TYPES } from "./oversight-events";
@@ -563,11 +563,78 @@ const RawWardenSchema = z
       })
       .strict()
       .optional(),
+    /**
+     * Checks over the project's open pull requests (ADR 2026-11-20-warden-pr-checks), `defaults/main.yaml` only. A check is
+     * on only when its block is set; logins, patterns and commands are yours, none is built in.
+     */
+    pr_checks: z
+      .object({
+        /** The step of a run that fixes its PR: named in proposals; a running one means a fix is under way. */
+        fix_step: z.string().optional(),
+        /** The automated reviewer: `author` login, `receipt` regex a receipt comment or review body matches, `retrigger` text proposed to re-run it. */
+        review_bot: z.object({ author: z.string(), receipt: z.string(), retrigger: z.string().optional() }).strict().optional(),
+        /** An open PR where none of these logins is requested or has reviewed. */
+        no_reviewer: z.object({ required: z.array(z.string()).min(1) }).strict().optional(),
+        /** A PR GitHub reports as conflicting. */
+        conflicting: z.object({}).strict().optional(),
+        /** The reviewer's last receipt is older than the PR head by more than `after` (needs review_bot). */
+        review_stale: z.object({ after: z.string() }).strict().optional(),
+        /** Checks or workflows in `names` that have not run on the head commit; `dispatch` is a command template ({sha} {branch} {pr} {name}). */
+        required_checks: z.object({ names: z.array(z.string()).min(1), dispatch: z.string().optional() }).strict().optional(),
+        /** The reviewer's latest review requests changes and no fix_step is running (needs review_bot and fix_step). */
+        review_findings: z.object({}).strict().optional(),
+        /** An open PR that no run owns. */
+        unowned: z.object({}).strict().optional(),
+        /** A draft PR not updated for `after` (`7d`, `48h`). */
+        draft_idle: z.object({ after: z.string() }).strict().optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 type RawWarden = z.infer<typeof RawWardenSchema>;
 
 /** The warden block over a base config, field by field; a bad value is reported through `fail`. */
+/** `30m`, `48h` or `7d` in ms; null when it is none of them. */
+function parseLongDuration(text: string): number | null {
+  const days = /^(\d+)\s*d$/.exec(text.trim());
+  return days ? Number(days[1]) * 86_400_000 || null : parseDuration(text);
+}
+
+/** `warden.pr_checks` resolved (repo-wide defaults only); null when no check is configured. A bad value is reported through `fail`. */
+export function resolveWardenPr(raw: RawWarden["pr_checks"], where: string, fail: (message: string) => void): WardenPrConfig | null {
+  if (!raw) return null;
+  const duration = (value: string | undefined, key: string): number | null => {
+    if (value === undefined) return null;
+    const ms = parseLongDuration(value);
+    if (ms === null) fail(`${where}.${key}: expected a duration such as 30m, 48h or 7d`);
+    return ms;
+  };
+  if (raw.review_bot) {
+    try {
+      new RegExp(raw.review_bot.receipt);
+    } catch {
+      fail(`${where}.review_bot.receipt: not a valid regular expression`);
+    }
+  }
+  if ((raw.review_stale || raw.review_findings) && !raw.review_bot) fail(`${where}: review_stale and review_findings need review_bot`);
+  if (raw.review_findings && !raw.fix_step) fail(`${where}.review_findings: needs fix_step (the step whose running means a fix is under way)`);
+  const reviewStale = raw.review_stale ? duration(raw.review_stale.after, "review_stale.after") : null;
+  const draftIdle = raw.draft_idle ? duration(raw.draft_idle.after, "draft_idle.after") : null;
+  const config: WardenPrConfig = {
+    fixStep: raw.fix_step ?? null,
+    reviewBot: raw.review_bot ? { author: raw.review_bot.author, receipt: raw.review_bot.receipt, retrigger: raw.review_bot.retrigger ?? null } : null,
+    noReviewer: raw.no_reviewer ? { required: raw.no_reviewer.required } : null,
+    conflicting: raw.conflicting ? {} : null,
+    reviewStale: reviewStale === null ? null : { afterMs: reviewStale },
+    requiredChecks: raw.required_checks ? { names: raw.required_checks.names, dispatch: raw.required_checks.dispatch ?? null } : null,
+    reviewFindings: raw.review_findings ? {} : null,
+    unowned: raw.unowned ? {} : null,
+    draftIdle: draftIdle === null ? null : { afterMs: draftIdle },
+  };
+  return Object.entries(config).some(([key, value]) => key !== "fixStep" && key !== "reviewBot" && value !== null) ? config : null;
+}
+
 function resolveWarden(raw: RawWarden | undefined, base: WardenConfig, where: string, fail: (message: string) => void): WardenConfig {
   const out: WardenConfig = structuredClone(base);
   if (!raw) return out;
@@ -722,7 +789,7 @@ const RawDefaultsSchema = z.object({
     silence: z.unknown().optional(),
     archive_agents: z.unknown().optional(),
   });
-type RawDefaults = Omit<z.infer<typeof RawDefaultsSchema>, "tiers"> & { tiers?: Tiers; managerCompact?: ManagerCompact; managerNudge?: Partial<ManagerNudge>; wardenConfig?: WardenConfig; managerMode?: ManagerMode; agentRules?: string[] };
+type RawDefaults = Omit<z.infer<typeof RawDefaultsSchema>, "tiers"> & { tiers?: Tiers; managerCompact?: ManagerCompact; managerNudge?: Partial<ManagerNudge>; wardenConfig?: WardenConfig; wardenPr?: WardenPrConfig | null; managerMode?: ManagerMode; agentRules?: string[] };
 
 function formatZodError(file: string, error: z.ZodError): string[] {
   return error.issues.map((issue) => {
@@ -882,7 +949,10 @@ async function loadDefaults(root: string, relDir: string): Promise<{ defaults: R
       else fail(`manager.lifecycle: ${mode}`);
     }
   }
-  if (parsed.data.warden !== undefined) defaults.wardenConfig = resolveWarden(parsed.data.warden, DEFAULT_WARDEN, "warden", fail);
+  if (parsed.data.warden !== undefined) {
+    defaults.wardenConfig = resolveWarden(parsed.data.warden, DEFAULT_WARDEN, "warden", fail);
+    defaults.wardenPr = resolveWardenPr(parsed.data.warden.pr_checks, "warden.pr_checks", fail);
+  }
   if (parsed.data.timeout && parseDuration(parsed.data.timeout) === null) {
     errors.push(`${rel}: timeout: expected a duration such as 30m or 2h`);
   }
@@ -1246,6 +1316,24 @@ export async function reloadStaleSessionsSetting(workspaceDir: string): Promise<
     return parsed.success ? (parsed.data.reload_stale_sessions ?? true) : true;
   }
   return true;
+}
+
+/** The warden settings of the workspace's `defaults/main.yaml` for the PR checks: null unless `warden.enabled` and a `pr_checks` check is set (or when the file is invalid). */
+export async function wardenPrSetting(workspaceDir: string): Promise<{ intervalMs: number; cooldownMs: number; checks: WardenPrConfig } | null> {
+  for (const relDir of PLAYBOOKS_DIRS) {
+    const file = path.join(workspaceDir, relDir, "defaults", "main.yaml");
+    if ((await readText(file)) === null) continue;
+    const raw = await readYaml(file, `${relDir}/defaults/main.yaml`);
+    if ("error" in raw) return null;
+    const parsed = RawDefaultsSchema.safeParse(raw.value);
+    if (!parsed.success || !parsed.data.warden) return null;
+    let failed = false;
+    const fail = () => void (failed = true);
+    const warden = resolveWarden(parsed.data.warden, DEFAULT_WARDEN, "warden", fail);
+    const checks = resolveWardenPr(parsed.data.warden.pr_checks, "warden.pr_checks", fail);
+    return warden.enabled && checks && !failed ? { intervalMs: warden.intervalMs, cooldownMs: warden.cooldownMs, checks } : null;
+  }
+  return null;
 }
 
 /** `gates.on_behalf` of the workspace's `defaults/main.yaml` (the first playbooks folder that has one); `allow` when unset. */
@@ -2325,6 +2413,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     if (nudgeOwn.maxIntervalMs !== undefined || nudgeOwn.afterMs !== undefined) err("manager.nudge.max_interval must not be shorter than manager.nudge.after");
     else managerNudge.maxIntervalMs = managerNudge.afterMs;
   }
+  if (pb.warden?.pr_checks !== undefined) err("`warden.pr_checks` only applies in defaults/main.yaml: it looks at the project's pull requests, not at one run");
   const warden = resolveWarden(pb.warden, defaults.wardenConfig ?? DEFAULT_WARDEN, "warden", err);
   let managerMode: ManagerMode = defaults.managerMode ?? DEFAULT_MANAGER_MODE;
   if (pb.manager?.mode !== undefined) {

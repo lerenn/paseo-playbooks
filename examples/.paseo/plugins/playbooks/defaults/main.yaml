@@ -32,3 +32,15 @@ warden: { enabled: false }
 #     loops: { above: 5, action: report }    # a goto edge fired more than this
 #     slow: { action: report }               # a running step is slower than its baseline
 #     gate_open: { after: 30m, action: report }
+# warden:                      # PR checks (defaults only; each check is off unless its block is set; needs a Sidekick and the gh CLI)
+#   enabled: true
+#   pr_checks:
+#     fix_step: fix                                              # the step that fixes a run's PR: named in proposals
+#     review_bot: { author: some-bot, receipt: "^Reviewed", retrigger: "comment `/review` on PR {pr}" }
+#     no_reviewer: { required: [alice, bob] }                    # none requested or reviewed
+#     conflicting: {}
+#     review_stale: { after: 30m }                               # needs review_bot
+#     required_checks: { names: [build, lint], dispatch: "your-dispatch-command {name} --ref {branch} --sha {sha}" }
+#     review_findings: {}                                        # needs review_bot and fix_step
+#     unowned: {}
+#     draft_idle: { after: 7d }

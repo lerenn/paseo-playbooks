@@ -42,7 +42,7 @@ import { workspaceTitle } from "../shared/workspace-name";
 import { createWorktree, diskUsedFraction, dirtyPaths, purgeScratch, linkedSubmodules, listWorktreeDirs, pruneWorktrees, unpushedCommits, removeWorktree, repoOfWorktree, worktreeBranch, worktreePath } from "./worktree";
 import { chooseDefinition, definitionMismatch, isAdoptable, readAtRef, shortReason, workspaceWarning } from "./fresh";
 import { runWorktreeTeardown } from "./teardown";
-import { gatesOnBehalfSetting, loadPlaybooks, loadSidekick, type SidekickConfig, type SidekickProviders } from "./loader";
+import { gatesOnBehalfSetting, wardenPrSetting, loadPlaybooks, loadSidekick, type SidekickConfig, type SidekickProviders } from "./loader";
 import { findEntry } from "../shared/repos";
 
 /** The entry a stored or typed playbook id means: bare ids resolve to the one namespaced entry (and the reverse); ambiguity or absence gives undefined. */
@@ -54,7 +54,8 @@ import { DEFAULT_SUBAGENT_ARCHIVE_AFTER_MS, subagentWorkspaceRefusal, SubagentAr
 import { DEFAULT_SIDEKICK_SUBAGENT, SIDEKICK_LABEL, SIDEKICK_PROJECT_LABEL, sidekickGateSweep, sidekickCompactCommand, sidekickCompactedNote, sidekickLimits, sidekickKickoff, SIDEKICK_PASEO_TOOLS, SIDEKICK_PLUGIN_TOOLS, SidekickRegistry, sidekickPrompt, sidekickTitle } from "./sidekick";
 import { BusError, EventBus, globToRegExp, type BusEvent, type Notifier, type Subscription } from "./bus";
 import { blockedOnGate, MANAGER_WATCH_CHECK_MS, nudgeDue, STUCK_AFTER_NUDGES } from "./manager-watch";
-import { diffFindings, gateOpenCandidates, loopCandidates, managerBlockedCandidates, slowCandidates, staleDefinitionCandidate, WARDEN_CHECK_MS, WARDEN_MAX_RUNS_PER_PASS, wardenSummary, type Act, type Candidate, type WardenIo } from "./warden";
+import { listOpenPrs, prCandidates, WardenPrStore, type OpenPr } from "./warden-prs";
+import { diffFindings, gateOpenCandidates, loopCandidates, managerBlockedCandidates, slowCandidates, staleDefinitionCandidate, WARDEN_CHECK_MS, WARDEN_MAX_RUNS_PER_PASS, wardenPrSummary, wardenSummary, type Act, type Candidate, type WardenIo } from "./warden";
 import { SlowIndex } from "./slow";
 import { gatePayload, OversightProducer, registerOversightTypes, runFieldsOf } from "./oversight-events";
 import { JOB_TYPES, publicJobEvents } from "./job-events";
@@ -498,7 +499,7 @@ export class Runtime {
 
   constructor(
     private readonly store: RunStore,
-    private readonly options: { dataDir?: string; debounceMs?: number; pollMs?: number; wakeGapMs?: number; /** Tests: how long a failed run's worktree is kept (default 24h). */ failedRetentionMs?: number; /** Tests: the used fraction of the volume holding the worktrees. */ diskUsedFraction?: (dir: string) => Promise<number>; admissionTimeoutMs?: number; /** Tests: false keeps the old manual flow (the plugin starts no ready agent step by itself). */ autoStartAgents?: boolean; /** Tests: the grace period of a Sidekick subagent's workspace archive when the project sets none. */ subagentArchiveAfterMs?: number; /** Tests: sessions reloaded at once after a plugin update (default 4). */ reloadConcurrency?: number; /** Tests: pause after each reload (default 20 ms). */ reloadPauseMs?: number } = {},
+    private readonly options: { dataDir?: string; debounceMs?: number; pollMs?: number; wakeGapMs?: number; /** Tests: how long a failed run's worktree is kept (default 24h). */ failedRetentionMs?: number; /** Tests: the used fraction of the volume holding the worktrees. */ diskUsedFraction?: (dir: string) => Promise<number>; admissionTimeoutMs?: number; /** Tests: false keeps the old manual flow (the plugin starts no ready agent step by itself). */ autoStartAgents?: boolean; /** Tests: the grace period of a Sidekick subagent's workspace archive when the project sets none. */ subagentArchiveAfterMs?: number; /** Tests: the open PRs of a project (default: `gh pr list`). */ listOpenPrs?: (dir: string) => Promise<OpenPr[]>; /** Tests: sessions reloaded at once after a plugin update (default 4). */ reloadConcurrency?: number; /** Tests: pause after each reload (default 20 ms). */ reloadPauseMs?: number } = {},
   ) {
     const dir = options.dataDir ?? path.dirname(store.dir);
     this.worktreesDir = path.join(dir, "worktrees");
@@ -1019,6 +1020,7 @@ export class Runtime {
       await this.bus.flush(now);
       await this.watchManagers(now).catch((error) => console.error("[playbooks] manager watch failed:", errorText(error)));
       await this.wardenPass(now).catch((error) => console.error("[playbooks] warden pass failed:", errorText(error)));
+      await this.wardenPrPass(now).catch((error) => console.error("[playbooks] warden PR pass failed:", errorText(error)));
       if (this.store.list().some((run) => run.gates.some((gate) => (gate.kind === "permission" || gate.kind === "manager_question") && gate.status === "pending"))) await this.sweepPermissions(false);
       // Fan-out children end in other runs: the scan is what notices them (no tokens, no agent).
       if (this.store.list().some((run) => isActive(run) && Object.values(run.steps).some((state) => state.fanout && state.status === "running"))) await this.tick();
@@ -1114,6 +1116,43 @@ export class Runtime {
       }
     }
     for (const [projectId, items] of notices) await this.wardenTellSidekick(projectId, wardenSummary(items)).catch((error: unknown) => console.error("[playbooks] warden summary failed:", errorText(error)));
+  }
+
+  private wardenPrAt = 0;
+  private readonly wardenPrSeen = new Map<string, number>();
+  private wardenPrStore: WardenPrStore | null = null;
+
+  /**
+   * The warden's PR checks (ADR 2026-11-20-warden-pr-checks): per project that has a Sidekick, whose `defaults/main.yaml` sets
+   * `warden.enabled` and a `warden.pr_checks` check, every `interval` one read of the open PRs (`gh`) and the configured checks.
+   * Nothing is read, run or written for a project without that configuration. Findings are kept per project (a file, so a
+   * restart does not repeat them), deduplicated like the run findings, and sent to the Sidekick in one message; it only proposes.
+   */
+  private async wardenPrPass(now: number): Promise<void> {
+    if (now - this.wardenPrAt < WARDEN_CHECK_MS) return;
+    this.wardenPrAt = now;
+    const registry = await this.sidekickRegistry.all();
+    const store = (this.wardenPrStore ??= new WardenPrStore(path.join(this.options.dataDir ?? path.dirname(this.store.dir), "warden-prs.json")));
+    for (const [projectId, record] of Object.entries(registry)) {
+      try {
+        if (now - (this.wardenPrSeen.get(projectId) ?? 0) < 60_000) continue;
+        const project = await this.projectOf(record.workspaceId).catch(() => null);
+        const setting = project ? await wardenPrSetting(project.root) : null;
+        if (!project || !setting || now - (this.wardenPrSeen.get(projectId) ?? 0) < setting.intervalMs) continue;
+        this.wardenPrSeen.set(projectId, now);
+        const prs: OpenPr[] = await (this.options.listOpenPrs ?? listOpenPrs)(project.root);
+        const runs = this.store.list().filter((run) => run.projectId === projectId && !run.archivedAt);
+        const candidates = prCandidates(prs, runs, setting.checks, now);
+        const iso = new Date(now).toISOString();
+        const existing = await store.read(projectId);
+        const { next, report } = diffFindings(existing, candidates, iso, setting.cooldownMs);
+        // The state is written before the message: a failed send never repeats a report.
+        await store.write(projectId, next);
+        if (report.length > 0) await this.wardenTellSidekick(projectId, wardenPrSummary(report.map((entry) => entry.finding)));
+      } catch (error) {
+        console.error(`[playbooks] warden PR pass on project ${projectId} failed:`, errorText(error));
+      }
+    }
   }
 
   /** The commit origin/<base> is at after a fetch; null when it cannot be read (offline, no such ref). */

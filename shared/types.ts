@@ -102,7 +102,10 @@ export const WardenConfigSchema = z.object({
   }),
 });
 export type WardenConfig = z.infer<typeof WardenConfigSchema>;
-export const WARDEN_CHECKS = ["stale_definition", "manager_blocked", "loops", "slow", "gate_open"] as const;
+export const WARDEN_RUN_CHECKS = ["stale_definition", "manager_blocked", "loops", "slow", "gate_open"] as const;
+/** The PR-level checks (ADR 2026-11-20-warden-pr-checks): over the project's open pull requests, each off unless configured. */
+export const WARDEN_PR_CHECKS = ["pr_no_reviewer", "pr_conflicting", "pr_review_stale", "pr_required_checks", "pr_review_findings", "pr_unowned", "pr_draft_idle"] as const;
+export const WARDEN_CHECKS = [...WARDEN_RUN_CHECKS, ...WARDEN_PR_CHECKS] as const;
 export type WardenCheck = (typeof WARDEN_CHECKS)[number];
 export const DEFAULT_WARDEN: WardenConfig = {
   enabled: false,
@@ -117,10 +120,30 @@ export const DEFAULT_WARDEN: WardenConfig = {
   },
 };
 
+/**
+ * `warden.pr_checks` (repo-wide, `defaults/main.yaml` only): the checks over open pull requests. A check is on only when its
+ * block is set; everything provider-specific (logins, comment patterns, commands) comes from here, none is built in.
+ */
+export const WardenPrConfigSchema = z.object({
+  /** The step of a run that fixes its PR (conflicts, review findings): named in proposals, and "running" means a fix is under way. */
+  fixStep: z.string().nullable(),
+  /** The automated reviewer: its login, a regex its receipt comment or review body matches, and what re-triggers it (text, used in proposals). */
+  reviewBot: z.object({ author: z.string(), receipt: z.string(), retrigger: z.string().nullable() }).nullable(),
+  noReviewer: z.object({ required: z.array(z.string()).min(1) }).nullable(),
+  conflicting: z.object({}).nullable(),
+  reviewStale: z.object({ afterMs: z.number().int().positive() }).nullable(),
+  /** `names`: checks (or workflows) that must have run on the head commit; `dispatch`: a command template ({sha} {branch} {pr} {name}) proposed when one is missing. */
+  requiredChecks: z.object({ names: z.array(z.string()).min(1), dispatch: z.string().nullable() }).nullable(),
+  reviewFindings: z.object({}).nullable(),
+  unowned: z.object({}).nullable(),
+  draftIdle: z.object({ afterMs: z.number().int().positive() }).nullable(),
+});
+export type WardenPrConfig = z.infer<typeof WardenPrConfigSchema>;
+
 /** What the warden remembers about a run (server/warden.ts): the findings it reported and still sees; survives a restart. */
 export const WardenFindingSchema = z.object({
   check: z.enum(WARDEN_CHECKS),
-  /** The step, gate or edge the finding is about (null: the run). */
+  /** The step, gate, edge or PR (`#12`) the finding is about (null: the run). */
   subject: z.string().nullable(),
   /** A change of it makes a new finding (a new origin sha, a new step run). */
   signature: z.string(),
@@ -130,6 +153,10 @@ export const WardenFindingSchema = z.object({
   reportedAt: z.string(),
   /** The action taken when it was first reported (`refresh_scripts` runs once per finding). */
   acted: z.enum(["refresh_scripts"]).nullable().default(null),
+  /** PR checks: the run that owns the PR (null: none), the PR, and the action the warden proposes (it never takes it itself). */
+  runId: z.string().nullable().default(null),
+  pr: z.object({ number: z.number(), url: z.string() }).nullable().default(null),
+  proposed: z.string().nullable().default(null),
 });
 export type WardenFinding = z.infer<typeof WardenFindingSchema>;
 export const WardenStateSchema = z.object({ findings: z.record(z.string(), WardenFindingSchema).default({}) });

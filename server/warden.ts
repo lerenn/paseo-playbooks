@@ -23,6 +23,10 @@ export interface Candidate {
   signature: string;
   detail: string;
   action: Act;
+  /** PR checks only: the owning run, the PR and the action proposed (as text). */
+  runId?: string | null;
+  pr?: { number: number; url: string } | null;
+  proposed?: string | null;
 }
 
 /** What the runtime reads for the checks that need the daemon or git. */
@@ -94,7 +98,7 @@ export function diffFindings(
     const old = existing[key];
     const changed = !old || old.signature !== candidate.signature;
     const due = changed || now - Date.parse(old.reportedAt) >= cooldownMs;
-    const finding: WardenFinding = { check: candidate.check, subject: candidate.subject, signature: candidate.signature, detail: candidate.detail, since: changed ? nowIso : old.since, reportedAt: due ? nowIso : old.reportedAt, acted: changed ? null : old.acted };
+    const finding: WardenFinding = { check: candidate.check, subject: candidate.subject, signature: candidate.signature, detail: candidate.detail, since: changed ? nowIso : old.since, reportedAt: due ? nowIso : old.reportedAt, acted: changed ? null : old.acted, runId: candidate.runId ?? null, pr: candidate.pr ?? null, proposed: candidate.proposed ?? null };
     next[key] = finding;
     if (due) report.push({ finding, fresh: changed, candidate });
   }
@@ -105,4 +109,10 @@ export function diffFindings(
 export function wardenSummary(items: Array<{ runId: string; playbook: string; runName: string | null; findings: WardenFinding[] }>): string {
   const lines = items.flatMap((item) => item.findings.map((finding) => `- ${item.runId} (${item.playbook}${item.runName ? `, ${item.runName}` : ""}) ${finding.check}: ${finding.detail}`));
   return `[playbooks] The warden found ${lines.length} thing${lines.length === 1 ? "" : "s"} that may need action:\n${lines.join("\n")}\nRead each with get_run (its \`warden\` field) before acting; the warden will not repeat a finding until its cooldown passes or it changes.`;
+}
+
+/** The one message a Sidekick gets per PR pass: each finding with its run (when any), PR, cause and proposed action. */
+export function wardenPrSummary(findings: WardenFinding[]): string {
+  const lines = findings.map((finding) => `- ${finding.runId ? `run ${finding.runId}` : "no run"}, ${finding.check}: ${finding.detail}. Proposed: ${finding.proposed ?? "look at it"}.`);
+  return `[playbooks] The warden found ${lines.length} thing${lines.length === 1 ? "" : "s"} that may need action on open pull requests:\n${lines.join("\n")}\nThe warden only proposes: check the PR and the run (get_run) before acting, and put to the human what needs them. It will not repeat a finding until its cooldown passes or it changes.`;
 }
