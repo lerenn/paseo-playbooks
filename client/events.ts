@@ -20,7 +20,6 @@ type PaseoApi = PluginClientContext["paseo"];
 export function watchAgents(paseo: PaseoApi, workspaceId: string | null, onChange: () => void, batchMs: number): () => void {
   const lifetime = new AbortController();
   let timer: ReturnType<typeof setTimeout> | null = null;
-  const ours = new Set<string>();
   const mine = (agentWorkspaceId: string | undefined) => workspaceId === null || agentWorkspaceId === workspaceId;
   const changed = () => {
     if (timer) return;
@@ -34,20 +33,14 @@ export function watchAgents(paseo: PaseoApi, workspaceId: string | null, onChang
     .then(({ subscription }) => {
       if (lifetime.signal.aborted) return void subscription.release();
       const stop = subscription.subscribe({
-        snapshot: ({ entries }) => {
-          ours.clear();
-          for (const { agent } of entries) if (mine(agent.workspaceId)) ours.add(agent.id);
-          changed();
-        },
+        snapshot: () => changed(),
         update: (message) => {
           if (message.type !== "agent_update") return;
           const update = message.payload;
           if (update.kind === "upsert") {
             if (!mine(update.agent.workspaceId)) return;
-            ours.add(update.agent.id);
             changed();
           } else {
-            ours.delete(update.agentId);
             changed();
           }
         },
