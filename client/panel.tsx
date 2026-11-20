@@ -1,4 +1,5 @@
-import { openExternalUrl, useRpc, useTabState, type PluginWorkspacePanelProps } from "@getpaseo/plugin/client";
+import { messages } from "./i18n";
+import { openExternalUrl, useRpc, useTabState, useTranslation, type PluginWorkspacePanelProps } from "@getpaseo/plugin/client";
 import { z } from "zod";
 import { Icon, ScrollView, useToast } from "@getpaseo/plugin/client/ui";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -28,6 +29,7 @@ interface Card {
 
 export function PlaybooksPanel(props: PluginWorkspacePanelProps) {
   const { theme, layout, workspaceId, navigation } = props;
+  const { t } = useTranslation(messages);
   const list = useRpc(listPlaybooks);
   const runsRpc = useRpc(listRuns);
   const playbooks = useQuery({
@@ -96,7 +98,7 @@ export function PlaybooksPanel(props: PluginWorkspacePanelProps) {
         </View>
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel="Refresh playbooks"
+          accessibilityLabel={t("panel.refresh")}
           hitSlop={8}
           onPress={() => void queryClient.invalidateQueries({ queryKey: ["playbooks"] })}
         >
@@ -108,7 +110,7 @@ export function PlaybooksPanel(props: PluginWorkspacePanelProps) {
         <EmptyState theme={theme} compact={layout.compact} workspaceId={workspaceId} />
       ) : (
         <ScrollView contentContainerStyle={{ paddingHorizontal: pad, paddingBottom: pad, gap: 12 }}>
-          {playbooks.isLoading ? <Text style={{ color: theme.colors.foregroundMuted }}>Loading…</Text> : null}
+          {playbooks.isLoading ? <Text style={{ color: theme.colors.foregroundMuted }}>{t("common.loading")}</Text> : null}
           {playbooks.error ? <Text style={{ color: theme.colors.statusDanger }}>{(playbooks.error as Error).message}</Text> : null}
           {/* Earlier cards stack above later ones, so a card's dropdown menus are not covered by the cards below it. */}
           {cards.map((card, index) => renderCard(card, total - index))}
@@ -174,6 +176,7 @@ const EXAMPLE_DIR = ".paseo/plugins/playbooks/";
 
 function EmptyState(props: { theme: Theme; compact: boolean; workspaceId: string }) {
   const { theme } = props;
+  const { t } = useTranslation(messages);
   const toast = useToast();
   const queryClient = useQueryClient();
   const createExample = useRpc(createExampleRpc);
@@ -186,7 +189,7 @@ function EmptyState(props: { theme: Theme; compact: boolean; workspaceId: string
     try {
       await createExample({ workspaceId: props.workspaceId });
       await queryClient.invalidateQueries({ queryKey: ["playbooks"] });
-      toast.show("Example playbook created. Press Start on its card.", { variant: "success" });
+      toast.show(t("empty.created"), { variant: "success" });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : String(error));
       setConfirming(false);
@@ -197,24 +200,24 @@ function EmptyState(props: { theme: Theme; compact: boolean; workspaceId: string
   return (
     <View style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: props.compact ? 16 : 24, gap: 12 }}>
       <Icon name="Workflow" size={32} color={theme.colors.foregroundMuted} />
-      <Text style={{ color: theme.colors.foreground, fontSize: 15, fontWeight: "600", textAlign: "center" }}>No playbooks in this workspace</Text>
+      <Text style={{ color: theme.colors.foreground, fontSize: 15, fontWeight: "600", textAlign: "center" }}>{t("empty.heading")}</Text>
       {confirming ? (
         <>
           <Text style={{ color: theme.colors.foregroundMuted, fontSize: 13, textAlign: "center", maxWidth: 320 }}>
-            This adds hello.yaml and a writer role under {EXAMPLE_DIR} in this workspace. Nothing existing is overwritten.
+            {t("empty.confirm", { dir: EXAMPLE_DIR })}
           </Text>
           <View style={{ flexDirection: "row", gap: 8 }}>
-            <Button theme={theme} kind="primary" label={busy ? "Creating…" : "Create files"} disabled={busy} onPress={() => void create()} />
-            <Button theme={theme} label="Cancel" disabled={busy} onPress={() => setConfirming(false)} />
+            <Button theme={theme} kind="primary" label={busy ? t("empty.creating") : t("empty.createFiles")} disabled={busy} onPress={() => void create()} />
+            <Button theme={theme} label={t("common.cancel")} disabled={busy} onPress={() => setConfirming(false)} />
           </View>
         </>
       ) : (
         <>
           <Text style={{ color: theme.colors.foregroundMuted, fontSize: 13, textAlign: "center", maxWidth: 320 }}>
-            Start from a small example that writes a note and waits for your approval, or add your own to {EXAMPLE_DIR} or .paseo/playbooks/ and refresh.
+            {t("empty.intro", { dir: EXAMPLE_DIR })}
           </Text>
-          <Button theme={theme} kind="primary" label="Create an example playbook" onPress={() => setConfirming(true)} />
-          <Button theme={theme} label="Read the guide ↗" onPress={open} accessibilityLabel="Open the getting started guide in your browser" />
+          <Button theme={theme} kind="primary" label={t("empty.createExample")} onPress={() => setConfirming(true)} />
+          <Button theme={theme} label={t("empty.readGuide")} onPress={open} accessibilityLabel={t("empty.readGuideLabel")} />
         </>
       )}
     </View>
@@ -445,12 +448,13 @@ function RunBar(props: { theme: Theme; run: Run; hostLabel: string }) {
 /** Split button: Start runs with the workspace's agent; the chevron menu offers a new agent here, or a new workspace. */
 /** The Start button's menu: other ways to start than the workspace's current agent. */
 const START_OPTIONS = [
-  { target: "agent", label: "Start on a new agent", icon: "Bot" },
-  { target: "workspace", label: "Start in a new workspace", icon: "GitBranchPlus" },
+  { target: "agent", label: "panel.startOnNewAgent", icon: "Bot" },
+  { target: "workspace", label: "panel.startInNewWorkspace", icon: "GitBranchPlus" },
 ] as const;
 
 function StartButton(props: { theme: Theme; title: string; onStart(target: StartTarget): void }) {
   const { theme } = props;
+  const { t } = useTranslation(messages);
   const [menu, setMenu] = useState(false);
   const [hover, setHover] = useState<StartTarget | null>(null);
   const segment = { flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 7, backgroundColor: theme.colors.accent } as const;
@@ -459,17 +463,17 @@ function StartButton(props: { theme: Theme; title: string; onStart(target: Start
       <View style={{ flexDirection: "row", borderRadius: 8, overflow: "hidden" }}>
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel={`Start ${props.title} with this workspace's agent`}
+          accessibilityLabel={t("panel.startWithAgent", { title: props.title })}
           onPress={() => props.onStart("current")}
           style={{ ...segment, paddingLeft: 12, paddingRight: 10 }}
         >
           <Icon name="Play" size={13} color={theme.colors.accentForeground} />
-          <Text style={{ color: theme.colors.accentForeground, fontSize: 13, fontWeight: "600" }}>Start</Text>
+          <Text style={{ color: theme.colors.accentForeground, fontSize: 13, fontWeight: "600" }}>{t("common.start")}</Text>
         </Pressable>
         <View style={{ width: 1, backgroundColor: theme.colors.accentForeground, opacity: 0.25 }} />
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel={`More ways to start ${props.title}`}
+          accessibilityLabel={t("panel.moreStartWays", { title: props.title })}
           accessibilityState={{ expanded: menu }}
           onPress={() => setMenu((value) => !value)}
           style={{ ...segment, paddingHorizontal: 8 }}
@@ -514,7 +518,7 @@ function StartButton(props: { theme: Theme; title: string; onStart(target: Start
               }}
             >
               <Icon name={option.icon} size={15} color={theme.colors.foreground} />
-              <Text style={{ color: theme.colors.foreground, fontSize: 13 }}>{option.label}</Text>
+              <Text style={{ color: theme.colors.foreground, fontSize: 13 }}>{t(option.label)}</Text>
             </Pressable>
           ))}
         </View>

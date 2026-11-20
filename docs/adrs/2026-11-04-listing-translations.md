@@ -18,7 +18,9 @@ large share of Paseo users read French or Chinese.
 - The translations say the same thing as `OVERVIEW.md` and the English description. A
   change to either updates the translations in the same pull request.
 - UI labels (Start, Approve, Reject, menu entries) stay in English in the translations,
-  because the panel is not translated.
+  because the panel is not translated. (Superseded in part: the panel is being translated, see
+  `2026-11-20-panel-ui-translations.md`; the translations name the controls in the panel's
+  language once they are translated.)
 - The repository's Docs check playbook includes the translated overviews in the documents
   it checks.
 

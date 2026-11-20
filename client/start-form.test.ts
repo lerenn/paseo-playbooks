@@ -4,7 +4,21 @@ import { RunPlaybookButton } from "./start-form";
 import type { Theme } from "./theme";
 
 vi.mock("react-native", () => ({ Pressable: "Pressable", Switch: "Switch", Text: "Text", View: "View" }));
-vi.mock("@getpaseo/plugin/client", () => ({ useRpc: vi.fn() }));
+// The real catalogue helpers, resolved in the locale `locale.current` (like the host does).
+const locale = vi.hoisted(() => ({ current: "en" }));
+vi.mock("@getpaseo/plugin/client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@getpaseo/plugin/client")>();
+  const { PluginTranslationRuntime } = await import("@getpaseo/plugin/client/host");
+  const runtime = new PluginTranslationRuntime({ getLocale: () => locale.current, subscribe: () => () => {} });
+  return {
+    ...actual,
+    useRpc: vi.fn(),
+    useTranslation: (messages: Parameters<typeof actual.useTranslation>[0]) => ({
+      locale: locale.current,
+      t: (key: string, ...args: unknown[]) => runtime.resolve((messages.message as (key: string, ...args: unknown[]) => never)(key, ...args)),
+    }),
+  };
+});
 vi.mock("@getpaseo/plugin/client/ui", () => ({ Icon: "Icon", Modal: "Modal", TextInput: "TextInput", useToast: vi.fn() }));
 
 const theme = { colors: { accent: "blue", accentForeground: "white" } } as Theme;
@@ -35,5 +49,22 @@ describe.each([false, true])("Run Playbook button compact=%s", compact => {
     expect(text.props.numberOfLines).toBeUndefined();
     expect(text.props.allowFontScaling).not.toBe(false);
     expect(button.props.style.height).toBeUndefined();
+  });
+});
+
+describe("Run Playbook button in another language", () => {
+  it.each([
+    ["fr", "Lancer un playbook : démarrer un playbook dans un nouvel espace de travail", "Lancer un playbook"],
+    ["zh-CN", "运行 Playbook：在新工作区中开始一个 playbook", "运行 Playbook"],
+  ])("labels it in %s, visible text and accessibility label", (language, label, text) => {
+    locale.current = language;
+    try {
+      const button = RunPlaybookButton({ theme, onPress: vi.fn() });
+      expect(button.props.accessibilityLabel).toBe(label);
+      const child = Children.toArray(button.props.children).filter(isValidElement).at(-1) as ReactElement<Record<string, unknown>>;
+      expect(child.props.children).toBe(text);
+    } finally {
+      locale.current = "en";
+    }
   });
 });

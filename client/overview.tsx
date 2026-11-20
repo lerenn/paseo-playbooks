@@ -1,4 +1,4 @@
-import { openExternalUrl, usePaseo, useRpc, useSettings, type PluginIconProps, type PluginScreenProps, type PluginSidebarItemProps } from "@getpaseo/plugin/client";
+import { openExternalUrl, usePaseo, useRpc, useSettings, useTranslation, type PluginIconProps, type PluginScreenProps, type PluginSidebarItemProps } from "@getpaseo/plugin/client";
 import { copyText, Icon, ScrollView, SidebarRow, useToast } from "@getpaseo/plugin/client/ui";
 import { useQueries, useQueryClient } from "@tanstack/react-query";
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
@@ -23,6 +23,7 @@ import { SidekickPane } from "./sidekick/pane";
 import { sidekickUi, useSidekickUi } from "./sidekick/ui-state";
 import { defaultProject, projectsOf, runButtonState, runnablePlaybooks } from "./run-form";
 import { Button, GateActions } from "./sheet";
+import { messages } from "./i18n";
 import { OverviewRunForm, RunPlaybookButton } from "./start-form";
 import { openJobsLabel, Stages, batchName } from "./stages";
 import { stepShortTitle, stepTitle, stepTitleOf, withAlpha, type Theme } from "./theme";
@@ -48,11 +49,12 @@ function useStoreRefresh(): () => void {
 export function PlaybooksSidebarItem(props: PluginSidebarItemProps & { store: OverviewStore }) {
   const { theme } = props;
   const { count } = useOverview(props.store);
-  const icon = useMemo(() => (count > 0 ? badgedIcon(theme, count) : "Workflow"), [theme, count]);
+  const { t } = useTranslation(messages);
+  const icon = useMemo(() => (count > 0 ? badgedIcon(theme, count, t("needsYou", { count })) : "Workflow"), [theme, count, t]);
   return (
     <SidebarRow
       icon={icon}
-      label="Playbooks"
+      label={t("title")}
       active={props.currentScreen?.screenId === SCREEN_ID}
       onPress={() => props.openScreen({ screenId: SCREEN_ID })}
     />
@@ -60,14 +62,14 @@ export function PlaybooksSidebarItem(props: PluginSidebarItemProps & { store: Ov
 }
 
 /** The Playbooks icon with the waiting count in an accent bubble on its corner. */
-function badgedIcon(theme: Theme, count: number) {
+function badgedIcon(theme: Theme, count: number, description: string) {
   return function BadgedIcon(props: PluginIconProps) {
     const bubble = Math.max(12, Math.round(props.size * 0.8));
     return (
       <View style={{ width: props.size, height: props.size }}>
         <Icon name="Workflow" size={props.size} color={props.color} />
         <View
-          accessibilityLabel={`${count} ${count === 1 ? "needs" : "need"} you`}
+          accessibilityLabel={description}
           style={{
             position: "absolute",
             top: -bubble / 2,
@@ -325,6 +327,7 @@ function ToneIcon(props: { tone: Tone; color: string; size?: number }) {
 // ---------------------------------------------------------------- screen
 
 export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStore }) {
+  const { t } = useTranslation(messages);
   const { theme, layout, navigation, store } = props;
   const workspaces = useWorkspaces();
   const [projectFilter, setProjectFilter] = useState<string | null>(null);
@@ -431,7 +434,7 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
               </>
             ) : null}
           </Text>
-          <RunPlaybookButton theme={theme} compact={layout.compact} loading={runState === "loading"} emptyReason={runState === "empty" ? (runProjects.length === 0 ? "No workspaces found" : "No runnable playbooks") : undefined} onPress={() => setRunForm(true)} />
+          <RunPlaybookButton theme={theme} compact={layout.compact} loading={runState === "loading"} emptyReason={runState === "empty" ? (runProjects.length === 0 ? t("form.noWorkspaces") : t("form.noRunnable")) : undefined} onPress={() => setRunForm(true)} />
           {!layout.compact ? (
             <Pressable
               accessibilityRole="button"

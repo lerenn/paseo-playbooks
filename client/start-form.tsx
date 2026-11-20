@@ -7,6 +7,8 @@ import { listWorkspaceAgents, startRun } from "../shared/contracts";
 import type { Playbook, VarValue } from "../shared/types";
 import { sanitizeWorkspaceName, WORKSPACE_NAME_MAX } from "../shared/workspace-name";
 import { inputErrors, type RunProject } from "./run-form";
+import { useTranslation } from "@getpaseo/plugin/client";
+import { messages } from "./i18n";
 import { Button } from "./sheet";
 import type { Theme } from "./theme";
 
@@ -24,18 +26,19 @@ function initialValues(playbook: Playbook): Record<string, string | boolean> {
 /** A playbook's description: a closed disclosure row (chevron and "Description") that expands to the full text. */
 export function DescriptionToggle(props: { theme: Theme; description: string }) {
   const { theme } = props;
+  const { t } = useTranslation(messages);
   const [open, setOpen] = useState(false);
   return (
     <View style={{ gap: 6 }}>
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={`${open ? "Hide" : "Show"} description`}
+        accessibilityLabel={open ? t("form.hideDescription") : t("form.showDescription")}
         accessibilityState={{ expanded: open }}
         onPress={() => setOpen((value) => !value)}
         style={{ flexDirection: "row", alignItems: "center", gap: 4 }}
       >
         <Icon name={open ? "ChevronDown" : "ChevronRight"} size={16} color={theme.colors.foregroundMuted} />
-        <Text style={{ color: theme.colors.foreground, fontSize: 13, fontWeight: "600" }}>Description</Text>
+        <Text style={{ color: theme.colors.foreground, fontSize: 13, fontWeight: "600" }}>{t("form.description")}</Text>
       </Pressable>
       {open ? <Text style={{ color: theme.colors.foregroundMuted, fontSize: 13 }}>{props.description}</Text> : null}
     </View>
@@ -57,6 +60,7 @@ export function StartForm(props: {
   picker?: ReactNode;
 }) {
   const { theme, playbook } = props;
+  const { t } = useTranslation(messages);
   const start = useRpc(startRun);
   const toast = useToast();
   const [values, setValues] = useState(() => initialValues(playbook));
@@ -89,7 +93,7 @@ export function StartForm(props: {
     setFieldErrors(problems);
     setError(null);
     if (Object.keys(problems).length > 0) {
-      setError("Fill in the highlighted inputs.");
+      setError(t("form.fillInputs"));
       return;
     }
     setBusy(true);
@@ -114,8 +118,8 @@ export function StartForm(props: {
         setDuplicate(result.message);
         return;
       }
-      const where = props.target === "workspace" ? sanitizeWorkspaceName(workspaceName) || playbook.title : "this workspace";
-      toast.show(result.queued ? `Queued ${playbook.title} in ${where}: the agent starts it when its current turn ends` : `Started ${playbook.title} in ${where}`, { variant: "success" });
+      const where = props.target === "workspace" ? sanitizeWorkspaceName(workspaceName) || playbook.title : t("form.thisWorkspace");
+      toast.show(result.queued ? t("form.queued", { title: playbook.title, where }) : t("form.started", { title: playbook.title, where }), { variant: "success" });
       props.onStarted({ workspaceId: result.workspaceId, managerAgentId: result.managerAgentId, sameWorkspace: props.target !== "workspace" });
     } catch (error) {
       setError(error instanceof Error ? error.message : String(error));
@@ -134,18 +138,18 @@ export function StartForm(props: {
   } as const;
 
   return (
-    <Modal title={props.title ?? `Start · ${playbook.title}`} open onOpenChange={(open) => !open && props.onClose()}>
+    <Modal title={props.title ?? t("form.startTitle", { title: playbook.title })} open onOpenChange={(open) => !open && props.onClose()}>
       <Modal.Content>
         {props.picker}
         {props.target === "workspace" ? (
           <View style={{ gap: 4 }}>
-            <Text style={{ color: theme.colors.foreground, fontSize: 13, fontWeight: "600" }}>Workspace name</Text>
+            <Text style={{ color: theme.colors.foreground, fontSize: 13, fontWeight: "600" }}>{t("form.workspaceName")}</Text>
             <TextInput
-              accessibilityLabel="Workspace name"
+              accessibilityLabel={t("form.workspaceName")}
               value={workspaceName}
               onChangeText={setWorkspaceName}
               maxLength={WORKSPACE_NAME_MAX}
-              placeholder={`Optional: default is “${playbook.title}: …”`}
+              placeholder={t("form.workspaceNamePlaceholder", { title: playbook.title })}
               placeholderTextColor={theme.colors.foregroundMuted}
               style={fieldStyle}
             />
@@ -153,14 +157,14 @@ export function StartForm(props: {
         ) : null}
         <Text style={{ color: current && !agents.isLoading && !manager ? theme.colors.statusWarning : theme.colors.foregroundMuted, fontSize: 12 }}>
           {props.target === "workspace"
-            ? "Creates a new workspace (a worktree on a new branch from this one), with a new Playbook Manager agent in it."
+            ? t("form.newWorkspaceNote")
             : props.target === "agent"
-              ? "Creates a new Playbook Manager agent in this workspace; the run uses this workspace's current branch."
+              ? t("form.newAgentNote")
               : agents.isLoading
-              ? "Finding this workspace's agent…"
+              ? t("form.findingAgent")
               : manager
-                ? `${manager.title ?? manager.id.slice(0, 8)} manages the run, in this workspace on its current branch. It is reloaded to get the playbook tools, then receives the kickoff${manager.status === "running" ? " when its current turn ends (it is busy now; it is not interrupted)" : ""}.`
-                : "No agent in this workspace can manage the run. Use “Start on a new agent” instead."}
+                ? t(manager.status === "running" ? "form.currentAgentBusyNote" : "form.currentAgentNote", { agent: manager.title ?? manager.id.slice(0, 8) })
+                : t("form.noAgent")}
         </Text>
         {playbook.description ? <DescriptionToggle theme={theme} description={playbook.description} /> : null}
         {Object.keys(playbook.inputs).length > 0 ? (
@@ -185,7 +189,7 @@ export function StartForm(props: {
                     {def.description ? (
                       <Pressable
                         accessibilityRole="button"
-                        accessibilityLabel={`${info.has(name) ? "Hide" : "Show"} description of ${name}`}
+                        accessibilityLabel={info.has(name) ? t("form.hideInputDescription", { name }) : t("form.showInputDescription", { name })}
                         hitSlop={8}
                         onPress={() => toggleInfo(name)}
                       >
@@ -193,7 +197,7 @@ export function StartForm(props: {
                       </Pressable>
                     ) : null}
                   </View>
-                  <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>{def.type === "enum" ? "choice" : def.type}</Text>
+                  <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>{def.type === "string" ? t("form.inputType.string") : def.type === "number" ? t("form.inputType.number") : def.type === "boolean" ? t("form.inputType.boolean") : t("form.inputType.enum")}</Text>
                 </View>
                 <View style={{ flex: compact ? undefined : 1, gap: 6 }}>
                 {def.type === "boolean" ? (
@@ -246,10 +250,10 @@ export function StartForm(props: {
         {duplicate ? (
           <View style={{ gap: 6 }}>
             <Text style={{ color: theme.colors.statusWarning, fontSize: 13 }}>{duplicate}</Text>
-            <Button theme={theme} kind="primary" label="Start anyway" disabled={busy} onPress={() => void submit(true)} />
+            <Button theme={theme} kind="primary" label={t("common.startAnyway")} disabled={busy} onPress={() => void submit(true)} />
           </View>
         ) : (
-          <Button theme={theme} kind="primary" label={busy ? "Starting…" : "Start"} disabled={busy || blocked} onPress={() => void submit(false)} />
+          <Button theme={theme} kind="primary" label={busy ? t("common.starting") : t("common.start")} disabled={busy || blocked} onPress={() => void submit(false)} />
         )}
         {/* Room below the last row, so nothing ends up behind the sticky Start button. */}
         <View style={{ height: 48 }} />
@@ -273,6 +277,7 @@ export function RunPlaybookForm(props: {
   lead?: ReactNode;
 }) {
   const { theme, playbooks } = props;
+  const { t } = useTranslation(messages);
   const [selected, setSelected] = useState(playbooks[0]?.id ?? "");
   const [open, setOpen] = useState(false);
   const playbook = playbooks.find((candidate) => candidate.id === selected);
@@ -281,10 +286,10 @@ export function RunPlaybookForm(props: {
     <>
     {props.lead}
     <View style={{ gap: 4, zIndex: 20 }}>
-      <Text style={{ color: theme.colors.foreground, fontSize: 13, fontWeight: "600" }}>Playbook</Text>
+      <Text style={{ color: theme.colors.foreground, fontSize: 13, fontWeight: "600" }}>{t("form.playbook")}</Text>
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={`Playbook: ${playbook.title}`}
+        accessibilityLabel={t("form.playbookLabel", { title: playbook.title })}
         accessibilityState={{ expanded: open }}
         onPress={() => setOpen((value) => !value)}
         style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderRadius: 8, borderWidth: 1, borderColor: theme.colors.border, padding: 8, backgroundColor: theme.colors.surface2 }}
@@ -321,7 +326,7 @@ export function RunPlaybookForm(props: {
       playbook={playbook}
       workspaceId={props.workspaceId}
       target="workspace"
-      title="Run Playbook"
+      title={t("form.runPlaybook")}
       picker={picker}
       compact={props.compact}
       onClose={props.onClose}
@@ -333,19 +338,20 @@ export function RunPlaybookForm(props: {
 /** The Run Playbook button, in the panel and the overview. Disabled while the playbook lists load. */
 export function RunPlaybookButton(props: { theme: Theme; loading?: boolean; emptyReason?: string; compact?: boolean; onPress(): void }) {
   const { theme } = props;
-  const reason = props.loading ? "Loading playbooks" : props.emptyReason;
+  const { t } = useTranslation(messages);
+  const reason = props.loading ? t("form.loadingPlaybooks") : props.emptyReason;
   const disabled = reason !== undefined;
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={reason !== undefined ? `Run Playbook unavailable: ${reason}` : "Run Playbook: start a playbook in a new workspace"}
+      accessibilityLabel={reason !== undefined ? t("form.runPlaybookUnavailable", { reason }) : t("form.runPlaybookHint")}
       accessibilityState={{ disabled }}
       disabled={disabled}
       onPress={props.onPress}
       style={{ flexDirection: "row", flexShrink: 1, maxWidth: "100%", alignItems: "center", gap: 6, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6, borderWidth: 1, borderColor: theme.colors.accent, backgroundColor: theme.colors.accent, opacity: disabled ? 0.5 : 1 }}
     >
       <Icon name="Play" size={13} color={theme.colors.accentForeground} />
-      <Text style={{ flexShrink: 1, color: theme.colors.accentForeground, fontSize: 13, fontWeight: "600" }}>{reason !== undefined ? `Run Playbook${props.compact ? "\n" : " · "}${reason}` : "Run Playbook"}</Text>
+      <Text style={{ flexShrink: 1, color: theme.colors.accentForeground, fontSize: 13, fontWeight: "600" }}>{reason !== undefined ? `${t("form.runPlaybook")}${props.compact ? "\n" : " · "}${reason}` : t("form.runPlaybook")}</Text>
     </Pressable>
   );
 }
@@ -353,19 +359,20 @@ export function RunPlaybookButton(props: { theme: Theme; loading?: boolean; empt
 /** The overview's project selector: a dropdown of the projects that have a runnable playbook. */
 export function ProjectPicker(props: { theme: Theme; projects: RunProject[]; selected: string | null; onSelect(projectId: string): void }) {
   const { theme } = props;
+  const { t } = useTranslation(messages);
   const [open, setOpen] = useState(false);
   const current = props.projects.find((project) => project.projectId === props.selected);
   return (
     <View style={{ gap: 4, zIndex: 30 }}>
-      <Text style={{ color: theme.colors.foreground, fontSize: 13, fontWeight: "600" }}>Project</Text>
+      <Text style={{ color: theme.colors.foreground, fontSize: 13, fontWeight: "600" }}>{t("form.project")}</Text>
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={`Project: ${current?.label ?? "choose one"}`}
+        accessibilityLabel={t("form.projectLabel", { name: current?.label ?? t("form.chooseOne") })}
         accessibilityState={{ expanded: open }}
         onPress={() => setOpen((value) => !value)}
         style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderRadius: 8, borderWidth: 1, borderColor: theme.colors.border, padding: 8, backgroundColor: theme.colors.surface2 }}
       >
-        <Text style={{ color: current ? theme.colors.foreground : theme.colors.foregroundMuted, fontSize: 13, flexShrink: 1 }}>{current?.label ?? "Choose a project"}</Text>
+        <Text style={{ color: current ? theme.colors.foreground : theme.colors.foregroundMuted, fontSize: 13, flexShrink: 1 }}>{current?.label ?? t("form.chooseProject")}</Text>
         <Icon name="ChevronDown" size={14} color={theme.colors.foregroundMuted} />
       </Pressable>
       {open ? (
@@ -401,6 +408,7 @@ export function OverviewRunForm(props: {
   onClose(): void;
   onStarted(result: { workspaceId: string; managerAgentId: string; sameWorkspace: boolean }): void;
 }) {
+  const { t } = useTranslation(messages);
   const [selected, setSelected] = useState<string | null>(props.initial);
   const project = props.projects.find((candidate) => candidate.projectId === selected);
   const playbooks = (project && props.playbooksOf.get(project.projectId)) || [];
@@ -410,10 +418,10 @@ export function OverviewRunForm(props: {
   }
   // No project chosen yet: only the selector, no Start.
   return (
-    <Modal title="Run Playbook" open onOpenChange={(open) => !open && props.onClose()}>
+    <Modal title={t("form.runPlaybook")} open onOpenChange={(open) => !open && props.onClose()}>
       <Modal.Content>
         {picker}
-        <Text style={{ color: props.theme.colors.foregroundMuted, fontSize: 12 }}>Choose the project to start a playbook in.</Text>
+        <Text style={{ color: props.theme.colors.foregroundMuted, fontSize: 12 }}>{t("form.chooseProjectHint")}</Text>
       </Modal.Content>
     </Modal>
   );
