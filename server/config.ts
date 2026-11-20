@@ -92,25 +92,32 @@ export async function readEventCoreConfig(file: string = userConfigFile()): Prom
   };
 }
 
-/** `rate_limits` of the user config (ADR 2026-11-20-rate-limiting): global limits and quota pacing of playbook steps. Everything is off by default. */
+/**
+ * `rate_limits` of the user config (ADR 2026-11-20-rate-limiting, capacity reworked by ADR 2026-11-20-dynamic-rate-limits):
+ * quota pacing decides how much work runs, with optional hard caps on top. Everything is off by default.
+ */
 export interface RateLimitsConfig {
-  /** Most steps running at once across all projects; null = no limit. */
+  /** What waits for headroom: `playbook` admits a whole run when headroom covers its estimated cost; `step` holds runs between steps and releases them one step at a time. */
+  mode: "step" | "playbook";
+  /** Optional hard cap: most steps running at once across all projects; null = no cap. */
   steps: number | null;
-  /** Most runs admitted at once across all projects; null = no limit. */
+  /** Optional hard cap: most runs admitted at once across all projects; null = no cap. */
   playbooks: number | null;
   quota: {
-    /** Pace new steps against each provider's usage windows. */
+    /** Pace work against each provider's usage windows: start it while the headroom covers its estimated cost. */
     pacing: boolean;
-    /** Percentage of a window the playbooks may use (the rest is a reserve). */
+    /** Percentage of a window the playbooks may use (the rest is a reserve): the hard cap, and the pace ceiling's slope. */
     usablePercent: number;
     /** A reading younger than this is used as is; an older one is refreshed in the background (ms). */
     refreshMs: number;
     /** A reading older than this is unusable: new steps are held as "quota data unavailable" (ms). */
     maxAgeMs: number;
+    /** Quota points (percent of a usage window) one agent step is assumed to use until the playbook has history. */
+    defaultShare: number;
   };
 }
 
-export const DEFAULT_RATE_LIMITS: RateLimitsConfig = { steps: null, playbooks: null, quota: { pacing: false, usablePercent: 97, refreshMs: 5 * 60_000, maxAgeMs: 30 * 60_000 } };
+export const DEFAULT_RATE_LIMITS: RateLimitsConfig = { mode: "playbook", steps: null, playbooks: null, quota: { pacing: false, usablePercent: 97, refreshMs: 5 * 60_000, maxAgeMs: 30 * 60_000, defaultShare: 2 } };
 
 function positiveInt(value: unknown): number | null {
   return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null;
@@ -121,7 +128,8 @@ function durationMs(value: unknown, fallback: number): number {
 }
 
 /**
- * `rate_limits: { steps: 4, playbooks: 2, quota: { pacing: true, usable_percent: 97, refresh_interval: 5m, max_age: 30m } }`.
+ * `rate_limits: { mode: playbook, steps: 4, playbooks: 2, quota: { pacing: true, usable_percent: 97, refresh_interval: 5m, max_age: 30m, default_share: 2 } }`
+ * (`steps` and `playbooks` are optional hard caps).
  * Anything missing or malformed falls back to the default (off): a bad config never blocks loading. Read when needed, so a
  * change applies without a reload.
  */
@@ -130,9 +138,11 @@ export async function readRateLimitsConfig(file: string = userConfigFile()): Pro
   const quota = asRecord(block.quota);
   const usable = typeof quota.usable_percent === "number" && quota.usable_percent > 0 && quota.usable_percent <= 100 ? quota.usable_percent : DEFAULT_RATE_LIMITS.quota.usablePercent;
   const refreshMs = durationMs(quota.refresh_interval, DEFAULT_RATE_LIMITS.quota.refreshMs);
+  const share = typeof quota.default_share === "number" && quota.default_share > 0 && quota.default_share <= 100 ? quota.default_share : DEFAULT_RATE_LIMITS.quota.defaultShare;
   return {
+    mode: block.mode === "step" ? "step" : "playbook",
     steps: positiveInt(block.steps),
     playbooks: positiveInt(block.playbooks),
-    quota: { pacing: quota.pacing === true, usablePercent: usable, refreshMs, maxAgeMs: Math.max(refreshMs, durationMs(quota.max_age, DEFAULT_RATE_LIMITS.quota.maxAgeMs)) },
+    quota: { pacing: quota.pacing === true, usablePercent: usable, refreshMs, maxAgeMs: Math.max(refreshMs, durationMs(quota.max_age, DEFAULT_RATE_LIMITS.quota.maxAgeMs)), defaultShare: share },
   };
 }

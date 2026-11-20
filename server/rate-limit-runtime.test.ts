@@ -24,9 +24,17 @@ steps:
   - id: a
     role: { name: implementer, agent: { provider: claude, model: m } }
     manage: { auto_start: false }
+  - id: b
+    needs: [a]
+    role: { name: implementer, agent: { provider: claude, model: m } }
+    manage: { auto_start: false }
 `;
 
-async function setup(rateLimits: string) {
+const HOUR = 3_600_000;
+/** A weekly window with `used` points, 50 of 168 hours gone: the pace ceiling is 28.87 points at 97 usable. */
+const weekly = (used: number) => ({ id: "weekly", label: "weekly", usedPct: used, resetsAt: new Date(Date.now() + 118 * HOUR).toISOString() });
+
+async function setup(rateLimits: string, usage: { current: unknown } = { current: { providers: [] } }) {
   const dir = await mkdtemp(path.join(tmpdir(), "rl-runtime-"));
   temps.push(dir);
   process.env.PASEO_HOME = dir;
@@ -46,13 +54,21 @@ async function setup(rateLimits: string) {
   const sent: string[] = [];
   const created: string[] = [];
   const paseo = {
+    providers: { listUsage: async () => usage.current },
     agents: { ref: () => ({ refresh: async () => ({ agent: { id: "m", status: "running", provider: "claude", model: null, archivedAt: null } }), send: async (text: string) => void sent.push(text) }) },
     workspaces: { ref: () => ({ agents: { create: async () => ({ id: `step-${created.push("x")}`, send: async () => undefined }) } }) },
   };
   const runtime = new Runtime(store);
   runtimes.push(runtime);
   await runtime.attach(paseo as never);
-  return { store, runtime, sent, created };
+  const internals = runtime as unknown as {
+    pacer: { refresh(): Promise<void> };
+    rateCheck(run: unknown, key?: string, quota?: boolean, step?: string): Promise<unknown>;
+    releaseHolds(): Promise<void>;
+    observeUsage(changes: unknown[]): void;
+    costs: { stepCost(playbook: string, provider: string, window: string): number | null };
+  };
+  return { store, runtime, sent, created, usage, internals, read: () => internals.pacer.refresh() };
 }
 
 describe("rate limiting in the runtime", () => {
@@ -84,5 +100,101 @@ describe("rate limiting in the runtime", () => {
     await runtime.startStep("m", "r0", "a", "go");
     await expect(runtime.startStep("m", "r1", "a", "go")).rejects.toThrow(/step limit reached/);
     expect(store.get("r1")!.rateHold!.kind).toBe("steps");
+  });
+});
+
+describe("dynamic capacity from quota headroom", () => {
+  const pacing = (mode: string, extra = "") => `rate_limits: { mode: ${mode}, ${extra} quota: { pacing: true, default_share: 5, refresh_interval: 1h, max_age: 2h } }`;
+  const claude = (used: number) => ({ providers: [{ providerId: "claude", status: "available", windows: [weekly(used)] }] });
+
+  it("playbook mode admits a whole run when the headroom covers its estimated cost, holds the next, and reserves the first's cost", async () => {
+    // Ceiling 28.87, used 10: 18.87 free. A run is 2 steps x 5 = 10 points: one run fits, not two.
+    const { runtime, store, internals, read } = await setup(pacing("playbook"), { current: claude(10) });
+    await read();
+    await runtime.startStep("m", "r0", "a", "go");
+    expect(store.get("r0")!.rateHold).toBeNull();
+    await expect(runtime.startStep("m", "r1", "a", "go")).rejects.toBeInstanceOf(RateHeldError);
+    expect(store.get("r1")!.rateHold).toMatchObject({ kind: "headroom", provider: "claude", window: "weekly", estimatedCost: 10, position: 1, priority: 0 });
+    expect(store.get("r1")!.rateHold!.headroom).toBeCloseTo(8.87, 1);
+    expect(store.get("r1")!.rateHold!.reason).toContain("insufficient quota headroom");
+    expect(store.get("r1")!.steps.a!.status).toBe("ready");
+    // Not evicted: the admitted run's next step is never held for lack of headroom, even with a higher-priority run waiting.
+    await store.mutate("r1", (run) => void (run.priority = 9));
+    await store.mutate("r0", (run) => void ((run.steps.a!.status = "completed"), (run.steps.b!.status = "ready")));
+    expect(await internals.rateCheck(store.get("r0")!, "r0/b", true, "b")).toBeNull();
+  });
+
+  it("holds an admitted run between steps only when its quota is exhausted", async () => {
+    const { runtime, store, internals, usage, read } = await setup(pacing("playbook"), { current: claude(10) });
+    await read();
+    await runtime.startStep("m", "r0", "a", "go");
+    await store.mutate("r0", (run) => void ((run.steps.a!.status = "completed"), (run.steps.b!.status = "ready")));
+    usage.current = claude(98);
+    await read();
+    expect(await internals.rateCheck(store.get("r0")!, "r0/b", true, "b")).toMatchObject({ kind: "quota", provider: "claude" });
+  });
+
+  it("a higher priority goes first (a run's own priority overrides the playbook's); a lower one is held", async () => {
+    const { runtime, store, read } = await setup(pacing("playbook"), { current: claude(10) });
+    await store.mutate("r1", (run) => void (run.priority = 5));
+    await read();
+    await expect(runtime.startStep("m", "r0", "a", "go")).rejects.toBeInstanceOf(RateHeldError);
+    expect(store.get("r0")!.rateHold!.priority).toBe(0);
+    await runtime.startStep("m", "r1", "a", "go");
+    expect(store.get("r1")!.steps.a!.status).toBe("running");
+  });
+
+  it("releases held runs by itself when headroom returns", async () => {
+    const { runtime, store, internals, usage, read } = await setup(pacing("playbook"), { current: claude(10) });
+    await read();
+    await runtime.startStep("m", "r0", "a", "go");
+    await expect(runtime.startStep("m", "r1", "a", "go")).rejects.toBeInstanceOf(RateHeldError);
+    // The first run ends and its reserved cost goes away with the next reading (usage down: a new window, say).
+    await store.mutate("r0", (run) => void (run.status = "completed"));
+    usage.current = claude(1);
+    await read();
+    await internals.releaseHolds();
+    expect(store.get("r1")!.rateHold).toBeNull();
+    await runtime.startStep("m", "r1", "a", "go");
+    expect(store.get("r1")!.steps.a!.status).toBe("running");
+  });
+
+  it("step mode holds runs between steps and releases them one step at a time, by priority", async () => {
+    // 18.87 free, a step is 5: three fit now; reserve them and the fourth waits. Use a smaller headroom: used 20 = 8.87 free, one step.
+    const { runtime, store, internals, usage, read } = await setup(pacing("step"), { current: claude(20) });
+    await read();
+    await store.mutate("r1", (run) => void (run.priority = 1));
+    await runtime.startStep("m", "r1", "a", "go");
+    await expect(runtime.startStep("m", "r0", "a", "go")).rejects.toBeInstanceOf(RateHeldError);
+    expect(store.get("r0")!.rateHold).toMatchObject({ kind: "headroom", estimatedCost: 5, position: 1 });
+    // r1 finishes its step; its next step is also queued like any other, behind nothing but its own priority.
+    await store.mutate("r1", (run) => void ((run.steps.a!.status = "completed"), (run.steps.b!.status = "ready")));
+    usage.current = claude(21);
+    await read();
+    await internals.releaseHolds();
+    // Priority 1 first: r1's step b is released, r0 still waits.
+    expect(store.get("r1")!.rateHold).toBeNull();
+    expect(store.get("r0")!.rateHold).not.toBeNull();
+  });
+
+  it("does not pace a provider that reports no usage, and says so in the run", async () => {
+    const { runtime, store, read } = await setup(pacing("playbook"), { current: { providers: [{ providerId: "claude", status: "available", windows: [] }] } });
+    await read();
+    await runtime.startStep("m", "r0", "a", "go");
+    await runtime.startStep("m", "r1", "a", "go");
+    expect(store.get("r1")!.rateHold).toBeNull();
+    expect(store.get("r1")!.rateNote).toContain("claude");
+    expect(store.get("r1")!.rateNote).toContain("not paced");
+  });
+
+  it("learns what a playbook's steps cost from the usage readings", async () => {
+    const { runtime, store, internals, read } = await setup(pacing("playbook"), { current: claude(10) });
+    await read();
+    await runtime.startStep("m", "r0", "a", "go");
+    const now = Date.now();
+    await store.mutate("r0", (run) => void ((run.steps.a!.attempts[0]!.endedAt = new Date(now).toISOString()), (run.steps.a!.status = "completed")));
+    const window = (used: number) => ({ id: "weekly", label: "weekly", usedPct: used, resetsAt: weekly(0).resetsAt });
+    internals.observeUsage([{ provider: "claude", before: { entry: { providerId: "claude", windows: [window(10)] }, at: now - 60_000 }, after: { entry: { providerId: "claude", windows: [window(13)] }, at: now } }]);
+    expect(internals.costs.stepCost("work", "claude", "weekly")).toBeCloseTo(3, 1);
   });
 });

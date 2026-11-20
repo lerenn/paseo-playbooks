@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted. Decisions 2 and 3 (the fixed step and playbook counts as the capacity) and the hold decision of 4 are superseded by `2026-11-20-dynamic-rate-limits.md`: the counts are now optional hard caps, and quota headroom decides what starts. The rest (settings block, quota data, "Continue anyway", never interrupt, awareness, UI) stands.
 
 ## Context
 

@@ -534,6 +534,8 @@ export const PlaybookSchema = z.object({
   managerNudge: ManagerNudgeSchema.default(DEFAULT_MANAGER_NUDGE),
   /** `warden`: the periodic checks. Unset on runs from before it (= off). */
   warden: WardenConfigSchema.default(DEFAULT_WARDEN),
+  /** `rate_limit`: the queue priority of the playbook's runs when rate limiting holds work (higher first). Unset on runs from before it (= 0). */
+  rateLimit: z.object({ priority: z.number() }).default({ priority: 0 }),
   /** `manager.mode`: `none` = no manager agent, the plugin drives the run. Unset on runs from before it (= always_on). */
   managerMode: ManagerModeSchema.default(DEFAULT_MANAGER_MODE),
   /** How long an exhausted `provider/model` is skipped before it is tried again (`providers.exhausted_for`), in ms. */
@@ -1094,8 +1096,11 @@ export type ScriptOutput = z.infer<typeof ScriptOutputSchema>;
  * interrupted: the hold applies between steps and at admission, and the plugin lifts it by itself.
  */
 export const RateHoldSchema = z.object({
-  /** `steps`: the global step limit is full; `playbooks`: the global run limit does not admit this run; `quota`: a provider's quota pacing. */
-  kind: z.enum(["steps", "playbooks", "quota"]),
+  /**
+   * `steps`: the step cap is full; `playbooks`: the run cap does not admit this run; `quota`: a provider's usage is at its usable
+   * share, or unreadable; `headroom`: the quota headroom does not cover the estimated cost yet (ADR 2026-11-20-dynamic-rate-limits).
+   */
+  kind: z.enum(["steps", "playbooks", "quota", "headroom"]),
   /** One line for humans and agents ("quota data unavailable", "claude weekly at 41% above its pace ceiling 36%"). */
   reason: z.string(),
   /** The provider whose quota holds the run (quota holds), else null. */
@@ -1105,6 +1110,12 @@ export const RateHoldSchema = z.object({
   since: z.string(),
   /** When the plugin looks again or expects room (ISO); null when it waits for another run to end or a limit to rise. */
   retryAt: z.string().nullable().default(null),
+  /** Headroom holds: the estimated cost of what waits to start (quota points of the window), the headroom now, and the run's place in the queue (1 = next). */
+  estimatedCost: z.number().nullable().default(null),
+  headroom: z.number().nullable().default(null),
+  position: z.number().int().nullable().default(null),
+  /** The run's priority when it was held (higher goes first). */
+  priority: z.number().nullable().default(null),
 });
 export type RateHold = z.infer<typeof RateHoldSchema>;
 
@@ -1181,6 +1192,10 @@ export const RunSchema = z.object({
   pausedAt: z.string().nullable().default(null),
   /** Set while rate limiting holds the run's new steps (limits or quota pacing); null otherwise. */
   rateHold: RateHoldSchema.nullable().default(null),
+  /** A warning about pacing, set while a provider the run uses reports no usage (so its work is not paced); null otherwise. */
+  rateNote: z.string().nullable().default(null),
+  /** The priority `start_playbook` gave this run, overriding the playbook's `rate_limit.priority`; null = the playbook's. */
+  priority: z.number().nullable().default(null),
   /** The manager watchdog's memory (nudges sent per reported step, the manager's open question). */
   managerWatch: ManagerWatchSchema.default({ steps: {}, question: null }),
   /** The warden's findings for this run (empty unless `warden.enabled`). */
@@ -1277,6 +1292,8 @@ export const RunSummarySchema = z.object({
   pausedAt: z.string().nullable(),
   /** Why rate limiting holds the run's new steps, when it does. */
   rateHold: RateHoldSchema.nullable().default(null),
+  /** Pacing warning (a used provider reports no usage), when there is one. */
+  rateNote: z.string().nullable().default(null),
   /** Each step's status, and when its work started and ended (for the slow-step warning). */
   steps: z.record(z.string(), z.object({ status: StepStatusSchema, startedAt: z.string().nullable().default(null), endedAt: z.string().nullable().default(null) })),
   /** Open gates only (the decided ones are in the full run). */
@@ -1334,6 +1351,7 @@ export function summarizeRun(run: Run): RunSummary {
     seenAt: run.seenAt,
     pausedAt: run.pausedAt,
     rateHold: run.rateHold,
+    rateNote: run.rateNote,
     steps: Object.fromEntries(Object.entries(run.steps).map(([stepId, step]) => [stepId, { status: step.status, ...stepTiming(step) }])),
     gates: run.gates.filter((gate) => gate.status === "pending"),
     after: Object.fromEntries(Object.entries(run.after).map(([taskId, task]) => [taskId, { status: task.status }])),

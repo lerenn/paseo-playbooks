@@ -112,8 +112,8 @@ export const OVERSIGHT_TYPES: EventTypeDef[] = [
   },
   {
     type: "run.held",
-    description: "Rate limiting holds a run's new steps (step limit, playbook limit or provider quota pacing): kind, reason, provider, window and when it is looked at again. Running steps finish; the plugin resumes the run by itself.",
-    payload: z.object({ ...runFields, kind: z.enum(["steps", "playbooks", "quota"]), reason: z.string(), provider: z.string().nullable(), window: z.string().nullable(), retryAt: z.string().nullable() }),
+    description: "Rate limiting holds a run's new steps (not enough quota headroom for its estimated cost, a provider at its usable share, or a step or playbook cap): kind, reason, provider, window, estimated cost, headroom, queue position, priority and when it is looked at again. Running steps finish; the plugin resumes the run by itself.",
+    payload: z.object({ ...runFields, kind: z.enum(["steps", "playbooks", "quota", "headroom"]), reason: z.string(), provider: z.string().nullable(), window: z.string().nullable(), retryAt: z.string().nullable(), estimatedCost: z.number().nullable().default(null), headroom: z.number().nullable().default(null), position: z.number().nullable().default(null), priority: z.number().nullable().default(null) }),
     line: (event) => `- run.held: ${runName(event.payload)} is on hold (${event.payload.kind}): ${event.payload.reason}.${event.payload.retryAt ? ` Looked at again at ${event.payload.retryAt}.` : ""} The plugin resumes it by itself: nothing to do. Tools: get_run { runId: "${event.runId}" }.`,
   },
   {
@@ -324,7 +324,7 @@ export class OversightProducer {
         await this.bus.emit("step.completed", { ...base, stepId: entry.stepId, attempt, outcome }, meta);
       } else if (entry.type === "run_held") {
         const hold = run.rateHold;
-        await this.bus.emit("run.held", { ...base, kind: hold?.kind ?? "quota", reason: entry.detail, provider: hold?.provider ?? null, window: hold?.window ?? null, retryAt: hold?.retryAt ?? null }, meta);
+        await this.bus.emit("run.held", { ...base, kind: hold?.kind ?? "quota", reason: entry.detail, provider: hold?.provider ?? null, window: hold?.window ?? null, retryAt: hold?.retryAt ?? null, estimatedCost: hold?.estimatedCost ?? null, headroom: hold?.headroom ?? null, position: hold?.position ?? null, priority: hold?.priority ?? null }, meta);
       } else if (entry.type === "run_released") {
         await this.bus.emit("run.released", base, meta);
       } else if (entry.type === "run_completed") {

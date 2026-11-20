@@ -539,6 +539,14 @@ function resolveManagerNudge(raw: RawManagerNudge | undefined, where: string, fa
   return out;
 }
 
+/** `rate_limit`: how the playbook's runs queue for quota (ADR 2026-11-20-dynamic-rate-limits). */
+const RawRateLimitSchema = z
+  .object({
+    /** Which held run goes first when headroom returns: higher first, ties oldest first. A whole number, default 0; `start_playbook` may override it per run. */
+    priority: z.number().int().min(-1000).max(1000).optional(),
+  })
+  .strict();
+
 /** `warden`: the periodic checks over the active runs (ADR 2026-11-18-warden). Off unless `enabled: true`. */
 const RawWardenSchema = z
   .object({
@@ -749,6 +757,8 @@ const RawPlaybookSchema = z.object({
     slow_warning: RawSlowWarningSchema.optional(),
     /** The warden's periodic checks; see RawWardenSchema. Off unless `enabled: true`. */
     warden: RawWardenSchema.optional(),
+    /** Queue priority of the playbook's runs when rate limiting holds work; see RawRateLimitSchema. */
+    rate_limit: RawRateLimitSchema.optional(),
     /** House rules added to the prompt of every agent of the playbook, after the repository's `agent_rules` (a list of short strings; checked by `parseAgentRules`). */
     agent_rules: z.unknown().optional(),
     outcomes: z.array(z.string()).min(1).optional(),
@@ -812,6 +822,8 @@ const RawDefaultsSchema = z.object({
     slow_warning: RawSlowWarningSchema.optional(),
     /** The warden's periodic checks (repo-wide default; a playbook may override field by field). Off unless `enabled: true`. */
     warden: RawWardenSchema.optional(),
+    /** Queue priority of every playbook's runs when rate limiting holds work (a playbook may override it). */
+    rate_limit: RawRateLimitSchema.optional(),
     timeout: z.string().optional(),
     /** Default `manage` of every step. */
     manage: RawManageSchema.optional(),
@@ -2482,6 +2494,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     managerCompact: pb.manager?.compact ?? defaults.managerCompact ?? DEFAULT_MANAGER_COMPACT,
     managerNudge,
     warden,
+    rateLimit: { priority: pb.rate_limit?.priority ?? defaults.rate_limit?.priority ?? 0 },
     managerMode,
     exhaustedForMs: (defaults.providers?.exhausted_for ? parseDuration(defaults.providers.exhausted_for) : null) ?? DEFAULT_EXHAUSTED_FOR_MS,
     onExhausted: defaults.providers?.on_exhausted ?? "fail",

@@ -220,23 +220,38 @@ per type. `filter` matches them by equality, e.g. `{ playbook: "release_trains",
 
 ### Rate limits
 
-Off by default. Global limits and a quota pace for playbook steps, in the user config
-(`$PASEO_HOME/plugin-data/lerenn/paseo-playbooks/config.yaml`, applied without a reload; ADR `docs/adrs/2026-11-20-rate-limiting.md`):
+Off by default. The plugin paces playbook work against each provider's quota, so **how much runs at once is the result of the quota
+left, not a setting**. In the user config (`$PASEO_HOME/plugin-data/lerenn/paseo-playbooks/config.yaml`, applied without a reload;
+ADRs `docs/adrs/2026-11-20-rate-limiting.md` and `docs/adrs/2026-11-20-dynamic-rate-limits.md`):
 
 ```yaml
 rate_limits:
-  steps: 4          # most agent and script steps running at once, across all projects
-  playbooks: 2      # most runs admitted at once; the oldest keep their place, the others are held between steps
+  mode: playbook           # playbook (default): admit a whole run when the headroom covers its estimated cost; step: hold runs between steps
   quota:
-    pacing: true            # pace new steps against each provider's usage windows
-    usable_percent: 97      # a 100 h window then allows 0.97 points an hour; the rest is a reserve
-    refresh_interval: 5m    # a reading younger than this is used as is
-    max_age: 30m            # an older reading holds new steps ("quota data unavailable") until a refresh succeeds
+    pacing: true           # work starts only while the quota headroom covers its estimated cost
+    usable_percent: 97     # a 100 h window then allows 0.97 points an hour (the pace ceiling); 97 is also the hard cap
+    default_share: 2       # quota points one agent step is assumed to use until the playbook has history
+    refresh_interval: 5m   # a reading younger than this is used as is
+    max_age: 30m           # an older reading holds new work ("quota data unavailable") until a refresh succeeds
+  steps: 4                 # optional hard cap: agent and script steps running at once, across all projects
+  playbooks: 2             # optional hard cap: runs admitted at once
 ```
 
-A running step is never interrupted: only new steps are held (between steps and at admission), and the plugin resumes the held run by
-itself. `get_run` shows why in `rateHold`, the manager and the Sidekick are told (`run.held`, `run.released`), and the run's tab says
-"on hold" with the provider, window and retry time, plus a "Continue anyway" button for a quota hold (one hour, per provider).
+**Headroom** of a provider window = its pace ceiling (`usable_percent` × elapsed / window length, the tightest window winning)
+minus current usage minus what work already started still has to use. Work starts while the headroom covers its **estimated cost**: the
+average quota points the playbook's steps used (measured from the usage readings, kept in `rate-history.json`), or `default_share` per
+step while there is no history. The rest is held; the plugin lifts the hold itself.
+
+- `mode: playbook`: a run is admitted only when the headroom covers its whole estimated cost. An admitted run is never evicted for a
+  higher-priority one, and is held between steps only when its quota is exhausted (a window at `usable_percent`).
+- `mode: step`: runs are held between steps; whenever the headroom covers one step, held runs are released by priority, then oldest first (runs interleave).
+- **Priority**: `rate_limit: { priority: 0 }` on a playbook (or in `defaults/main.yaml`), overridden per run by `start_playbook`'s `priority`.
+  Higher goes first, ties oldest first, in both modes and for the optional caps. A held run blocks lower ones on the same provider, so a large run is not starved.
+- A provider that reports no usage is not paced; the run carries a note (`rateNote` in `get_run`, shown in the run's menu) and the plugin logs it once.
+
+A running step is never interrupted. `get_run` shows why in `rateHold` (kind `headroom`, `quota`, `steps` or `playbooks`, reason, estimated cost,
+headroom, position in the queue, priority, retry time), the manager and the Sidekick are told (`run.held`, `run.released`), and the run's tab
+says "on hold" with a "Continue anyway" button for a quota or headroom hold (one hour, per provider).
 
 ### Profiles
 

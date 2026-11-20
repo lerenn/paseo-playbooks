@@ -5,8 +5,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { DEFAULT_RATE_LIMITS, readRateLimitsConfig } from "./config";
 import { newRun, setRateHold, startAttempt } from "./engine";
 import { loadPlaybooks } from "./loader";
-import { admittedRunIds, limitVerdict, paceCeiling, QuotaPacer, quotaVerdict, runningStepCount, windowLengthMs } from "./rate-limit";
+import { admittedRunIds, limitVerdict, paceCeiling, QuotaPacer, roomFreeAt, roomHeadroom, runningStepCount, windowLengthMs, windowRooms } from "./rate-limit";
 import type { UsageSnapshot } from "./usage";
+import type { Probe } from "./rate-limit";
 import type { Run } from "../shared/types";
 
 const temps: string[] = [];
@@ -31,31 +32,33 @@ describe("pace ceiling", () => {
     expect(pace.ceiling).toBeCloseTo(9.7, 5);
   });
 
-  it("holds at or above the ceiling and says when the ceiling catches up", () => {
+  it("headroom is the pace ceiling minus usage, and says when the ceiling catches up", () => {
     const entry = { providerId: "claude", status: "available", windows: [windowOf("weekly", 168, 84, 60)] };
-    const held = quotaVerdict(entry, 97, NOW)!;
-    expect(held).toMatchObject({ kind: "quota", provider: "claude", window: "weekly" });
-    // 60% is reached by 97 * t / 168 at t = 103.9 h: 19.9 h from now.
-    expect(Date.parse(held.retryAt!) - NOW).toBeCloseTo((60 / 97) * 168 * HOUR - 84 * HOUR, -3);
-    expect(quotaVerdict({ ...entry, windows: [windowOf("weekly", 168, 84, 40)] }, 97, NOW)).toBeNull();
+    const [room] = windowRooms(entry, 97, NOW);
+    expect(room!.ceiling).toBeCloseTo(48.5, 5);
+    expect(roomHeadroom(room!)).toBeCloseTo(-11.5, 5);
+    // 60% is reached by 97 * t / 168 at t = 103.9 h.
+    expect(roomFreeAt(room!, 60)! - NOW).toBeCloseTo((60 / 97) * 168 * HOUR - 84 * HOUR, -3);
+    expect(roomHeadroom(windowRooms({ ...entry, windows: [windowOf("weekly", 168, 84, 40)] }, 97, NOW)[0]!)).toBeCloseTo(8.5, 5);
   });
 
-  it("holds everything above the usable percent until the window resets; the tightest window wins", () => {
-    const entry = { providerId: "claude", windows: [windowOf("five_hour", 5, 4.9, 97.5), windowOf("weekly", 168, 160, 10)] };
-    const held = quotaVerdict(entry, 97, NOW)!;
-    expect(held.window).toBe("five_hour");
-    expect(held.retryAt).toBe(new Date(NOW + 0.1 * HOUR).toISOString());
+  it("never lets the ceiling pass the usable percent; a window of unknown length only has that hard cap", () => {
+    const [late] = windowRooms({ providerId: "claude", windows: [windowOf("five_hour", 5, 5, 10)] }, 97, NOW - 1);
+    expect(late!.ceiling).toBeLessThanOrEqual(97);
+    const [unknown] = windowRooms({ providerId: "claude", windows: [windowOf("mystery", 5, 1, 10)] }, 97, NOW);
+    expect(unknown!.ceiling).toBe(97);
+    expect(roomFreeAt(unknown!, 50)).toBeNull();
   });
 
-  it("ignores a provider that is unavailable, has no window, or a window that already reset", () => {
-    expect(quotaVerdict({ providerId: "x", status: "error", windows: [windowOf("weekly", 168, 84, 99)] }, 97, NOW)).toBeNull();
-    expect(quotaVerdict({ providerId: "x" }, 97, NOW)).toBeNull();
-    expect(quotaVerdict({ providerId: "x", windows: [windowOf("weekly", 168, 169, 99)] }, 97, NOW)).toBeNull();
+  it("ignores per-model windows, windows that already reset, and windows without usage", () => {
+    expect(windowRooms({ providerId: "x", windows: [windowOf("weekly", 168, 169, 99)] }, 97, NOW)).toEqual([]);
+    expect(windowRooms({ providerId: "x" }, 97, NOW)).toEqual([]);
+    expect(windowRooms({ providerId: "x", windows: [{ id: "weekly", label: "w" }] }, 97, NOW)).toEqual([]);
   });
 });
 
 describe("quota cache", () => {
-  const config = { pacing: true, usablePercent: 97, refreshMs: 5 * 60_000, maxAgeMs: 30 * 60_000 };
+  const config = { pacing: true, usablePercent: 97, refreshMs: 5 * 60_000, maxAgeMs: 30 * 60_000, defaultShare: 2 };
   const MIN = 60_000;
   function pacer(results: Array<UsageSnapshot | Error>) {
     let now = NOW;
@@ -70,21 +73,22 @@ describe("quota cache", () => {
     return { quota, advance: (ms: number) => void (now += ms), calls: () => calls, changes: () => changes };
   }
   const ok = (used: number): UsageSnapshot => ({ providers: [{ providerId: "claude", windows: [windowOf("weekly", 168, 84, used)] }] });
+  const unavailable = (probe: Probe) => (probe.state === "unavailable" ? probe.verdict.reason : "");
   const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
   it("holds as unavailable before the first read, then decides from the data", async () => {
     const { quota } = pacer([ok(10)]);
-    expect(quota.check(["claude"], config)?.reason).toContain("quota data unavailable");
+    expect(unavailable(quota.probe("claude", config))).toContain("quota data unavailable");
     await quota.refresh();
-    expect(quota.check(["claude"], config)).toBeNull();
+    expect(quota.probe("claude", config).state).toBe("ok");
   });
 
   it("keeps deciding from a stale reading and refreshes once in the background", async () => {
     const t = pacer([ok(10), ok(10)]);
     await t.quota.refresh();
     t.advance(10 * MIN);
-    expect(t.quota.check(["claude"], config)).toBeNull();
-    expect(t.quota.check(["claude"], config)).toBeNull();
+    expect(t.quota.probe("claude", config).state).toBe("ok");
+    expect(t.quota.probe("claude", config).state).toBe("ok");
     await settle();
     expect(t.calls()).toBe(2);
   });
@@ -94,35 +98,39 @@ describe("quota cache", () => {
     const t = pacer([ok(10), down, down, down, down, down, ok(10)]);
     await t.quota.refresh();
     t.advance(31 * MIN);
-    expect(t.quota.check(["claude"], config)?.reason).toContain("quota data unavailable");
+    expect(unavailable(t.quota.probe("claude", config))).toContain("quota data unavailable");
     await settle();
     expect(t.calls()).toBe(2);
     // Inside the backoff: no new call.
     t.advance(30_000);
-    t.quota.check(["claude"], config);
+    t.quota.probe("claude", config);
     await settle();
     expect(t.calls()).toBe(2);
     for (const wait of [1, 2, 5, 10, 10]) {
       t.advance(wait * MIN + 1);
       const before = t.calls();
-      const verdict = t.quota.check(["claude"], config);
+      const verdict = unavailable(t.quota.probe("claude", config));
       await settle();
-      if (t.calls() === before + 1 && t.calls() < 7) expect(verdict?.reason).toContain("unavailable");
+      if (t.calls() === before + 1 && t.calls() < 7) expect(verdict).toContain("unavailable");
     }
     expect(t.calls()).toBe(7);
-    expect(t.quota.check(["claude"], config)).toBeNull();
+    expect(t.quota.probe("claude", config).state).toBe("ok");
     expect(t.changes()).toBe(2);
   });
 
-  it("lets a provider through while it has a continue-anyway override, and the tightest provider wins", async () => {
-    const t = pacer([{ providers: [{ providerId: "claude", windows: [windowOf("weekly", 168, 84, 90)] }, { providerId: "codex", windows: [windowOf("weekly", 168, 84, 95)] }] }]);
-    t.quota.check(["claude", "codex"], config);
+  it("lets a provider through while it has a continue-anyway override; a provider with no report is unreported", async () => {
+    const t = pacer([{ providers: [{ providerId: "claude", windows: [windowOf("weekly", 168, 84, 90)] }, { providerId: "codex", status: "unavailable" }] }]);
+    t.quota.probe("claude", config);
+    t.quota.probe("codex", config);
+    t.quota.probe("other", config);
     await t.quota.refresh();
-    expect(t.quota.check(["claude", "codex"], config)?.provider).toBe("codex");
-    t.quota.override("codex", 10 * MIN);
-    expect(t.quota.check(["claude", "codex"], config)?.provider).toBe("claude");
+    expect(t.quota.probe("claude", config).state).toBe("ok");
+    expect(t.quota.probe("codex", config).state).toBe("unreported");
+    expect(t.quota.probe("other", config).state).toBe("unreported");
+    t.quota.override("claude", 10 * MIN);
+    expect(t.quota.probe("claude", config).state).toBe("override");
     t.advance(11 * MIN);
-    expect(t.quota.check(["codex"], config)?.provider).toBe("codex");
+    expect(t.quota.probe("claude", config).state).toBe("ok");
   });
 });
 
@@ -200,11 +208,11 @@ describe("rate_limits config", () => {
 
   it("is off by default", async () => {
     expect(await read(null)).toEqual(DEFAULT_RATE_LIMITS);
-    expect(DEFAULT_RATE_LIMITS).toMatchObject({ steps: null, playbooks: null, quota: { pacing: false, usablePercent: 97 } });
+    expect(DEFAULT_RATE_LIMITS).toMatchObject({ mode: "playbook", steps: null, playbooks: null, quota: { pacing: false, usablePercent: 97, defaultShare: 2 } });
   });
 
   it("reads the block and falls back on malformed values", async () => {
-    expect(await read("rate_limits: { steps: 4, playbooks: 2, quota: { pacing: true, usable_percent: 90, refresh_interval: 2m, max_age: 10m } }")).toEqual({ steps: 4, playbooks: 2, quota: { pacing: true, usablePercent: 90, refreshMs: 120_000, maxAgeMs: 600_000 } });
-    expect(await read("rate_limits: { steps: 0, playbooks: x, quota: { pacing: yes, usable_percent: 400, max_age: soon } }")).toEqual(DEFAULT_RATE_LIMITS);
+    expect(await read("rate_limits: { mode: step, steps: 4, playbooks: 2, quota: { pacing: true, usable_percent: 90, refresh_interval: 2m, max_age: 10m, default_share: 3.5 } }")).toEqual({ mode: "step", steps: 4, playbooks: 2, quota: { pacing: true, usablePercent: 90, refreshMs: 120_000, maxAgeMs: 600_000, defaultShare: 3.5 } });
+    expect(await read("rate_limits: { mode: sometimes, steps: 0, playbooks: x, quota: { pacing: yes, usable_percent: 400, max_age: soon, default_share: -1 } }")).toEqual(DEFAULT_RATE_LIMITS);
   });
 });

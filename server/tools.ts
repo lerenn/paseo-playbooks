@@ -186,7 +186,8 @@ function runTimes(run: Run, now: number) {
 /** Why rate limiting holds the run's new steps (`rateHold`, absent when it does not: additive): kind, reason, provider, window, since and retryAt. The plugin lifts it by itself. */
 function rateHoldView(run: Run) {
   const hold = run.rateHold;
-  return hold ? { rateHold: { kind: hold.kind, reason: hold.reason, provider: hold.provider, window: hold.window, since: hold.since, retryAt: hold.retryAt, note: "No new step starts until the hold is lifted; the plugin resumes the run by itself. Do not start, retry or restart steps." } } : {};
+  const note = run.rateNote ? { rateNote: run.rateNote } : {};
+  return hold ? { ...note, rateHold: { kind: hold.kind, reason: hold.reason, provider: hold.provider, window: hold.window, since: hold.since, retryAt: hold.retryAt, estimatedCost: hold.estimatedCost, headroom: hold.headroom, position: hold.position, priority: hold.priority, note: "No new step starts until the hold is lifted; the plugin resumes the run by itself. Do not start, retry or restart steps." } } : note;
 }
 
 /** The warden's open findings of a run (`warden`, absent when there are none: additive). */
@@ -482,12 +483,19 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
           .optional()
           .describe("A fan-out child run this run replaces (e.g. you restart your own run, canceling it and starting a new one for the same item): its run id. The new run is attached to the same item of the parent's fan-out (same key, same slot), the replaced run is canceled if still active, and the fan-out ends only when the last run of the item's chain does. The new run must be of the same playbook (its inputs may differ). Refused if the run is not a child of a running fan-out step. Starts in a new workspace, like forJob"),
         replaceReason: z.string().max(500).optional().describe("With replaces: why (shown in the item's chain, get_run, the events and the Playbooks panel)"),
+        priority: z
+          .number()
+          .int()
+          .min(-1000)
+          .max(1000)
+          .optional()
+          .describe("Rate limiting: this run's priority in the queue for provider quota, overriding the playbook's `rate_limit.priority` (default 0). Higher goes first; ties go to the oldest run. Only matters while rate limiting holds work (`rate_limits` in the user config)"),
         autoStart: z
           .boolean()
           .default(true)
           .describe("Start the run's ready agent steps right away, as start_step would with no brief (default true). false: leave them ready; with workspaceId or a Sidekick, the new manager then waits to be told to start them"),
       }),
-      execute: ({ playbook, inputs, name, newWorkspace: requested, workspaceId, autoStart, workspaceName, forJob, replaces, replaceReason }, { agent }) =>
+      execute: ({ playbook, inputs, name, newWorkspace: requested, workspaceId, autoStart, workspaceName, forJob, replaces, replaceReason, priority }, { agent }) =>
         guard(async () => {
           const sidekick = await runtime.isSidekick(agent.id);
           // New workspace by default. Exceptions: a Playbook Manager the plugin created for a reserved workspace creates its run there;
@@ -515,7 +523,7 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
           };
           if (workspaceName?.trim() && !newWorkspace) throw new UserError("workspaceName names a new workspace: it does not apply to a run that starts in an existing one (your reserved workspace, or an isolated run in yours)");
           if (inPlace) {
-            const started = await runtime.startPlaybookInWorkspace(agent, { playbook, inputs, workspaceId: target!, newWorkspace: false, autoStart });
+            const started = await runtime.startPlaybookInWorkspace(agent, { playbook, inputs, workspaceId: target!, newWorkspace: false, autoStart, priority });
             await afterStart(started);
             return ok(
               `Run ${started.runId} of "${playbook}" is starting in workspace ${started.workspaceId}, in its own private worktree (isolation: worktree), with ${started.managerAgentId ? `its own Playbook Manager (${started.managerAgentId})` : "no Playbook Manager (manager.mode: none): the plugin drives it"}. It shows in that workspace's Playbook panel next to its other runs. You do not manage it: the plugin tells you how it goes through your event subscription (list_runs shows it).`,
@@ -523,7 +531,7 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
             );
           }
           if (workspaceId || sidekick) {
-            const started = await runtime.startPlaybookInWorkspace(agent, { playbook, inputs, workspaceId, newWorkspace: true, autoStart, workspaceName });
+            const started = await runtime.startPlaybookInWorkspace(agent, { playbook, inputs, workspaceId, newWorkspace: true, autoStart, workspaceName, priority });
             await afterStart(started);
             return ok(
               `Run ${started.runId} of "${playbook}" is starting in a new workspace ${started.workspaceId} with ${started.managerAgentId ? `its own Playbook Manager (${started.managerAgentId})` : "no Playbook Manager (manager.mode: none): the plugin drives it"}. You do not manage it: the plugin tells you how it goes through your event subscription (list_runs shows it).`,
@@ -531,14 +539,14 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
             );
           }
           if (newWorkspace) {
-            const started = await runtime.startPlaybookElsewhere(agent, playbook, inputs, workspaceName);
+            const started = await runtime.startPlaybookElsewhere(agent, playbook, inputs, workspaceName, priority);
             await afterStart(started);
             return ok(
               `Run ${started.runId} of "${playbook}" is starting in a new workspace (${started.workspaceId}) with ${started.managerAgentId ? `its own Playbook Manager (${started.managerAgentId})` : "no Playbook Manager (manager.mode: none): the plugin drives it"}. You do not manage it: carry on with your own run.`,
               started,
             );
           }
-          const run = await runtime.startPlaybook(agent, playbook, inputs, { name, hold: !autoStart });
+          const run = await runtime.startPlaybook(agent, playbook, inputs, { name, hold: !autoStart, ...(priority !== undefined ? { priority } : {}) });
           if (run.playbook.singleton) {
             return ok(
               `"${playbook}" is a singleton: its pipeline is run ${run.id}, in its own workspace. Hand-off steps give it jobs; each stage's batches get their own Playbook Manager there. You do not manage it.`,
@@ -802,7 +810,7 @@ export function runTools(runtime: Runtime): AgentToolDefinition[] {
     defineAgentTool({
       name: "get_run",
       description:
-        'Show a run\'s state. Read-only on a run you do not manage (any run id works); the tools that change it refuse it. Without runId, your active (or latest) run. view "compact" (default): per step its status, outcome, attempts, turn end and the start of its summary, plus gates, loops and after-tasks. view "full": every step\'s definition, full report, outputs and summary, the run inputs and the gates in full (e.g. for a retro brief). steps limits either view to those steps. Each step has startedAt, endedAt (ISO; endedAt absent while it runs), durationMs and, while it still runs, live: true (durationMs is then the time so far); a retried step shows its current attempt plus totalMs across attempts (view full also attemptTimes per attempt). The run has startedAt, endedAt, durationMs the same way. While rate limiting (global step or playbook limits, provider quota pacing) holds new steps of the run, `rateHold` {kind, reason, provider, window, since, retryAt} says why and until when; running steps are not interrupted and the plugin resumes the run by itself (do not start, retry or restart anything). The open findings of the warden, when it is on, are in `warden` (check, subject, detail, since, reportedAt). A step slower than usual (the attention triangle of the panel) has `slow` {elapsedMs, baselineMs, factor, ratio, samples, running}; `slowSteps` lists them.',
+        'Show a run\'s state. Read-only on a run you do not manage (any run id works); the tools that change it refuse it. Without runId, your active (or latest) run. view "compact" (default): per step its status, outcome, attempts, turn end and the start of its summary, plus gates, loops and after-tasks. view "full": every step\'s definition, full report, outputs and summary, the run inputs and the gates in full (e.g. for a retro brief). steps limits either view to those steps. Each step has startedAt, endedAt (ISO; endedAt absent while it runs), durationMs and, while it still runs, live: true (durationMs is then the time so far); a retried step shows its current attempt plus totalMs across attempts (view full also attemptTimes per attempt). The run has startedAt, endedAt, durationMs the same way. While rate limiting (provider quota headroom, optional step or playbook caps) holds new steps of the run, `rateHold` {kind, reason, provider, window, since, retryAt, estimatedCost, headroom, position, priority} says why (kind headroom: the quota headroom does not cover the estimated cost yet; position 1 is next in the queue by priority, then age), and `rateNote` warns that a provider the run uses reports no usage so its work is not paced and until when; running steps are not interrupted and the plugin resumes the run by itself (do not start, retry or restart anything). The open findings of the warden, when it is on, are in `warden` (check, subject, detail, since, reportedAt). A step slower than usual (the attention triangle of the panel) has `slow` {elapsedMs, baselineMs, factor, ratio, samples, running}; `slowSteps` lists them.',
       input: z.object({
         runId: IdArg.optional(),
         view: z.enum(["compact", "full"]).default("compact").describe('"compact" (default) or "full" (reports, outputs, inputs, gate details)'),

@@ -72,7 +72,9 @@ import { fetchAllWorkspaces, WorkspaceLookup } from "./workspace-lookup";
 import type { RunStore } from "./store";
 import { holdsBlock, planAdmissions, slotHolders } from "../shared/slots";
 import { DEFAULT_RATE_LIMITS, readRateLimitsConfig, type RateLimitsConfig } from "./config";
-import { limitVerdict, QuotaPacer, runProviders, type HoldVerdict } from "./rate-limit";
+import { CostHistory, exhaustionVerdict, orderCandidates, planHeadroom, windowKey, type Candidate as RateCandidate, type PlanContext } from "./rate-budget";
+import { limitVerdict, QuotaPacer, runPriority, runProviders, usedPct, type HoldVerdict, type ReadChange } from "./rate-limit";
+import { pluginDataDir } from "./data-dir";
 
 export class UserError extends Error {}
 
@@ -220,6 +222,8 @@ interface Reservation {
   created?: boolean;
   /** Set when a fan-out step started the run. */
   parent?: Run["parent"];
+  /** `start_playbook`'s priority for the run (rate limiting). */
+  priority?: number;
 }
 
 /** Kept of a script's output: the end of stdout and stderr, shown in the panel and to the manager. */
@@ -637,8 +641,22 @@ export class Runtime {
   /** Quota pacing of playbook steps: provider usage readings with their freshness, backoff and "continue anyway" overrides. */
   private readonly pacer = new QuotaPacer(
     async () => (await this.api().providers.listUsage()) as unknown as UsageSnapshot,
-    () => void this.tick().catch((error) => console.error("[playbooks] tick after a quota read failed:", errorText(error))),
+    (changes) => {
+      try {
+        this.observeUsage(changes);
+      } catch (error) {
+        console.error("[playbooks] could not attribute quota usage:", errorText(error));
+      }
+      void this.tick().catch((error) => console.error("[playbooks] tick after a quota read failed:", errorText(error)));
+    },
   );
+  /** What steps cost in quota per playbook, measured from the usage readings (ADR 2026-11-20-dynamic-rate-limits); kept in a file. */
+  private readonly costs = new CostHistory(path.join(pluginDataDir(), "rate-history.json"));
+  /** Quota that started work has yet to use, per run (playbook mode) or step (step mode): est − spent counts against the headroom until the readings catch up. */
+  private readonly reservedQuota = new Map<string, { runId: string; stepKey: string | null; est: Record<string, number>; spent: Record<string, number>; at: number; endedAt: number | null }>();
+  /** The quota points each running or just ended agent attempt has been measured to use so far, folded into `costs` when it ends. */
+  private readonly attemptUse = new Map<string, { playbookId: string; provider: string; points: Record<string, number> }>();
+  private readonly warnedUnreported = new Set<string>();
   private rateConfig: { at: number; value: RateLimitsConfig } | null = null;
   private limitTimer: ReturnType<typeof setInterval> | null = null;
   /** Usage skips already written to a run's log (`run|target|window|reset`), so a skip is logged once. */
@@ -1677,7 +1695,7 @@ export class Runtime {
     manager: { id: string; workspaceId: string | null; cwd: string },
     playbookId: string,
     inputs: Record<string, unknown>,
-    options: { playbook?: Playbook; name?: string; hold?: boolean } = {},
+    options: { playbook?: Playbook; name?: string; hold?: boolean; priority?: number } = {},
   ): Promise<Run> {
     if (!manager.workspaceId) throw new UserError("this agent has no workspace");
     const workspace = await this.lookupWorkspace(manager.workspaceId);
@@ -1719,6 +1737,7 @@ export class Runtime {
         ...(chosen ? { definition: chosen.definition } : {}),
         name: runName(options.name),
         ...(reservation?.parent ? { parent: reservation.parent } : {}),
+        ...((options.priority ?? reservation?.priority) !== undefined ? { priority: (options.priority ?? reservation?.priority)! } : {}),
         inputs,
         now: nowIso(),
       });
@@ -2234,22 +2253,193 @@ export class Runtime {
   /**
    * Whether rate limiting holds `run` from starting a step now: the verdict (also recorded in the run, announced when it changes)
    * or null, which also lifts a hold the run had. Only agent and script steps count and are held; a gate, a hand-off or a
-   * fan-out is never held (a fan-out's own step would deadlock the runs it started).
+   * fan-out is never held (a fan-out's own step would deadlock the runs it started). `starting` reserves the quota of work that passes.
    */
-  private async rateCheck(run: Run, exceptKey = "", quota = true): Promise<HoldVerdict | null> {
+  private async rateCheck(run: Run, exceptKey = "", quota = true, stepId?: string): Promise<HoldVerdict | null> {
     const config = await this.rateLimits();
     let verdict: HoldVerdict | null = null;
     if (config.steps !== null || config.playbooks !== null) verdict = limitVerdict(run, this.store.list(), config, this.reservedStarts(exceptKey));
-    if (!verdict && quota && config.quota.pacing) verdict = this.pacer.check(runProviders(run, DEFAULT_PROVIDER), config.quota);
+    if (!verdict && quota && config.quota.pacing) verdict = this.paceVerdict(this.store.get(run.id) ?? run, config, stepId, exceptKey !== "");
+    await this.noteUnreported(run.id, config);
     await this.applyHold(run.id, verdict);
     return verdict;
+  }
+
+  private planContext(config: RateLimitsConfig): PlanContext {
+    return {
+      now: Date.now(),
+      config,
+      probe: (provider) => this.pacer.probe(provider, config.quota),
+      stepCost: (run, provider, windowId) => {
+        const known = this.costs.stepCost(run.playbook.id, provider, windowId);
+        return known === null ? { cost: config.quota.defaultShare, fromHistory: false } : { cost: known, fromHistory: true };
+      },
+      reserved: (provider, windowId) => {
+        const key = windowKey(provider, windowId);
+        let total = 0;
+        for (const entry of this.reservedQuota.values()) total += Math.max(0, (entry.est[key] ?? 0) - (entry.spent[key] ?? 0));
+        return total;
+      },
+    };
+  }
+
+  /** The provider each agent step of the run starts on (the step's, else the default). */
+  private stepProvider(run: Run, stepId: string): string {
+    const step = engine.stepDef(run, stepId);
+    return step.kind === "agent" ? step.agent.provider ?? DEFAULT_PROVIDER : DEFAULT_PROVIDER;
+  }
+
+  /** Playbook mode: a run is admitted once an agent step of it has started, or its quota is reserved. */
+  private rateAdmitted(run: Run): boolean {
+    return this.reservedQuota.has(`run:${run.id}`) || run.playbook.steps.some((step) => step.kind === "agent" && (run.steps[step.id]?.attempts.length ?? 0) > 0);
+  }
+
+  /** What the run wants to start: providers → steps. Playbook mode: all its remaining agent steps; step mode: the one step (the given one, else the first ready). */
+  private rateDemand(run: Run, mode: RateLimitsConfig["mode"], stepId?: string): Map<string, number> {
+    const demand = new Map<string, number>();
+    const add = (id: string) => demand.set(this.stepProvider(run, id), (demand.get(this.stepProvider(run, id)) ?? 0) + 1);
+    if (mode === "step") {
+      const next = stepId ?? engine.readySteps(run).find((id) => engine.stepDef(run, id).kind === "agent");
+      if (next) add(next);
+      return demand;
+    }
+    for (const step of run.playbook.steps) {
+      const status = run.steps[step.id]?.status;
+      if (step.kind === "agent" && status !== "completed" && status !== "skipped") add(step.id);
+    }
+    return demand;
+  }
+
+  /** Runs that wait for headroom, in queue order (the asking run always included). */
+  private rateCandidates(config: RateLimitsConfig, asking: Run, stepId: string | undefined): RateCandidate[] {
+    const runs = this.store.list();
+    const out: RateCandidate[] = [];
+    for (const run of runs) {
+      const isAsking = run.id === asking.id;
+      if (!isAsking && (run.archivedAt || isPipeline(run) || !isActive(run) || isPaused(run))) continue;
+      if (!isAsking && config.mode === "playbook" && this.rateAdmitted(run)) continue;
+      const demand = this.rateDemand(isAsking ? asking : run, config.mode, isAsking ? stepId : undefined);
+      if (demand.size === 0 && !isAsking) continue;
+      out.push({ run: isAsking ? asking : run, priority: runPriority(run, runs), demand });
+    }
+    return orderCandidates(out, runs);
+  }
+
+  /** The quota hold for work wanting to start, or null; with `reserve`, work that passes has its estimated cost reserved. */
+  private paceVerdict(run: Run, config: RateLimitsConfig, stepId: string | undefined, reserve: boolean): HoldVerdict | null {
+    const providers = runProviders(run, DEFAULT_PROVIDER);
+    if (providers.length === 0) return null;
+    const ctx = this.planContext(config);
+    if (config.mode === "playbook" && this.rateAdmitted(run)) return exhaustionVerdict(providers, ctx).verdict;
+    this.pruneQuotaReservations();
+    const plan = planHeadroom(this.rateCandidates(config, run, stepId), ctx);
+    const hold = plan.holds.get(run.id) ?? null;
+    const est = plan.admitted.get(run.id);
+    if (!hold && reserve && est && Object.keys(est).length > 0) {
+      const id = config.mode === "step" ? `step:${run.id}/${stepId ?? ""}` : `run:${run.id}`;
+      this.reservedQuota.set(id, { runId: run.id, stepKey: config.mode === "step" ? `${run.id}/${stepId ?? ""}` : null, est, spent: {}, at: Date.now(), endedAt: null });
+    }
+    return hold;
+  }
+
+  /** A reservation whose work ended stays until the next successful usage read (the readings then include its use); an old one is dropped. */
+  private pruneQuotaReservations(): void {
+    const now = Date.now();
+    for (const [id, entry] of this.reservedQuota) {
+      if (entry.endedAt === null) {
+        if (entry.stepKey) {
+          const [runId, stepId] = entry.stepKey.split("/");
+          if (!this.startingSteps.has(entry.stepKey) && this.store.get(runId!)?.steps[stepId!]?.status !== "running") entry.endedAt = now;
+        } else {
+          const run = this.store.get(entry.runId);
+          if (!run || !isActive(run)) entry.endedAt = now;
+        }
+      }
+      if (now - entry.at > 6 * 3_600_000) this.reservedQuota.delete(id);
+    }
+  }
+
+  /** Sets (or clears) the run's note that a provider it uses reports no usage, so its work is not paced; logs it once per provider. */
+  private async noteUnreported(runId: string, config: RateLimitsConfig): Promise<void> {
+    const run = this.store.get(runId);
+    if (!run) return;
+    let note: string | null = null;
+    if (config.quota.pacing) {
+      const silent = runProviders(run, DEFAULT_PROVIDER).filter((provider) => this.pacer.probe(provider, config.quota).state === "unreported");
+      for (const provider of silent) {
+        if (!this.warnedUnreported.has(provider)) console.warn(`[playbooks] rate limiting: provider "${provider}" reports no usage, so its work is not paced`);
+        this.warnedUnreported.add(provider);
+      }
+      if (silent.length > 0) note = `quota pacing is on but ${silent.join(", ")} report${silent.length === 1 ? "s" : ""} no usage: that work is not paced`;
+    }
+    if (note !== run.rateNote) await this.store.mutate(runId, (current) => void (current.rateNote = note));
+  }
+
+  /**
+   * Learns what steps cost: each successful usage read's increase per window is shared among the agent attempts running on that
+   * provider in the interval, by time overlap. An ended attempt's total joins the playbook's history; the same increase reduces what
+   * its reservation still holds back. Reservations of ended work are dropped: the readings include their use now.
+   */
+  private observeUsage(changes: ReadChange[]): void {
+    const runs = this.store.list();
+    for (const { provider, before, after } of changes) {
+      if (!before?.entry || !after.entry) continue;
+      const weights: Array<{ runId: string; stepId: string; n: number; playbookId: string; weight: number }> = [];
+      for (const run of runs) {
+        if (run.archivedAt || isPipeline(run) || run.updatedAt < new Date(before.at).toISOString()) continue;
+        for (const step of run.playbook.steps) {
+          if (step.kind !== "agent") continue;
+          for (const attempt of run.steps[step.id]?.attempts ?? []) {
+            const started = Date.parse(attempt.startedAt);
+            const ended = attempt.endedAt ? Date.parse(attempt.endedAt) : after.at;
+            const attemptProvider = attempt.target ? attempt.target.split("/")[0]! : this.stepProvider(run, step.id);
+            const overlap = Math.min(ended, after.at) - Math.max(started, before.at);
+            if (attemptProvider === provider && overlap > 0) weights.push({ runId: run.id, stepId: step.id, n: attempt.n, playbookId: run.playbook.id, weight: overlap });
+          }
+        }
+      }
+      const total = weights.reduce((sum, item) => sum + item.weight, 0);
+      if (total <= 0) continue;
+      const afterWindows = new Map((after.entry.windows ?? []).map((window) => [window.id, window]));
+      for (const window of before.entry.windows ?? []) {
+        const next = afterWindows.get(window.id);
+        const was = usedPct(window);
+        const now = next ? usedPct(next) : null;
+        // A window that reset between the readings cannot be compared.
+        if (!next || was === null || now === null || Math.abs(Date.parse(next.resetsAt ?? "") - Date.parse(window.resetsAt ?? "")) > 60_000) continue;
+        const delta = Math.max(0, now - was);
+        for (const item of weights) {
+          const key = `${item.runId}/${item.stepId}/${item.n}`;
+          const entry = this.attemptUse.get(key) ?? { playbookId: item.playbookId, provider, points: {} };
+          const share = (delta * item.weight) / total;
+          entry.points[window.id] = (entry.points[window.id] ?? 0) + share;
+          this.attemptUse.set(key, entry);
+          for (const id of [`step:${item.runId}/${item.stepId}`, `run:${item.runId}`]) {
+            const reserved = this.reservedQuota.get(id);
+            if (reserved) reserved.spent[windowKey(provider, window.id)] = (reserved.spent[windowKey(provider, window.id)] ?? 0) + share;
+          }
+        }
+      }
+    }
+    let learned = false;
+    for (const [key, entry] of [...this.attemptUse]) {
+      const [runId, stepId, n] = key.split("/");
+      const attempt = this.store.get(runId!)?.steps[stepId!]?.attempts.find((candidate) => String(candidate.n) === n);
+      if (attempt && !attempt.endedAt) continue;
+      this.costs.add(entry.playbookId, entry.provider, entry.points);
+      this.attemptUse.delete(key);
+      learned = true;
+    }
+    if (learned) void this.costs.save().catch((error) => console.error("[playbooks] could not save the quota cost history:", errorText(error)));
+    this.pruneQuotaReservations();
+    for (const [id, entry] of this.reservedQuota) if (entry.endedAt !== null) this.reservedQuota.delete(id);
   }
 
   /** Records a hold (or its end) in the run and tells the manager when it starts and when it ends. */
   private async applyHold(runId: string, verdict: HoldVerdict | null): Promise<void> {
     const before = this.store.get(runId)?.rateHold ?? null;
     if (!verdict && !before) return;
-    if (verdict && before && before.kind === verdict.kind && before.provider === verdict.provider && before.window === verdict.window && before.reason === verdict.reason && before.retryAt === verdict.retryAt) return;
+    if (verdict && before && before.kind === verdict.kind && before.provider === verdict.provider && before.window === verdict.window && before.reason === verdict.reason && before.retryAt === verdict.retryAt && before.position === (verdict.position ?? null)) return;
     let change: "held" | "released" | null = null;
     await this.store.mutate(runId, (run) => void (change = engine.setRateHold(run, verdict, nowIso())));
     const run = this.store.get(runId);
@@ -3927,7 +4117,7 @@ export class Runtime {
     if (this.startingSteps.has(startKey)) throw new UserError(`step "${stepId}" is being started right now (the plugin starts ready agent steps by itself)`);
     this.startingSteps.add(startKey);
     try {
-      const held = await this.rateCheck(run, startKey);
+      const held = await this.rateCheck(run, startKey, true, stepId);
       if (held) throw new RateHeldError(held);
       return await this.startStepNow(managerId, run, step, brief, model);
     } finally {
@@ -5546,7 +5736,7 @@ export class Runtime {
     return (await this.sidekickRegistry.findByAgent(agentId)) !== null;
   }
 
-  async startPlaybookInWorkspace(caller: { id: string; workspaceId: string | null }, input: { playbook: string; inputs: Record<string, VarValue>; workspaceId: string | undefined; newWorkspace: boolean; autoStart?: boolean; workspaceName?: string | undefined }) {
+  async startPlaybookInWorkspace(caller: { id: string; workspaceId: string | null }, input: { playbook: string; inputs: Record<string, VarValue>; workspaceId: string | undefined; newWorkspace: boolean; autoStart?: boolean; workspaceName?: string | undefined; priority?: number | undefined }) {
     const isSidekick = await this.isSidekick(caller.id);
     if (input.workspaceName && !input.newWorkspace) throw new UserError("workspaceName names the new workspace: pass it with newWorkspace");
     // Without workspaceId a Sidekick branches the new workspace off its own (hidden) one, which is the project's root checkout.
@@ -5561,7 +5751,7 @@ export class Runtime {
     const callerProject = (await this.lookupWorkspace(caller.workspaceId))?.projectId;
     if (!callerProject) throw new UserError("cannot check that workspace against the caller's project: the caller's own workspace is not listed (list_workspaces)");
     if (workspace.projectId !== callerProject) throw new UserError("that workspace belongs to another project");
-    const started = await this.startFromPanel({ workspaceId: workspace.id, playbook: input.playbook, inputs: input.inputs, force: false, sameWorkspace: !input.newWorkspace, autoStart: input.autoStart !== false, workspaceName: input.workspaceName });
+    const started = await this.startFromPanel({ workspaceId: workspace.id, playbook: input.playbook, inputs: input.inputs, force: false, sameWorkspace: !input.newWorkspace, autoStart: input.autoStart !== false, workspaceName: input.workspaceName, priority: input.priority });
     if (started.status === "duplicate") throw new UserError(`${started.message} Not started again.`);
     return started;
   }
@@ -5577,6 +5767,8 @@ export class Runtime {
     autoStart?: boolean | undefined;
     /** Title of the new workspace (only when one is created); empty: the default title. */
     workspaceName?: string | undefined;
+    /** Rate-limit priority of the run (overrides the playbook's); unset: the playbook's. */
+    priority?: number | undefined;
     /** A fan-out step starting a child run: its id (reserved before the workspace exists) and its parent link. */
     child?: { runId: string; parent: NonNullable<Run["parent"]> } | undefined;
   }) {
@@ -5612,7 +5804,7 @@ export class Runtime {
     if (input.sameWorkspace && playbook.managerMode === "none") {
       const busy = this.workspaceConflict(workspace.id, playbook.isolation.mode === "worktree");
       if (busy) throw new UserError(`this workspace already has an active run (${busy.id}); use "Start in a new workspace"${playbook.isolation.mode === "worktree" ? "" : ", or give the playbook `isolation: worktree` so runs can share a workspace"}`);
-      const run = await this.startPlaybook({ id: "", workspaceId: workspace.id, cwd: workspaceDir }, playbook.id, resolved.inputs, { playbook });
+      const run = await this.startPlaybook({ id: "", workspaceId: workspace.id, cwd: workspaceDir }, playbook.id, resolved.inputs, { playbook, ...(input.priority !== undefined ? { priority: input.priority } : {}) });
       return { status: "started" as const, workspaceId: workspace.id, managerAgentId: "", runId: run.id, queued: false };
     }
     if (input.sameWorkspace) {
@@ -5620,7 +5812,7 @@ export class Runtime {
       if (busy) throw new UserError(`this workspace already has an active run (${busy.id}); use "Start in a new workspace"${playbook.isolation.mode === "worktree" ? "" : ", or give the playbook `isolation: worktree` so runs can share a workspace"}`);
       // The new agent creates the run itself with start_playbook, which takes this reserved id.
       const runId = `run_${shortId()}`;
-      this.addReservation(workspace.id, { runId, branch: null, playbook, inputs: resolved.inputs });
+      this.addReservation(workspace.id, { runId, branch: null, playbook, inputs: resolved.inputs, ...(input.priority !== undefined ? { priority: input.priority } : {}) });
       const manager = await this.api().workspaces.ref(workspace.id).agents.create({
         config: this.managerConfig(playbook, await this.managerSkips(playbook)),
         title: `Playbook Manager · ${playbook.title}`,
@@ -5629,7 +5821,7 @@ export class Runtime {
       });
       return { status: "started" as const, workspaceId: workspace.id, managerAgentId: manager.id, runId, queued: false };
     }
-    return this.startInNewWorkspace(workspaceDir, playbook, resolved.inputs, input.workspaceName, input.child);
+    return this.startInNewWorkspace(workspaceDir, playbook, resolved.inputs, input.workspaceName, input.child, input.priority);
   }
 
 
@@ -6249,7 +6441,7 @@ export class Runtime {
   }
 
   /** A new workspace branched off this one's current ref, with a new Playbook Manager that starts the run there. */
-  private async startInNewWorkspace(workspaceDir: string, playbook: Playbook, inputs: Record<string, VarValue>, workspaceName?: string, child?: { runId: string; parent: NonNullable<Run["parent"]> }) {
+  private async startInNewWorkspace(workspaceDir: string, playbook: Playbook, inputs: Record<string, VarValue>, workspaceName?: string, child?: { runId: string; parent: NonNullable<Run["parent"]> }, priority?: number) {
     const runId = child?.runId ?? `run_${shortId()}`;
     const id = runId.replace(/^run_/, "");
     const branch = worktreeBranch(playbook.id, id);
@@ -6258,11 +6450,11 @@ export class Runtime {
       title: workspaceTitle(playbook.title, inputs, workspaceName),
       source: { kind: "worktree", cwd: workspaceDir, action: "branch-off", branchName: branch, ...(base ? { refName: base } : {}) },
     });
-    this.addReservation(created.id, { runId, branch, playbook, inputs, created: true, ...(child ? { parent: child.parent } : {}) });
+    this.addReservation(created.id, { runId, branch, playbook, inputs, created: true, ...(child ? { parent: child.parent } : {}), ...(priority !== undefined ? { priority } : {}) });
     if (playbook.managerMode === "none") {
       // No manager agent: the plugin creates the run itself, from the reservation, and drives it.
       try {
-        const run = await this.startPlaybook({ id: "", workspaceId: created.id, cwd: workspaceDir }, playbook.id, inputs, { playbook });
+        const run = await this.startPlaybook({ id: "", workspaceId: created.id, cwd: workspaceDir }, playbook.id, inputs, { playbook, ...(priority !== undefined ? { priority } : {}) });
         return { status: "started" as const, workspaceId: created.id, managerAgentId: "", runId: run.id };
       } catch (error) {
         this.reservations.delete(created.id);
@@ -6282,7 +6474,7 @@ export class Runtime {
    * start_playbook with `newWorkspace`: the run gets its own workspace and its own Playbook
    * Manager, so any manager can start one, a batch's included (rework for an ejected job).
    */
-  async startPlaybookElsewhere(manager: { cwd: string; workspaceId: string | null }, playbookId: string, inputs: Record<string, unknown>, workspaceName?: string) {
+  async startPlaybookElsewhere(manager: { cwd: string; workspaceId: string | null }, playbookId: string, inputs: Record<string, unknown>, workspaceName?: string, priority?: number) {
     let workspaceDir = manager.cwd;
     let projectId: string | null = null;
     if (manager.workspaceId) {
@@ -6303,7 +6495,7 @@ export class Runtime {
     const resolved = engine.resolveRunInputs(playbook, inputs);
     if (!resolved.ok) throw new UserError(resolved.errors.join("; "));
     if (projectId) this.checkConcurrency(playbook, projectId);
-    return this.startInNewWorkspace(workspaceDir, playbook, resolved.inputs, workspaceName);
+    return this.startInNewWorkspace(workspaceDir, playbook, resolved.inputs, workspaceName, undefined, priority);
   }
 
   /** Whether the playbook, as the workspace has it, declares `isolation: { mode: worktree }` (false when the workspace or playbook is missing or invalid). */

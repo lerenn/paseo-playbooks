@@ -81,6 +81,8 @@ export interface NewRunInput {
   definition?: RunDefinition;
   /** Set when a fan-out step started the run. */
   parent?: Run["parent"];
+  /** `start_playbook`'s priority, overriding the playbook's `rate_limit.priority`. */
+  priority?: number | null;
   inputs: Record<string, unknown>;
   now: string;
 }
@@ -219,6 +221,8 @@ function createRun(input: NewRunInput, inputs: Record<string, VarValue>, kind: "
     seenAt: null,
     pausedAt: null,
     rateHold: null,
+    rateNote: null,
+    priority: input.priority ?? null,
     managerWatch: { steps: {}, question: null },
     warden: { findings: {} },
     steps: Object.fromEntries(
@@ -1770,7 +1774,7 @@ export function resumeRun(run: Run, now: string): boolean {
  * Records that rate limiting holds (or no longer holds) the run's new steps. A change of kind, provider or window is a new
  * hold (`run_held`); a changed reason or retry time alone only updates the state. Returns "held", "released" or null.
  */
-export function setRateHold(run: Run, hold: { kind: RateHold["kind"]; reason: string; provider: string | null; window: string | null; retryAt: string | null } | null, now: string): "held" | "released" | null {
+export function setRateHold(run: Run, hold: (Omit<RateHold, "since" | "estimatedCost" | "headroom" | "position" | "priority"> & Partial<Pick<RateHold, "estimatedCost" | "headroom" | "position" | "priority">>) | null, now: string): "held" | "released" | null {
   const current = run.rateHold;
   if (!hold) {
     if (!current) return null;
@@ -1778,11 +1782,12 @@ export function setRateHold(run: Run, hold: { kind: RateHold["kind"]; reason: st
     log(run, now, "run_released", null, `rate limit hold lifted (was: ${current.reason})`);
     return "released";
   }
+  const detail = { estimatedCost: hold.estimatedCost ?? null, headroom: hold.headroom ?? null, position: hold.position ?? null, priority: hold.priority ?? null };
   if (current && current.kind === hold.kind && current.provider === hold.provider && current.window === hold.window) {
-    run.rateHold = { ...current, reason: hold.reason, retryAt: hold.retryAt };
+    run.rateHold = { ...current, reason: hold.reason, retryAt: hold.retryAt, ...detail };
     return null;
   }
-  run.rateHold = { ...hold, since: now };
+  run.rateHold = { ...hold, ...detail, since: now };
   log(run, now, "run_held", null, hold.reason);
   return "held";
 }

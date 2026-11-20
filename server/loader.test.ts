@@ -307,6 +307,20 @@ steps:
     expect((await loadPlaybooks(none)).entries[0]!.playbook!.slowWarning).toEqual({ runs: 10, factor: 2 });
   });
 
+  it("reads rate_limit.priority in a playbook and in defaults (default 0); refuses a bad or unknown rate_limit", async () => {
+    const steps = "steps:\n  - id: a\n    role: { name: investigator, prompt: go }\n";
+    const dir = await workspace({ "defaults/main.yaml": "rate_limit: { priority: 2 }\n", "urgent.yaml": `rate_limit: { priority: 9 }\n${steps}`, "plain.yaml": steps });
+    const entries = (await loadPlaybooks(dir)).entries;
+    expect(entries.find((entry) => entry.id === "urgent")!.playbook!.rateLimit).toEqual({ priority: 9 });
+    expect(entries.find((entry) => entry.id === "plain")!.playbook!.rateLimit).toEqual({ priority: 2 });
+    const none = await workspace({ "plain.yaml": steps });
+    expect((await loadPlaybooks(none)).entries[0]!.playbook!.rateLimit).toEqual({ priority: 0 });
+    for (const block of ["{ priority: high }", "{ priority: 1.5 }", "{ weight: 3 }", "3"]) {
+      const bad = await workspace({ "pr.yaml": `rate_limit: ${block}\n${steps}` });
+      expect((await loadPlaybooks(bad)).entries[0]!.errors.length, block).toBeGreaterThan(0);
+    }
+  });
+
   it("reads agent_rules: defaults first, then the playbook's, each once; absent means none", async () => {
     const steps = "steps:\n  - id: a\n    role: { name: investigator, prompt: go }\n";
     const dir = await workspace({

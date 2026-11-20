@@ -613,10 +613,10 @@ function RunChip(props: { theme: Theme; run: Run; label?: string | undefined; se
               {run.rateHold ? (
                 <View style={{ gap: 4 }}>
                   <Text selectable style={{ color: theme.colors.foreground, fontSize: 12 }}>
-                    {`On hold (${run.rateHold.kind === "quota" ? "provider quota" : run.rateHold.kind === "steps" ? "step limit" : "playbook limit"}): ${run.rateHold.reason}`}
-                    {run.rateHold.retryAt ? `. The plugin looks again at ${new Date(run.rateHold.retryAt).toLocaleTimeString()}` : ". It resumes by itself when a run ends or the limit rises"}
+                    {`On hold (${run.rateHold.kind === "quota" ? "provider quota" : run.rateHold.kind === "headroom" ? "quota headroom" : run.rateHold.kind === "steps" ? "step cap" : "playbook cap"}): ${run.rateHold.reason}`}
+                    {run.rateHold.retryAt ? `. The plugin looks again at ${new Date(run.rateHold.retryAt).toLocaleTimeString()}` : ". It resumes by itself when a run ends or the cap rises"}
                   </Text>
-                  {run.rateHold.kind === "quota" && run.rateHold.provider ? (
+                  {(run.rateHold.kind === "quota" || run.rateHold.kind === "headroom") && run.rateHold.provider ? (
                     <Pressable
                       accessibilityRole="button"
                       accessibilityLabel={`Continue anyway on ${run.rateHold.provider} for one hour`}
@@ -627,6 +627,9 @@ function RunChip(props: { theme: Theme; run: Run; label?: string | undefined; se
                     </Pressable>
                   ) : null}
                 </View>
+              ) : null}
+              {run.rateNote ? (
+                <Text selectable style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>{`Note: ${run.rateNote}`}</Text>
               ) : null}
               {Object.keys(run.inputs).length > 0 ? (
                 <>
