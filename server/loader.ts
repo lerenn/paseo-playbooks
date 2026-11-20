@@ -454,6 +454,18 @@ const RawWorkspaceSchema = z
   })
   .strict();
 
+/** `auto_archive`: the plugin archives a finished run and its idle manager after a grace period (ADR 2026-11-20-auto-archive-runs). Off unless `enabled: true`. */
+const RawAutoArchiveSchema = z
+  .object({
+    /** `true` turns it on. Default false: a finished run stays in the list until archive_run. */
+    enabled: z.boolean().optional(),
+    /** Grace period after the run ended (a duration such as 30m or 2h). Default 30m. */
+    after: z.string().refine((value) => parseDuration(value) !== null, { message: "auto_archive.after must be a duration such as 30m or 2h" }).optional(),
+  })
+  .strict();
+
+export const DEFAULT_AUTO_ARCHIVE_AFTER_MS = 30 * 60_000;
+
 export const DEFAULT_WORKSPACE_ARCHIVE_AFTER_MS = 6 * 3_600_000;
 
 /** `workspace.archive_after`: unset gives the default, `never` turns it off; a bad value was refused at load. */
@@ -550,8 +562,8 @@ const RawWardenSchema = z
     cooldown: z.string().optional(),
     checks: z
       .object({
-        /** A run pinned to an older definition than origin/<base>: `report` | `refresh_scripts` (isolated runs only) | `none`. */
-        stale_definition: z.object({ action: z.enum(WARDEN_ACTIONS).optional() }).strict().optional(),
+        /** A run pinned to an older definition than origin/<base> for longer than `after` (default 12h): `report` | `refresh_scripts` (isolated runs only) | `none`. */
+        stale_definition: z.object({ after: z.string().optional(), action: z.enum(WARDEN_ACTIONS).optional() }).strict().optional(),
         /** A manager gone or idle while its run has an open gate it holds: `report` | `none`. */
         manager_blocked: z.object({ action: z.enum(WARDEN_ACTIONS).optional() }).strict().optional(),
         /** A goto edge fired more than `above` times (default 5): `report` | `none`. */
@@ -693,6 +705,7 @@ function resolveWarden(raw: RawWarden | undefined, base: WardenConfig, where: st
     if (check?.action === "refresh_scripts" && name !== "stale_definition") fail(`${where}.checks.${name}.action: \`refresh_scripts\` only applies to stale_definition (use report or none)`);
   }
   if (checks.stale_definition?.action) out.checks.staleDefinition.action = checks.stale_definition.action;
+  out.checks.staleDefinition.afterMs = duration(checks.stale_definition?.after, "checks.stale_definition.after") ?? out.checks.staleDefinition.afterMs;
   if (checks.manager_blocked?.action) out.checks.managerBlocked.action = checks.manager_blocked.action;
   if (checks.loops?.action) out.checks.loops.action = checks.loops.action;
   if (checks.loops?.above !== undefined) out.checks.loops.above = checks.loops.above;
@@ -723,6 +736,7 @@ const RawPlaybookSchema = z.object({
       .strict()
       .optional(),
     workspace: RawWorkspaceSchema.optional(),
+    auto_archive: RawAutoArchiveSchema.optional(),
     isolation: RawIsolationSchema.optional(),
     permissions: RawPermissionsSchema.optional(),
     inputs: z.record(z.string(), RawVarDefSchema.nullable()).optional(),
@@ -770,6 +784,7 @@ const RawDefaultsSchema = z.object({
     /** `lifecycle` is the repo-wide default of a playbook's `manager.mode` (here `mode` is the manager agent's own permission mode). */
     manager: RawAgentSchema.extend({ compact: ManagerCompactSchema.optional(), nudge: RawManagerNudgeSchema.optional(), lifecycle: z.string().optional() }).optional(),
     workspace: RawWorkspaceSchema.optional(),
+    auto_archive: RawAutoArchiveSchema.optional(),
     isolation: RawIsolationSchema.optional(),
     permissions: RawPermissionsSchema.optional(),
     /** Provider failover (a tier listing several targets). */
@@ -2493,6 +2508,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     agentRules: mergeAgentRules(defaults.agentRules ?? [], ownRules.rules, [...blocks.values()]),
     managerInstructions: managerInstructions(folder.managerText, qid, pb.manager?.prompt, [...blocks.values()]),
     outcomes: playbookOutcomes,
+    autoArchive: { enabled: pb.auto_archive?.enabled ?? defaults.auto_archive?.enabled ?? false, afterMs: parseDuration(pb.auto_archive?.after ?? defaults.auto_archive?.after ?? "") ?? DEFAULT_AUTO_ARCHIVE_AFTER_MS },
     workspace: {
       archive: pb.workspace?.archive ?? defaults.workspace?.archive ?? "never",
       keepFailed: pb.workspace?.keep_failed ?? defaults.workspace?.keep_failed ?? true,

@@ -128,6 +128,9 @@ workspace:             # what happens to the workspace a run created with newWor
   keep_failed: true    # keep it when the run failed or lost its manager (default true)
   archive_with_run: true   # archiving a run also archives the workspace it created, when safe: no uncommitted/unpushed work (default true)
   archive_after: 6h        # archive the workspace of a completed/canceled run this long after it ended; never = off (default 6h)
+auto_archive:          # archive a finished run and its manager, restartable with restart_run (off by default)
+  enabled: true        # default false
+  after: 30m           # grace period after the run ended (default 30m); an open gate, an open hand-off job or a busy manager keeps it
 reload_stale_sessions: true  # after a plugin update, reload idle agents still holding the old plugin's tools (default true; false disables)
 isolation: none        # none (default) | worktree | { mode: worktree, submodules: none | all | [paths], base: <branch> }: see "Isolated runs"
 ```
@@ -1350,10 +1353,10 @@ mean duration of its last `runs` (default 10, at least 3) completed runs of the 
   open, or while a gate of the run is held by a human or a role). If you are that manager: complete_step it, or route it
   (nudge_step). After the second prompt without progress `subscribe_events` type `step.waiting_manager_stuck` fires; a
   manager question open for `after` fires `manager.question_pending` (once per episode each; both are in the Sidekick's default `watch`).
-- The warden (`warden: { enabled: false, interval: 15m, cooldown: 1h, checks: { stale_definition: { action: report }, manager_blocked: { action: report }, loops: { above: 5, action: report }, slow: { action: report }, gate_open: { after: 30m, action: report } } }`
+- The warden (`warden: { enabled: false, interval: 15m, cooldown: 1h, checks: { stale_definition: { after: 12h, action: report }, manager_blocked: { action: report }, loops: { above: 5, action: report }, slow: { action: report }, gate_open: { after: 30m, action: report } } }`
   in `defaults/main.yaml` or a playbook; a playbook's own fields win): **off by default**, nothing runs without `enabled: true`. One periodic,
   deterministic pass (no LLM, no prompt to a run's agent). `action`: `report` or `none` (off for that check); `stale_definition` also
-  `refresh_scripts` (isolated runs only, once per finding). Findings are in `get_run`'s `warden` list (check, subject, detail, since, reportedAt)
+  `refresh_scripts` (isolated runs only, once per finding) and only fires once the run's pinned definition is `after` old (default `12h`; a workspace-checkout definition is reported at once). Findings are in `get_run`'s `warden` list (check, subject, detail, since, reportedAt)
   and in the panel; `warden.finding` (`subscribe_events`, scoped) is emitted for `stale_definition`, `manager_blocked` and `loops`; `slow` and
   `gate_open` reuse `step.slow` and `gate.stale`. A finding is reported once, again after `cooldown` if still true. The Sidekick gets one
   "[playbooks] The warden found ..." message per pass with the new findings only. See `docs/adrs/2026-11-18-warden.md`.

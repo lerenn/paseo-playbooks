@@ -89,8 +89,8 @@ export const WardenConfigSchema = z.object({
   intervalMs: z.number().int().positive(),
   cooldownMs: z.number().int().positive(),
   checks: z.object({
-    /** A run pinned to an older definition than origin/<base> (or read from the workspace checkout). `refresh_scripts`: only isolated runs. */
-    staleDefinition: z.object({ action: WardenActionSchema }),
+    /** A run pinned to an older definition than origin/<base> (or read from the workspace checkout), for longer than `afterMs` (default 12h; the checkout case is not aged). `refresh_scripts`: only isolated runs. */
+    staleDefinition: z.object({ action: WardenActionSchema, afterMs: z.number().int().positive().default(12 * 3_600_000) }).default({ action: "report", afterMs: 12 * 3_600_000 }),
     /** A manager that is gone or idle while its run has an open gate nobody else can decide. */
     managerBlocked: z.object({ action: WardenActionSchema }),
     /** A goto edge fired more than `above` times. */
@@ -112,7 +112,7 @@ export const DEFAULT_WARDEN: WardenConfig = {
   intervalMs: 15 * 60_000,
   cooldownMs: 60 * 60_000,
   checks: {
-    staleDefinition: { action: "report" },
+    staleDefinition: { action: "report", afterMs: 12 * 3_600_000 },
     managerBlocked: { action: "report" },
     loops: { above: 5, action: "report" },
     slow: { action: "report" },
@@ -554,6 +554,8 @@ export const PlaybookSchema = z.object({
   workspace: z
     .object({ archive: z.enum(["never", "on_end"]), keepFailed: z.boolean(), archiveWithRun: z.boolean().default(false), archiveAfterMs: z.number().nullable().default(null) })
     .default({ archive: "never", keepFailed: true, archiveWithRun: false, archiveAfterMs: null }),
+  /** `auto_archive`: the plugin archives a finished run (and its idle manager) `afterMs` after it ended. Off unless `enabled`. Unset on runs from before it (= off). */
+  autoArchive: z.object({ enabled: z.boolean(), afterMs: z.number().int().positive() }).default({ enabled: false, afterMs: 30 * 60_000 }),
   /**
    * Where the run's agents work: the workspace checkout (`none`), or a private git worktree the
    * plugin creates for the run (`worktree`). Unset on runs from before isolation.

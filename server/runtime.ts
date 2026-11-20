@@ -158,6 +158,9 @@ function preapprove(config: AgentConfig, provider: string, tools: string[]): Age
 }
 
 const MANAGER_LABEL = "playbooks/manager";
+/** `auto_archive`: runs looked into per tick, and how long one that was not archived waits before it is looked into again. */
+const AUTO_ARCHIVE_PER_TICK = 3;
+const AUTO_ARCHIVE_RETRY_MS = 10 * 60_000;
 export const STEP_LABEL = "playbooks/step";
 export const RUN_LABEL = "playbooks/run";
 /** On a gate's role decider agent: the gate id. */
@@ -1084,7 +1087,7 @@ export class Runtime {
           }
         };
         const { staleDefinition, managerBlocked, loops, slow, gateOpen } = config.checks;
-        if (staleDefinition.action !== "none") await guarded("stale_definition", async () => staleDefinitionCandidate(listed, await io.originSha(listed), staleDefinition.action as Act));
+        if (staleDefinition.action !== "none") await guarded("stale_definition", async () => staleDefinitionCandidate(listed, await io.originSha(listed), staleDefinition.afterMs, now, staleDefinition.action as Act));
         if (managerBlocked.action !== "none") await guarded("manager_blocked", async () => managerBlockedCandidates(listed, await io.manager(listed), managerBlocked.action as Act));
         if (loops.action !== "none") await guarded("loops", () => loopCandidates(listed, loops.above, loops.action as Act));
         if (slow.action !== "none") await guarded("slow", () => slowCandidates(listed, (slowIndex ??= new SlowIndex(this.store.list())).of(listed, now), slow.action as Act));
@@ -2204,6 +2207,7 @@ export class Runtime {
         await this.tickPhase("cleanupEndedWorktrees", () => this.cleanupEndedWorktrees());
         await this.tickPhase("archiveEndedWorkspaces", () => this.archiveEndedWorkspaces());
         await this.tickPhase("archiveAgedWorkspaces", () => this.archiveAgedWorkspaces());
+        await this.tickPhase("autoArchiveRuns", () => this.autoArchiveRuns());
       } while (this.tickAgain);
     } finally {
       this.ticking = false;
@@ -4267,6 +4271,63 @@ export class Runtime {
       });
       if (!outcome.archived) console.error(`[playbooks] workspace ${candidate.workspaceId} kept after ${candidate.id} ended: ${outcome.reason}`);
     }
+  }
+
+  /** When each run was last looked at by `autoArchiveRuns` and not archived: the daemon is not asked about it again for AUTO_ARCHIVE_RETRY_MS. */
+  private readonly autoArchiveTried = new Map<string, number>();
+
+  /**
+   * `auto_archive` (ADR 2026-11-20-auto-archive-runs): archives a finished run, and its plugin-created manager agent, once
+   * `auto_archive.after` has passed since it ended. Candidates are chosen from memory (no daemon call); at most
+   * AUTO_ARCHIVE_PER_TICK are looked into per tick and a refusal waits AUTO_ARCHIVE_RETRY_MS, so the sweep stays cheap and
+   * never holds the tick for long. A run is left alone while it has an open gate, an open hand-off job, an after-task
+   * running, or its manager is in a turn. The workspace follows `workspace.archive_with_run` and its safety checks
+   * (unsaved or unpushed work keeps it); restart_run reopens the run and creates a manager when it is gone.
+   */
+  private async autoArchiveRuns(): Promise<void> {
+    const now = Date.now();
+    const runs = this.store.list();
+    for (const id of [...this.autoArchiveTried.keys()]) if (!this.store.get(id) || this.store.get(id)!.archivedAt) this.autoArchiveTried.delete(id);
+    const open = new Set(runs.flatMap((other) => other.jobs.filter((job) => job.status === "open").map((job) => job.fromRunId)));
+    let looked = 0;
+    for (const candidate of runs) {
+      if (looked >= AUTO_ARCHIVE_PER_TICK) break;
+      const { autoArchive } = candidate.playbook;
+      if (!autoArchive.enabled || candidate.archivedAt || !isTerminal(candidate.status) || isActive(candidate) || candidate.batch || isPipeline(candidate)) continue;
+      if (candidate.gates.some((gate) => gate.status === "pending") || open.has(candidate.id)) continue;
+      const ended = candidate.history.findLast((event) => event.type === "run_completed" || event.type === "run_failed" || event.type === "run_canceled")?.at ?? candidate.updatedAt;
+      if (now - Math.max(Date.parse(ended), Date.parse(candidate.updatedAt)) < autoArchive.afterMs) continue;
+      if (now - (this.autoArchiveTried.get(candidate.id) ?? 0) < AUTO_ARCHIVE_RETRY_MS) continue;
+      looked += 1;
+      this.autoArchiveTried.set(candidate.id, now);
+      try {
+        await this.autoArchiveRun(candidate);
+      } catch (error) {
+        console.error(`[playbooks] could not auto-archive ${candidate.id}:`, errorText(error));
+      }
+    }
+  }
+
+  private async autoArchiveRun(candidate: Run): Promise<void> {
+    const managerId = isManagerless(candidate) ? null : candidate.managerAgentId || null;
+    if (managerId && this.busyManagers.has(managerId)) return;
+    const manager = managerId ? (await this.api().agents.ref(managerId).refresh().catch(() => null))?.agent ?? null : null;
+    if (manager && !manager.archivedAt && (manager.status === "running" || manager.status === "initializing" || manager.activeTurn || (manager.pendingPermissions?.length ?? 0) > 0)) return;
+    const { workspaceArchived } = await this.archiveRunAndWorkspace(candidate.id);
+    // The manager goes only when the plugin made it (a restart_run takeOver may have made a human's agent the manager) and no other run uses it.
+    const shared = this.store.list().some((other) => other.id !== candidate.id && !other.archivedAt && other.managerAgentId === managerId);
+    let managerArchived = false;
+    if (managerId && manager && !manager.archivedAt && manager.labels?.[MANAGER_LABEL] !== undefined && !shared) {
+      managerArchived = await this.api().agents.ref(managerId).archive().then(() => true, (error: unknown) => {
+        console.error(`[playbooks] could not archive the manager of ${candidate.id}:`, errorText(error));
+        return false;
+      });
+    }
+    await this.store.mutate(candidate.id, (run) => engine.noteEvent(run, "run_auto_archived", null, `archived ${Math.round(candidate.playbook.autoArchive.afterMs / 60_000)} min after it ended (auto_archive)${managerArchived ? ", with its manager" : ""}`, nowIso())).catch(() => undefined);
+    const fresh = this.store.get(candidate.id) ?? candidate;
+    await this.bus
+      .emit("run.auto_archived", { ...runFieldsOf(fresh), managerArchived, workspaceArchived: workspaceArchived?.archived ?? false, workspaceReason: workspaceArchived && !workspaceArchived.archived ? workspaceArchived.reason : null }, { runId: candidate.id, source: "runs" })
+      .catch((error: unknown) => console.error("[playbooks] could not emit run.auto_archived:", errorText(error)));
   }
 
   /**

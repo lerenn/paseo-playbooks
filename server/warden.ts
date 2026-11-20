@@ -63,11 +63,16 @@ export function loopCandidates(run: Run, above: number, action: Act): Candidate[
     .map(([edge, count]) => ({ check: "loops" as const, subject: edge, signature: edge, detail: `edge ${edge} fired ${count} times (limit ${above})`, action }));
 }
 
-/** A run pinned to a definition other than origin's current one: read from the workspace checkout, or at an older commit. */
-export function staleDefinitionCandidate(run: Run, originSha: string | null, action: Act): Candidate[] {
+/**
+ * A run pinned to a definition other than origin's current one: read from the workspace checkout, or at an older commit that
+ * the run has held for `afterMs` or more (the definition is pinned when the run starts, so its age is the run's). A healthy
+ * run on a recent pin is not reported. Not looked at: whether origin changed a file this run's steps use (ADR 2026-11-20-warden-stale-definition-age).
+ */
+export function staleDefinitionCandidate(run: Run, originSha: string | null, afterMs: number, now: number, action: Act): Candidate[] {
   const definition = run.definition;
   if (!definition || !originSha) return [];
-  const stale = definition.source === "workspace" || (definition.sha !== null && definition.sha !== originSha);
+  const aged = now - Date.parse(run.createdAt) >= afterMs;
+  const stale = definition.source === "workspace" || (aged && definition.sha !== null && definition.sha !== originSha);
   if (!stale) return [];
   const pinned = definition.source === "workspace" ? "the workspace checkout" : `${definition.ref ?? "origin"}@${(definition.sha ?? "").slice(0, 8)}`;
   return [{ check: "stale_definition", subject: null, signature: `${definition.source}@${originSha}`, detail: `the definition is pinned to ${pinned}, origin is at ${originSha.slice(0, 8)}`, action }];

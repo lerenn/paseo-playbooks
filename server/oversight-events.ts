@@ -180,6 +180,12 @@ export const OVERSIGHT_TYPES: EventTypeDef[] = [
     line: (event) => `- run.definition_fallback: ${runName(event.payload)} in ${String(event.payload.workspaceDir)}: ${String(event.payload.warning)}. It may run an out-of-date definition. Tools: get_run { runId: "${event.runId}" }, validate_playbooks.`,
   },
   {
+    type: "run.auto_archived",
+    description: "The plugin archived a finished run (auto_archive.enabled) after the grace period: the run and its idle manager agent; workspaceArchived says whether the workspace went too (workspaceReason when not). restart_run still reopens it.",
+    payload: z.object({ ...runFields, managerArchived: z.boolean(), workspaceArchived: z.boolean(), workspaceReason: z.string().nullable() }),
+    line: (event) => `- run.auto_archived: ${runName(event.payload)} in ${String(event.payload.workspaceDir)} was archived after it ended${event.payload.managerArchived ? ", with its manager" : ""}${event.payload.workspaceReason ? `; workspace kept: ${String(event.payload.workspaceReason)}` : ""}. Tools: restart_run, list_runs { archived: true }.`,
+  },
+  {
     type: "run.canceled",
     description: 'A run was canceled (status "canceled"): the reason, when given.',
     payload: z.object({ ...runFields, reason: z.string().nullable() }),

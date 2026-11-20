@@ -200,13 +200,25 @@ describe("the checks", () => {
     expect(s.spies.origin).not.toHaveBeenCalled();
     await s.isolate("old");
     s.spies.origin.mockResolvedValue("new");
-    await s.look(20);
+    await s.look(20); // pinned only 20 min: a healthy run on a slightly older origin is not reported
+    expect(s.store.get("run_x")!.warden.findings).toEqual({});
+    await s.look(13 * 60); // past the 12 h default
     expect(Object.keys(s.store.get("run_x")!.warden.findings)).toEqual(["stale_definition:"]);
     await s.isolate("new");
-    await s.look(40);
+    await s.look(14 * 60);
     expect(s.store.get("run_x")!.warden.findings).toEqual({});
     await s.store.mutate("run_x", (run) => void (run.definition = { source: "workspace", ref: null, sha: null, note: "x", warning: "w" }));
-    await s.look(60);
+    await s.look(15 * 60); // the workspace checkout case is not aged
+    expect(Object.keys(s.store.get("run_x")!.warden.findings)).toEqual(["stale_definition:"]);
+  });
+
+  it("stale_definition.after sets the age", async () => {
+    const s = await setup(ON("{ stale_definition: { after: 30m } }"));
+    await s.isolate("old");
+    s.spies.origin.mockResolvedValue("new");
+    await s.look(20);
+    expect(s.store.get("run_x")!.warden.findings).toEqual({});
+    await s.look(40);
     expect(Object.keys(s.store.get("run_x")!.warden.findings)).toEqual(["stale_definition:"]);
   });
 
@@ -223,10 +235,10 @@ describe("the checks", () => {
 
 describe("actions", () => {
   it("refresh_scripts runs for a stale definition, once per finding, with no message to any agent", async () => {
-    const s = await setup(ON("{ stale_definition: { action: refresh_scripts } }"));
+    const s = await setup(ON("{ stale_definition: { after: 1m, action: refresh_scripts } }"));
     await s.isolate("old");
     s.spies.origin.mockResolvedValue("new");
-    await s.look(0);
+    await s.look(2);
     expect(s.spies.refresh).toHaveBeenCalledTimes(1);
     expect(s.spies.refresh.mock.calls[0]![2]).toBe("warden");
     await s.look(20);
