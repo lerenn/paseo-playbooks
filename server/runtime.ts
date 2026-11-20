@@ -54,7 +54,8 @@ import { DEFAULT_SUBAGENT_ARCHIVE_AFTER_MS, subagentWorkspaceRefusal, SubagentAr
 import { DEFAULT_SIDEKICK_SUBAGENT, SIDEKICK_LABEL, SIDEKICK_PROJECT_LABEL, sidekickGateSweep, sidekickCompactCommand, sidekickCompactedNote, sidekickLimits, sidekickKickoff, SIDEKICK_PASEO_TOOLS, SIDEKICK_PLUGIN_TOOLS, SidekickRegistry, sidekickPrompt, sidekickTitle } from "./sidekick";
 import { BusError, EventBus, globToRegExp, type BusEvent, type Notifier, type Subscription } from "./bus";
 import { blockedOnGate, MANAGER_WATCH_CHECK_MS, nudgeDue, STUCK_AFTER_NUDGES } from "./manager-watch";
-import { listOpenPrs, prCandidates, WardenPrStore, type OpenPr } from "./warden-prs";
+import type { WardenPrConfig } from "../shared/types";
+import { listOpenPrs, prCandidates, reposOfRun, rulesetChecks, rulesetKey, WardenPrStore, type OpenPr } from "./warden-prs";
 import { diffFindings, gateOpenCandidates, loopCandidates, managerBlockedCandidates, slowCandidates, staleDefinitionCandidate, WARDEN_CHECK_MS, WARDEN_MAX_RUNS_PER_PASS, wardenPrSummary, wardenSummary, type Act, type Candidate, type WardenIo } from "./warden";
 import { SlowIndex } from "./slow";
 import { gatePayload, OversightProducer, registerOversightTypes, runFieldsOf } from "./oversight-events";
@@ -499,7 +500,7 @@ export class Runtime {
 
   constructor(
     private readonly store: RunStore,
-    private readonly options: { dataDir?: string; debounceMs?: number; pollMs?: number; wakeGapMs?: number; /** Tests: how long a failed run's worktree is kept (default 24h). */ failedRetentionMs?: number; /** Tests: the used fraction of the volume holding the worktrees. */ diskUsedFraction?: (dir: string) => Promise<number>; admissionTimeoutMs?: number; /** Tests: false keeps the old manual flow (the plugin starts no ready agent step by itself). */ autoStartAgents?: boolean; /** Tests: the grace period of a Sidekick subagent's workspace archive when the project sets none. */ subagentArchiveAfterMs?: number; /** Tests: the open PRs of a project (default: `gh pr list`). */ listOpenPrs?: (dir: string) => Promise<OpenPr[]>; /** Tests: sessions reloaded at once after a plugin update (default 4). */ reloadConcurrency?: number; /** Tests: pause after each reload (default 20 ms). */ reloadPauseMs?: number } = {},
+    private readonly options: { dataDir?: string; debounceMs?: number; pollMs?: number; wakeGapMs?: number; /** Tests: how long a failed run's worktree is kept (default 24h). */ failedRetentionMs?: number; /** Tests: the used fraction of the volume holding the worktrees. */ diskUsedFraction?: (dir: string) => Promise<number>; admissionTimeoutMs?: number; /** Tests: false keeps the old manual flow (the plugin starts no ready agent step by itself). */ autoStartAgents?: boolean; /** Tests: the grace period of a Sidekick subagent's workspace archive when the project sets none. */ subagentArchiveAfterMs?: number; /** Tests: the open PRs of a project (default: `gh pr list`). */ listOpenPrs?: (dir: string, repo: string | null) => Promise<OpenPr[]>; /** Tests: the checks a base branch's ruleset requires (default: `gh api`). */ rulesetChecks?: (repo: string, base: string) => Promise<string[]>; /** Tests: sessions reloaded at once after a plugin update (default 4). */ reloadConcurrency?: number; /** Tests: pause after each reload (default 20 ms). */ reloadPauseMs?: number } = {},
   ) {
     const dir = options.dataDir ?? path.dirname(store.dir);
     this.worktreesDir = path.join(dir, "worktrees");
@@ -1140,12 +1141,14 @@ export class Runtime {
         const setting = project ? await wardenPrSetting(project.root) : null;
         if (!project || !setting || now - (this.wardenPrSeen.get(projectId) ?? 0) < setting.intervalMs) continue;
         this.wardenPrSeen.set(projectId, now);
-        const prs: OpenPr[] = await (this.options.listOpenPrs ?? listOpenPrs)(project.root);
         const runs = this.store.list().filter((run) => run.projectId === projectId && !run.archivedAt);
-        const candidates = prCandidates(prs, runs, setting.checks, now);
+        const { prs, failedRepos, rulesets } = await this.wardenPrRead(project.root, setting.checks, runs, projectId);
+        const candidates = prCandidates(prs, runs, setting.checks, now, rulesets);
         const iso = new Date(now).toISOString();
         const existing = await store.read(projectId);
         const { next, report } = diffFindings(existing, candidates, iso, setting.cooldownMs);
+        // A repository that could not be read keeps what was found there: its findings are neither cleared nor repeated.
+        for (const [key, finding] of Object.entries(existing)) if (failedRepos.some((repo) => finding.subject?.startsWith(`${repo}#`))) next[key] = finding;
         // The state is written before the message: a failed send never repeats a report.
         await store.write(projectId, next);
         if (report.length > 0) await this.wardenTellSidekick(projectId, wardenPrSummary(report.map((entry) => entry.finding)));
@@ -1153,6 +1156,48 @@ export class Runtime {
         console.error(`[playbooks] warden PR pass on project ${projectId} failed:`, errorText(error));
       }
     }
+  }
+
+  /**
+   * What the PR checks read from GitHub (`gh`): the open PRs of each repository to scan (the project root's repository unless
+   * `repos` is set; `repos.names` plus, with `from_runs`, the repositories of the project's runs' PR URLs), and the required
+   * checks of each base branch's ruleset when `required_checks.from_ruleset` is set. With `repos`, a repository that fails is
+   * logged and skipped (`failedRepos`); so is a ruleset that cannot be read (that branch then has its static names only).
+   * Nothing is read when only `failed_run` is configured.
+   */
+  private async wardenPrRead(root: string, config: WardenPrConfig, runs: Run[], projectId: string): Promise<{ prs: OpenPr[]; failedRepos: string[]; rulesets: Map<string, string[]> }> {
+    const prs: OpenPr[] = [];
+    const failedRepos: string[] = [];
+    const rulesets = new Map<string, string[]>();
+    const { fixStep: _fix, reviewBot: _bot, failedRuns: _failed, repos, ...checks } = config;
+    if (!Object.values(checks).some((value) => value !== null)) return { prs, failedRepos, rulesets };
+    const list = this.options.listOpenPrs ?? listOpenPrs;
+    if (!repos) prs.push(...(await list(root, null)));
+    else {
+      const names = [...new Set([...repos.names, ...(repos.fromRuns ? runs.flatMap(reposOfRun) : [])])];
+      for (const repo of names) {
+        try {
+          prs.push(...(await list(root, repo)));
+        } catch (error) {
+          failedRepos.push(repo);
+          console.error(`[playbooks] warden PR checks (project ${projectId}): skipped repository ${repo}: ${errorText(error)}`);
+        }
+      }
+    }
+    if (config.requiredChecks?.fromRuleset) {
+      const read = this.options.rulesetChecks ?? rulesetChecks;
+      for (const pr of prs) {
+        const key = rulesetKey(pr.repo, pr.baseRefName);
+        if (!pr.repo || !pr.baseRefName || rulesets.has(key)) continue;
+        rulesets.set(key, []);
+        try {
+          rulesets.set(key, await read(pr.repo, pr.baseRefName));
+        } catch (error) {
+          console.error(`[playbooks] warden PR checks (project ${projectId}): required checks of ${pr.repo}@${pr.baseRefName} not read, using the configured names only: ${errorText(error)}`);
+        }
+      }
+    }
+    return { prs, failedRepos, rulesets };
   }
 
   /** The commit origin/<base> is at after a fetch; null when it cannot be read (offline, no such ref). */

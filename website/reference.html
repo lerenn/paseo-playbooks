@@ -688,10 +688,12 @@ manager:
 <tr><td><code>no_reviewer: { required: [...] }</code></td><td><code>pr_no_reviewer</code>: none of the logins is requested or has reviewed (drafts excepted)</td></tr>
 <tr><td><code>conflicting: {}</code></td><td><code>pr_conflicting</code>: GitHub reports merge conflicts; proposes routing to <code>fix_step</code></td></tr>
 <tr><td><code>review_bot: { author, receipt, retrigger }</code> and <code>review_stale: { after }</code></td><td><code>pr_review_stale</code>: the bot's last comment or review matching <code>receipt</code> is older than the head commit by more than <code>after</code>; proposes <code>retrigger</code></td></tr>
-<tr><td><code>required_checks: { names, dispatch }</code></td><td><code>pr_required_checks</code>: a named check or workflow has not run on the head commit; proposes <code>dispatch</code> ({name} {sha} {branch} {pr}) on the exact head</td></tr>
-<tr><td><code>review_findings: {}</code> (needs <code>review_bot</code>, <code>fix_step</code>)</td><td><code>pr_review_findings</code>: the bot's latest review requests changes and the run's <code>fix_step</code> is not running</td></tr>
+<tr><td><code>required_checks: { names, from_ruleset, workflows, dispatch }</code></td><td><code>pr_required_checks</code>: a named check or workflow has not run on the head commit. With <code>from_ruleset: true</code> the checks the base branch's ruleset requires (<code>gh api repos/&lt;repo&gt;/rules/branches/&lt;base&gt;</code>) count too; an API error or missing permission is logged and skipped, the static names still apply. <code>workflows</code> maps a check to its workflow, named in the proposal; <code>dispatch</code> ({name} {workflow} {repo} {sha} {branch} {pr}) is proposed on the exact head</td></tr>
+<tr><td><code>review_findings: { marker }</code> (needs <code>review_bot</code>, <code>fix_step</code>)</td><td><code>pr_review_findings</code>: the bot's latest review requests changes and the run's <code>fix_step</code> is not running. With <code>marker: { pattern, truthy }</code> the bot's latest comment or review matching <code>pattern</code> (one capture group) decides instead: findings are open when the captured text matches <code>truthy</code> (default <code>^(true|yes|[1-9]\d*)$</code>)</td></tr>
 <tr><td><code>unowned: {}</code></td><td><code>pr_unowned</code>: no run owns the open PR</td></tr>
-<tr><td><code>draft_idle: { after }</code></td><td><code>pr_draft_idle</code>: a draft not updated for <code>after</code> (<code>7d</code>, <code>48h</code>)</td></tr></tbody></table>
+<tr><td><code>draft_idle: { after }</code></td><td><code>pr_draft_idle</code>: a draft not updated for <code>after</code> (<code>7d</code>, <code>48h</code>)</td></tr>
+<tr><td><code>repos: { names, from_runs }</code></td><td>Not a check: which repositories are scanned (<code>gh pr list --repo</code>). <code>names</code> are <code>owner/repo</code>; <code>from_runs: true</code> adds the repositories whose PR URLs appear in the project's runs. Unset: the project root's repository. A repository that fails is logged and skipped, its earlier findings kept. Ownership is matched per repository (a branch name alone does not own a PR of another repository than the run's); findings are keyed <code>owner/repo#N</code></td></tr>
+<tr><td><code>failed_run: { playbooks, within }</code></td><td><code>run_failed</code>: a run of one of these playbook ids failed, or has a failed step, within <code>within</code> (default <code>24h</code>); proposed to the Sidekick with the run id, the failing step and the error text</td></tr></tbody></table>
 <p class="file">Example: warden PR checks</p>
 <pre><code># defaults/main.yaml
 warden:
@@ -702,10 +704,12 @@ warden:
     no_reviewer: { required: [alice, bob] }
     conflicting: {}
     review_stale: { after: 30m }
-    required_checks: { names: [build, lint], dispatch: "your-dispatch-command {name} --ref {branch} --sha {sha}" }
-    review_findings: {}
+    required_checks: { names: [build], from_ruleset: true, workflows: { build: ci.yml }, dispatch: "your-dispatch-command {workflow} --repo {repo} --ref {branch} --sha {sha}" }
+    review_findings: { marker: { pattern: "findings: (\\w+)", truthy: "^(true|[1-9]\\d*)$" } }
     unowned: {}
-    draft_idle: { after: 7d }</code></pre>
+    draft_idle: { after: 7d }
+    repos: { names: [your-org/app, your-org/infra], from_runs: true }
+    failed_run: { playbooks: [release, handoff], within: 24h }</code></pre>
 <p class="file">Example: warden</p>
 <pre><code># defaults/main.yaml
 warden:

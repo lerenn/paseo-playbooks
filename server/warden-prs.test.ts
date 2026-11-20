@@ -7,7 +7,7 @@ import { newRun } from "./engine";
 import { loadPlaybooks, wardenPrSetting } from "./loader";
 import { Runtime } from "./runtime";
 import { RunStore } from "./store";
-import { lastReceipt, ownerOf, parseGhPrs, prCandidates, type OpenPr } from "./warden-prs";
+import { lastReceipt, ownerOf, parseGhPrs, parseRulesetChecks, prCandidates, type OpenPr } from "./warden-prs";
 
 const EXAMPLES = path.resolve(__dirname, "..", "examples");
 const MIN = 60_000;
@@ -22,9 +22,9 @@ afterEach(async () => {
   await Promise.all(temps.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
-const NONE: WardenPrConfig = { fixStep: null, reviewBot: null, noReviewer: null, conflicting: null, reviewStale: null, requiredChecks: null, reviewFindings: null, unowned: null, draftIdle: null };
+const NONE: WardenPrConfig = { fixStep: null, reviewBot: null, noReviewer: null, conflicting: null, reviewStale: null, requiredChecks: null, reviewFindings: null, unowned: null, draftIdle: null, repos: null, failedRuns: null };
 const BOT = { author: "review-bot", receipt: "^Reviewed", retrigger: "post `/review` on PR {pr}" };
-const pr = (patch: Partial<OpenPr> = {}): OpenPr => ({ number: 7, title: "t", url: "https://example.test/pr/7", isDraft: false, headRefName: "feature", headSha: "abcdef123456", mergeable: "MERGEABLE", updatedAt: iso(0), requested: [], reviews: [], comments: [], headCommittedAt: iso(-60 * MIN), checks: [], ...patch });
+const pr = (patch: Partial<OpenPr> = {}): OpenPr => ({ number: 7, title: "t", url: "https://example.test/pr/7", isDraft: false, headRefName: "feature", headSha: "abcdef123456", mergeable: "MERGEABLE", updatedAt: iso(0), requested: [], reviews: [], comments: [], headCommittedAt: iso(-60 * MIN), checks: [], repo: "", baseRefName: "main", ...patch });
 
 const PLAYBOOK = `
 title: Release
@@ -100,7 +100,7 @@ describe("PR checks", () => {
   });
 
   it("required_checks: names missing on the head, with the dispatch command on the exact head", () => {
-    const config = { ...NONE, requiredChecks: { names: ["build", "lint"], dispatch: "run {name} --ref {branch} --sha {sha}" } };
+    const config = { ...NONE, requiredChecks: { names: ["build", "lint"], fromRuleset: false, workflows: {}, dispatch: "run {name} --ref {branch} --sha {sha}" } };
     const [found] = prCandidates([pr({ checks: ["build"] })], [], config, T0);
     expect(found).toMatchObject({ check: "pr_required_checks" });
     expect(found!.proposed).toBe("dispatch on the exact head: run lint --ref feature --sha abcdef123456");
@@ -110,7 +110,7 @@ describe("PR checks", () => {
   it("review_findings: changes requested by the bot and no fix step running", async () => {
     const dir = await project("warden: { enabled: true }\n");
     const run = await runOf(dir, "run_1", "feature");
-    const config = { ...NONE, reviewBot: BOT, fixStep: "fix", reviewFindings: {} };
+    const config = { ...NONE, reviewBot: BOT, fixStep: "fix", reviewFindings: { marker: null } };
     const review = { author: "review-bot", state: "CHANGES_REQUESTED", at: iso(-5 * MIN), body: "" };
     const [found] = prCandidates([pr({ reviews: [review] })], [run], config, T0);
     expect(found).toMatchObject({ check: "pr_review_findings", runId: "run_1" });
@@ -137,6 +137,230 @@ describe("PR checks", () => {
     expect(prCandidates([pr({ isDraft: true, updatedAt: iso(-8 * DAY) })], [], config, T0)).toHaveLength(1);
     expect(prCandidates([pr({ isDraft: true, updatedAt: iso(-6 * DAY) })], [], config, T0)).toHaveLength(0);
     expect(prCandidates([pr({ isDraft: false, updatedAt: iso(-30 * DAY) })], [], config, T0)).toHaveLength(0);
+  });
+});
+
+  async function setup(defaults: string, prs: OpenPr[], extra: Record<string, unknown> = {}, mutate?: (run: Run) => void) {
+    const dir = await project(defaults);
+    const store = new RunStore(path.join(dir, "runs"));
+    await store.init();
+    const first = await runOf(dir, "run_1", "feature");
+    mutate?.(first);
+    await store.create(first);
+    await writeFile(path.join(dir, "sidekick.json"), JSON.stringify({ p: { workspaceId: "ws-sk", agentId: "sk" } }));
+    const sent: string[] = [];
+    const ref = (agentId: string) => ({ refresh: async () => ({ agent: { id: agentId, status: "idle", provider: "claude", model: null, archivedAt: null, pendingPermissions: [] } }), send: async (text: string) => void sent.push(text), timeline: { refetch: async () => ({ entries: [] }) } });
+    const list = vi.fn(async () => prs);
+    const runtime = new Runtime(store, { debounceMs: 0, dataDir: dir, listOpenPrs: list, ...extra } as never);
+    runtimes.push(runtime);
+    await runtime.attach({ agents: { ref, list: async () => ({ entries: [] }) } } as never);
+    vi.spyOn(runtime as never, "projectOf" as never).mockResolvedValue({ projectId: "p", label: "p", root: dir } as never);
+    return { runtime, sent, list, look: (minutes: number) => runtime.watchEvents(T0 + minutes * MIN) };
+  }
+
+describe("several repositories", () => {
+  const other = (patch: Partial<OpenPr> = {}) => pr({ repo: "org/other", url: "https://example.test/org/other/pull/7", ...patch });
+  const CFG = { ...NONE, unowned: {}, repos: { names: ["org/a", "org/other"], fromRuns: false } };
+
+  it("keys findings by repo, so equal PR numbers do not collide", () => {
+    const out = prCandidates([pr({ repo: "org/a", url: "https://example.test/org/a/pull/7" }), other()], [], CFG, T0);
+    expect(out.map((c) => c.subject)).toEqual(["org/a#7", "org/other#7"]);
+  });
+
+  it("matches the owner per repo: a branch name shared with a run working in another repo is not ownership", async () => {
+    const dir = await project("{}\n");
+    const run = await runOf(dir, "run_a", "feature");
+    run.steps.fix!.summary = "opened https://example.test/org/a/pull/3";
+    run.steps.fix!.outputs = { pr_url: "https://example.test/org/a/pull/3" };
+    expect(ownerOf(pr({ repo: "org/a", url: "https://example.test/org/a/pull/9" }), [run])?.id).toBe("run_a");
+    expect(ownerOf(other({ url: "https://example.test/org/other/pull/9" }), [run])).toBeNull();
+    expect(ownerOf(other({ url: "https://example.test/org/a/pull/3".replace("org/a", "org/other") }), [run])).toBeNull();
+    const bare = await runOf(dir, "run_b", "feature"); // no PR URL known: the branch alone decides
+    expect(ownerOf(other(), [bare])?.id).toBe("run_b");
+    const byUrl = await runOf(dir, "run_c", "nothing");
+    byUrl.steps.fix!.outputs = { pr_url: "https://example.test/org/other/pull/7" };
+    expect(ownerOf(other({ headRefName: "zzz" }), [byUrl])?.id).toBe("run_c");
+  });
+
+  it("scans each configured repo with --repo, adds the repos of the runs' PR URLs, and logs and skips one that fails", async () => {
+    const calls: Array<string | null> = [];
+    const list = async (_dir: string, repo: string | null) => {
+      calls.push(repo);
+      if (repo === "org/broken") throw new Error("HTTP 404");
+      return [pr({ repo: repo ?? "", url: `https://example.test/${repo}/pull/7`, headRefName: `b-${repo}` })];
+    };
+    const s = await setup("warden: { enabled: true, interval: 5m, pr_checks: { unowned: {}, repos: { names: [org/a, org/broken], from_runs: true } } }\n", [], { listOpenPrs: list }, (run) => {
+      run.steps.fix!.outputs = { pr_url: "https://example.test/org/from-run/pull/1" };
+    });
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    await s.look(0);
+    expect(calls.sort()).toEqual(["org/a", "org/broken", "org/from-run"]);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("skipped repository org/broken"));
+    const text = s.sent.filter((t) => /warden found/.test(t)).join("\n");
+    expect(text).toContain("PR org/a#7");
+    expect(text).toContain("PR org/from-run#7");
+  });
+
+  it("without repos it reads the project root's repository, as before", async () => {
+    const calls: Array<string | null> = [];
+    const list = async (_dir: string, repo: string | null) => (calls.push(repo), []);
+    const s = await setup("warden: { enabled: true, interval: 5m, pr_checks: { unowned: {} } }\n", [], { listOpenPrs: list });
+    await s.look(0);
+    expect(calls).toEqual([null]);
+  });
+
+  it("refuses an empty or malformed repos block", async () => {
+    for (const [block, message] of [
+      ["warden: { pr_checks: { unowned: {}, repos: {} } }", /set names, from_runs/],
+      ["warden: { pr_checks: { unowned: {}, repos: { names: [nope] } } }", /not owner\/repo/],
+    ] as const) expect(JSON.stringify(await loadPlaybooks(await project(`${block}\n`))), block).toMatch(message);
+  });
+});
+
+describe("required checks from the base branch's ruleset", () => {
+  const rulesets = new Map([["org/a@main", ["build", "lint"]]]);
+  const base = { ...NONE, requiredChecks: { names: ["extra"], fromRuleset: true, workflows: { build: "ci.yml" }, dispatch: "go {workflow} {name} {repo} {sha}" } };
+  const target = pr({ repo: "org/a", checks: ["lint", "extra"] });
+
+  it("flags a ruleset check missing on the head, names its workflow in the dispatch, and unions static names", () => {
+    const [found] = prCandidates([target], [], base, T0, rulesets);
+    expect(found).toMatchObject({ check: "pr_required_checks" });
+    expect(found!.detail).toContain("no run of build");
+    expect(found!.proposed).toBe("dispatch on the exact head: go ci.yml build org/a abcdef123456");
+    expect(prCandidates([pr({ repo: "org/a", checks: ["build", "lint", "extra"] })], [], base, T0, rulesets)).toEqual([]);
+    expect(prCandidates([pr({ repo: "org/a", checks: ["lint"] })], [], base, T0, rulesets)[0]!.detail).toContain("extra, build");
+  });
+
+  it("names the mapped workflow in the text when there is no dispatch template", () => {
+    const [found] = prCandidates([target], [], { ...base, requiredChecks: { ...base.requiredChecks, dispatch: null } }, T0, rulesets);
+    expect(found!.proposed).toBe("dispatch build (workflow ci.yml) on commit abcdef123456");
+  });
+
+  it("ignores the ruleset when from_ruleset is off or it was not read", () => {
+    expect(prCandidates([target], [], { ...base, requiredChecks: { ...base.requiredChecks, fromRuleset: false } }, T0, rulesets)).toEqual([]);
+    expect(prCandidates([target], [], base, T0)).toEqual([]);
+  });
+
+  it("parses the rules API answer", () => {
+    const json = JSON.stringify([{ type: "pull_request" }, { type: "required_status_checks", parameters: { required_status_checks: [{ context: "build" }, { context: "lint" }, { context: "build" }] } }]);
+    expect(parseRulesetChecks(json)).toEqual(["build", "lint"]);
+    expect(parseRulesetChecks("[]")).toEqual([]);
+  });
+
+  it("an unreadable ruleset is logged once and skipped: the static names still apply, no spam", async () => {
+    const read = vi.fn(async () => {
+      throw new Error("HTTP 403: Resource not accessible");
+    });
+    const prs = [pr({ repo: "org/a", url: "https://example.test/org/a/pull/7", checks: [] }), pr({ number: 8, repo: "org/a", url: "https://example.test/org/a/pull/8", headRefName: "b", checks: [] })];
+    const s = await setup("warden: { enabled: true, interval: 5m, pr_checks: { required_checks: { names: [static], from_ruleset: true } } }\n", prs, { rulesetChecks: read });
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    await s.look(0);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("org/a@main not read"));
+    expect(s.sent.join("\n")).toContain("no run of static");
+    expect(s.sent.join("\n")).not.toContain("build");
+  });
+
+  it("refuses required_checks with nothing to require", async () => {
+    expect(JSON.stringify(await loadPlaybooks(await project("warden: { pr_checks: { required_checks: {} } }\n")))).toMatch(/set names, from_ruleset/);
+  });
+});
+
+describe("review findings from a marker", () => {
+  const marker = { pattern: "findings: (\\w+)", truthy: "^(true|[1-9]\\d*)$" };
+  const config = { ...NONE, reviewBot: BOT, fixStep: "fix", reviewFindings: { marker } };
+  const note = (at: number, body: string, author = BOT.author) => ({ author, at: iso(at), body });
+
+  it("reports when the bot's latest marked comment is truthy, and not when a later one clears it", () => {
+    const open = pr({ comments: [note(-30 * MIN, "<!-- findings: 3 -->")] });
+    const [found] = prCandidates([open], [], config, T0);
+    expect(found).toMatchObject({ check: "pr_review_findings", signature: iso(-30 * MIN) });
+    expect(found!.detail).toContain("marker `3`");
+    expect(prCandidates([pr({ comments: [note(-30 * MIN, "findings: 3"), note(-10 * MIN, "findings: 0")] })], [], config, T0)).toEqual([]);
+    expect(prCandidates([pr({ comments: [note(-30 * MIN, "findings: 0"), note(-10 * MIN, "findings: 2")] })], [], config, T0)).toHaveLength(1);
+  });
+
+  it("looks only at the bot's own text and reads reviews as well as comments", () => {
+    expect(prCandidates([pr({ comments: [note(-5 * MIN, "findings: 4", "someone")] })], [], config, T0)).toEqual([]);
+    expect(prCandidates([pr({ reviews: [{ author: BOT.author, state: "COMMENTED", at: iso(-5 * MIN), body: "findings: true" }] })], [], config, T0)).toHaveLength(1);
+  });
+
+  it("is not CHANGES_REQUESTED: such a review without the marker is ignored, and without a marker config it still counts", () => {
+    const requested = pr({ reviews: [{ author: BOT.author, state: "CHANGES_REQUESTED", at: iso(-5 * MIN), body: "no marker here" }] });
+    expect(prCandidates([requested], [], config, T0)).toEqual([]);
+    expect(prCandidates([requested], [], { ...config, reviewFindings: { marker: null } }, T0)).toHaveLength(1);
+  });
+
+  it("stays quiet while a fix step runs", async () => {
+    const dir = await project("{}\n");
+    const run = await runOf(dir, "run_1", "feature");
+    run.steps.fix!.status = "running";
+    expect(prCandidates([pr({ comments: [note(-5 * MIN, "findings: 2")] })], [run], config, T0)).toEqual([]);
+  });
+
+  it("loads: truthy defaults, and a pattern needs one capture group", async () => {
+    const ok = await wardenPrSetting(await project("warden: { enabled: true, pr_checks: { fix_step: fix, review_bot: { author: b, receipt: x }, review_findings: { marker: { pattern: 'n=(\\d+)' } } } }\n"));
+    expect(ok?.checks.reviewFindings?.marker?.truthy).toMatch(/true\|yes/);
+    expect(JSON.stringify(await loadPlaybooks(await project("warden: { pr_checks: { fix_step: fix, review_bot: { author: b, receipt: x }, review_findings: { marker: { pattern: 'n=\\d+' } } } }\n")))).toMatch(/needs one capture group/);
+  });
+});
+
+describe("failed hand-off or release runs", () => {
+  const config = { ...NONE, failedRuns: { playbooks: ["release"], withinMs: DAY } };
+  const failed = async (patch: (run: Run) => void) => {
+    const run = await runOf(await project("{}\n"), "run_f", "x");
+    run.updatedAt = iso(-10 * MIN);
+    patch(run);
+    return run;
+  };
+
+  it("proposes a failed run of a configured playbook with the run id, the failing step and the error", async () => {
+    const run = await failed((r) => {
+      r.status = "failed";
+      r.failure = "step fix failed: tests did not pass";
+      r.steps.fix!.status = "failed";
+    });
+    const [found] = prCandidates([], [run], config, T0);
+    expect(found).toMatchObject({ check: "run_failed", subject: "run_f", runId: "run_f", pr: null });
+    expect(found!.detail).toBe("run run_f (release) failed: step `fix`: step fix failed: tests did not pass");
+    expect(found!.proposed).toContain("get_run");
+  });
+
+  it("also catches a failed step of a run that has not ended, with the step's own error", async () => {
+    const run = await failed((r) => {
+      r.steps.fix!.status = "failed";
+      r.steps.fix!.summary = "the script exited 2";
+    });
+    expect(prCandidates([], [run], config, T0)[0]!.detail).toBe("run run_f (release) has a failed step: step `fix`: the script exited 2");
+  });
+
+  it("ignores other playbooks, healthy runs and failures older than the window", async () => {
+    const failing = (r: Run) => {
+      r.status = "failed";
+      r.failure = "boom";
+    };
+    expect(prCandidates([], [await failed(failing)], { ...NONE, failedRuns: { playbooks: ["other"], withinMs: DAY } }, T0)).toEqual([]);
+    expect(prCandidates([], [await failed(() => undefined)], config, T0)).toEqual([]);
+    expect(prCandidates([], [await failed(failing)], config, T0 + 2 * DAY)).toEqual([]);
+  });
+
+  it("is sent once by the pass, without any gh call when it is the only check", async () => {
+    const s = await setup("warden: { enabled: true, interval: 5m, pr_checks: { failed_run: { playbooks: [release] } } }\n", [], {}, (run) => {
+      run.status = "failed";
+      run.failure = "boom";
+      run.updatedAt = iso(-MIN);
+    });
+    await s.look(0);
+    await s.look(10);
+    expect(s.list).not.toHaveBeenCalled();
+    const sent = s.sent.filter((t) => /warden found/.test(t));
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toContain("run run_1, run_failed: run run_1 (release) failed: no single step: boom");
+  });
+
+  it("loads with a default window of 24h and refuses a bad one", async () => {
+    expect((await wardenPrSetting(await project("warden: { enabled: true, pr_checks: { failed_run: { playbooks: [release] } } }\n")))?.checks.failedRuns).toEqual({ playbooks: ["release"], withinMs: DAY });
+    expect(JSON.stringify(await loadPlaybooks(await project("warden: { pr_checks: { failed_run: { playbooks: [release], within: soon } } }\n")))).toMatch(/expected a duration/);
   });
 });
 
@@ -169,21 +393,6 @@ describe("warden.pr_checks config", () => {
 });
 
 describe("the warden PR pass", () => {
-  async function setup(defaults: string, prs: OpenPr[]) {
-    const dir = await project(defaults);
-    const store = new RunStore(path.join(dir, "runs"));
-    await store.init();
-    await store.create(await runOf(dir, "run_1", "feature"));
-    await writeFile(path.join(dir, "sidekick.json"), JSON.stringify({ p: { workspaceId: "ws-sk", agentId: "sk" } }));
-    const sent: string[] = [];
-    const ref = (agentId: string) => ({ refresh: async () => ({ agent: { id: agentId, status: "idle", provider: "claude", model: null, archivedAt: null, pendingPermissions: [] } }), send: async (text: string) => void sent.push(text), timeline: { refetch: async () => ({ entries: [] }) } });
-    const list = vi.fn(async () => prs);
-    const runtime = new Runtime(store, { debounceMs: 0, dataDir: dir, listOpenPrs: list } as never);
-    runtimes.push(runtime);
-    await runtime.attach({ agents: { ref, list: async () => ({ entries: [] }) } } as never);
-    vi.spyOn(runtime as never, "projectOf" as never).mockResolvedValue({ projectId: "p", label: "p", root: dir } as never);
-    return { runtime, sent, list, look: (minutes: number) => runtime.watchEvents(T0 + minutes * MIN) };
-  }
   const ON = "warden: { enabled: true, interval: 5m, cooldown: 1h, pr_checks: { unowned: {}, conflicting: {}, fix_step: fix } }\n";
 
   it("does nothing without configuration: no gh call, no message", async () => {

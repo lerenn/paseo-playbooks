@@ -580,9 +580,29 @@ const RawWardenSchema = z
         /** The reviewer's last receipt is older than the PR head by more than `after` (needs review_bot). */
         review_stale: z.object({ after: z.string() }).strict().optional(),
         /** Checks or workflows in `names` that have not run on the head commit; `dispatch` is a command template ({sha} {branch} {pr} {name}). */
-        required_checks: z.object({ names: z.array(z.string()).min(1), dispatch: z.string().optional() }).strict().optional(),
-        /** The reviewer's latest review requests changes and no fix_step is running (needs review_bot and fix_step). */
-        review_findings: z.object({}).strict().optional(),
+        required_checks: z
+          .object({
+            names: z.array(z.string()).optional(),
+            /** Also the checks the base branch's ruleset requires (`gh api repos/<repo>/rules/branches/<base>`); an API error skips it, logged. */
+            from_ruleset: z.boolean().optional(),
+            /** Check name -> workflow, named in the proposal and as `{workflow}` in `dispatch`. */
+            workflows: z.record(z.string(), z.string()).optional(),
+            dispatch: z.string().optional(),
+          })
+          .strict()
+          .optional(),
+        /** The reviewer's latest review requests changes and no fix_step is running (needs review_bot and fix_step); or, with `marker`, its latest comment or review carries a truthy marker. */
+        review_findings: z
+          .object({
+            /** `pattern`: a regex with one capture group, matched against the review bot's comments and reviews; `truthy`: a regex the captured text matches when findings are open (default `^(true|yes|[1-9]\d*)$`). */
+            marker: z.object({ pattern: z.string(), truthy: z.string().optional() }).strict().optional(),
+          })
+          .strict()
+          .optional(),
+        /** The repositories to scan with `gh pr list --repo`: `names` (`owner/repo`) and/or `from_runs` (the repos the project's runs have PR URLs of). Unset: the project root's repository. */
+        repos: z.object({ names: z.array(z.string()).optional(), from_runs: z.boolean().optional() }).strict().optional(),
+        /** A run of one of these playbooks (ids) that failed or has a failed step within `within` (default 24h): proposed to the Sidekick with the step and the error. */
+        failed_run: z.object({ playbooks: z.array(z.string()).min(1), within: z.string().optional() }).strict().optional(),
         /** An open PR that no run owns. */
         unowned: z.object({}).strict().optional(),
         /** A draft PR not updated for `after` (`7d`, `48h`). */
@@ -617,22 +637,42 @@ export function resolveWardenPr(raw: RawWarden["pr_checks"], where: string, fail
       fail(`${where}.review_bot.receipt: not a valid regular expression`);
     }
   }
+  const marker = raw.review_findings?.marker;
+  if (marker) {
+    try {
+      const groups = new RegExp(`${marker.pattern}|`).exec("")!.length - 1;
+      if (groups < 1) fail(`${where}.review_findings.marker.pattern: needs one capture group around the value`);
+    } catch {
+      fail(`${where}.review_findings.marker.pattern: not a valid regular expression`);
+    }
+    try {
+      new RegExp(marker.truthy ?? "");
+    } catch {
+      fail(`${where}.review_findings.marker.truthy: not a valid regular expression`);
+    }
+  }
+  if (raw.required_checks && !raw.required_checks.from_ruleset && (raw.required_checks.names ?? []).length === 0) fail(`${where}.required_checks: set names, from_ruleset: true, or both`);
+  if (raw.repos && (raw.repos.names ?? []).length === 0 && !raw.repos.from_runs) fail(`${where}.repos: set names, from_runs: true, or both`);
+  for (const name of raw.repos?.names ?? []) if (!/^[\w.-]+\/[\w.-]+$/.test(name)) fail(`${where}.repos.names: "${name}" is not owner/repo`);
   if ((raw.review_stale || raw.review_findings) && !raw.review_bot) fail(`${where}: review_stale and review_findings need review_bot`);
   if (raw.review_findings && !raw.fix_step) fail(`${where}.review_findings: needs fix_step (the step whose running means a fix is under way)`);
   const reviewStale = raw.review_stale ? duration(raw.review_stale.after, "review_stale.after") : null;
   const draftIdle = raw.draft_idle ? duration(raw.draft_idle.after, "draft_idle.after") : null;
+  const failedWithin = raw.failed_run ? (raw.failed_run.within === undefined ? 86_400_000 : duration(raw.failed_run.within, "failed_run.within")) : null;
   const config: WardenPrConfig = {
     fixStep: raw.fix_step ?? null,
     reviewBot: raw.review_bot ? { author: raw.review_bot.author, receipt: raw.review_bot.receipt, retrigger: raw.review_bot.retrigger ?? null } : null,
     noReviewer: raw.no_reviewer ? { required: raw.no_reviewer.required } : null,
     conflicting: raw.conflicting ? {} : null,
     reviewStale: reviewStale === null ? null : { afterMs: reviewStale },
-    requiredChecks: raw.required_checks ? { names: raw.required_checks.names, dispatch: raw.required_checks.dispatch ?? null } : null,
-    reviewFindings: raw.review_findings ? {} : null,
+    requiredChecks: raw.required_checks ? { names: raw.required_checks.names ?? [], fromRuleset: raw.required_checks.from_ruleset === true, workflows: raw.required_checks.workflows ?? {}, dispatch: raw.required_checks.dispatch ?? null } : null,
+    reviewFindings: raw.review_findings ? { marker: marker ? { pattern: marker.pattern, truthy: marker.truthy ?? "^(true|yes|[1-9]\\d*)$" } : null } : null,
     unowned: raw.unowned ? {} : null,
     draftIdle: draftIdle === null ? null : { afterMs: draftIdle },
+    repos: raw.repos ? { names: raw.repos.names ?? [], fromRuns: raw.repos.from_runs === true } : null,
+    failedRuns: raw.failed_run && failedWithin !== null ? { playbooks: raw.failed_run.playbooks, withinMs: failedWithin } : null,
   };
-  return Object.entries(config).some(([key, value]) => key !== "fixStep" && key !== "reviewBot" && value !== null) ? config : null;
+  return Object.entries(config).some(([key, value]) => key !== "fixStep" && key !== "reviewBot" && key !== "repos" && value !== null) ? config : null;
 }
 
 function resolveWarden(raw: RawWarden | undefined, base: WardenConfig, where: string, fail: (message: string) => void): WardenConfig {

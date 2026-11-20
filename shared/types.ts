@@ -104,7 +104,7 @@ export const WardenConfigSchema = z.object({
 export type WardenConfig = z.infer<typeof WardenConfigSchema>;
 export const WARDEN_RUN_CHECKS = ["stale_definition", "manager_blocked", "loops", "slow", "gate_open"] as const;
 /** The PR-level checks (ADR 2026-11-20-warden-pr-checks): over the project's open pull requests, each off unless configured. */
-export const WARDEN_PR_CHECKS = ["pr_no_reviewer", "pr_conflicting", "pr_review_stale", "pr_required_checks", "pr_review_findings", "pr_unowned", "pr_draft_idle"] as const;
+export const WARDEN_PR_CHECKS = ["pr_no_reviewer", "pr_conflicting", "pr_review_stale", "pr_required_checks", "pr_review_findings", "pr_unowned", "pr_draft_idle", "run_failed"] as const;
 export const WARDEN_CHECKS = [...WARDEN_RUN_CHECKS, ...WARDEN_PR_CHECKS] as const;
 export type WardenCheck = (typeof WARDEN_CHECKS)[number];
 export const DEFAULT_WARDEN: WardenConfig = {
@@ -132,11 +132,20 @@ export const WardenPrConfigSchema = z.object({
   noReviewer: z.object({ required: z.array(z.string()).min(1) }).nullable(),
   conflicting: z.object({}).nullable(),
   reviewStale: z.object({ afterMs: z.number().int().positive() }).nullable(),
-  /** `names`: checks (or workflows) that must have run on the head commit; `dispatch`: a command template ({sha} {branch} {pr} {name}) proposed when one is missing. */
-  requiredChecks: z.object({ names: z.array(z.string()).min(1), dispatch: z.string().nullable() }).nullable(),
-  reviewFindings: z.object({}).nullable(),
+  /**
+   * `names`: checks (or workflows) that must have run on the head commit; `fromRuleset`: also the ones the base branch's ruleset
+   * requires (`gh api repos/<repo>/rules/branches/<base>`); `workflows`: check name -> workflow, named in the proposal;
+   * `dispatch`: a command template ({sha} {branch} {pr} {name} {workflow} {repo}) proposed when one is missing.
+   */
+  requiredChecks: z.object({ names: z.array(z.string()), fromRuleset: z.boolean(), workflows: z.record(z.string(), z.string()), dispatch: z.string().nullable() }).nullable(),
+  /** `marker`: a machine-readable marker in the review bot's latest comment or review: `pattern` (a regex with one capture) and `truthy` (a regex the captured text matches when findings are open). Null: CHANGES_REQUESTED reviews. */
+  reviewFindings: z.object({ marker: z.object({ pattern: z.string(), truthy: z.string() }).nullable() }).nullable(),
   unowned: z.object({}).nullable(),
   draftIdle: z.object({ afterMs: z.number().int().positive() }).nullable(),
+  /** The repositories to scan (`gh pr list --repo`): listed `names`, plus, with `fromRuns`, the ones the project's runs have PR URLs of. Null: the project root's repository. */
+  repos: z.object({ names: z.array(z.string()), fromRuns: z.boolean() }).nullable(),
+  /** A run of one of these playbooks (id) that failed, or has a failed step, within `withinMs`. */
+  failedRuns: z.object({ playbooks: z.array(z.string()).min(1), withinMs: z.number().int().positive() }).nullable(),
 });
 export type WardenPrConfig = z.infer<typeof WardenPrConfigSchema>;
 

@@ -36,9 +36,20 @@ export interface OpenPr {
   headCommittedAt: string | null;
   /** Names of the checks and workflows reported on the head commit. */
   checks: string[];
+  /** `owner/repo` of the PR (from its URL; "" when it has none) and the branch it targets. */
+  repo: string;
+  baseRefName: string;
 }
 
-const GH_FIELDS = "number,title,url,isDraft,headRefName,headRefOid,mergeable,updatedAt,reviewRequests,latestReviews,comments,commits,statusCheckRollup";
+const PR_URL = /https?:\/\/[^\s"/]+\/([\w.-]+\/[\w.-]+)\/pull\/\d+/g;
+/** `owner/repo` of a pull request URL; "" when it is none. */
+export const repoOfUrl = (url: string): string => new RegExp(PR_URL.source).exec(url)?.[1] ?? "";
+/** The repositories whose PR URLs appear in a run's step state. */
+export function reposOfRun(run: Run): string[] {
+  return [...new Set([...JSON.stringify(run.steps).matchAll(PR_URL)].map((match) => match[1]!))];
+}
+
+const GH_FIELDS = "number,title,url,isDraft,headRefName,baseRefName,headRefOid,mergeable,updatedAt,reviewRequests,latestReviews,comments,commits,statusCheckRollup";
 
 type Json = Record<string, unknown>;
 const str = (value: unknown): string => (typeof value === "string" ? value : "");
@@ -61,6 +72,8 @@ export function parseGhPrs(json: string): OpenPr[] {
         isDraft: pr.isDraft === true,
         headRefName: str(pr.headRefName),
         headSha,
+        repo: repoOfUrl(str(pr.url)),
+        baseRefName: str(pr.baseRefName),
         mergeable: str(pr.mergeable),
         updatedAt: str(pr.updatedAt),
         requested: list(pr.reviewRequests).map((entry) => str(entry.login) || str(entry.slug) || str(entry.name)).filter(Boolean),
@@ -73,9 +86,9 @@ export function parseGhPrs(json: string): OpenPr[] {
   });
 }
 
-/** The project's open PRs, through the `gh` CLI in `dir` (it uses the user's own GitHub login); throws when `gh` fails. */
-export async function listOpenPrs(dir: string): Promise<OpenPr[]> {
-  const { stdout } = await exec("gh", ["pr", "list", "--state", "open", "--limit", "100", "--json", GH_FIELDS], { cwd: dir, timeout: 60_000, maxBuffer: 64 * 1024 * 1024 });
+/** The open PRs of `repo` (`owner/repo`), or of the repository of `dir` when it is null, through the `gh` CLI (it uses the user's own GitHub login); throws when `gh` fails. */
+export async function listOpenPrs(dir: string, repo: string | null = null): Promise<OpenPr[]> {
+  const { stdout } = await exec("gh", ["pr", "list", ...(repo ? ["--repo", repo] : []), "--state", "open", "--limit", "100", "--json", GH_FIELDS], { cwd: dir, timeout: 60_000, maxBuffer: 64 * 1024 * 1024 });
   return parseGhPrs(stdout);
 }
 
@@ -84,13 +97,36 @@ function mentions(run: Run, url: string): boolean {
   return url !== "" && new RegExp(`${url.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?!\\d)`).test(JSON.stringify(run.steps));
 }
 
-/** The run that owns a PR: its branch is the PR's head, or the PR's URL is in its state. The active one wins, else the latest. */
+/**
+ * The run that owns a PR: the PR's URL is in its state, or its branch is the PR's head (and the run is not known to work in
+ * another repository: its step state names PR URLs, none of this repo). The active one wins, else the latest.
+ */
 export function ownerOf(pr: OpenPr, runs: Run[]): Run | null {
-  const mine = runs.filter((run) => run.worktree?.branch === pr.headRefName || run.branch === pr.headRefName || mentions(run, pr.url));
+  const inRepo = (run: Run) => {
+    const repos = pr.repo ? reposOfRun(run) : [];
+    return repos.length === 0 || repos.includes(pr.repo);
+  };
+  const mine = runs.filter((run) => mentions(run, pr.url) || ((run.worktree?.branch === pr.headRefName || run.branch === pr.headRefName) && inRepo(run)));
   return mine.sort((a, b) => Number(isActive(b)) - Number(isActive(a)) || b.createdAt.localeCompare(a.createdAt))[0] ?? null;
 }
 
-const fill = (template: string, values: Record<string, string>): string => template.replace(/\{(sha|branch|pr|name)\}/g, (_, key: string) => values[key] ?? "");
+/** The checks the base branch's ruleset requires (`gh api repos/<repo>/rules/branches/<base>`); throws when the API call fails (no access, no such branch). */
+export async function rulesetChecks(repo: string, base: string): Promise<string[]> {
+  const { stdout } = await exec("gh", ["api", `repos/${repo}/rules/branches/${encodeURIComponent(base)}`], { timeout: 60_000, maxBuffer: 16 * 1024 * 1024 });
+  return parseRulesetChecks(stdout);
+}
+
+/** The required status check names in the JSON of a branch's rules (the `required_status_checks` rules' `context`s). */
+export function parseRulesetChecks(json: string): string[] {
+  const names = list(JSON.parse(json) as unknown)
+    .filter((rule) => rule.type === "required_status_checks")
+    .flatMap((rule) => list(((rule.parameters ?? {}) as Json).required_status_checks))
+    .map((check) => str(check.context))
+    .filter(Boolean);
+  return [...new Set(names)];
+}
+
+const fill = (template: string, values: Record<string, string>): string => template.replace(/\{(sha|branch|pr|name|workflow|repo)\}/g, (_, key: string) => values[key] ?? "");
 const ms = (iso: string | null): number | null => {
   const time = iso ? Date.parse(iso) : NaN;
   return Number.isNaN(time) ? null : time;
@@ -106,13 +142,13 @@ export function lastReceipt(pr: OpenPr, bot: NonNullable<WardenPrConfig["reviewB
   return times.length > 0 ? Math.max(...times) : null;
 }
 
-/** The candidates of every configured PR check over `prs`; `runs` are the project's runs (owners, running fix steps). */
-export function prCandidates(prs: OpenPr[], runs: Run[], config: WardenPrConfig, now: number): Candidate[] {
+/** The candidates of every configured PR check over `prs`; `runs` are the project's runs (owners, running fix steps); `rulesets` the required checks read per `repo@base` (a missing key: none known). */
+export function prCandidates(prs: OpenPr[], runs: Run[], config: WardenPrConfig, now: number, rulesets: Map<string, string[]> = new Map()): Candidate[] {
   const out: Candidate[] = [];
   for (const pr of prs) {
     const owner = ownerOf(pr, runs);
     const runId = owner?.id ?? null;
-    const subject = `#${pr.number}`;
+    const subject = config.repos && pr.repo ? `${pr.repo}#${pr.number}` : `#${pr.number}`;
     const make = (check: Candidate["check"], signature: string, detail: string, proposed: string) =>
       out.push({ check, subject, signature, detail: `PR ${subject} (${pr.url}) ${detail}`, action: "report", runId, pr: { number: pr.number, url: pr.url }, proposed });
     const fix = config.fixStep;
@@ -132,22 +168,82 @@ export function prCandidates(prs: OpenPr[], runs: Run[], config: WardenPrConfig,
     }
     if (config.requiredChecks) {
       const seen = new Set(pr.checks);
-      const missing = config.requiredChecks.names.filter((name) => !seen.has(name));
+      const required = [...new Set([...config.requiredChecks.names, ...(config.requiredChecks.fromRuleset ? (rulesets.get(rulesetKey(pr.repo, pr.baseRefName)) ?? []) : [])])];
+      const missing = required.filter((name) => !seen.has(name));
       if (missing.length > 0 && !pr.isDraft) {
         const dispatch = config.requiredChecks.dispatch;
-        const commands = dispatch ? missing.map((name) => fill(dispatch, { sha: pr.headSha, branch: pr.headRefName, pr: String(pr.number), name })).join("; ") : null;
-        make("pr_required_checks", `${pr.headSha}:${missing.join(",")}`, `has no run of ${missing.join(", ")} on its head ${pr.headSha.slice(0, 8)}`, commands ? `dispatch on the exact head: ${commands}` : `dispatch ${missing.join(", ")} on commit ${pr.headSha}`);
+        const workflows = config.requiredChecks.workflows;
+        const workflowOf = (name: string) => workflows[name] ?? name;
+        const commands = dispatch ? missing.map((name) => fill(dispatch, { sha: pr.headSha, branch: pr.headRefName, pr: String(pr.number), name, workflow: workflowOf(name), repo: pr.repo })).join("; ") : null;
+        const named = missing.map((name) => (workflows[name] ? `${name} (workflow ${workflows[name]})` : name)).join(", ");
+        make("pr_required_checks", `${pr.headSha}:${missing.join(",")}`, `has no run of ${missing.join(", ")} on its head ${pr.headSha.slice(0, 8)}`, commands ? `dispatch on the exact head: ${commands}` : `dispatch ${named} on commit ${pr.headSha}`);
       }
     }
     if (config.reviewFindings && config.reviewBot && config.fixStep) {
-      const review = pr.reviews.find((entry) => entry.author === config.reviewBot!.author && entry.state === "CHANGES_REQUESTED");
-      if (review && !fixRunning) make("pr_review_findings", `${review.at}`, `has open automated-review findings (changes requested ${review.at}) and no \`${config.fixStep}\` step is running`, owner ? `route run ${owner.id} to its \`${config.fixStep}\` step` : "no run owns it: start one or address the findings by hand");
+      const bot = config.reviewBot;
+      const marker = config.reviewFindings.marker;
+      const open = marker ? markerOpen(pr, bot.author, marker) : changesRequested(pr, bot.author);
+      if (open && !fixRunning) make("pr_review_findings", open.at, `has open automated-review findings (${marker ? `marker \`${open.value}\` in the review of ${open.at}` : `changes requested ${open.at}`}) and no \`${config.fixStep}\` step is running`, owner ? `route run ${owner.id} to its \`${config.fixStep}\` step` : "no run owns it: start one or address the findings by hand");
     }
     if (config.unowned && !owner) make("pr_unowned", "none", "is open and no run owns it", "start a run for it, or close it if it is abandoned");
     if (config.draftIdle && pr.isDraft) {
       const updated = ms(pr.updatedAt);
       if (updated !== null && now - updated >= config.draftIdle.afterMs) make("pr_draft_idle", "idle", `has been a draft with no activity for ${Math.floor((now - updated) / 86_400_000)} day(s)`, "mark it ready, resume the work, or close it");
     }
+  }
+  if (config.failedRuns) out.push(...failedRunCandidates(runs, config.failedRuns, now));
+  return out;
+}
+
+/** The key of a base branch in the rulesets map. */
+export const rulesetKey = (repo: string, base: string): string => `${repo}@${base}`;
+
+/** The reviewer's latest review that requests changes (the original, marker-less behaviour). */
+function changesRequested(pr: OpenPr, author: string): { at: string; value: string } | null {
+  const review = pr.reviews.find((entry) => entry.author === author && entry.state === "CHANGES_REQUESTED");
+  return review ? { at: review.at, value: "" } : null;
+}
+
+/** The reviewer's latest comment or review whose body matches the marker pattern, when its captured value is truthy. */
+export function markerOpen(pr: OpenPr, author: string, marker: { pattern: string; truthy: string }): { at: string; value: string } | null {
+  const pattern = new RegExp(marker.pattern);
+  const truthy = new RegExp(marker.truthy);
+  let latest: { at: string; time: number; value: string } | null = null;
+  for (const entry of [...pr.comments, ...pr.reviews]) {
+    if (entry.author !== author) continue;
+    const value = pattern.exec(entry.body)?.[1];
+    const time = ms(entry.at);
+    if (value === undefined || time === null) continue;
+    if (!latest || time >= latest.time) latest = { at: entry.at, time, value };
+  }
+  return latest && truthy.test(latest.value) ? { at: latest.at, value: latest.value } : null;
+}
+
+const trim = (text: string): string => (text.length > 400 ? `${text.slice(0, 400)}…` : text);
+
+/** Runs of the configured playbooks that failed, or whose step failed, within the window: with the run, the failing step and the error. */
+export function failedRunCandidates(runs: Run[], config: NonNullable<WardenPrConfig["failedRuns"]>, now: number): Candidate[] {
+  const out: Candidate[] = [];
+  for (const run of runs) {
+    if (!config.playbooks.includes(run.playbook.id)) continue;
+    const failedStep = Object.entries(run.steps).find(([, state]) => state.status === "failed");
+    if (run.status !== "failed" && !failedStep) continue;
+    const at = ms(failedStep?.[1].attempts.at(-1)?.endedAt ?? null) ?? ms(run.updatedAt);
+    if (at === null || now - at > config.withinMs) continue;
+    const attempt = failedStep?.[1].attempts.at(-1);
+    const stepError = attempt?.report?.summary || attempt?.lastMessage || failedStep?.[1].summary || "";
+    const error = trim(run.failure || stepError || "no error text recorded");
+    const where = failedStep ? `step \`${failedStep[0]}\`` : "no single step";
+    out.push({
+      check: "run_failed",
+      subject: run.id,
+      signature: `${run.status}:${failedStep?.[0] ?? ""}:${attempt?.n ?? 0}`,
+      detail: `run ${run.id} (${run.playbook.id}) ${run.status === "failed" ? "failed" : "has a failed step"}: ${where}: ${error}`,
+      action: "report",
+      runId: run.id,
+      pr: null,
+      proposed: `read run ${run.id} (get_run), then retry the step or restart the run if the cause is transient, or tell the human what broke`,
+    });
   }
   return out;
 }

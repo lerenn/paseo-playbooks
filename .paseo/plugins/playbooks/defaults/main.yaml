@@ -33,6 +33,11 @@ warden: { enabled: false }
 #     conflicting: {}
 #     review_stale: { after: 30m }                               # needs review_bot
 #     required_checks: { names: [build, lint], dispatch: "your-dispatch-command {name} --ref {branch} --sha {sha}" }
+#     # ... or also the checks the base branch's ruleset requires, with a workflow per check ({workflow} {repo} in dispatch):
+#     # required_checks: { names: [], from_ruleset: true, workflows: { build: ci.yml }, dispatch: "your-dispatch-command {workflow} --repo {repo} --sha {sha}" }
 #     review_findings: {}                                        # needs review_bot and fix_step
+#     # review_findings: { marker: { pattern: "findings: (\\w+)", truthy: "^(true|[1-9]\\d*)$" } }   # the bot's own marker instead of CHANGES_REQUESTED
 #     unowned: {}
 #     draft_idle: { after: 7d }
+#     repos: { names: [your-org/app, your-org/infra], from_runs: true }   # scan several repositories (default: the project root's)
+#     failed_run: { playbooks: [release, handoff], within: 24h }          # a failed run or step of these playbooks, sent with the step and error
