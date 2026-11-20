@@ -17,6 +17,7 @@ import {
 } from "./engine";
 import { resolveRunInputs } from "./engine";
 import { isPaused } from "../shared/types";
+import { findGate, restartRun } from "./engine";
 import { loadPlaybooks } from "./loader";
 
 const EXAMPLES = path.resolve(__dirname, "..", "examples");
@@ -175,6 +176,40 @@ describe("engine", () => {
     expect(r.status).toBe("failed");
   });
 
+  it("a loop-limit gate after restart_run gets a new id: the old, decided gate is not mistaken for it", () => {
+    const r = run();
+    runStep(r, "investigate", "success");
+    const toLimit = () => {
+      for (let guard = 0; guard < 10 && !r.gates.some((g) => g.status === "pending"); guard++) {
+        for (const id of ["implement", "review", "local_qa"]) if (readySteps(r).includes(id)) runStep(r, id, "success");
+        if (readySteps(r).includes("babysit")) runStep(r, "babysit", "changes_requested");
+      }
+      return r.gates.filter((g) => g.kind === "loop_limit" && g.status === "pending").at(-1)!;
+    };
+    const first = toLimit();
+    decideGate(r, first.id, { decision: "rejected", comment: "no", by: "host", via: "panel", now: now() });
+    expect(r.status).toBe("failed");
+    restartRun(r, "implement", { comment: null, by: "host", now: now() });
+    const second = toLimit();
+    expect(second.id).not.toBe(first.id);
+    expect(new Set(r.gates.map((g) => g.id)).size).toBe(r.gates.length);
+    // The new gate is the one found, pending, and decidable: not "already decided" by the old one.
+    expect(findGate(r, second.id)).toBe(second);
+    expect(findGate(r, first.id)).toBe(first);
+    const decided = decideGate(r, second.id, { decision: "approved", comment: null, by: "host", via: "panel", now: now() });
+    expect(decided.alreadyDecided).toBe(false);
+    expect(second.status).toBe("approved");
+    expect(first.status).toBe("rejected");
+  });
+
+  it("findGate picks the pending gate among gates sharing an id (runs saved before ids were unique)", () => {
+    const r = run();
+    runStep(r, "investigate", "success");
+    const mk = (status: "rejected" | "pending") => ({ ...structuredClone(capabilityGate()), id: "loop-x-y-8", status });
+    r.gates.push(mk("rejected"), mk("pending"));
+    expect(findGate(r, "loop-x-y-8")!.status).toBe("pending");
+  });
+
   it("retries a failure within retries, then fails; lost attempts don't count", () => {
     const r = run();
     runStep(r, "investigate", "success");
@@ -281,3 +316,9 @@ describe("engine", () => {
     });
   });
 });
+
+function capabilityGate() {
+  const r = capabilityAtGate();
+  requestGate(r, "approve", "", now());
+  return r.gates[0]!;
+}
