@@ -9,6 +9,13 @@ type PaseoApi = PluginClientContext["paseo"];
  * with those events, and the plugin SDK has no way to push its own events to the client.
  * `workspaceId` limits it to the agents of one workspace; null follows every workspace.
  * Returns a function that stops it.
+ *
+ * The snapshot is asked for a single agent (`page.limit` 1): the daemon's live agent_update stream
+ * is cut by the request's `filter` only, never by `page` or `scope` (those shape just the first
+ * snapshot), and the filter cannot select a workspace, so the full 200-agent snapshot (about 1.3 MB
+ * per connect and resume) would buy nothing. Membership is therefore learned from upserts, and a
+ * remove (which carries only an id and is also sent when an agent stops matching, e.g. an internal
+ * helper) always counts as a change, since an agent never seen in the snapshot cannot be told apart.
  */
 export function watchAgents(paseo: PaseoApi, workspaceId: string | null, onChange: () => void, batchMs: number): () => void {
   const lifetime = new AbortController();
@@ -23,7 +30,7 @@ export function watchAgents(paseo: PaseoApi, workspaceId: string | null, onChang
     }, batchMs);
   };
   void paseo.agents
-    .list({ subscribe: {} })
+    .list({ subscribe: {}, page: { limit: 1 } })
     .then(({ subscription }) => {
       if (lifetime.signal.aborted) return void subscription.release();
       const stop = subscription.subscribe({
@@ -39,7 +46,8 @@ export function watchAgents(paseo: PaseoApi, workspaceId: string | null, onChang
             if (!mine(update.agent.workspaceId)) return;
             ours.add(update.agent.id);
             changed();
-          } else if (ours.delete(update.agentId)) {
+          } else {
+            ours.delete(update.agentId);
             changed();
           }
         },
