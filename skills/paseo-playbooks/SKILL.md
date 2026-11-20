@@ -1120,6 +1120,10 @@ on:
   Conditions `date`, `run_ended` (another run of the project) and `gate_decided` (another gate of the project) are tracked
   from run state (they return the gate to review and emit `gate.returned`); `manual` is not tracked (a PR merge, a reply):
   say so, and bring it back with `return_gate` or let `remindAt` do it. Do not guess a condition from chat.
+  Without being asked, a Sidekick may defer a *routine* gate that plainly cannot be decided yet (`initiative: "agent"`:
+  best tracked condition from run data, else `manual` with a note and `remindAt`; recorded as "on its own judgment", never as the
+  human's request) and must tell the human afterwards. Secrets, credentials, IAM, auth or permissions, data loss, billing and
+  production go/no-go gates stay in Needs you unless the human explicitly defers them.
 - `by: manager`: the manager may decide alone (`resume` with `byManager: true` and its reason
   as comment, shown as "by the manager"), or call `escalate_gate` with its reason and ask a human as
   for a human gate (this tells agents subscribed to `gate.escalated`).

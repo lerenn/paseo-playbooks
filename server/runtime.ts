@@ -5818,8 +5818,10 @@ export class Runtime {
     return { run, by: `agent ${agent.title?.trim() || agent.id} on behalf of the human` };
   }
 
-  async deferGateOnBehalf(agent: { id: string; title: string | null; parentAgentId: string | null }, input: { runId: string; gateId: string; reason: string; condition: GateWaitCondition; remindAt?: string | null }): Promise<Gate> {
-    const { by } = await this.outsideAgentRun(agent, input.runId, "defer_gate");
+  async deferGateOnBehalf(agent: { id: string; title: string | null; parentAgentId: string | null }, input: { runId: string; gateId: string; reason: string; condition: GateWaitCondition; remindAt?: string | null; initiative?: "human" | "agent" | undefined }): Promise<Gate> {
+    const { by: onBehalf } = await this.outsideAgentRun(agent, input.runId, "defer_gate");
+    // A deferral the agent chose is recorded as the agent's own, never as the human's wish.
+    const by = input.initiative === "agent" ? `agent ${agent.title?.trim() || agent.id} on its own judgment` : onBehalf;
     return this.deferGate(input.runId, input.gateId, input, by, agent.id);
   }
 

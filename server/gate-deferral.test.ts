@@ -7,6 +7,8 @@ import { describeCondition, isWaiting, needsReview, waitsForHuman } from "../sha
 import { gatesOnBehalfSetting, loadPlaybooks } from "./loader";
 import { gateListing } from "./overseer";
 import { Runtime } from "./runtime";
+import { sidekickPrompt } from "./sidekick";
+import { deferGateTool } from "./tools";
 import { RunStore } from "./store";
 
 const EXAMPLES = path.resolve(__dirname, "..", "examples");
@@ -101,6 +103,33 @@ describe("gate deferral", () => {
     // Decision rules are unchanged: the same choice, the same path.
     const decided = await runtime.decideGate(run.id, gate.id, { decision: "approved", comment: null, by: "human", via: "panel", now: now() });
     expect(decided.gate.status).toBe("approved");
+  });
+
+  it("records a deferral the agent chose as its own judgment, never as the human's request", async () => {
+    const { runtime, store, run, gate } = await open();
+    await runtime.deferGateOnBehalf(coordinator, { runId: run.id, gateId: gate.id, reason: "Waits for the PR to merge", condition: { kind: "manual", note: "PR merge" }, initiative: "agent" });
+    const stored = gateOf(store, run.id);
+    expect(stored.deferral?.deferredBy).toBe("agent Coordinator on its own judgment");
+    expect(stored.deferral?.deferredBy).not.toMatch(/on behalf of the human/);
+    expect(stored.status).toBe("pending");
+    const events = (await runtime.bus.recent({ types: ["gate.deferred"] })).events;
+    expect(events[0]?.payload).toMatchObject({ deferredBy: "agent Coordinator on its own judgment" });
+  });
+
+  it("keeps the same scope for an own-judgment deferral: refused for a run's own agent", async () => {
+    const { runtime, run, gate } = await open();
+    await expect(runtime.deferGateOnBehalf({ id: "m", title: null, parentAgentId: null }, { runId: run.id, gateId: gate.id, reason: "x", condition: { kind: "manual", note: "" }, initiative: "agent" })).rejects.toThrow(/outside the runs/);
+  });
+
+  it("documents in the tool and the Sidekick prompt that sensitive gates stay with the human", () => {
+    const tool = deferGateTool({} as Runtime);
+    expect(tool.description).toMatch(/initiative agent/);
+    expect(tool.description).toMatch(/secrets or credentials, IAM, auth or permissions, data loss or migrations, billing, production/);
+    expect(tool.description).toMatch(/never claim the human asked/i);
+    const prompt = sidekickPrompt({ projectId: "p", label: "Shop", root: "/work/shop", watch: [] }, null);
+    expect(prompt).toMatch(/On your own judgment \(initiative agent\)/);
+    expect(prompt).toMatch(/secrets, credentials, IAM, auth or permissions, data loss, billing, production go\/no-go/);
+    expect(prompt).toMatch(/tell the human/i);
   });
 
   it("requires a reason, a future date and a tracked run of the same project, and refuses self-references", async () => {
