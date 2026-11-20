@@ -249,7 +249,10 @@ export class OversightProducer {
         continue;
       }
       if (seeding) this.cursor.set(run.id, run.seq);
-      for (const gate of run.gates) {
+      for (const [index, gate] of run.gates.entries()) {
+        // A run from before gate ids were unique may hold several gates with one id (a restarted loop-limit gate): one key, so
+        // only the latest is followed; the earlier ones, decided long ago, would otherwise re-announce the new gate on every scan.
+        if (run.gates.some((later, at) => at > index && later.id === gate.id)) continue;
         const key = `${run.id}/${gate.id}`;
         if (gate.status === "pending") {
           if (!isActive(run)) continue;

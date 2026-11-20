@@ -1227,8 +1227,12 @@ function gotoOrLimit(run: Run, step: Step, target: string, maxLoops: number | un
     return;
   }
   run.steps[step.id]!.status = "waiting";
+  // The count alone repeats: restart_run and a block's counter reset bring the same count back. A later gate of the same
+  // base gets a suffix, so an id names one gate for the life of the run (ADR 2026-11-20-unique-loop-gate-ids).
+  const base = `loop-${step.id}-${target}-${run.loops[key] ?? 0}`;
+  const earlier = run.gates.filter((candidate) => candidate.id === base || candidate.id.startsWith(`${base}~`)).length;
   const gate: Gate = {
-    id: `loop-${step.id}-${target}-${run.loops[key] ?? 0}`,
+    id: earlier === 0 ? base : `${base}~${earlier + 1}`,
     kind: "loop_limit",
     stepId: step.id,
     gotoTarget: target,
@@ -1529,7 +1533,9 @@ export function startGateDecider(run: Run, gateId: string, agentId: string, now:
 
 /** Finds the pending gate for a step id or gate id. */
 export function findGate(run: Run, ref: string): Gate | null {
-  const byId = run.gates.find((gate) => gate.id === ref);
+  // Runs from before ids were unique may hold several gates with one id: the pending one, else the latest.
+  const sameId = run.gates.filter((gate) => gate.id === ref);
+  const byId = sameId.find((gate) => gate.status === "pending") ?? sameId.at(-1);
   if (byId) return byId;
   const forStep = run.gates.filter((gate) => gate.stepId === ref);
   return forStep.find((gate) => gate.status === "pending") ?? forStep.at(-1) ?? null;
