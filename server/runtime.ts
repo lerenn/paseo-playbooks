@@ -660,8 +660,8 @@ export class Runtime {
   );
   /** What steps cost in quota per playbook, measured from the usage readings (ADR 2026-11-20-dynamic-rate-limits); kept in a file. */
   private readonly costs = new CostHistory(path.join(pluginDataDir(), "rate-history.json"));
-  /** Quota that started work has yet to use, per run (playbook mode) or step (step mode): est − spent counts against the headroom until the readings catch up. */
-  private readonly reservedQuota = new Map<string, { runId: string; stepKey: string | null; est: Record<string, number>; spent: Record<string, number>; at: number; endedAt: number | null }>();
+  /** Quota that started work has yet to use, per run: est − spent counts against the headroom until the readings catch up. */
+  private readonly reservedQuota = new Map<string, { runId: string; est: Record<string, number>; spent: Record<string, number>; at: number; endedAt: number | null }>();
   /** The quota points each running or just ended agent attempt has been measured to use so far, folded into `costs` when it ends. */
   private readonly attemptUse = new Map<string, { playbookId: string; provider: string; points: Record<string, number> }>();
   private readonly warnedUnreported = new Set<string>();
@@ -2277,11 +2277,11 @@ export class Runtime {
    * or null, which also lifts a hold the run had. Only agent and script steps count and are held; a gate, a hand-off or a
    * fan-out is never held (a fan-out's own step would deadlock the runs it started). `starting` reserves the quota of work that passes.
    */
-  private async rateCheck(run: Run, exceptKey = "", quota = true, stepId?: string): Promise<HoldVerdict | null> {
+  private async rateCheck(run: Run, exceptKey = "", quota = true): Promise<HoldVerdict | null> {
     const config = await this.rateLimits();
     let verdict: HoldVerdict | null = null;
     if (config.steps !== null || config.playbooks !== null) verdict = limitVerdict(run, this.store.list(), config, this.reservedStarts(exceptKey));
-    if (!verdict && quota && config.quota.pacing) verdict = this.paceVerdict(this.store.get(run.id) ?? run, config, stepId, exceptKey !== "");
+    if (!verdict && quota && config.quota.pacing) verdict = this.paceVerdict(this.store.get(run.id) ?? run, config, exceptKey !== "");
     await this.noteUnreported(run.id, config);
     await this.applyHold(run.id, verdict);
     return verdict;
@@ -2308,36 +2308,32 @@ export class Runtime {
     return step.kind === "agent" ? step.agent.provider ?? DEFAULT_PROVIDER : DEFAULT_PROVIDER;
   }
 
-  /** Playbook mode: a run is admitted once an agent step of it has started, or its quota is reserved. */
+  /** A run is admitted once an agent step of it has started, or its quota is reserved. */
   private rateAdmitted(run: Run): boolean {
     return this.reservedQuota.has(`run:${run.id}`) || run.playbook.steps.some((step) => step.kind === "agent" && (run.steps[step.id]?.attempts.length ?? 0) > 0);
   }
 
-  /** What the run wants to start: providers → steps. Playbook mode: all its remaining agent steps; step mode: the one step (the given one, else the first ready). */
-  private rateDemand(run: Run, mode: RateLimitsConfig["mode"], stepId?: string): Map<string, number> {
+  /** What the run wants to start: providers → steps (all its remaining agent steps: a run is admitted whole). */
+  private rateDemand(run: Run): Map<string, number> {
     const demand = new Map<string, number>();
-    const add = (id: string) => demand.set(this.stepProvider(run, id), (demand.get(this.stepProvider(run, id)) ?? 0) + 1);
-    if (mode === "step") {
-      const next = stepId ?? engine.readySteps(run).find((id) => engine.stepDef(run, id).kind === "agent");
-      if (next) add(next);
-      return demand;
-    }
     for (const step of run.playbook.steps) {
       const status = run.steps[step.id]?.status;
-      if (step.kind === "agent" && status !== "completed" && status !== "skipped") add(step.id);
+      if (step.kind !== "agent" || status === "completed" || status === "skipped") continue;
+      const provider = this.stepProvider(run, step.id);
+      demand.set(provider, (demand.get(provider) ?? 0) + 1);
     }
     return demand;
   }
 
   /** Runs that wait for headroom, in queue order (the asking run always included). */
-  private rateCandidates(config: RateLimitsConfig, asking: Run, stepId: string | undefined): RateCandidate[] {
+  private rateCandidates(asking: Run): RateCandidate[] {
     const runs = this.store.list();
     const out: RateCandidate[] = [];
     for (const run of runs) {
       const isAsking = run.id === asking.id;
       if (!isAsking && (run.archivedAt || isPipeline(run) || !isActive(run) || isPaused(run))) continue;
-      if (!isAsking && config.mode === "playbook" && this.rateAdmitted(run)) continue;
-      const demand = this.rateDemand(isAsking ? asking : run, config.mode, isAsking ? stepId : undefined);
+      if (!isAsking && this.rateAdmitted(run)) continue;
+      const demand = this.rateDemand(isAsking ? asking : run);
       if (demand.size === 0 && !isAsking) continue;
       out.push({ run: isAsking ? asking : run, priority: runPriority(run, runs), demand });
     }
@@ -2345,24 +2341,23 @@ export class Runtime {
   }
 
   /** The quota hold for work wanting to start, or null; with `reserve`, work that passes has its estimated cost reserved. */
-  private paceVerdict(run: Run, config: RateLimitsConfig, stepId: string | undefined, reserve: boolean): HoldVerdict | null {
+  private paceVerdict(run: Run, config: RateLimitsConfig, reserve: boolean): HoldVerdict | null {
     const providers = runProviders(run, DEFAULT_PROVIDER);
     if (providers.length === 0) return null;
     const ctx = this.planContext(config);
-    if (config.mode === "playbook" && this.rateAdmitted(run)) return exhaustionVerdict(providers, ctx).verdict ?? this.paceFit(run, ctx);
+    if (this.rateAdmitted(run)) return exhaustionVerdict(providers, ctx).verdict ?? this.paceFit(run, ctx);
     this.pruneQuotaReservations();
-    const plan = planHeadroom(this.rateCandidates(config, run, stepId), ctx);
+    const plan = planHeadroom(this.rateCandidates(run), ctx);
     const hold = plan.holds.get(run.id) ?? null;
     const est = plan.admitted.get(run.id);
     if (!hold && reserve && est && Object.keys(est).length > 0) {
-      const id = config.mode === "step" ? `step:${run.id}/${stepId ?? ""}` : `run:${run.id}`;
-      this.reservedQuota.set(id, { runId: run.id, stepKey: config.mode === "step" ? `${run.id}/${stepId ?? ""}` : null, est, spent: {}, at: Date.now(), endedAt: null });
+      this.reservedQuota.set(`run:${run.id}`, { runId: run.id, est, spent: {}, at: Date.now(), endedAt: null });
     }
     return hold;
   }
 
   /**
-   * Playbook mode, an admitted run between steps (no step running): paused when the capacity the pace allows no longer holds it
+   * An admitted run between steps (no step running): paused when the capacity the pace allows no longer holds it
    * (ADR 2026-11-21-pause-admitted-runs-to-fit-pace). All admitted runs compete by priority then oldest; the remaining cost of each
    * (its reservation's remainder) is taken from the headroom, and the ones that do not fit are paused; they come back one by one in
    * the same order as the pace relaxes or a run ends. A running step is never interrupted: such a run is only left as it is.
@@ -2393,13 +2388,8 @@ export class Runtime {
     const now = Date.now();
     for (const [id, entry] of this.reservedQuota) {
       if (entry.endedAt === null) {
-        if (entry.stepKey) {
-          const [runId, stepId] = entry.stepKey.split("/");
-          if (!this.startingSteps.has(entry.stepKey) && this.store.get(runId!)?.steps[stepId!]?.status !== "running") entry.endedAt = now;
-        } else {
-          const run = this.store.get(entry.runId);
-          if (!run || !isActive(run)) entry.endedAt = now;
-        }
+        const run = this.store.get(entry.runId);
+        if (!run || !isActive(run)) entry.endedAt = now;
       }
       if (now - entry.at > 6 * 3_600_000) this.reservedQuota.delete(id);
     }
@@ -2460,10 +2450,8 @@ export class Runtime {
           const share = (delta * item.weight) / total;
           entry.points[window.id] = (entry.points[window.id] ?? 0) + share;
           this.attemptUse.set(key, entry);
-          for (const id of [`step:${item.runId}/${item.stepId}`, `run:${item.runId}`]) {
-            const reserved = this.reservedQuota.get(id);
-            if (reserved) reserved.spent[windowKey(provider, window.id)] = (reserved.spent[windowKey(provider, window.id)] ?? 0) + share;
-          }
+          const reserved = this.reservedQuota.get(`run:${item.runId}`);
+          if (reserved) reserved.spent[windowKey(provider, window.id)] = (reserved.spent[windowKey(provider, window.id)] ?? 0) + share;
         }
       }
     }
@@ -4163,7 +4151,7 @@ export class Runtime {
     if (this.startingSteps.has(startKey)) throw new UserError(`step "${stepId}" is being started right now (the plugin starts ready agent steps by itself)`);
     this.startingSteps.add(startKey);
     try {
-      const held = await this.rateCheck(run, startKey, true, stepId);
+      const held = await this.rateCheck(run, startKey, true);
       if (held) throw new RateHeldError(held);
       return await this.startStepNow(managerId, run, step, brief, model);
     } finally {

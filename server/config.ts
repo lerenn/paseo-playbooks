@@ -97,8 +97,6 @@ export async function readEventCoreConfig(file: string = userConfigFile()): Prom
  * quota pacing decides how much work runs, with optional hard caps on top. Everything is off by default.
  */
 export interface RateLimitsConfig {
-  /** What waits for headroom: `playbook` admits a whole run when headroom covers its estimated cost; `step` holds runs between steps and releases them one step at a time. */
-  mode: "step" | "playbook";
   /** Optional hard cap: most steps running at once across all projects; null = no cap. */
   steps: number | null;
   /** Optional hard cap: most runs admitted at once across all projects; null = no cap. */
@@ -115,7 +113,7 @@ export interface RateLimitsConfig {
   };
 }
 
-export const DEFAULT_RATE_LIMITS: RateLimitsConfig = { mode: "playbook", steps: null, playbooks: null, quota: { pacing: false, usablePercent: 97, refreshMs: 5 * 60_000, maxAgeMs: 30 * 60_000 } };
+export const DEFAULT_RATE_LIMITS: RateLimitsConfig = { steps: null, playbooks: null, quota: { pacing: false, usablePercent: 97, refreshMs: 5 * 60_000, maxAgeMs: 30 * 60_000 } };
 
 function positiveInt(value: unknown): number | null {
   return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null;
@@ -126,18 +124,24 @@ function durationMs(value: unknown, fallback: number): number {
 }
 
 /**
- * `rate_limits: { mode: playbook, steps: 4, playbooks: 2, quota: { pacing: true, usable_percent: 97, refresh_interval: 5m, max_age: 30m } }`
+ * `rate_limits: { steps: 4, playbooks: 2, quota: { pacing: true, usable_percent: 97, refresh_interval: 5m, max_age: 30m } }`
  * (`steps` and `playbooks` are optional hard caps).
  * Anything missing or malformed falls back to the default (off): a bad config never blocks loading. Read when needed, so a
  * change applies without a reload.
  */
+let modeNoted = false;
+
 export async function readRateLimitsConfig(file: string = userConfigFile()): Promise<RateLimitsConfig> {
   const block = asRecord((await readConfig(file)).rate_limits);
+  // `mode` (step | playbook) was removed (ADR 2026-11-21-remove-rate-limit-mode): ignored, noted once.
+  if ("mode" in block && !modeNoted) {
+    modeNoted = true;
+    console.warn("[playbooks] rate_limits.mode is no longer used and is ignored: runs are always admitted whole (remove it from config.yaml)");
+  }
   const quota = asRecord(block.quota);
   const usable = typeof quota.usable_percent === "number" && quota.usable_percent > 0 && quota.usable_percent <= 100 ? quota.usable_percent : DEFAULT_RATE_LIMITS.quota.usablePercent;
   const refreshMs = durationMs(quota.refresh_interval, DEFAULT_RATE_LIMITS.quota.refreshMs);
   return {
-    mode: block.mode === "step" ? "step" : "playbook",
     steps: positiveInt(block.steps),
     playbooks: positiveInt(block.playbooks),
     quota: { pacing: quota.pacing === true, usablePercent: usable, refreshMs, maxAgeMs: Math.max(refreshMs, durationMs(quota.max_age, DEFAULT_RATE_LIMITS.quota.maxAgeMs)) },

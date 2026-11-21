@@ -222,11 +222,10 @@ per type. `filter` matches them by equality, e.g. `{ playbook: "release_trains",
 
 Off by default. The plugin paces playbook work against each provider's quota, so **how much runs at once is the result of the quota
 left, not a setting**. In the user config (`$PASEO_HOME/plugin-data/lerenn/paseo-playbooks/config.yaml`, applied without a reload;
-ADRs `docs/adrs/2026-11-20-rate-limiting.md` and `docs/adrs/2026-11-20-dynamic-rate-limits.md` and `docs/adrs/2026-11-21-pause-admitted-runs-to-fit-pace.md`):
+ADRs `docs/adrs/2026-11-20-rate-limiting.md` and `docs/adrs/2026-11-20-dynamic-rate-limits.md` and `docs/adrs/2026-11-21-pause-admitted-runs-to-fit-pace.md`; the former `rate_limits.mode` was removed, see `docs/adrs/2026-11-21-remove-rate-limit-mode.md`; a config that still sets it loads, the key is ignored and noted once in the log):
 
 ```yaml
 rate_limits:
-  mode: playbook           # playbook (default): admit a whole run when the headroom covers its estimated cost; step: hold runs between steps
   quota:
     pacing: true           # work starts only while the quota headroom covers its estimated cost
     usable_percent: 97     # a 100 h window then allows 0.97 points an hour (the pace ceiling); 97 is also the hard cap
@@ -243,15 +242,14 @@ average quota points the playbook's steps used, measured from the usage readings
 without a headroom check and reserves nothing) until its first measure exists; the hard cap (`usable_percent`) and "quota data unavailable" still hold it.
 The rest is held; the plugin lifts the hold itself.
 
-- `mode: playbook`: a run is admitted only when the headroom covers its whole estimated cost. The capacity is dynamic over
+- A run is admitted only when the headroom covers its whole estimated cost. The capacity is dynamic over
   running runs too: when the pace no longer allows as many runs as are running (say it allows 4 while 10 run), the extra ones are
   **paused** when they reach the end of a step (a running step is never interrupted). Those that keep running are chosen by priority, then
   oldest first; the lowest priority and newest are paused. Paused runs resume one by one, in the same order, when the pace relaxes or a
   continuing run finishes; the capacity is re-checked each time, so never more runs than it allows progress. Runs with no measured cost
   are not paced and never paused. Held and paused runs are re-checked at once when a run ends or is archived or a step ends (debounced, one check per burst), with the 15 s timer as fallback. A run is also held between steps when its quota is exhausted (a window at `usable_percent`).
-- `mode: step`: runs are held between steps; whenever the headroom covers one step, held runs are released by priority, then oldest first (runs interleave).
 - **Priority**: `rate_limit: { priority: 0 }` on a playbook (or in `defaults/main.yaml`), overridden per run by `start_playbook`'s `priority`.
-  Higher goes first, ties oldest first, in both modes and for the optional caps. A held run blocks lower ones on the same provider, so a large run is not starved.
+  Higher goes first, ties oldest first, also for the optional caps. A held run blocks lower ones on the same provider, so a large run is not starved.
 - A provider that reports no usage is not paced; the run carries a note (`rateNote` in `get_run`, shown in the run's menu) and the plugin logs it once.
 
 A running step is never interrupted. `get_run` shows why in `rateHold` (kind `headroom`, `pace` (an admitted run paused to fit the pace, with its position in the resume queue), `quota`, `steps` or `playbooks`, reason, estimated cost,

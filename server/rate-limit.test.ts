@@ -208,11 +208,17 @@ describe("rate_limits config", () => {
 
   it("is off by default", async () => {
     expect(await read(null)).toEqual(DEFAULT_RATE_LIMITS);
-    expect(DEFAULT_RATE_LIMITS).toMatchObject({ mode: "playbook", steps: null, playbooks: null, quota: { pacing: false, usablePercent: 97 } });
+    expect(DEFAULT_RATE_LIMITS).toMatchObject({ steps: null, playbooks: null, quota: { pacing: false, usablePercent: 97 } });
+  });
+
+  it("ignores the removed mode key (either value) and loads the rest", async () => {
+    for (const mode of ["step", "playbook", "sometimes"]) {
+      expect(await read(`rate_limits: { mode: ${mode}, steps: 4, quota: { pacing: true } }`)).toEqual({ ...DEFAULT_RATE_LIMITS, steps: 4, quota: { ...DEFAULT_RATE_LIMITS.quota, pacing: true } });
+    }
   });
 
   it("reads the block and falls back on malformed values", async () => {
-    expect(await read("rate_limits: { mode: step, steps: 4, playbooks: 2, quota: { pacing: true, usable_percent: 90, refresh_interval: 2m, max_age: 10m } }")).toEqual({ mode: "step", steps: 4, playbooks: 2, quota: { pacing: true, usablePercent: 90, refreshMs: 120_000, maxAgeMs: 600_000 } });
-    expect(await read("rate_limits: { mode: sometimes, steps: 0, playbooks: x, quota: { pacing: yes, usable_percent: 400, max_age: soon } }")).toEqual(DEFAULT_RATE_LIMITS);
+    expect(await read("rate_limits: { steps: 4, playbooks: 2, quota: { pacing: true, usable_percent: 90, refresh_interval: 2m, max_age: 10m } }")).toEqual({ steps: 4, playbooks: 2, quota: { pacing: true, usablePercent: 90, refreshMs: 120_000, maxAgeMs: 600_000 } });
+    expect(await read("rate_limits: { steps: 0, playbooks: x, quota: { pacing: yes, usable_percent: 400, max_age: soon } }")).toEqual(DEFAULT_RATE_LIMITS);
   });
 });

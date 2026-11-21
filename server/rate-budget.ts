@@ -77,7 +77,7 @@ export class CostHistory {
 export interface Candidate {
   run: Run;
   priority: number;
-  /** provider → number of steps (1 in step mode; all the run's remaining steps in playbook mode). */
+  /** provider → number of steps (all the run's remaining agent steps). */
   demand: Map<string, number>;
 }
 
@@ -193,7 +193,7 @@ export function planHeadroom(candidates: Candidate[], ctx: PlanContext): Plan {
 }
 
 /**
- * A run already admitted (playbook mode) is only held between steps when a provider's quota is exhausted (a window at or above
+ * A run already admitted is only held between steps when a provider's quota is exhausted (a window at or above
  * the usable percent) or its data is unavailable; never for lack of headroom.
  */
 export function exhaustionVerdict(providers: string[], ctx: Pick<PlanContext, "now" | "probe">): { verdict: HoldVerdict | null; unreported: Set<string> } {
@@ -216,7 +216,7 @@ export function exhaustionVerdict(providers: string[], ctx: Pick<PlanContext, "n
   return { verdict: worst, unreported };
 }
 
-/** An admitted run (playbook mode) competing for the capacity: what its started work still has to use, per window key (its reservation's remainder). */
+/** An admitted run competing for the capacity: what its started work still has to use, per window key (its reservation's remainder). */
 export interface Admitted {
   run: Run;
   priority: number;
