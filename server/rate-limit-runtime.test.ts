@@ -220,7 +220,7 @@ describe("dynamic capacity from quota headroom", () => {
     await runtime.startStep("m", "r1", "a", "go");
     expect(store.get("r1")!.rateHold).toBeNull();
     const now = Date.now();
-    for (const id of ["r0", "r1"]) await store.mutate(id, (run) => void ((run.steps.a!.attempts[0]!.endedAt = new Date(now).toISOString()), (run.steps.a!.status = "completed")));
+    for (const id of ["r0", "r1"]) await store.mutate(id, (run) => void (((run.steps.a!.attempts[0]!.startedAt = new Date(now - 30_000).toISOString()), (run.steps.a!.attempts[0]!.endedAt = new Date(now).toISOString())), (run.steps.a!.status = "completed")));
     const window = (used: number) => ({ id: "weekly", label: "weekly", usedPct: used, resetsAt: weekly(0).resetsAt });
     internals.observeUsage([{ provider: "claude", before: { entry: { providerId: "claude", windows: [window(20)] }, at: now - 60_000 }, after: { entry: { providerId: "claude", windows: [window(24)] }, at: now } }]);
     // Two steps shared 4 points: 2 each. From now on the estimate comes from history.
@@ -232,7 +232,7 @@ describe("dynamic capacity from quota headroom", () => {
     await read();
     await runtime.startStep("m", "r0", "a", "go");
     const now = Date.now();
-    await store.mutate("r0", (run) => void ((run.steps.a!.attempts[0]!.endedAt = new Date(now).toISOString()), (run.steps.a!.status = "completed")));
+    await store.mutate("r0", (run) => void (((run.steps.a!.attempts[0]!.startedAt = new Date(now - 30_000).toISOString()), (run.steps.a!.attempts[0]!.endedAt = new Date(now).toISOString())), (run.steps.a!.status = "completed")));
     const window = (used: number) => ({ id: "weekly", label: "weekly", usedPct: used, resetsAt: weekly(0).resetsAt });
     internals.observeUsage([{ provider: "claude", before: { entry: { providerId: "claude", windows: [window(10)] }, at: now - 60_000 }, after: { entry: { providerId: "claude", windows: [window(13)] }, at: now } }]);
     expect(internals.costs.stepCost("work", "claude", "weekly")).toBeCloseTo(3, 1);
