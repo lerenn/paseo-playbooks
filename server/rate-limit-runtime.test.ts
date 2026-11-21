@@ -136,6 +136,29 @@ describe("dynamic capacity from quota headroom", () => {
     expect(await internals.rateCheck(store.get("r0")!, "r0/b", true, "b")).toMatchObject({ kind: "quota", provider: "claude" });
   });
 
+  it("pauses an admitted run between steps when the pace no longer fits it, never a running step, and resumes it when capacity returns", async () => {
+    const { runtime, store, internals, usage, read } = await setup(pacing("playbook"), { current: claude(10) });
+    await read();
+    await runtime.startStep("m", "r0", "a", "go");
+    // Usage jumps ahead of the pace: 28.87 - 25 = 3.87 free, the run still needs 10.
+    usage.current = claude(25);
+    await read();
+    // The jump came from outside the plugin: none of it counts as this run's own use.
+    const inner = runtime as unknown as { reservedQuota: Map<string, { spent: Record<string, number> }>; attemptUse: Map<string, unknown> };
+    for (const entry of inner.reservedQuota.values()) entry.spent = {};
+    inner.attemptUse.clear();
+    // A step is running: it is not interrupted and the run is not paused yet.
+    expect(await internals.rateCheck(store.get("r0")!, "", true)).toBeNull();
+    await store.mutate("r0", (run) => void ((run.steps.a!.status = "completed"), (run.steps.b!.status = "ready")));
+    expect(await internals.rateCheck(store.get("r0")!, "r0/b", true, "b")).toMatchObject({ kind: "pace", position: 1, provider: "claude", window: "weekly" });
+    expect(store.get("r0")!.rateHold).toMatchObject({ kind: "pace" });
+    // The pace relaxes (usage back down): the run resumes by itself.
+    usage.current = claude(5);
+    await read();
+    await internals.releaseHolds();
+    expect(store.get("r0")!.rateHold).toBeNull();
+  });
+
   it("a higher priority goes first (a run's own priority overrides the playbook's); a lower one is held", async () => {
     const { runtime, store, read } = await setup(pacing("playbook"), { current: claude(10) });
     await store.mutate("r1", (run) => void (run.priority = 5));

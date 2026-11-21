@@ -113,7 +113,7 @@ export const OVERSIGHT_TYPES: EventTypeDef[] = [
   {
     type: "run.held",
     description: "Rate limiting holds a run's new steps (not enough quota headroom for its estimated cost, a provider at its usable share, or a step or playbook cap): kind, reason, provider, window, estimated cost, headroom, queue position, priority and when it is looked at again. Running steps finish; the plugin resumes the run by itself.",
-    payload: z.object({ ...runFields, kind: z.enum(["steps", "playbooks", "quota", "headroom"]), reason: z.string(), provider: z.string().nullable(), window: z.string().nullable(), retryAt: z.string().nullable(), estimatedCost: z.number().nullable().default(null), headroom: z.number().nullable().default(null), position: z.number().nullable().default(null), priority: z.number().nullable().default(null) }),
+    payload: z.object({ ...runFields, kind: z.enum(["steps", "playbooks", "quota", "headroom", "pace"]), reason: z.string(), provider: z.string().nullable(), window: z.string().nullable(), retryAt: z.string().nullable(), estimatedCost: z.number().nullable().default(null), headroom: z.number().nullable().default(null), position: z.number().nullable().default(null), priority: z.number().nullable().default(null) }),
     line: (event) => `- run.held: ${runName(event.payload)} is on hold (${event.payload.kind}): ${event.payload.reason}.${event.payload.retryAt ? ` Looked at again at ${event.payload.retryAt}.` : ""} The plugin resumes it by itself: nothing to do. Tools: get_run { runId: "${event.runId}" }.`,
   },
   {

@@ -216,6 +216,68 @@ export function exhaustionVerdict(providers: string[], ctx: Pick<PlanContext, "n
   return { verdict: worst, unreported };
 }
 
+/** An admitted run (playbook mode) competing for the capacity: what its started work still has to use, per window key (its reservation's remainder). */
+export interface Admitted {
+  run: Run;
+  priority: number;
+  providers: string[];
+  need: Record<string, number>;
+}
+
+/**
+ * Dynamic capacity over admitted runs (ADR 2026-11-21-pause-admitted-runs-to-fit-pace): the runs that may keep progressing are the
+ * ones whose remaining cost fits under the pace, taken by priority then oldest first, each taking its need from the headroom
+ * (pace ceiling minus usage, minus `other` reservations). The rest are paused between steps (never a running step), with their
+ * place in the queue. A run that does not fit blocks lower runs on the same provider (a strict order), so resuming goes one by one
+ * in that order and never exceeds the capacity. A run with no need (no cost measured) is not paced and never paused.
+ * `quota` and unavailable data are the business of `exhaustionVerdict`, not decided here.
+ */
+export function planPace(runs: Admitted[], ctx: Pick<PlanContext, "now" | "probe">, other: (provider: string, windowId: string) => number): Map<string, HoldVerdict> {
+  const paused = new Map<string, HoldVerdict>();
+  const left = new Map<string, number>();
+  const blocked = new Set<string>();
+  let position = 0;
+  const available = (room: WindowRoom): number => {
+    const key = windowKey(room.provider, room.id);
+    if (!left.has(key)) left.set(key, roomHeadroom(room) - other(room.provider, room.id));
+    return left.get(key)!;
+  };
+  for (const entry of [...runs].sort((a, b) => b.priority - a.priority || a.run.createdAt.localeCompare(b.run.createdAt) || a.run.id.localeCompare(b.run.id))) {
+    const takes: Array<{ room: WindowRoom; cost: number }> = [];
+    let short: { room: WindowRoom; cost: number; free: number } | null = null;
+    for (const provider of entry.providers) {
+      const probe = ctx.probe(provider);
+      if (probe.state !== "ok") continue;
+      for (const room of probe.rooms) {
+        const cost = entry.need[windowKey(provider, room.id)] ?? 0;
+        if (cost <= 1e-9) continue;
+        const free = available(room);
+        if (free + 1e-9 >= cost && !blocked.has(provider)) takes.push({ room, cost });
+        else if (!short || free - cost < short.free - short.cost) short = { room, cost, free };
+      }
+    }
+    if (!short) {
+      for (const take of takes) left.set(windowKey(take.room.provider, take.room.id), available(take.room) - take.cost);
+      continue;
+    }
+    position += 1;
+    for (const provider of entry.providers) blocked.add(provider);
+    const at = roomFreeAt(short.room, short.room.used + short.cost + other(short.room.provider, short.room.id)) ?? ctx.now + 15 * 60_000;
+    paused.set(entry.run.id, {
+      kind: "pace",
+      reason: `paused to fit the pace on ${short.room.provider} ${short.room.id}: ${pts(Math.max(0, short.free))} points free, ${pts(short.cost)} still estimated for this run; runs resume by priority then oldest as the pace relaxes or other runs finish; priority ${entry.priority}, ${position === 1 ? "next to resume" : `position ${position} in the queue`}`,
+      provider: short.room.provider,
+      window: short.room.id,
+      retryAt: new Date(Math.max(at, ctx.now + 60_000)).toISOString(),
+      estimatedCost: short.cost,
+      headroom: Math.max(0, short.free),
+      position,
+      priority: entry.priority,
+    });
+  }
+  return paused;
+}
+
 /** The candidates in queue order. */
 export function orderCandidates(candidates: Candidate[], runs: Run[]): Candidate[] {
   const order = byQueue(runs);

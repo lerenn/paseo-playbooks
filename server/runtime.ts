@@ -72,7 +72,7 @@ import { fetchAllWorkspaces, WorkspaceLookup } from "./workspace-lookup";
 import type { RunStore } from "./store";
 import { holdsBlock, planAdmissions, slotHolders } from "../shared/slots";
 import { DEFAULT_RATE_LIMITS, readRateLimitsConfig, type RateLimitsConfig } from "./config";
-import { CostHistory, exhaustionVerdict, orderCandidates, planHeadroom, windowKey, type Candidate as RateCandidate, type PlanContext } from "./rate-budget";
+import { CostHistory, exhaustionVerdict, planPace, type Admitted as AdmittedRun, orderCandidates, planHeadroom, windowKey, type Candidate as RateCandidate, type PlanContext } from "./rate-budget";
 import { limitVerdict, QuotaPacer, runPriority, runProviders, usedPct, type HoldVerdict, type ReadChange } from "./rate-limit";
 import { pluginDataDir } from "./data-dir";
 
@@ -2331,7 +2331,7 @@ export class Runtime {
     const providers = runProviders(run, DEFAULT_PROVIDER);
     if (providers.length === 0) return null;
     const ctx = this.planContext(config);
-    if (config.mode === "playbook" && this.rateAdmitted(run)) return exhaustionVerdict(providers, ctx).verdict;
+    if (config.mode === "playbook" && this.rateAdmitted(run)) return exhaustionVerdict(providers, ctx).verdict ?? this.paceFit(run, ctx);
     this.pruneQuotaReservations();
     const plan = planHeadroom(this.rateCandidates(config, run, stepId), ctx);
     const hold = plan.holds.get(run.id) ?? null;
@@ -2341,6 +2341,33 @@ export class Runtime {
       this.reservedQuota.set(id, { runId: run.id, stepKey: config.mode === "step" ? `${run.id}/${stepId ?? ""}` : null, est, spent: {}, at: Date.now(), endedAt: null });
     }
     return hold;
+  }
+
+  /**
+   * Playbook mode, an admitted run between steps (no step running): paused when the capacity the pace allows no longer holds it
+   * (ADR 2026-11-21-pause-admitted-runs-to-fit-pace). All admitted runs compete by priority then oldest; the remaining cost of each
+   * (its reservation's remainder) is taken from the headroom, and the ones that do not fit are paused; they come back one by one in
+   * the same order as the pace relaxes or a run ends. A running step is never interrupted: such a run is only left as it is.
+   */
+  private paceFit(run: Run, ctx: PlanContext): HoldVerdict | null {
+    if (Object.values(run.steps).some((state) => state.status === "running")) return null;
+    const runs = this.store.list();
+    const admitted: AdmittedRun[] = [];
+    for (const other of runs) {
+      if (other.archivedAt || other.parent || isPipeline(other) || !isActive(other) || !this.rateAdmitted(other)) continue;
+      const reserved = this.reservedQuota.get(`run:${other.id}`);
+      const need: Record<string, number> = {};
+      for (const [key, est] of Object.entries(reserved?.est ?? {})) need[key] = Math.max(0, est - (reserved?.spent[key] ?? 0));
+      admitted.push({ run: other, priority: runPriority(other, runs), providers: runProviders(other, DEFAULT_PROVIDER), need });
+    }
+    const counted = new Set(admitted.map((entry) => `run:${entry.run.id}`));
+    const others = (provider: string, windowId: string) => {
+      const key = windowKey(provider, windowId);
+      let total = 0;
+      for (const [id, entry] of this.reservedQuota) if (!counted.has(id) && entry.endedAt === null) total += Math.max(0, (entry.est[key] ?? 0) - (entry.spent[key] ?? 0));
+      return total;
+    };
+    return planPace(admitted, ctx, others).get(run.id) ?? null;
   }
 
   /** A reservation whose work ended stays until the next successful usage read (the readings then include its use); an old one is dropped. */

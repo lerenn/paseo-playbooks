@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { DEFAULT_RATE_LIMITS } from "./config";
 import { newRun } from "./engine";
 import { loadPlaybooks } from "./loader";
-import { CostHistory, exhaustionVerdict, orderCandidates, planHeadroom, windowKey, type Candidate, type PlanContext } from "./rate-budget";
+import { CostHistory, exhaustionVerdict, orderCandidates, planHeadroom, planPace, windowKey, type Candidate, type PlanContext } from "./rate-budget";
 import { admittedRunIds, windowRooms, type Probe } from "./rate-limit";
 import type { Run } from "../shared/types";
 
@@ -149,5 +149,47 @@ describe("priority", () => {
     // r0 has started: the higher-priority newcomer does not evict it.
     runs[0]!.steps.a!.attempts.push({ n: 1, agentId: "x", startedAt: new Date(NOW).toISOString(), endedAt: null } as never);
     expect([...admittedRunIds(runs, 1)!]).toEqual(["r0"]);
+  });
+});
+
+describe("pace fit of admitted runs", () => {
+  const key = windowKey("claude", "weekly");
+  const entry = (run: Run, need: number, priority = 0) => ({ run, priority, providers: ["claude"], need: need > 0 ? { [key]: need } : {} });
+  const none = () => 0;
+
+  it("keeps what the headroom covers by priority then oldest, and pauses the rest in queue order", async () => {
+    const runs = await mk(5);
+    // Headroom 28.87 - 20 = 8.87 points: room for 4 runs of 2.
+    expect([...planPace(runs.map((run) => entry(run, 2)), ctxOf(20), none).keys()]).toEqual(["r4"]);
+    const tight = planPace(runs.map((run) => entry(run, 2)), ctxOf(23), none);
+    expect([...tight.keys()].sort()).toEqual(["r2", "r3", "r4"]);
+    expect(tight.get("r2")).toMatchObject({ kind: "pace", position: 1, provider: "claude", window: "weekly" });
+    expect(tight.get("r4")!.position).toBe(3);
+  });
+
+  it("a higher priority keeps running and the newest low priority is paused", async () => {
+    const runs = await mk(3);
+    const paused = planPace([entry(runs[0]!, 2, 0), entry(runs[1]!, 2, 0), entry(runs[2]!, 2, 5)], ctxOf(23), none);
+    expect([...paused.keys()]).toEqual(["r1"]);
+  });
+
+  it("resumes as the headroom grows or a run ends, never beyond the capacity", async () => {
+    const runs = await mk(3);
+    expect([...planPace(runs.map((run) => entry(run, 2)), ctxOf(24), none).keys()]).toEqual(["r2"]);
+    // One run ends: the two left fit.
+    expect(planPace(runs.slice(0, 2).map((run) => entry(run, 2)), ctxOf(24), none).size).toBe(0);
+    // The pace relaxes: all three fit.
+    expect(planPace(runs.map((run) => entry(run, 2)), ctxOf(20), none).size).toBe(0);
+  });
+
+  it("never pauses a run without a cost, and a large run blocks smaller later ones on its provider", async () => {
+    const runs = await mk(3);
+    const paused = planPace([entry(runs[0]!, 0), entry(runs[1]!, 50), entry(runs[2]!, 1)], ctxOf(20), none);
+    expect([...paused.keys()]).toEqual(["r1", "r2"]);
+  });
+
+  it("counts other reservations against the headroom", async () => {
+    const runs = await mk(2);
+    expect(planPace(runs.map((run) => entry(run, 2)), ctxOf(20), () => 6).size).toBe(1);
   });
 });
