@@ -311,14 +311,23 @@ steps:
     const steps = "steps:\n  - id: a\n    role: { name: investigator, prompt: go }\n";
     const dir = await workspace({ "defaults/main.yaml": "rate_limit: { priority: 2 }\n", "urgent.yaml": `rate_limit: { priority: 9 }\n${steps}`, "plain.yaml": steps });
     const entries = (await loadPlaybooks(dir)).entries;
-    expect(entries.find((entry) => entry.id === "urgent")!.playbook!.rateLimit).toEqual({ priority: 9, estimate: null });
-    expect(entries.find((entry) => entry.id === "plain")!.playbook!.rateLimit).toEqual({ priority: 2, estimate: null });
+    expect(entries.find((entry) => entry.id === "urgent")!.playbook!.rateLimit).toEqual({ priority: 9 });
+    expect(entries.find((entry) => entry.id === "plain")!.playbook!.rateLimit).toEqual({ priority: 2 });
     const none = await workspace({ "plain.yaml": steps });
-    expect((await loadPlaybooks(none)).entries[0]!.playbook!.rateLimit).toEqual({ priority: 0, estimate: null });
-    for (const block of ["{ priority: high }", "{ priority: 1.5 }", "{ estimate: 0 }", "{ estimate: x }", "{ weight: 3 }", "3"]) {
+    expect((await loadPlaybooks(none)).entries[0]!.playbook!.rateLimit).toEqual({ priority: 0 });
+    for (const block of ["{ priority: high }", "{ priority: 1.5 }", "{ weight: 3 }", "3"]) {
       const bad = await workspace({ "pr.yaml": `rate_limit: ${block}\n${steps}` });
       expect((await loadPlaybooks(bad)).entries[0]!.errors.length, block).toBeGreaterThan(0);
     }
+  });
+
+  it("refuses the removed rate_limit.estimate with a message saying so, in a playbook and in defaults", async () => {
+    const steps = "steps:\n  - id: a\n    role: { name: investigator, prompt: go }\n";
+    const inPlaybook = await workspace({ "pr.yaml": `rate_limit: { priority: 1, estimate: 3 }\n${steps}` });
+    expect((await loadPlaybooks(inPlaybook)).entries[0]!.errors.join("\n")).toMatch(/rate_limit\.estimate.*was removed/);
+    const inDefaults = await workspace({ "defaults/main.yaml": "rate_limit: { estimate: 3 }\n", "pr.yaml": steps });
+    const loaded = await loadPlaybooks(inDefaults);
+    expect(JSON.stringify(loaded)).toMatch(/rate_limit\.estimate.*was removed/);
   });
 
   it("reads agent_rules: defaults first, then the playbook's, each once; absent means none", async () => {

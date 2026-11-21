@@ -534,8 +534,8 @@ export const PlaybookSchema = z.object({
   managerNudge: ManagerNudgeSchema.default(DEFAULT_MANAGER_NUDGE),
   /** `warden`: the periodic checks. Unset on runs from before it (= off). */
   warden: WardenConfigSchema.default(DEFAULT_WARDEN),
-  /** `rate_limit`: the queue priority of the playbook's runs when rate limiting holds work (higher first), and an optional manual `estimate` (quota points per agent step) used instead of the measured history. Unset on runs from before it (= 0). */
-  rateLimit: z.object({ priority: z.number(), estimate: z.number().nullable().default(null) }).default({ priority: 0, estimate: null }),
+  /** `rate_limit`: the queue priority of the playbook's runs when rate limiting holds work (higher first) (costs come only from measured history). Unset on runs from before it (= 0). */
+  rateLimit: z.object({ priority: z.number() }).default({ priority: 0 }),
   /** `manager.mode`: `none` = no manager agent, the plugin drives the run. Unset on runs from before it (= always_on). */
   managerMode: ManagerModeSchema.default(DEFAULT_MANAGER_MODE),
   /** How long an exhausted `provider/model` is skipped before it is tried again (`providers.exhausted_for`), in ms. */

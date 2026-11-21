@@ -556,8 +556,8 @@ const RawRateLimitSchema = z
   .object({
     /** Which held run goes first when headroom returns: higher first, ties oldest first. A whole number, default 0; `start_playbook` may override it per run. */
     priority: z.number().int().min(-1000).max(1000).optional(),
-    /** Quota points (percent of a usage window) one agent step of this playbook uses, instead of its measured history. Unset: the history; with neither, the playbook is not paced by cost. */
-    estimate: z.number().positive().max(100).optional(),
+    /** Removed (ADR 2026-11-21-remove-rate-limit-estimate): costs come only from measured history. Kept in the schema only to refuse it with a clear message. */
+    estimate: z.unknown().refine((value) => value === undefined, "`rate_limit.estimate` was removed: the cost of a playbook comes only from its measured history (a playbook with no history is not paced until its first measure); delete the field").optional(),
   })
   .strict();
 
@@ -2511,7 +2511,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     managerCompact: pb.manager?.compact ?? defaults.managerCompact ?? DEFAULT_MANAGER_COMPACT,
     managerNudge,
     warden,
-    rateLimit: { priority: pb.rate_limit?.priority ?? defaults.rate_limit?.priority ?? 0, estimate: pb.rate_limit?.estimate ?? defaults.rate_limit?.estimate ?? null },
+    rateLimit: { priority: pb.rate_limit?.priority ?? defaults.rate_limit?.priority ?? 0 },
     managerMode,
     exhaustedForMs: (defaults.providers?.exhausted_for ? parseDuration(defaults.providers.exhausted_for) : null) ?? DEFAULT_EXHAUSTED_FOR_MS,
     onExhausted: defaults.providers?.on_exhausted ?? "fail",

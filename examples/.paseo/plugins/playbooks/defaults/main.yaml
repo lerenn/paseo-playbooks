@@ -20,7 +20,7 @@ manager:
 # isolation: worktree          # every run works in its own git worktree, so runs can share a workspace
 # reload_stale_sessions: false   # default true: after a plugin update, reload idle agents' sessions that hold the old tools
 # permissions: { on_request: authorize }   # what the plugin does when a run agent raises a tool permission request: authorize (default) | escalate (a gate) | deny
-# rate_limit: { priority: 0, estimate: 3 }   # who goes first when quota headroom is short (rate_limits in the user config): higher first, ties oldest first; a playbook may set its own, start_playbook may override per run
+# rate_limit: { priority: 0 }   # who goes first when quota headroom is short (rate_limits in the user config): higher first, ties oldest first; a playbook may set its own, start_playbook may override per run
 # The warden: one periodic, deterministic pass over the active runs (no LLM, no message to an agent). OFF by default.
 warden: { enabled: false }
 # warden:                      # defaults shown; set enabled: true to turn it on

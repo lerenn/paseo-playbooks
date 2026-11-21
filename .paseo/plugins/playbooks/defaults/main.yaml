@@ -12,7 +12,7 @@ manager:
   tier: worker
   mode: default
   compact: { above_tokens: 150000 }   # /compact the manager when idle and over this many tokens
-# rate_limit: { priority: 0, estimate: 3 }   # who goes first when quota headroom is short (rate_limits in the user config): higher first, ties oldest first
+# rate_limit: { priority: 0 }   # who goes first when quota headroom is short (rate_limits in the user config): higher first, ties oldest first
 # The warden: one periodic, deterministic pass over the active runs (no LLM, no message to an agent). OFF by default.
 warden: { enabled: false }
 # warden:                      # defaults shown; set enabled: true to turn it on

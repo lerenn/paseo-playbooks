@@ -20,7 +20,6 @@ beforeEach(() => void (process.env.PASEO_HOME = ""));
 
 const PLAYBOOK = `
 title: Work
-rate_limit: { estimate: 5 }
 steps:
   - id: a
     role: { name: implementer, agent: { provider: claude, model: m } }
@@ -35,17 +34,19 @@ const HOUR = 3_600_000;
 /** A weekly window with `used` points, 50 of 168 hours gone: the pace ceiling is 28.87 points at 97 usable. */
 const weekly = (used: number) => ({ id: "weekly", label: "weekly", usedPct: used, resetsAt: new Date(Date.now() + 118 * HOUR).toISOString() });
 
-async function setup(rateLimits: string, usage: { current: unknown } = { current: { providers: [] } }, options: { estimate?: boolean } = {}) {
+async function setup(rateLimits: string, usage: { current: unknown } = { current: { providers: [] } }, options: { history?: boolean } = {}) {
   const dir = await mkdtemp(path.join(tmpdir(), "rl-runtime-"));
   temps.push(dir);
   process.env.PASEO_HOME = dir;
   await mkdir(path.join(dir, "plugin-data/lerenn/paseo-playbooks"), { recursive: true });
   await writeFile(path.join(dir, "plugin-data/lerenn/paseo-playbooks/config.yaml"), rateLimits);
+  // A playbook's cost comes only from measured history: seed 5 points per step on the weekly window unless the test wants none.
+  if (options.history !== false) await writeFile(path.join(dir, "plugin-data/lerenn/paseo-playbooks/rate-history.json"), JSON.stringify({ "work|claude\u0000weekly": { points: 5, steps: 1 } }));
   const root = path.join(dir, "repo/.paseo/playbooks");
   await mkdir(path.join(root, "roles/implementer"), { recursive: true });
   await writeFile(path.join(root, "roles/implementer/role.yaml"), "title: Implementer\n");
   await writeFile(path.join(root, "roles/implementer/instructions.md"), "Do it.\n");
-  await writeFile(path.join(root, "work.yaml"), options.estimate === false ? PLAYBOOK.replace("rate_limit: { estimate: 5 }\n", "") : PLAYBOOK);
+  await writeFile(path.join(root, "work.yaml"), PLAYBOOK);
   const entry = (await loadPlaybooks(path.join(dir, "repo"))).entries.find((candidate) => candidate.id === "work")!;
   expect(entry.errors).toEqual([]);
   const store = new RunStore(path.join(dir, "runs"));
@@ -188,9 +189,9 @@ describe("dynamic capacity from quota headroom", () => {
     expect(store.get("r1")!.rateNote).toContain("not paced");
   });
 
-  it("a playbook with no estimate and no history yet is not paced by cost, and learns from its first measure", async () => {
-    // Same config but a playbook without estimate: both runs start although the headroom (8.87) could not hold two 10-point runs.
-    const { runtime, store, internals, read } = await setup(pacing("playbook"), { current: claude(20) }, { estimate: false });
+  it("a playbook with no history yet is not paced by cost, and learns from its first measure", async () => {
+    // Same config but a playbook without history: both runs start although the headroom (8.87) could not hold two 10-point runs.
+    const { runtime, store, internals, read } = await setup(pacing("playbook"), { current: claude(20) }, { history: false });
     await read();
     await runtime.startStep("m", "r0", "a", "go");
     await runtime.startStep("m", "r1", "a", "go");
@@ -204,7 +205,7 @@ describe("dynamic capacity from quota headroom", () => {
   });
 
   it("learns what a playbook's steps cost from the usage readings", async () => {
-    const { runtime, store, internals, read } = await setup(pacing("playbook"), { current: claude(10) });
+    const { runtime, store, internals, read } = await setup(pacing("playbook"), { current: claude(10) }, { history: false });
     await read();
     await runtime.startStep("m", "r0", "a", "go");
     const now = Date.now();

@@ -238,15 +238,15 @@ rate_limits:
 
 **Headroom** of a provider window = its pace ceiling (`usable_percent` × elapsed / window length, the tightest window winning)
 minus current usage minus what work already started still has to use. Work starts while the headroom covers its **estimated cost**: the
-average quota points the playbook's steps used (measured from the usage readings, kept in `rate-history.json`), or the playbook's manual
-`rate_limit: { estimate: 3 }` (points per step) when set, which wins over history. A playbook with neither is **not paced by cost** (it starts
+average quota points the playbook's steps used, measured from the usage readings and kept in `rate-history.json` (there is no manual estimate;
+`rate_limit.estimate` was removed and is refused at load). A playbook with no history is **not paced by cost** (it starts
 without a headroom check and reserves nothing) until its first measure exists; the hard cap (`usable_percent`) and "quota data unavailable" still hold it.
 The rest is held; the plugin lifts the hold itself.
 
 - `mode: playbook`: a run is admitted only when the headroom covers its whole estimated cost. An admitted run is never evicted for a
   higher-priority one, and is held between steps only when its quota is exhausted (a window at `usable_percent`).
 - `mode: step`: runs are held between steps; whenever the headroom covers one step, held runs are released by priority, then oldest first (runs interleave).
-- **Priority**: `rate_limit: { priority: 0, estimate: 3 }` on a playbook (or in `defaults/main.yaml`), overridden per run by `start_playbook`'s `priority`.
+- **Priority**: `rate_limit: { priority: 0 }` on a playbook (or in `defaults/main.yaml`), overridden per run by `start_playbook`'s `priority`.
   Higher goes first, ties oldest first, in both modes and for the optional caps. A held run blocks lower ones on the same provider, so a large run is not starved.
 - A provider that reports no usage is not paced; the run carries a note (`rateNote` in `get_run`, shown in the run's menu) and the plugin logs it once.
 

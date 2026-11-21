@@ -2274,12 +2274,7 @@ export class Runtime {
       now: Date.now(),
       config,
       probe: (provider) => this.pacer.probe(provider, config.quota),
-      stepCost: (run, provider, windowId) => {
-        const manual = run.playbook.rateLimit.estimate;
-        if (manual !== null) return { cost: manual, source: "override" as const };
-        const known = this.costs.stepCost(run.playbook.id, provider, windowId);
-        return known === null ? null : { cost: known, source: "history" as const };
-      },
+      stepCost: (run, provider, windowId) => this.costs.stepCost(run.playbook.id, provider, windowId),
       reserved: (provider, windowId) => {
         const key = windowKey(provider, windowId);
         let total = 0;
