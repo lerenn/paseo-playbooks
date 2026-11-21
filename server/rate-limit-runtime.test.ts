@@ -97,6 +97,16 @@ describe("rate limiting in the runtime", () => {
     expect(store.get("r1")!.steps.a!.status).toBe("running");
   });
 
+  it("lifts a hold at once when a run ends, without waiting for the 15 s timer", async () => {
+    const { runtime, store } = await setup("rate_limits: { playbooks: 1 }");
+    await expect(runtime.startStep("m", "r1", "a", "go")).rejects.toBeInstanceOf(RateHeldError);
+    expect(store.get("r1")!.rateHold!.kind).toBe("playbooks");
+    // No releaseHolds() call and no timer advance: the end of r0 alone triggers the re-check (debounced).
+    await store.mutate("r0", (run) => void (run.status = "completed"));
+    for (let i = 0; i < 60 && store.get("r1")!.rateHold; i += 1) await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(store.get("r1")!.rateHold).toBeNull();
+  });
+
   it("holds a step when the step limit is full", async () => {
     const { runtime, store } = await setup("rate_limits: { steps: 1 }");
     await runtime.startStep("m", "r0", "a", "go");

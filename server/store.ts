@@ -54,6 +54,13 @@ export class RunStore {
     if (eventCore.parity) this.settings.parity = eventCore.parity;
   }
 
+  private readonly changeListeners: Array<(before: Run, after: Run) => void> = [];
+
+  /** Listens to every persisted change of a run, with the run before and after (in-process; a listener's failure never fails the mutation). */
+  onChange(listener: (before: Run, after: Run) => void): void {
+    this.changeListeners.push(listener);
+  }
+
   /** Listens to the events committed mutations record (in-process: the first of the internal wake-ups, ADR 2026-11-12-internal-wakeups). A listener's failure never fails the mutation. */
   onEvents(listener: EventListener): void {
     this.listeners.push(listener);
@@ -115,6 +122,13 @@ export class RunStore {
       if (events.length > 0) await this.commit(run, working, events);
       await this.write(working);
       this.runs.set(id, working);
+      for (const listener of this.changeListeners) {
+        try {
+          listener(run, working);
+        } catch (error) {
+          console.error("[playbooks] change listener failed:", error instanceof Error ? error.message : error);
+        }
+      }
       if (events.length > 0) this.notify(working, events);
       return result;
     });

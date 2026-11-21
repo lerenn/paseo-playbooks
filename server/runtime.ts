@@ -507,7 +507,7 @@ export class Runtime {
 
   constructor(
     private readonly store: RunStore,
-    private readonly options: { dataDir?: string; debounceMs?: number; pollMs?: number; wakeGapMs?: number; /** Tests: how long a failed run's worktree is kept (default 24h). */ failedRetentionMs?: number; /** Tests: the used fraction of the volume holding the worktrees. */ diskUsedFraction?: (dir: string) => Promise<number>; admissionTimeoutMs?: number; /** Tests: false keeps the old manual flow (the plugin starts no ready agent step by itself). */ autoStartAgents?: boolean; /** Tests: the grace period of a Sidekick subagent's workspace archive when the project sets none. */ subagentArchiveAfterMs?: number; /** Tests: the open PRs of a project (default: `gh pr list`). */ listOpenPrs?: (dir: string, repo: string | null) => Promise<OpenPr[]>; /** Tests: the checks a base branch's ruleset requires (default: `gh api`). */ rulesetChecks?: (repo: string, base: string) => Promise<string[]>; /** Tests: sessions reloaded at once after a plugin update (default 4). */ reloadConcurrency?: number; /** Tests: pause after each reload (default 20 ms). */ reloadPauseMs?: number } = {},
+    private readonly options: { dataDir?: string; debounceMs?: number; pollMs?: number; wakeGapMs?: number; /** Tests: how long a failed run's worktree is kept (default 24h). */ failedRetentionMs?: number; /** Tests: the used fraction of the volume holding the worktrees. */ diskUsedFraction?: (dir: string) => Promise<number>; admissionTimeoutMs?: number; /** Tests: false keeps the old manual flow (the plugin starts no ready agent step by itself). */ autoStartAgents?: boolean; /** Tests: the grace period of a Sidekick subagent's workspace archive when the project sets none. */ subagentArchiveAfterMs?: number; /** Tests: the open PRs of a project (default: `gh pr list`). */ listOpenPrs?: (dir: string, repo: string | null) => Promise<OpenPr[]>; /** Tests: the checks a base branch's ruleset requires (default: `gh api`). */ rulesetChecks?: (repo: string, base: string) => Promise<string[]>; /** Tests: sessions reloaded at once after a plugin update (default 4). */ reloadConcurrency?: number; /** Tests: pause after each reload (default 20 ms). */ reloadPauseMs?: number; /** Tests: debounce of the immediate re-check of held runs when capacity frees (default 250 ms). */ limitKickMs?: number } = {},
   ) {
     const dir = options.dataDir ?? path.dirname(store.dir);
     this.worktreesDir = path.join(dir, "worktrees");
@@ -526,6 +526,11 @@ export class Runtime {
       for (const event of publicJobEvents(run, events)) {
         jobEvents = jobEvents.then(() => this.bus.emit(event.type, event.payload, { runId: run.id, source: "pipelines" })).catch((error: unknown) => console.error(`[playbooks] could not emit ${event.type}:`, errorText(error)));
       }
+    });
+    // Capacity freed (a run ends or is archived, a step ends): held and paused runs are looked at again at once, not at the next 15 s timer.
+    store.onChange((before, after) => {
+      const running = (run: Run) => Object.values(run.steps).filter((state) => state.status === "running").length;
+      if ((isActive(before) && !isActive(after)) || (!before.archivedAt && after.archivedAt) || running(after) < running(before)) this.kickLimits();
     });
     // Script steps with `wake_on` (script-wake.ts logic below): an internal listener, not an agent subscription.
     this.bus.onEmit((event) => {
@@ -708,6 +713,7 @@ export class Runtime {
     for (const timer of this.subagentArchiveTimers.values()) clearTimeout(timer);
     this.subagentArchiveTimers.clear();
     for (const id of [...this.scripts.keys()]) this.stopScript(id);
+    if (this.limitKick) clearTimeout(this.limitKick);
     return Promise.all([this.store.close(), this.bus.close(), this.sessions.flush(), this.usageLedger.flush()]).then(() => undefined);
   }
 
@@ -2195,6 +2201,18 @@ export class Runtime {
         }
       }
     }
+  }
+
+  private limitKick: ReturnType<typeof setTimeout> | null = null;
+
+  /** Re-checks held runs soon (a burst of events makes one tick); the 15 s timer stays as the fallback. */
+  private kickLimits(): void {
+    if (this.limitKick) return;
+    this.limitKick = setTimeout(() => {
+      this.limitKick = null;
+      if (this.store.list().some((run) => run.rateHold)) void this.tick().catch((error) => console.error("[playbooks] tick for held runs failed:", errorText(error)));
+    }, this.options.limitKickMs ?? 250);
+    (this.limitKick as unknown as { unref?: () => void }).unref?.();
   }
 
   /** Starts ready script and hand-off steps, ends the jobs of ended singleton runs, and starts boarding runs. */

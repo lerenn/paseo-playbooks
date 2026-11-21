@@ -248,7 +248,7 @@ The rest is held; the plugin lifts the hold itself.
   **paused** when they reach the end of a step (a running step is never interrupted). Those that keep running are chosen by priority, then
   oldest first; the lowest priority and newest are paused. Paused runs resume one by one, in the same order, when the pace relaxes or a
   continuing run finishes; the capacity is re-checked each time, so never more runs than it allows progress. Runs with no measured cost
-  are not paced and never paused. A run is also held between steps when its quota is exhausted (a window at `usable_percent`).
+  are not paced and never paused. Held and paused runs are re-checked at once when a run ends or is archived or a step ends (debounced, one check per burst), with the 15 s timer as fallback. A run is also held between steps when its quota is exhausted (a window at `usable_percent`).
 - `mode: step`: runs are held between steps; whenever the headroom covers one step, held runs are released by priority, then oldest first (runs interleave).
 - **Priority**: `rate_limit: { priority: 0 }` on a playbook (or in `defaults/main.yaml`), overridden per run by `start_playbook`'s `priority`.
   Higher goes first, ties oldest first, in both modes and for the optional caps. A held run blocks lower ones on the same provider, so a large run is not starved.

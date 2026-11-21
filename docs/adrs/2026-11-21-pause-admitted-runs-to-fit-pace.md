@@ -24,6 +24,7 @@ the pace tightened, ten admitted runs kept spending a quota that only had room f
 5. **Unchanged.** Runs with no measured cost have no need: not paced, never paused. Exhausted quota and unavailable data still hold
    as before and win over a pace pause. Step mode, `run.released`, "Continue anyway" (now also for `pace`) and the manager and
    Sidekick awareness are as before.
+6. **Immediate re-check.** Held and paused runs are re-evaluated as soon as capacity frees: when a run ends or is archived, or a step ends. The store reports each change and the runtime schedules one debounced tick (250 ms; a burst of events makes one). The 15 s timer remains the fallback (a pace that relaxes with time, a backoff).
 
 ## Consequences
 
