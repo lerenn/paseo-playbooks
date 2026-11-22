@@ -307,6 +307,18 @@ steps:
     expect((await loadPlaybooks(none)).entries[0]!.playbook!.slowWarning).toEqual({ runs: 10, factor: 2 });
   });
 
+  it("reads manager_recovery in a playbook and in defaults, field by field (unset = null); refuses a flat or unknown key", async () => {
+    const steps = "steps:\n  - id: a\n    role: { name: investigator, prompt: go }\n";
+    const dir = await workspace({ "defaults/main.yaml": "manager_recovery: { retry: false, fallback: { provider: codex, model: gpt-5-mini } }\n", "pr.yaml": `manager_recovery: { retry: true }\n${steps}`, "plain.yaml": steps });
+    const entries = (await loadPlaybooks(dir)).entries;
+    expect(entries.find((entry) => entry.id === "pr")!.playbook!.managerRecovery).toEqual({ retry: true, fallback: { provider: "codex", model: "gpt-5-mini" } });
+    expect(entries.find((entry) => entry.id === "plain")!.playbook!.managerRecovery).toEqual({ retry: false, fallback: { provider: "codex", model: "gpt-5-mini" } });
+    const none = await workspace({ "plain.yaml": steps });
+    expect((await loadPlaybooks(none)).entries[0]!.playbook!.managerRecovery).toEqual({ retry: null, fallback: null });
+    const bad = await workspace({ "pr.yaml": `manager_recovery: { retry: true, fallback: { provider: codex } }\n${steps}`, "other.yaml": `manager_recovery: { fallback: codex/gpt-5-mini }\n${steps}` });
+    expect((await loadPlaybooks(bad)).entries.every((entry) => entry.errors.length > 0)).toBe(true);
+  });
+
   it("reads rate_limit.priority in a playbook and in defaults (default 0); refuses a bad or unknown rate_limit", async () => {
     const steps = "steps:\n  - id: a\n    role: { name: investigator, prompt: go }\n";
     const dir = await workspace({ "defaults/main.yaml": "rate_limit: { priority: 2 }\n", "urgent.yaml": `rate_limit: { priority: 9 }\n${steps}`, "plain.yaml": steps });

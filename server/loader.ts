@@ -515,6 +515,16 @@ function resolveIsolation(own: RawIsolation | undefined, fallback: RawIsolation 
   return { mode: merged.mode ?? "none", submodules: merged.submodules ?? "none", base: merged.base ?? null, allowGitlinkRemoval: merged.allow_gitlink_removal ?? false };
 }
 
+/** `manager_recovery`: what the plugin does by itself when a run's manager is blocked by its provider's quota (ADR 2026-11-23-manager-auto-recovery-and-fresh-workspaces). */
+const RawManagerRecoverySchema = z
+  .object({
+    /** Retry recovery by itself, on a timer, once the provider's quota reading shows headroom again. Default true. */
+    retry: z.boolean().optional(),
+    /** Opt-in: when retrying, re-assign the manager to this provider/model (it need not be in the manager's tier). Default none. */
+    fallback: z.object({ provider: z.string().min(1), model: z.string().min(1) }).strict().optional(),
+  })
+  .strict();
+
 const RawSlowWarningSchema = z
   .object({
     /** How many of the latest completed runs of a step make its baseline (at least 3). Default 10. */
@@ -775,6 +785,8 @@ const RawPlaybookSchema = z.object({
     /** How the playbook can end, for a parent that uses it as a sub-playbook. The first is a normal finish. */
     /** Slow-step warning: a step slower than `factor` times the mean of its last `runs` completed runs gets a warning. Defaults 10 and 2. */
     slow_warning: RawSlowWarningSchema.optional(),
+    /** What the plugin does by itself when the manager is blocked by its provider's quota; see RawManagerRecoverySchema. */
+    manager_recovery: RawManagerRecoverySchema.optional(),
     /** The warden's periodic checks; see RawWardenSchema. Off unless `enabled: true`. */
     warden: RawWardenSchema.optional(),
     /** Queue priority of the playbook's runs when rate limiting holds work; see RawRateLimitSchema. */
@@ -841,6 +853,8 @@ const RawDefaultsSchema = z.object({
     reload_stale_sessions: z.boolean().optional(),
     /** Slow-step warning: a step slower than `factor` times the mean of its last `runs` completed runs gets a warning. Defaults 10 and 2. */
     slow_warning: RawSlowWarningSchema.optional(),
+    /** What the plugin does by itself when the manager is blocked by its provider's quota; see RawManagerRecoverySchema. */
+    manager_recovery: RawManagerRecoverySchema.optional(),
     /** The warden's periodic checks (repo-wide default; a playbook may override field by field). Off unless `enabled: true`. */
     warden: RawWardenSchema.optional(),
     /** Queue priority of every playbook's runs when rate limiting holds work (a playbook may override it). */
@@ -2523,6 +2537,10 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     fallback: defaults.providers?.fallback ?? [],
     usageCheck: defaults.providers?.usage?.check ?? true,
     usageThreshold: defaults.providers?.usage?.threshold ?? 100,
+    managerRecovery: {
+      retry: pb.manager_recovery?.retry ?? defaults.manager_recovery?.retry ?? null,
+      fallback: pb.manager_recovery?.fallback ?? defaults.manager_recovery?.fallback ?? null,
+    },
     slowWarning: { runs: pb.slow_warning?.runs ?? defaults.slow_warning?.runs ?? DEFAULT_SLOW_WARNING.runs, factor: pb.slow_warning?.factor ?? defaults.slow_warning?.factor ?? DEFAULT_SLOW_WARNING.factor },
     agentRules: mergeAgentRules(defaults.agentRules ?? [], ownRules.rules, [...blocks.values()]),
     managerInstructions: managerInstructions(folder.managerText, qid, pb.manager?.prompt, [...blocks.values()]),

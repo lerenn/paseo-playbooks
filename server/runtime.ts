@@ -37,7 +37,7 @@ import { isQuotaError, isQuotaMessage } from "./quota";
 import { UsageCache, usageBlock, type UsageBlock, type UsageSnapshot } from "./usage";
 import * as engine from "./engine";
 import { ADMISSION_TIMEOUT_MS, admissionInput, readAdmission } from "./admission";
-import { checkoutSnapshot, currentRef, defaultBranch, exportPaths, fastForward, freshRef, freshRefInfo, git as gitOutput, removedGitlinks, snapshotDiff, checkoutViolationSince, unsavedWork } from "./git";
+import { checkoutSnapshot, currentRef, defaultBranch, exportPaths, fastForward, freshenCheckout, freshRef, freshRefInfo, git as gitOutput, removedGitlinks, snapshotDiff, checkoutViolationSince, unsavedWork } from "./git";
 import { workspaceTitle } from "../shared/workspace-name";
 import { createWorktree, diskUsedFraction, dirtyPaths, purgeScratch, linkedSubmodules, listWorktreeDirs, pruneWorktrees, unpushedCommits, removeWorktree, repoOfWorktree, worktreeBranch, worktreePath } from "./worktree";
 import { chooseDefinition, definitionMismatch, isAdoptable, readAtRef, shortReason, workspaceWarning } from "./fresh";
@@ -71,7 +71,7 @@ import { StaleSessions } from "./stale-sessions";
 import { fetchAllWorkspaces, WorkspaceLookup } from "./workspace-lookup";
 import type { RunStore } from "./store";
 import { holdsBlock, planAdmissions, slotHolders } from "../shared/slots";
-import { DEFAULT_RATE_LIMITS, readRateLimitsConfig, type RateLimitsConfig } from "./config";
+import { DEFAULT_MANAGER_RECOVERY, DEFAULT_RATE_LIMITS, readManagerRecoveryConfig, readRateLimitsConfig, type ManagerRecoveryConfig, type RateLimitsConfig } from "./config";
 import { CostHistory, exhaustionVerdict, planPace, type Admitted as AdmittedRun, orderCandidates, planHeadroom, windowKey, type Candidate as RateCandidate, type PlanContext } from "./rate-budget";
 import { limitVerdict, QuotaPacer, runPriority, runProviders, usedPct, type HoldVerdict, type ReadChange } from "./rate-limit";
 import { pluginDataDir } from "./data-dir";
@@ -617,7 +617,7 @@ export class Runtime {
     if (!this.limitTimer) {
       // Held runs are looked at again while any is held (a quota ceiling catches up with time, a backoff ends).
       this.limitTimer = setInterval(() => {
-        if (this.store.list().some((run) => run.rateHold)) void this.tick().catch((error) => console.error("[playbooks] tick for held runs failed:", errorText(error)));
+        if (this.store.list().some((run) => run.rateHold || (isActive(run) && run.managerQuotaBlockedId !== null && run.managerQuotaBlockedId === run.managerAgentId))) void this.tick().catch((error) => console.error("[playbooks] tick for held runs failed:", errorText(error)));
       }, 15_000);
       (this.limitTimer as unknown as { unref?: () => void }).unref?.();
     }
@@ -2244,6 +2244,7 @@ export class Runtime {
         this.tickAgain = false;
         await this.tickPhase("releaseDelayed", () => this.releaseDelayed());
         await this.tickPhase("releaseHolds", () => this.releaseHolds());
+        await this.tickPhase("retryBlockedManagers", () => this.retryBlockedManagers());
         await this.tickPhase("driveManagerless", () => this.driveManagerless());
         await this.tickPhase("settleGateChats", () => this.settleGateChats());
         await this.tickPhase("askGatesInChat", () => this.askGatesInChat());
@@ -2503,6 +2504,37 @@ export class Runtime {
       await this.enqueue(runId, [`Rate limit lifted: the run continues.${ready.length > 0 ? ` Ready for you: ${ready.join(", ")}.` : " The plugin starts the ready steps by itself."}`]);
       await this.deliver(runId);
     }
+  }
+
+  /** Per run: when a quota-blocked manager's recovery is tried again, and how many tries have not recovered it (the interval doubles, 30 s to 10 min). */
+  private readonly managerRetry = new Map<string, { next: number; failures: number }>();
+
+  /**
+   * A manager blocked by its provider's quota with work pending (a queued wake-up, a recovery prompt, a ready step) is
+   * recovered by itself (`manager_recovery.retry`, default on): recoverManager runs as if called by hand, but only
+   * succeeds once a target of the chain (or `manager_recovery.fallback`) has headroom in the provider's usage reading.
+   * Runs from the 15 s limit timer, with a per-run backoff, and reads usage through the shared cache: it never hammers the endpoint.
+   */
+  private async retryBlockedManagers(): Promise<void> {
+    const blocked = new Set<string>();
+    for (const listed of this.store.list()) {
+      const managerId = listed.managerAgentId;
+      if (!managerId || listed.managerQuotaBlockedId !== managerId || !isActive(listed) || listed.archivedAt || isPaused(listed) || isManagerless(listed) || isPipeline(listed)) continue;
+      blocked.add(listed.id);
+      if (listed.inbox.length === 0 && !listed.managerRecoveryPrompt && engine.readyForManager(listed).length === 0) continue;
+      const state = this.managerRetry.get(listed.id) ?? { next: 0, failures: 0 };
+      if (Date.now() < state.next || this.recoveringManagers.has(managerId)) continue;
+      if (!(await this.managerRecovery(listed.playbook)).retry) continue;
+      state.failures += 1;
+      state.next = Date.now() + Math.min(30_000 * 2 ** (state.failures - 1), 600_000);
+      this.managerRetry.set(listed.id, state);
+      const result = await this.recoverManager(listed.id, managerId, "provider quota (automatic retry)", undefined, undefined, true).catch((error: unknown) => {
+        console.error(`[playbooks] automatic manager recovery of ${listed.id}:`, errorText(error));
+        return null;
+      });
+      if (result?.changed) this.managerRetry.delete(listed.id);
+    }
+    for (const id of [...this.managerRetry.keys()]) if (!blocked.has(id)) this.managerRetry.delete(id);
   }
 
   /** Lifts, by itself, every hold that no longer applies (capacity or quota returned, the run ended); runs again from the timer while any run is held. */
@@ -3720,6 +3752,13 @@ export class Runtime {
       const refreshed = run.scripts ? path.join(run.scripts.dir, step.script!) : null;
       const inWorktree = run.worktree ? path.join(run.worktree.path, step.script!) : null;
       const scriptFile = refreshed && existsSync(refreshed) ? refreshed : inWorktree && existsSync(inWorktree) ? inWorktree : path.join(run.workspaceDir, step.script!);
+      if (!existsSync(scriptFile)) {
+        // Fail fast with where it looked, instead of a bare ENOENT: a checkout behind origin is the usual cause.
+        const dir = engine.workDir(run);
+        void gitOutput(dir, ["rev-parse", "HEAD"]).then((sha) => sha.trim(), () => "unknown").then((sha) =>
+          done({ code: null, signal: null }, `script file not found: ${scriptFile} (workspace ${dir}, head ${sha}); the workspace checkout may be behind origin or the path is wrong`));
+        return;
+      }
       const child = spawn(scriptFile, [], {
         cwd: engine.workDir(run),
         env: scriptEnv(run, stepId, attempt, this.scriptFeedback.get(attemptId) ?? null),
@@ -4939,11 +4978,13 @@ export class Runtime {
   }
 
   /** A manager-only CAS handoff. Creation is unprompted until the binding is durable. */
-  async recoverManager(runId: string, expectedManagerId: string, reason: string, target?: string, outcome?: string) {
+  async recoverManager(runId: string, expectedManagerId: string, reason: string, target?: string, outcome?: string, auto = false) {
     return this.managerOperation(runId, async () => {
       this.recoveringManagers.add(expectedManagerId);
       let result;
+      let retargeted = false;
       try {
+        const settings = await this.managerRecovery(await this.store.get(runId)?.playbook);
         result = await this.store.mutate(runId, async (run) => {
           if (run.managerAgentId !== expectedManagerId) {
             const prior = run.managerRecoveries.find((entry) => entry.from === expectedManagerId && entry.to === run.managerAgentId);
@@ -4959,15 +5000,19 @@ export class Runtime {
           if (!proof) throw new UserError("manager has no confirmed provider quota exit; recovery refused");
           if (!proof.agent.provider || !proof.agent.model) throw new UserError("manager provider/model is unknown; recovery refused");
           if (this.runsOfManager(expectedManagerId).filter(isActive).length !== 1) throw new UserError("manager owns multiple active runs; recovery refused");
-          if (target && !this.managerTargets(run.playbook).some((candidate) => `${candidate.provider}/${candidate.model}` === target)) {
+          const chain = this.managerTargets(run.playbook, settings.fallback);
+          if (target && !chain.some((candidate) => `${candidate.provider}/${candidate.model}` === target)) {
             throw new UserError("model is not in the run's configured manager fallback chain; recovery refused");
           }
           const exhausted = `${proof.agent.provider}/${proof.agent.model}`;
-          engine.markTarget(run, exhausted, nowIso());
+          if (!auto) engine.markTarget(run, exhausted, nowIso());
+          else if (await this.usageShowsHeadroom(run.playbook, proof.agent.provider, proof.agent.model)) run.exhausted = run.exhausted.filter((entry) => entry.target !== exhausted);
+          else if (!run.exhausted.some((entry) => entry.target === exhausted)) engine.markTarget(run, exhausted, nowIso());
           run.managerQuotaBlockedId = expectedManagerId;
-          const skips = await this.managerSkips(run.playbook, engine.activeExhausted(run));
-          const candidates = this.managerTargets(run.playbook).filter((candidate) => candidate.model && !skips.includes(`${candidate.provider}/${candidate.model}`));
+          const skips = await this.managerSkips(run.playbook, engine.activeExhausted(run), settings.fallback);
+          const candidates = chain.filter((candidate) => candidate.model && !skips.includes(`${candidate.provider}/${candidate.model}`));
           const chosen = target ? candidates.find((candidate) => `${candidate.provider}/${candidate.model}` === target) : candidates[0];
+          retargeted = chosen !== undefined && settings.fallback !== null && chosen.provider === settings.fallback.provider && chosen.model === settings.fallback.model && !this.managerTargets(run.playbook).some((candidate) => candidate.provider === chosen.provider && candidate.model === chosen.model);
           // Commit the quota block even if there is no available fallback: no futile wake-up loop.
           if (!chosen) return { changed: false, blocked: true as const, from: expectedManagerId, to: expectedManagerId, target: exhausted, thinking: null, reason: "no configured fallback is available", at: nowIso() };
           const config: AgentConfig = { provider: `${chosen.provider}/${chosen.model}` };
@@ -4988,10 +5033,15 @@ export class Runtime {
           run.managerRecoveries.push(record);
           run.managerQuotaBlockedId = null;
           run.managerRecoveryPrompt = `${managerTakeover(run, [], "after its previous manager hit provider quota")}\nRead get_run with view full before acting. Preserve all existing attempts, reports, outputs, local commits, jobs and gates. Do not restart steps or decide a human/role gate. Respect blockers in reports/lastMessage: a blocked or unimplemented report is not success just to fit an outcome schema. Do not retry blocked work until its documented prerequisites and required checks pass.\nRecovery reason: ${record.reason}\nCurrent state: ${JSON.stringify({ status: run.status, steps: Object.fromEntries(Object.entries(run.steps).map(([id, state]) => [id, state.status])), gates: run.gates, queue: run.inbox })}`;
+          if (auto) engine.noteEvent(run, "manager_recovered", null, `the manager was blocked by its provider's quota; the plugin replaced it by itself with ${record.target}${retargeted ? " (manager_recovery.fallback)" : ""}`, record.at);
           return { changed: true, ...record };
         });
       } finally {
         this.recoveringManagers.delete(expectedManagerId);
+      }
+      if (auto && result.changed) {
+        const fresh = this.store.get(runId);
+        if (fresh) await this.bus.emit("run.manager_recovered", { ...runFieldsOf(fresh), fromManagerId: expectedManagerId, managerId: result.to, target: result.target, retargeted }, { runId, source: "runs" }).catch((error: unknown) => console.error("[playbooks] could not emit run.manager_recovered:", errorText(error)));
       }
       if (!("blocked" in result)) await this.bus.rebindOwner(expectedManagerId, result.to);
       if (result.changed) {
@@ -5803,7 +5853,7 @@ export class Runtime {
 
   /** Agent config of a new Playbook Manager for this playbook. */
   /** The manager's targets (its tier, primary first) with their resolved provider and model. */
-  private managerTargets(playbook: Playbook) {
+  private managerTargets(playbook: Playbook, recoveryFallback: ManagerRecoveryConfig["fallback"] = null) {
     const targets: AgentSettings[] = [playbook.manager, ...(playbook.manager.fallback ?? [])];
     const own = targets.map((target) => {
       const provider = target.provider ?? DEFAULT_PROVIDER;
@@ -5814,12 +5864,34 @@ export class Runtime {
       const [provider, model] = splitTarget(entry);
       return { target: inheritTarget({ ...own[0]!.target, provider: own[0]!.provider }, provider, model), provider, model };
     });
-    return [...own, ...extra];
+    const all = [...own, ...extra];
+    // `manager_recovery.fallback` (opt-in): the last resort of a recovery, after the manager's own chain.
+    if (recoveryFallback && !all.some((candidate) => candidate.provider === recoveryFallback.provider && candidate.model === recoveryFallback.model)) {
+      all.push({ target: inheritTarget({ ...own[0]!.target, provider: own[0]!.provider }, recoveryFallback.provider, recoveryFallback.model), provider: recoveryFallback.provider, model: recoveryFallback.model });
+    }
+    return all;
+  }
+
+  /** `manager_recovery` in effect for a playbook: its own fields, then the user config, then the defaults (retry on, no fallback). */
+  private async managerRecovery(playbook: Playbook | undefined): Promise<ManagerRecoveryConfig> {
+    const user = await readManagerRecoveryConfig().catch(() => ({}) as Partial<ManagerRecoveryConfig>);
+    return {
+      retry: playbook?.managerRecovery?.retry ?? user.retry ?? DEFAULT_MANAGER_RECOVERY.retry,
+      fallback: playbook?.managerRecovery?.fallback ?? user.fallback ?? DEFAULT_MANAGER_RECOVERY.fallback,
+    };
+  }
+
+  /** Whether the provider's usage reading is available and shows no window of `provider`/`model` at the playbook's threshold. */
+  private async usageShowsHeadroom(playbook: Playbook, provider: string, model: string | undefined): Promise<boolean> {
+    if (!playbook.usageCheck) return false;
+    const snapshot = await this.usage.read().catch(() => null);
+    if (!snapshot || !snapshot.providers.some((entry) => entry.providerId === provider && (entry.status === undefined || entry.status === "available"))) return false;
+    return usageBlock(snapshot, provider, model, playbook.usageThreshold) === null;
   }
 
   /** `exhausted` plus the manager targets whose provider's usage is at the threshold: what a new manager skips. */
-  private async managerSkips(playbook: Playbook, exhausted: string[] = []): Promise<string[]> {
-    const blocks = await this.usageBlocks(playbook, this.managerTargets(playbook));
+  private async managerSkips(playbook: Playbook, exhausted: string[] = [], recoveryFallback: ManagerRecoveryConfig["fallback"] = null): Promise<string[]> {
+    const blocks = await this.usageBlocks(playbook, this.managerTargets(playbook, recoveryFallback));
     return [...exhausted, ...blocks.keys()];
   }
 
@@ -6549,6 +6621,24 @@ export class Runtime {
   }
 
   /** A new workspace branched off this one's current ref, with a new Playbook Manager that starts the run there. */
+  /**
+   * A new workspace branches off the root checkout's local branch, which may be behind origin (a script the playbook
+   * references is then missing). Right after creation it is fast-forwarded to `origin/<branch>`. Best effort: when that is
+   * impossible (offline, diverged) the run starts as it is and a note is logged.
+   */
+  private async freshenNewWorkspace(workspaceId: string, rootDir: string, branch: string | null | undefined): Promise<void> {
+    if (!branch) return;
+    try {
+      const dir = (await this.lookupWorkspace(workspaceId))?.workspaceDirectory;
+      if (!dir || dir === rootDir) return;
+      const result = await freshenCheckout(dir, branch);
+      if (result.note) console.warn(`[playbooks] new workspace ${workspaceId} stays on the root checkout's ${branch}: ${result.note}`);
+      else if (result.updated) console.log(`[playbooks] new workspace ${workspaceId} fast-forwarded to origin/${branch}`);
+    } catch (error) {
+      console.warn(`[playbooks] could not bring new workspace ${workspaceId} up to date:`, errorText(error));
+    }
+  }
+
   private async startInNewWorkspace(workspaceDir: string, playbook: Playbook, inputs: Record<string, VarValue>, workspaceName?: string, child?: { runId: string; parent: NonNullable<Run["parent"]> }, priority?: number) {
     const runId = child?.runId ?? `run_${shortId()}`;
     const id = runId.replace(/^run_/, "");
@@ -6559,6 +6649,7 @@ export class Runtime {
       source: { kind: "worktree", cwd: workspaceDir, action: "branch-off", branchName: branch, ...(base ? { refName: base } : {}) },
     });
     this.addReservation(created.id, { runId, branch, playbook, inputs, created: true, ...(child ? { parent: child.parent } : {}), ...(priority !== undefined ? { priority } : {}) });
+    await this.freshenNewWorkspace(created.id, workspaceDir, base ?? (await defaultBranch(workspaceDir)));
     if (playbook.managerMode === "none") {
       // No manager agent: the plugin creates the run itself, from the reservation, and drives it.
       try {

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
-import { checkoutSnapshot, checkoutViolationSince, freshRef } from "./git";
+import { checkoutSnapshot, checkoutViolationSince, freshenCheckout, freshRef } from "./git";
 
 const run = promisify(execFile);
 const temps: string[] = [];
@@ -42,6 +42,39 @@ describe("freshRef", () => {
 
   it("keep the branch itself without an origin", async () => {
     expect(await freshRef(await repo(), "main")).toBe("main");
+  });
+});
+
+describe("freshenCheckout", () => {
+  async function stale() {
+    const origin = await repo();
+    const clone = await mkdtemp(path.join(tmpdir(), "git-"));
+    temps.push(clone);
+    await git(clone, "clone", "-q", origin, ".");
+    await writeFile(path.join(origin, "script.sh"), "#!/bin/sh\n");
+    await git(origin, "add", "script.sh");
+    await git(origin, "commit", "-qm", "adds the script");
+    return { origin, clone };
+  }
+
+  it("fast-forwards a checkout that is behind origin, so a file added there exists", async () => {
+    const { origin, clone } = await stale();
+    expect(await freshenCheckout(clone, "main")).toEqual({ updated: true, note: null });
+    expect(await git(clone, "rev-parse", "HEAD")).toBe(await git(origin, "rev-parse", "main"));
+    expect(await git(clone, "ls-files", "script.sh")).toBe("script.sh");
+    expect(await freshenCheckout(clone, "main")).toEqual({ updated: false, note: null });
+  });
+
+  it("never throws: a diverged checkout, and one without an origin, stay as they are with a note", async () => {
+    const { clone } = await stale();
+    await writeFile(path.join(clone, "local"), "x");
+    await git(clone, "add", "local");
+    await git(clone, "commit", "-qm", "local work");
+    const head = await git(clone, "rev-parse", "HEAD");
+    expect((await freshenCheckout(clone, "main")).note).toMatch(/could not fast-forward to origin\/main/);
+    expect(await git(clone, "rev-parse", "HEAD")).toBe(head);
+    const alone = await repo();
+    expect(await freshenCheckout(alone, "main")).toMatchObject({ updated: false, note: expect.stringMatching(/could not fetch origin\/main/) });
   });
 });
 

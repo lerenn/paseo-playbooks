@@ -147,3 +147,25 @@ export async function readRateLimitsConfig(file: string = userConfigFile()): Pro
     quota: { pacing: quota.pacing === true, usablePercent: usable, refreshMs, maxAgeMs: Math.max(refreshMs, durationMs(quota.max_age, DEFAULT_RATE_LIMITS.quota.maxAgeMs)) },
   };
 }
+
+/**
+ * `manager_recovery` (ADR 2026-11-23-manager-auto-recovery-and-fresh-workspaces): what the plugin does by itself when a
+ * run's manager is blocked by its provider's quota. `retry` (default on) retries recovery on a timer once the provider's
+ * usage shows headroom; `fallback` (default none, opt-in) is a provider/model the manager may be re-assigned to.
+ */
+export interface ManagerRecoveryConfig {
+  retry: boolean;
+  fallback: { provider: string; model: string } | null;
+}
+
+export const DEFAULT_MANAGER_RECOVERY: ManagerRecoveryConfig = { retry: true, fallback: null };
+
+/** `manager_recovery: { retry: true, fallback: { provider, model } }` of the user config; anything malformed falls back to the default. */
+export async function readManagerRecoveryConfig(file: string = userConfigFile()): Promise<Partial<ManagerRecoveryConfig>> {
+  const block = asRecord((await readConfig(file)).manager_recovery);
+  const fallback = asRecord(block.fallback);
+  return {
+    ...(typeof block.retry === "boolean" ? { retry: block.retry } : {}),
+    ...(typeof fallback.provider === "string" && fallback.provider && typeof fallback.model === "string" && fallback.model ? { fallback: { provider: fallback.provider, model: fallback.model } } : {}),
+  };
+}

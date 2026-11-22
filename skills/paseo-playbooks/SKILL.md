@@ -116,6 +116,7 @@ providers:             # provider failover
   fallback: [codex/gpt-5.5, claude/claude-opus-5-5]  # provider/model targets every step falls back to, after its own tier (default none)
   usage: { check: true, threshold: 100 }  # skip a target whose provider's reported usage window is at/over threshold % (defaults shown; check: false disables)
 timeout: 1h            # default step timeout (optional)
+manager_recovery: { retry: true }  # a quota-blocked manager is recovered by itself once its provider has headroom (default retry: true); opt-in fallback: { provider: codex, model: gpt-5-mini } re-assigns it (also allowed in a playbook, and in config.yaml)
 slow_warning: { runs: 10, factor: 2 }  # warn when a step takes more than factor x the mean of its last `runs` completed runs (defaults shown; also allowed in a playbook)
 agent_rules: ["Prefer simple, separate shell commands."]  # house rules added to the prompt of every agent of the folder (a playbook can add its own `agent_rules:`; at most 20 rules of 500 characters; see "Agent rules")
 gates: { on_behalf: allow }  # allow (default) | deny: whether an agent outside the runs may answer a human gate with resume_gate, with the human's own answer
@@ -193,8 +194,14 @@ that chain; there is no thinking override or tier upgrade. The result reports `t
 `thinking` (null means provider default, not a known effort level). API prices do not predict
 subscription quota consumption. Configure a lower-cost target in the existing tier if wanted;
 recovery does not rewrite profile mappings. With no target available the manager stays durably
-blocked, preserving its inbox, without a background retry loop; retry `recover_manager` when
-a configured target is available. The takeover brief and pending inbox are durable until sent,
+blocked, preserving its inbox. While it has pending work (inbox, recovery prompt or a ready step) the plugin
+retries by itself (`manager_recovery.retry`, default true; every 15 s timer tick, per-run backoff 30 s doubling
+to 10 min, shared usage cache): a retry succeeds only once a target has headroom in the provider's usage
+reading (or its `providers.exhausted_for` ended), then writes a `manager_recovered` history entry and emits
+`run.manager_recovered` (`retargeted: true` when it used `manager_recovery.fallback`). The opt-in
+`manager_recovery: { fallback: { provider, model } }` (defaults, playbook or config.yaml) adds that provider/model after
+the manager's own chain, also for a manual `recover_manager { model }`. Nothing to do by hand in the common case; you
+may still call `recover_manager` yourself. The takeover brief and pending inbox are durable until sent,
 and event subscriptions and their queued notices transfer to the replacement. Startup repairs
 only committed handoffs; already-stuck managers need an explicit recovery after inspection.
 
@@ -421,7 +428,10 @@ The script contract:
 
 - **The file:** a plain name in `scripts/` (no path), executable (`chmod +x`). Its
   shebang picks the language: `#!/usr/bin/env bash`, `#!/usr/bin/env python3`… It runs in the
-  run's worktree, with the daemon's environment.
+  run's worktree, with the daemon's environment. If the file is not in the workspace when the step starts (a checkout
+  behind origin), the step fails at once with `script file not found: <path> (workspace <dir>, head <sha>)`, not a
+  bare ENOENT. A run started with `newWorkspace` begins in a workspace fast-forwarded to `origin/<branch>`, so
+  files that exist on origin are there.
 - **Inputs** come as environment variables, never in a command line:
   `PLAYBOOK_INPUT_<NAME>` (upper case; `services` → `PLAYBOOK_INPUT_SERVICES`), plus
   `PLAYBOOK_RUN_ID`, `PLAYBOOK_STEP_ID`, `PLAYBOOK_ATTEMPT`, `PLAYBOOK_CHECK` (1, 2, … within

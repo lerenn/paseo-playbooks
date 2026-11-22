@@ -582,6 +582,8 @@ export const PlaybookSchema = z.object({
    * Unset on runs from before agent rules.
    */
   agentRules: z.array(z.string()).default([]),
+  /** `manager_recovery`: null = not set here, so the user config (`manager_recovery` of config.yaml) and then the defaults (retry on, no fallback) apply. */
+  managerRecovery: z.object({ retry: z.boolean().nullable().default(null), fallback: z.object({ provider: z.string(), model: z.string() }).nullable().default(null) }).default({ retry: null, fallback: null }),
   /** `slow_warning`: how the slow-step warning is computed (ADR 2026-11-12-slow-step-warning). */
   slowWarning: z.object({ runs: z.number().int().min(3), factor: z.number().gt(1) }).default({ runs: 10, factor: 2 }),
   /**

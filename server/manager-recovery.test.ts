@@ -16,7 +16,7 @@ afterEach(async () => {
   await Promise.all(temps.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
-async function setup(options: { error?: boolean; noFallback?: boolean; providerFallback?: boolean } = {}) {
+async function setup(options: { error?: boolean; noFallback?: boolean; providerFallback?: boolean; recoveryYaml?: string } = {}) {
   const dir = await mkdtemp(path.join(tmpdir(), "manager-recovery-"));
   temps.push(dir);
   const root = path.join(dir, ".paseo/playbooks");
@@ -27,6 +27,7 @@ async function setup(options: { error?: boolean; noFallback?: boolean; providerF
     - { provider: claude, model: claude-haiku-5-5 }
 ${options.noFallback || options.providerFallback ? "" : "    - { provider: codex, model: gpt-5-mini, thinking: low }\n"}manager: { tier: modest }
 ${options.providerFallback ? "providers: { fallback: [codex/gpt-5-mini] }" : ""}
+${options.recoveryYaml ?? ""}
 `);
   await writeFile(path.join(root, "release.yaml"), `title: Release
 steps:
@@ -58,7 +59,7 @@ steps:
   const created: Array<{ config: { provider?: string; thinkingOptionId?: string; systemPrompt?: string } }> = [];
   const sent: Array<{ id: string; text: string }> = [];
   const archived: string[] = [];
-  const controls = { failSend: false, createWait: null as Promise<void> | null, sendWait: null as Promise<void> | null, createStarted: null as (() => void) | null };
+  const controls = { usage: { providers: [] as unknown[] }, failSend: false, createWait: null as Promise<void> | null, sendWait: null as Promise<void> | null, createStarted: null as (() => void) | null };
   const ref = (id: string) => ({
     refresh: async () => ({ agent: { id, ...manager, ...(id === "step-1" ? { status: "running" } : {}) } }),
     timeline: { refetch: async () => ({ entries }) },
@@ -70,7 +71,7 @@ steps:
       sent.push({ id, text });
     },
   });
-  const api = { agents: { ref, list: async () => ({ entries: [] }) }, workspaces: { ref: () => ({ agents: { create: async (input: (typeof created)[number]) => {
+  const api = { providers: { listUsage: async () => controls.usage }, agents: { ref, list: async () => ({ entries: [] }) }, workspaces: { ref: () => ({ agents: { create: async (input: (typeof created)[number]) => {
     controls.createStarted?.();
     if (controls.createWait) await controls.createWait;
     created.push(input);
@@ -82,7 +83,14 @@ steps:
   await store.mutate("run_x", (run) => { run.inbox.push("A pending report notice"); });
   sent.length = 0;
   const recover = (target?: string) => runtime.recoverManager("run_x", "m", "quota recovery", target);
-  return { dir, store, runtime, recover, manager, controls, created, sent, archived, setEntries: (value: typeof entries) => { entries = value; } };
+  const retry = async () => {
+    // A fresh usage reading, and the backoff between automatic tries over.
+    (runtime as unknown as { usage: { memo: unknown } }).usage.memo = null;
+    (runtime as unknown as { managerRetry: Map<string, unknown> }).managerRetry.clear();
+    await (runtime as unknown as { retryBlockedManagers: () => Promise<void> }).retryBlockedManagers();
+  };
+  const events = async (type: string) => ((runtime as unknown as { bus: { recent: (q: object) => Promise<{ events: Array<{ payload: Record<string, unknown> }> }> } }).bus.recent({ types: [type] })).then((r) => r.events);
+  return { retry, events, dir, store, runtime, recover, manager, controls, created, sent, archived, setEntries: (value: typeof entries) => { entries = value; } };
 }
 
 describe("state-preserving manager recovery", () => {
@@ -277,3 +285,85 @@ describe("state-preserving manager recovery", () => {
     expect(f.store.get("run_x")!.managerAgentId).toBe("m");
   });
 });
+
+const usage = (pct: number) => ({ providers: [{ providerId: "claude", status: "available", windows: [{ id: "five_hour", usedPct: pct, resetsAt: new Date(Date.now() + 3_600_000).toISOString() }] }] });
+
+describe("automatic retry of a quota-blocked manager", () => {
+  it("waits while the provider's usage is full or unreported, and recovers once headroom is back", async () => {
+    const f = await setup({ noFallback: true });
+    expect(await f.recover()).toMatchObject({ changed: false, blocked: true });
+    await f.retry();
+    expect(f.created).toEqual([]);
+    f.controls.usage = usage(100);
+    await f.retry();
+    expect(f.created).toEqual([]);
+    expect(f.store.get("run_x")!.managerQuotaBlockedId).toBe("m");
+    f.controls.usage = usage(20);
+    await f.retry();
+    expect(f.created).toHaveLength(1);
+    expect(f.created[0]!.config).toMatchObject({ provider: "claude/claude-haiku-5-5" });
+    const run = f.store.get("run_x")!;
+    expect(run.managerAgentId).toBe("replacement-1");
+    expect(run.managerQuotaBlockedId).toBeNull();
+    expect(run.history.some((entry) => entry.type === "manager_recovered")).toBe(true);
+    expect(f.sent.map((entry) => entry.id)).toEqual(["replacement-1"]);
+    expect(await f.events("run.manager_recovered")).toMatchObject([{ payload: { runId: "run_x", fromManagerId: "m", managerId: "replacement-1", target: "claude/claude-haiku-5-5", retargeted: false } }]);
+    // Recovered: nothing more happens.
+    await f.retry();
+    expect(f.created).toHaveLength(1);
+  });
+
+  it("does not try again before its backoff ends", async () => {
+    const f = await setup({ noFallback: true });
+    await f.recover();
+    await f.retry();
+    f.controls.usage = usage(20);
+    (f.runtime as unknown as { usage: { memo: unknown } }).usage.memo = null;
+    await (f.runtime as unknown as { retryBlockedManagers: () => Promise<void> }).retryBlockedManagers();
+    expect(f.created).toEqual([]);
+  });
+
+  it("is off with manager_recovery: { retry: false }", async () => {
+    const f = await setup({ noFallback: true, recoveryYaml: "manager_recovery: { retry: false }" });
+    await f.recover();
+    f.controls.usage = usage(20);
+    await f.retry();
+    expect(f.created).toEqual([]);
+    expect(f.store.get("run_x")!.managerQuotaBlockedId).toBe("m");
+  });
+
+  it("re-assigns the manager to manager_recovery.fallback while its own provider is full", async () => {
+    const f = await setup({ noFallback: true, recoveryYaml: "manager_recovery: { fallback: { provider: codex, model: gpt-5-mini } }" });
+    f.controls.usage = usage(100);
+    expect(await f.recover()).toMatchObject({ changed: true, target: "codex/gpt-5-mini" });
+    const g = await setup({ noFallback: true });
+    expect(await g.recover()).toMatchObject({ changed: false, blocked: true });
+  });
+
+  it("retargets by itself and says so in the event", async () => {
+    const f = await setup({ noFallback: true, recoveryYaml: "manager_recovery: { fallback: { provider: codex, model: gpt-5-mini } }" });
+    f.controls.usage = usage(100);
+    await f.store.mutate("run_x", (run) => { run.managerQuotaBlockedId = "m"; });
+    await f.retry();
+    expect(f.created[0]!.config).toMatchObject({ provider: "codex/gpt-5-mini" });
+    expect(f.store.get("run_x")!.managerAgentId).toBe("replacement-1");
+    expect(await f.events("run.manager_recovered")).toMatchObject([{ payload: { target: "codex/gpt-5-mini", retargeted: true } }]);
+    expect(f.store.get("run_x")!.history.find((entry) => entry.type === "manager_recovered")!.detail).toContain("manager_recovery.fallback");
+  });
+
+  it("leaves a run with no pending work alone", async () => {
+    const f = await setup({ noFallback: true });
+    await f.recover();
+    await f.store.mutate("run_x", (run) => { run.inbox = []; run.managerRecoveryPrompt = null; });
+    f.controls.usage = usage(20);
+    await f.retry();
+    expect(f.created).toEqual([]);
+  });
+
+  it("keeps the manual recover_manager path: it still needs a confirmed quota exit", async () => {
+    const f = await setup({ noFallback: true });
+    f.setEntries([{ item: { type: "assistant_message", text: "All done, nothing to see" } }]);
+    await expect(f.recover()).rejects.toThrow(/no confirmed provider quota exit/);
+  });
+});
+

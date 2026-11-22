@@ -186,6 +186,12 @@ export const OVERSIGHT_TYPES: EventTypeDef[] = [
     line: (event) => `- run.auto_archived: ${runName(event.payload)} in ${String(event.payload.workspaceDir)} was archived after it ended${event.payload.managerArchived ? ", with its manager" : ""}${event.payload.workspaceReason ? `; workspace kept: ${String(event.payload.workspaceReason)}` : ""}. Tools: restart_run, list_runs { archived: true }.`,
   },
   {
+    type: "run.manager_recovered",
+    description: "The plugin recovered a run's quota-blocked manager by itself (manager_recovery.retry): a new manager took the run over. retargeted is true when it runs on the configured manager_recovery.fallback provider/model instead of the manager's own chain; target is the provider/model.",
+    payload: z.object({ ...runFields, fromManagerId: z.string(), managerId: z.string(), target: z.string(), retargeted: z.boolean() }),
+    line: (event) => `- run.manager_recovered: the manager of ${runName(event.payload)} was blocked by its provider's quota; the plugin replaced it by itself with ${String(event.payload.target)}${event.payload.retargeted ? " (manager_recovery.fallback)" : ""}. Tools: get_run { runId: "${event.runId}" }.`,
+  },
+  {
     type: "run.canceled",
     description: 'A run was canceled (status "canceled"): the reason, when given.',
     payload: z.object({ ...runFields, reason: z.string().nullable() }),
