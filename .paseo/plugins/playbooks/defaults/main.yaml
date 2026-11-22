@@ -25,6 +25,7 @@ warden: { enabled: false }
 #     loops: { above: 5, action: report }    # a goto edge fired more than this
 #     slow: { action: report }               # a running step is slower than its baseline
 #     gate_open: { after: 30m, action: report }
+#     stalled: { after: 30m, action: report } # an active run with nothing running, ready or queued and no open gate
 # warden:                      # PR checks (defaults only; each check is off unless its block is set; needs a Sidekick and the gh CLI)
 #   enabled: true
 #   pr_checks:

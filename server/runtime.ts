@@ -56,7 +56,7 @@ import { BusError, EventBus, globToRegExp, type BusEvent, type Notifier, type Su
 import { blockedOnGate, MANAGER_WATCH_CHECK_MS, nudgeDue, STUCK_AFTER_NUDGES } from "./manager-watch";
 import type { WardenPrConfig } from "../shared/types";
 import { listOpenPrs, prCandidates, reposOfRun, rulesetChecks, rulesetKey, WardenPrStore, type OpenPr } from "./warden-prs";
-import { diffFindings, gateOpenCandidates, loopCandidates, managerBlockedCandidates, slowCandidates, staleDefinitionCandidate, WARDEN_CHECK_MS, WARDEN_MAX_RUNS_PER_PASS, wardenPrSummary, wardenSummary, type Act, type Candidate, type WardenIo } from "./warden";
+import { diffFindings, gateOpenCandidates, loopCandidates, managerBlockedCandidates, slowCandidates, stalledCandidates, stalledInfo, staleDefinitionCandidate, WARDEN_CHECK_MS, WARDEN_MAX_RUNS_PER_PASS, wardenPrSummary, wardenSummary, type Act, type Candidate, type WardenIo } from "./warden";
 import { SlowIndex } from "./slow";
 import { gatePayload, OversightProducer, registerOversightTypes, runFieldsOf } from "./oversight-events";
 import { JOB_TYPES, publicJobEvents } from "./job-events";
@@ -1095,6 +1095,7 @@ export class Runtime {
         if (!managers.has(id)) managers.set(id, this.wardenManagerState(id));
         return managers.get(id)!;
       },
+      managerQuota: async (run) => (run.managerAgentId ? this.wardenManagerQuota(run.managerAgentId) : false),
     };
     let slowIndex: SlowIndex | null = null;
     const notices = new Map<string, Array<{ runId: string; playbook: string; runName: string | null; findings: WardenFinding[] }>>();
@@ -1110,12 +1111,20 @@ export class Runtime {
             console.error(`[playbooks] warden check ${name} failed on ${listed.id}:`, errorText(error));
           }
         };
-        const { staleDefinition, managerBlocked, loops, slow, gateOpen } = config.checks;
+        const { staleDefinition, managerBlocked, loops, slow, gateOpen, stalled } = config.checks;
         if (staleDefinition.action !== "none") await guarded("stale_definition", async () => staleDefinitionCandidate(listed, await io.originSha(listed), staleDefinition.afterMs, now, staleDefinition.action as Act));
         if (managerBlocked.action !== "none") await guarded("manager_blocked", async () => managerBlockedCandidates(listed, await io.manager(listed), managerBlocked.action as Act));
         if (loops.action !== "none") await guarded("loops", () => loopCandidates(listed, loops.above, loops.action as Act));
         if (slow.action !== "none") await guarded("slow", () => slowCandidates(listed, (slowIndex ??= new SlowIndex(this.store.list())).of(listed, now), slow.action as Act));
         if (gateOpen.action !== "none") await guarded("gate_open", () => gateOpenCandidates(listed, gateOpen.afterMs, now, gateOpen.action as Act));
+        if (stalled.action !== "none") {
+          await guarded("stalled", async () => {
+            const info = stalledInfo(listed);
+            if (!info || now - info.idleSince < stalled.afterMs) return [];
+            const manager = await io.manager(listed);
+            return stalledCandidates(listed, info, stalled.afterMs, now, manager, manager === null || manager === "running" ? false : await io.managerQuota(listed), stalled.action as Act);
+          });
+        }
         // The state is written before any effect: a crash or a failed effect never repeats a report.
         const reported = await this.store.mutate(listed.id, (run) => {
           const { next, report } = diffFindings(run.warden.findings, found, iso, config.cooldownMs);
@@ -1240,6 +1249,14 @@ export class Runtime {
     const agent = (await this.api().agents.ref(id).refresh().catch(() => null))?.agent;
     if (!agent || agent.archivedAt || agent.status === "closed" || agent.status === "error") return "gone";
     return agent.status === "running" || agent.status === "initializing" || agent.activeTurn || this.busyManagers.has(id) ? "running" : "idle";
+  }
+
+  /** Whether the manager's last turn ended on its provider's out-of-tokens notice (it is stopped until the quota returns). */
+  private async wardenManagerQuota(id: string): Promise<boolean> {
+    const page = await this.api().agents.ref(id).timeline.refetch({ direction: "tail", limit: 30 }).catch(() => null);
+    if (!page) return false;
+    const entries = page.entries as never;
+    return isQuotaError(failureText(entries)) || isQuotaMessage(lastAssistantText(entries));
   }
 
   /** One summary to the project's Sidekick, when there is one: sent now when it is idle, else held until its turn ends. */

@@ -99,10 +99,12 @@ export const WardenConfigSchema = z.object({
     slow: z.object({ action: WardenActionSchema }),
     /** A gate open longer than `afterMs`. */
     gateOpen: z.object({ afterMs: z.number().int().positive(), action: WardenActionSchema }),
+    /** An active run with no running, ready or queued step and no open gate for longer than `afterMs` (ADR 2026-11-23-warden-stalled-and-repeat-suppression). */
+    stalled: z.object({ afterMs: z.number().int().positive().default(30 * 60_000), action: WardenActionSchema }).default({ afterMs: 30 * 60_000, action: "report" }),
   }),
 });
 export type WardenConfig = z.infer<typeof WardenConfigSchema>;
-export const WARDEN_RUN_CHECKS = ["stale_definition", "manager_blocked", "loops", "slow", "gate_open"] as const;
+export const WARDEN_RUN_CHECKS = ["stale_definition", "manager_blocked", "loops", "slow", "gate_open", "stalled"] as const;
 /** The PR-level checks (ADR 2026-11-20-warden-pr-checks): over the project's open pull requests, each off unless configured. */
 export const WARDEN_PR_CHECKS = ["pr_no_reviewer", "pr_conflicting", "pr_review_stale", "pr_required_checks", "pr_review_findings", "pr_unowned", "pr_draft_idle", "run_failed"] as const;
 export const WARDEN_CHECKS = [...WARDEN_RUN_CHECKS, ...WARDEN_PR_CHECKS] as const;
@@ -117,6 +119,7 @@ export const DEFAULT_WARDEN: WardenConfig = {
     loops: { above: 5, action: "report" },
     slow: { action: "report" },
     gateOpen: { afterMs: 30 * 60_000, action: "report" },
+    stalled: { afterMs: 30 * 60_000, action: "report" },
   },
 };
 
@@ -166,6 +169,10 @@ export const WardenFindingSchema = z.object({
   runId: z.string().nullable().default(null),
   pr: z.object({ number: z.number(), url: z.string() }).nullable().default(null),
   proposed: z.string().nullable().default(null),
+  /** The count or value (loop count, idle minutes) when it was last reported: it is reported again only once it has doubled. Null: not measured. */
+  value: z.number().nullable().default(null),
+  /** The run state when it was last reported: it is reported again when this changes (after the cooldown). Null: not tracked. */
+  state: z.string().nullable().default(null),
 });
 export type WardenFinding = z.infer<typeof WardenFindingSchema>;
 export const WardenStateSchema = z.object({ findings: z.record(z.string(), WardenFindingSchema).default({}) });

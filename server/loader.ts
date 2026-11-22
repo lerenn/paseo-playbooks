@@ -582,6 +582,8 @@ const RawWardenSchema = z
         slow: z.object({ action: z.enum(WARDEN_ACTIONS).optional() }).strict().optional(),
         /** A gate open longer than `after` (default 30m): `report` | `none`. */
         gate_open: z.object({ after: z.string().optional(), action: z.enum(WARDEN_ACTIONS).optional() }).strict().optional(),
+        /** An active run with no running, ready or queued step and no open gate for longer than `after` (default 30m): `report` | `none`. */
+        stalled: z.object({ after: z.string().optional(), action: z.enum(WARDEN_ACTIONS).optional() }).strict().optional(),
       })
       .strict()
       .optional(),
@@ -722,6 +724,8 @@ function resolveWarden(raw: RawWarden | undefined, base: WardenConfig, where: st
   if (checks.slow?.action) out.checks.slow.action = checks.slow.action;
   if (checks.gate_open?.action) out.checks.gateOpen.action = checks.gate_open.action;
   out.checks.gateOpen.afterMs = duration(checks.gate_open?.after, "checks.gate_open.after") ?? out.checks.gateOpen.afterMs;
+  if (checks.stalled?.action) out.checks.stalled.action = checks.stalled.action;
+  out.checks.stalled.afterMs = duration(checks.stalled?.after, "checks.stalled.after") ?? out.checks.stalled.afterMs;
   return out;
 }
 
