@@ -80,6 +80,8 @@ export const QuotaProjectLimitsSchema = z.object({
   closedHours: z.object({ timezone: z.string(), slots: z.array(z.custom<ClosedSlotView>()) }).nullable().optional(),
   /** Whether a closed slot is running now and when that next changes (ADR 2026-11-23-off-hours-tab); only with `closedHours`. `changeAt` is null when nothing changes within a week. Absent from an older server. */
   closedNow: z.object({ closed: z.boolean(), changeAt: z.string().nullable() }).optional(),
+  /** The week planner of the Off hours tab: this week (Monday first) in the schedule's timezone, closed ranges as clock minutes per day, today's weekday (0 = Sunday) and the current clock minute. Only with `closedHours`. Absent from an older server. */
+  closedWeek: z.object({ today: z.number(), nowMin: z.number(), days: z.array(z.object({ day: z.number(), lengthMin: z.number(), ranges: z.array(z.tuple([z.number(), z.number()])) })) }).optional(),
   /** Matches `paces[].closedKey`. */
   closedKey: z.string().nullable().optional(),
   stepsLimit: z.number().nullable(),

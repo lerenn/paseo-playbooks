@@ -5,7 +5,7 @@ import type { RateLimitsConfig } from "./config";
 import { windowKey } from "./rate-budget";
 import { admittedRunIds, runningStepCount, usedPct, windowRooms, type PacerView } from "./rate-limit";
 import { windowModel } from "./usage";
-import { closedKey, closedState, hostTimezone, type ClosedHours } from "./closed-hours";
+import { closedKey, closedState, closedWeek, hostTimezone, type ClosedHours } from "./closed-hours";
 
 const closedView = (closed: ClosedHours | null | undefined) => (closed && closed.slots.length > 0 ? { timezone: closed.timezone ?? hostTimezone(), slots: closed.slots } : null);
 
@@ -116,7 +116,7 @@ export function buildQuotaLimitation(input: { projects: ProjectLimitsInput[]; no
     projectId,
     label,
     ...(unitCost ? { unitCost } : {}),
-    limits: sets.map(({ repos, config }) => ({ repos, pacing: config.quota.pacing, usablePercent: config.quota.usablePercent, ...(closedView(config.quota.closedHours) ? { closedHours: closedView(config.quota.closedHours), closedKey: closedKey(config.quota.closedHours), closedNow: closedNowView(config.quota.closedHours, nowMs) } : {}), stepsLimit: config.steps, runsLimit: config.playbooks })),
+    limits: sets.map(({ repos, config }) => ({ repos, pacing: config.quota.pacing, usablePercent: config.quota.usablePercent, ...(closedView(config.quota.closedHours) ? { closedHours: closedView(config.quota.closedHours), closedKey: closedKey(config.quota.closedHours), closedNow: closedNowView(config.quota.closedHours, nowMs), closedWeek: closedWeek(config.quota.closedHours!, nowMs) } : {}), stepsLimit: config.steps, runsLimit: config.playbooks })),
   }));
   return {
     now: new Date(nowMs).toISOString(),

@@ -172,3 +172,39 @@ export function closedState(closed: ClosedHours | null | undefined, nowMs: numbe
   if (first[0] <= nowMs) return { closed: true, changeAt: first[1] >= end ? null : first[1] };
   return { closed: false, changeAt: first[0] };
 }
+
+/** One day of the week planner: closed ranges as minutes of the local clock (0-1440), merged like every other reading of the calendar. */
+export interface ClosedWeekDay {
+  /** 0 = Sunday. */
+  day: number;
+  /** The real length of the day: 1380 or 1500 on a daylight-saving day. */
+  lengthMin: number;
+  ranges: Array<[number, number]>;
+}
+
+/**
+ * The week (Monday first) that contains `nowMs`, in the schedule's timezone, for the Off hours planner: per day its closed ranges
+ * read off `closedIntervals` (so merged slots and daylight saving agree with what the quota and warden apply), as clock minutes, plus
+ * today's weekday and the current clock minute. A daylight-saving day is drawn on the clock (a skipped or repeated hour is not
+ * drawn); its real length is in `lengthMin`.
+ */
+export function closedWeek(closed: ClosedHours, nowMs: number): { today: number; nowMin: number; days: ClosedWeekDay[] } {
+  const timezone = closed.timezone ?? hostTimezone();
+  const wall = wallAsUtc(timezone, nowMs);
+  const todayMidnight = Math.floor(wall / 86_400_000) * 86_400_000;
+  const monday = todayMidnight - ((new Date(todayMidnight).getUTCDay() + 6) % 7) * 86_400_000;
+  const days: ClosedWeekDay[] = [];
+  for (let i = 0; i < 7; i++) {
+    const midnight = monday + i * 86_400_000;
+    const start = instantOfWall(timezone, midnight);
+    const end = instantOfWall(timezone, midnight + 86_400_000);
+    const ranges: Array<[number, number]> = [];
+    for (const [a, b] of closedIntervals(closed, start, end)) {
+      const from = Math.round((wallAsUtc(timezone, a) - midnight) / 60_000);
+      const to = b >= end ? 1440 : Math.round((wallAsUtc(timezone, b) - midnight) / 60_000);
+      if (to > from) ranges.push([from, Math.min(to, 1440)]);
+    }
+    days.push({ day: new Date(midnight).getUTCDay(), lengthMin: Math.round((end - start) / 60_000), ranges });
+  }
+  return { today: new Date(todayMidnight).getUTCDay(), nowMin: Math.floor((wall - todayMidnight) / 60_000), days };
+}

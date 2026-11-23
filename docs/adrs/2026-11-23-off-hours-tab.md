@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted. Refines `2026-11-23-closed-hours-shared.md` and `2026-11-23-closed-hours-several-ranges.md` (the block, its layering and its effects are unchanged).
+Superseded by 2026-11-23-off-hours-by-project.md (one row per project, plus a week planner; the data source and the read-only rule stand).
 
 ## Context
 
