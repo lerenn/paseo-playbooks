@@ -48,9 +48,21 @@ export function whenLabel(iso: string, nowIso: string, timezone: string, locale:
   return `${new Date(iso).toLocaleDateString(locale, { timeZone: timezone, weekday: "short" })} ${time}`;
 }
 
-/** The closed stretches of a day bar as shares (percent) of the 24 h clock. */
-export function barSegments(ranges: ReadonlyArray<readonly [number, number]>): Array<{ left: number; width: number }> {
+/** The closed stretches of a day as shares (percent) of the 24 h clock. */
+export function closedSegments(ranges: ReadonlyArray<readonly [number, number]>): Array<{ left: number; width: number }> {
   return ranges.map(([from, to]) => ({ left: (from / 1440) * 100, width: ((to - from) / 1440) * 100 }));
+}
+
+/** The open stretches of a day bar (the ones drawn, in blue) as shares of the 24 h clock: what the closed ranges leave. */
+export function openSegments(ranges: ReadonlyArray<readonly [number, number]>): Array<{ left: number; width: number }> {
+  const out: Array<{ left: number; width: number }> = [];
+  let cursor = 0;
+  for (const [from, to] of [...ranges].sort((a, b) => a[0] - b[0])) {
+    if (from > cursor) out.push({ left: (cursor / 1440) * 100, width: ((from - cursor) / 1440) * 100 });
+    cursor = Math.max(cursor, to);
+  }
+  if (cursor < 1440) out.push({ left: (cursor / 1440) * 100, width: ((1440 - cursor) / 1440) * 100 });
+  return out;
 }
 
 /** What a day bar says: closed all day, open all day, or closed in ranges (the text alternative lists them). */

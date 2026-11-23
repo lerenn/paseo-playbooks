@@ -6,8 +6,9 @@ import { describeDays, describeRanges, weeklyClosedRows } from "../shared/closed
 import { quotaLimitationRpc } from "../shared/contracts";
 import type { QuotaLimitation } from "../shared/quota-limitation";
 import { messages } from "./i18n";
-import { barSegments, dayKind, HOUR_TICKS, offHoursRows, rowState, whenLabel, type OffHoursRow, type OffHoursSchedule } from "./off-hours-rows";
-import { semanticColor } from "./semantic-colors";
+import { dayKind, HOUR_TICKS, openSegments, offHoursRows, rowState, whenLabel, type OffHoursRow, type OffHoursSchedule } from "./off-hours-rows";
+import { SERIES_DARK, SERIES_LIGHT } from "./analytics-chart";
+import { isDarkTheme, semanticColor } from "./semantic-colors";
 import type { Theme } from "./theme";
 
 /** How often the open tab reads the state again. */
@@ -136,8 +137,20 @@ function ScheduleView(props: { theme: Theme; schedule: OffHoursSchedule; nowIso:
   );
 }
 
+/** The blue of open hours: a shade of the Analytics series blue that reads on dark and on light surfaces. */
+const openBlue = (theme: Theme) => (isDarkTheme(theme) ? SERIES_DARK[2] : SERIES_LIGHT[1]);
+
+/** The "now" line: the theme's text colour with a halo of the card's colour, so it shows on the blue and on the empty track alike. */
+function NowMarker(props: { theme: Theme; percent: number }) {
+  return (
+    <View pointerEvents="none" style={{ position: "absolute", top: 0, bottom: 0, left: `${props.percent}%`, width: 4, marginLeft: -1, backgroundColor: props.theme.colors.surface1, alignItems: "center" }}>
+      <View style={{ width: 2, flex: 1, backgroundColor: props.theme.colors.foreground }} />
+    </View>
+  );
+}
+
 /**
- * The weekly planner: one 24 h bar per day (Monday first), open neutral, closed violet, ticks at 0/6/12/18/24, today highlighted and a
+ * The weekly planner: one 24 h bar per day (Monday first), open stretches filled blue, closed ones left empty (the outlined track), ticks at 0/6/12/18/24, today highlighted and a
  * marker at the current time of the schedule's timezone. The bars are rows that fill the width, so they fit a narrow screen as is. A
  * daylight-saving day is drawn on the clock (see ADR); its note says how long it really is.
  */
@@ -167,14 +180,14 @@ function Planner(props: { theme: Theme; week: NonNullable<OffHoursSchedule["week
           <View key={day.day} style={{ gap: 1 }}>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
               <Text style={{ width: labelWidth, color: isToday ? theme.colors.foreground : muted, fontSize: 11, fontWeight: isToday ? "700" : "400" }}>{dayName(day.day, "short")}</Text>
-              <View accessible accessibilityRole="image" accessibilityLabel={isToday ? `${alt} ${t("offHours.alt.today")}` : alt} style={{ flex: 1, height: 14, borderRadius: 3, overflow: "hidden", backgroundColor: theme.colors.surface2, borderWidth: isToday ? 1 : 0, borderColor: theme.colors.foreground }}>
-                {barSegments(day.ranges).map((segment, index) => (
-                  <View key={index} style={{ position: "absolute", top: 0, bottom: 0, left: `${segment.left}%`, width: `${segment.width}%`, backgroundColor: semanticColor(theme, "paused") }} />
+              <View accessible accessibilityRole="image" accessibilityLabel={isToday ? `${alt} ${t("offHours.alt.today")}` : alt} style={{ flex: 1, height: 14, borderRadius: 3, overflow: "hidden", borderWidth: 1, borderColor: isToday ? theme.colors.foreground : theme.colors.border }}>
+                {openSegments(day.ranges).map((segment, index) => (
+                  <View key={index} style={{ position: "absolute", top: 0, bottom: 0, left: `${segment.left}%`, width: `${segment.width}%`, backgroundColor: openBlue(theme) }} />
                 ))}
                 {HOUR_TICKS.filter((hour) => hour > 0 && hour < 24).map((hour) => (
-                  <View key={hour} style={{ position: "absolute", top: 0, bottom: 0, left: `${(hour / 24) * 100}%`, width: 1, backgroundColor: theme.colors.surface1, opacity: 0.6 }} />
+                  <View key={hour} style={{ position: "absolute", top: 0, bottom: 0, left: `${(hour / 24) * 100}%`, width: 1, backgroundColor: theme.colors.border }} />
                 ))}
-                {isToday ? <View style={{ position: "absolute", top: 0, bottom: 0, left: `${Math.min(99.5, (week.nowMin / 1440) * 100)}%`, width: 2, backgroundColor: theme.colors.foreground }} /> : null}
+                {isToday ? <NowMarker theme={theme} percent={Math.min(99, (week.nowMin / 1440) * 100)} /> : null}
               </View>
             </View>
             {day.lengthMin !== 1440 ? <Text style={{ marginLeft: labelWidth + 6, color: muted, fontSize: 10 }}>{t("offHours.dstDay", { hours: day.lengthMin / 60 })}</Text> : null}
@@ -183,11 +196,17 @@ function Planner(props: { theme: Theme; week: NonNullable<OffHoursSchedule["week
       })}
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 12, marginLeft: labelWidth + 6 }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
-          <View style={{ width: 10, height: 10, borderRadius: 2, backgroundColor: semanticColor(theme, "paused") }} />
+          <View style={{ width: 10, height: 10, borderRadius: 2, backgroundColor: openBlue(theme) }} />
+          <Text style={{ color: muted, fontSize: 10 }}>{t("offHours.legendOpen")}</Text>
+        </View>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+          <View style={{ width: 10, height: 10, borderRadius: 2, borderWidth: 1, borderColor: theme.colors.border }} />
           <Text style={{ color: muted, fontSize: 10 }}>{t("offHours.legendClosed")}</Text>
         </View>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
-          <View style={{ width: 2, height: 10, backgroundColor: theme.colors.foreground }} />
+          <View style={{ width: 4, height: 10, backgroundColor: theme.colors.surface1, alignItems: "center" }}>
+            <View style={{ width: 2, flex: 1, backgroundColor: theme.colors.foreground }} />
+          </View>
           <Text style={{ color: muted, fontSize: 10 }}>{t("offHours.legendNow")}</Text>
         </View>
       </View>

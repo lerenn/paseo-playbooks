@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { describeDays, describeRanges, weeklyClosedRows } from "../shared/closed-hours";
 import type { QuotaLimitation } from "../shared/quota-limitation";
-import { barSegments, dayKind, offHoursRows, rowState, whenLabel } from "./off-hours-rows";
+import { closedSegments, dayKind, openSegments, offHoursRows, rowState, whenLabel } from "./off-hours-rows";
 
 const label = (day: number) => ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][day]!;
 const text = (slots: Parameters<typeof weeklyClosedRows>[0]) => weeklyClosedRows(slots).map((row) => `${describeDays(row.days, label)}: ${row.allDay ? "all day" : describeRanges(row.ranges)}`);
@@ -64,8 +64,15 @@ describe("collapsed time labels", () => {
 
 describe("planner bars", () => {
   it("draws the closed ranges as shares of the 24 h clock", () => {
-    expect(barSegments([[0, 480], [1200, 1440]])).toEqual([{ left: 0, width: (480 / 1440) * 100 }, { left: (1200 / 1440) * 100, width: (240 / 1440) * 100 }]);
-    expect(barSegments([])).toEqual([]);
+    expect(closedSegments([[0, 480], [1200, 1440]])).toEqual([{ left: 0, width: (480 / 1440) * 100 }, { left: (1200 / 1440) * 100, width: (240 / 1440) * 100 }]);
+    expect(closedSegments([])).toEqual([]);
+  });
+
+  it("draws the open stretches (the blue ones) as what the closed ranges leave", () => {
+    expect(openSegments([[0, 480], [1200, 1440]])).toEqual([{ left: 480 / 1440 * 100, width: 720 / 1440 * 100 }]);
+    expect(openSegments([])).toEqual([{ left: 0, width: 100 }]);
+    expect(openSegments([[0, 1440]])).toEqual([]);
+    expect(openSegments([[360, 720], [720, 1080]])).toEqual([{ left: 0, width: 25 }, { left: 75, width: 25 }]);
   });
 
   it("tells closed all day, open all day and ranges apart (the text alternative)", () => {
