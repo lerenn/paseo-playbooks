@@ -3,7 +3,7 @@ import { isActive, type Run } from "../shared/types";
 import type { QuotaLimitation, QuotaProject, QuotaProvider, QuotaWindow } from "../shared/quota-limitation";
 import type { RateLimitsConfig } from "./config";
 import { windowKey } from "./rate-budget";
-import { admittedRunIds, runningStepCount, runPriority, usedPct, windowRooms, type PacerView } from "./rate-limit";
+import { admittedRunIds, runningStepCount, usedPct, windowRooms, type PacerView } from "./rate-limit";
 import { windowModel } from "./usage";
 
 /** A reservation as the runtime keeps it: points still to use per `windowKey`. */
@@ -43,14 +43,6 @@ export function buildQuotaLimitation(input: { projects: ProjectLimitsInput[]; no
   const pacedBy = [...new Set([...pacing.values()].flat())];
   const live = runs.filter((run) => !run.archivedAt && isActive(run));
   const titleOf = (run: Run) => run.playbook.title;
-  /** What the tab needs to show and change a run's quota priority. */
-  const priorityOf = (run: Run) => ({
-    priority: runPriority(run, runs),
-    defaultPriority: runPriority({ ...run, priorityOverride: null }, runs),
-    override: run.priorityOverride ?? null,
-    hasChildren: runs.some((other) => other.parent?.runId === run.id),
-    inheritChildren: run.inheritChildPriority ?? false,
-  });
   const remaining = (reservation: ReservationView, key: string) => Math.max(0, (reservation.est[key] ?? 0) - (reservation.spent[key] ?? 0));
   const open = reservations.filter((reservation) => reservation.endedAt === null);
 
@@ -94,9 +86,9 @@ export function buildQuotaLimitation(input: { projects: ProjectLimitsInput[]; no
           const value = remaining(reservation, key);
           if (provider === view.provider && windowId && value > 0) left[windowId] = round(value);
         }
-        return [{ runId: run.id, projectId: run.projectId, title: titleOf(run), ...priorityOf(run), remaining: left }];
+        return [{ runId: run.id, projectId: run.projectId, title: titleOf(run), remaining: left }];
       }),
-      held: live.flatMap((run) => (run.rateHold && run.rateHold.provider === view.provider ? [{ runId: run.id, projectId: run.projectId, title: titleOf(run), ...priorityOf(run), kind: run.rateHold.kind, reason: run.rateHold.reason, window: run.rateHold.window, retryAt: run.rateHold.retryAt }] : [])),
+      held: live.flatMap((run) => (run.rateHold && run.rateHold.provider === view.provider ? [{ runId: run.id, projectId: run.projectId, title: titleOf(run), kind: run.rateHold.kind, reason: run.rateHold.reason, window: run.rateHold.window, retryAt: run.rateHold.retryAt }] : [])),
       exhausted: live.flatMap((run) =>
         run.exhausted
           .filter((entry) => entry.target === view.provider || entry.target.startsWith(`${view.provider}/`))

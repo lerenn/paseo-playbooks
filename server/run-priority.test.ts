@@ -6,7 +6,6 @@ import { setRunPriorityRpc } from "../shared/contracts";
 import { RunSchema, type Run } from "../shared/types";
 import { newRun } from "./engine";
 import { loadPlaybooks } from "./loader";
-import { buildQuotaLimitation } from "./quota-limitation";
 import { runPriority } from "./rate-limit";
 import { Runtime } from "./runtime";
 import { RunStore } from "./store";
@@ -160,19 +159,23 @@ describe("run quota priority override", () => {
     expect(RunSchema.parse(saved)).toMatchObject({ priorityOverride: null, inheritChildPriority: false });
   });
 
-  it("shows in the Quota limitation payload: the priority now, the playbook's, the override and the children", async () => {
+  it("shows in the Runs view for an active run of a project that paces: the priority now, the playbook's, the override and the children", async () => {
     const { store, runtime } = await setup();
     await runtime.setRunPriority("p", 8, true, "test");
-    const view = { provider: "claude", state: "ok" as const, entry: null, readAt: null, overrideUntil: null };
-    const data = buildQuotaLimitation({
-      projects: [],
-      nowMs: Date.now(),
-      views: [view as never],
-      runs: store.list(),
-      reservations: [{ runId: "p", est: { "claude\u0000weekly": 5 }, spent: {}, endedAt: null }, { runId: "c2", est: { "claude\u0000weekly": 5 }, spent: {}, endedAt: null }],
+    // Only the runs whose playbook turns pacing on get the view.
+    for (const id of ["p", "c2"]) await store.mutate(id, (run) => void (run.playbook.quotaLimits = { quota: { pacing: true } }));
+    const views = await runtime.priorityViews(store.list());
+    expect([...views.keys()].sort()).toEqual(["c2", "p"]);
+    expect(views.get("p")).toEqual({ priority: 8, defaultPriority: 2, override: 8, hasChildren: true, inheritChildren: true });
+    expect(views.get("c2")).toEqual({ priority: 8, defaultPriority: 2, override: 8, hasChildren: false, inheritChildren: true });
+  });
+
+  it("has no view for a finished run", async () => {
+    const { store, runtime } = await setup();
+    await store.mutate("p", (run) => {
+      run.playbook.quotaLimits = { quota: { pacing: true } };
+      run.status = "completed";
     });
-    const [parent, child] = data.providers[0]!.reservations;
-    expect(parent).toMatchObject({ runId: "p", priority: 8, defaultPriority: 2, override: 8, hasChildren: true, inheritChildren: true });
-    expect(child).toMatchObject({ runId: "c2", priority: 8, defaultPriority: 2, override: 8, hasChildren: false });
+    expect((await runtime.priorityViews(store.list())).has("p")).toBe(false);
   });
 });

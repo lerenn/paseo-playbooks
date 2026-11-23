@@ -207,7 +207,11 @@ export default function contribute(server: PluginServerContext) {
   });
   handle(quotaLimitationRpc, async ({ workspaces }) => runtime.quotaLimitation(workspaces));
   handle(analyticsStateRpc, async ({ days, playbook, projectId, timeZone }) => runtime.analytics({ days, playbook, projectId, timeZone }));
-  handle(overviewStateRpc, async () => ({ runs: store.list().filter((run) => !run.archivedAt).map(summarizeRun) }));
+  handle(overviewStateRpc, async () => {
+    const all = store.list();
+    const priorities = await runtime.priorityViews(all);
+    return { runs: all.filter((run) => !run.archivedAt).map((run) => summarizeRun(run, priorities.get(run.id) ?? null)) };
+  });
   handle(admissionStatusRpc, async ({ runId }) => {
     const stages = runtime.admissionStatus(runId);
     return { stages, stations: stages };

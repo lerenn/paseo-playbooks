@@ -8,7 +8,7 @@ import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 
 /** The daemon API handed to plugin handlers (typed via the SDK, so the build needs no @getpaseo/client). */
 type PaseoApi = PluginHandlerContext["paseo"];
-import type { AdmissionStatus, ScriptOutput } from "../shared/types";
+import type { AdmissionStatus, RunPriorityView, ScriptOutput } from "../shared/types";
 import type { GateWaitCondition } from "../shared/types";
 import type { AgentSettings, AgentTarget, Attempt, FanoutChild as FanoutChildState, PoolPass as PoolPassState, Gate, Job, Playbook, Run, RunDefinition, RunWorktree, Step, VarValue, WardenFinding } from "../shared/types";
 import { addUsage, DEFAULT_EXHAUSTED_FOR_MS, DEFAULT_PERMISSION_POLICY, workspaceKeptUntil } from "../shared/types";
@@ -76,7 +76,7 @@ import { DEFAULT_MANAGER_RECOVERY, DEFAULT_RATE_LIMITS, readManagerRecoveryConfi
 import { buildQuotaLimitation } from "./quota-limitation";
 import type { QuotaLimitation } from "../shared/quota-limitation";
 import { CostHistory, exhaustionVerdict, planPace, type Admitted as AdmittedRun, orderCandidates, planHeadroom, windowKey, type Candidate as RateCandidate, type PlanContext } from "./rate-budget";
-import { limitVerdict, QuotaPacer, runPriority, runProviders, usedPct, type HoldVerdict, type ReadChange } from "./rate-limit";
+import { limitVerdict, parentIds, priorityViewOf, QuotaPacer, runPriority, runProviders, usedPct, type HoldVerdict, type ReadChange } from "./rate-limit";
 import { pluginDataDir } from "./data-dir";
 
 export class UserError extends Error {}
@@ -2618,6 +2618,16 @@ export class Runtime {
       }
       await this.rateCheck(listed);
     }
+  }
+
+  /**
+   * The quota priority of each active run whose limits have pacing on (resolved like `limitsOf`), for the Runs view; the other runs
+   * are absent. A run's own priority is changed with `setRunPriority` whatever pacing says: this only decides who sees the control.
+   */
+  async priorityViews(runs: Run[]): Promise<Map<string, RunPriorityView>> {
+    await this.userQuotaLayer();
+    const parents = parentIds(runs);
+    return new Map(runs.filter((run) => !run.archivedAt && isActive(run) && this.limitsOf(run).quota.pacing).map((run) => [run.id, priorityViewOf(run, runs, parents)]));
   }
 
   /** The global limits and pacing for the panel: the settings, running steps, the overrides and every held run. */

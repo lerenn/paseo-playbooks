@@ -5,7 +5,6 @@ import { Pressable, Text, View } from "react-native";
 import { quotaLimitationRpc } from "../shared/contracts";
 import type { QuotaLimitation } from "../shared/quota-limitation";
 import { messages } from "./i18n";
-import { PriorityRunLine } from "./quota-priority-line";
 import { projectRows, type ProjectRow, type ProviderRow, type SlotRow, type Tone } from "./quota-rows";
 import { semanticColor } from "./semantic-colors";
 import type { Theme } from "./theme";
@@ -56,13 +55,13 @@ export function QuotaView(props: { theme: Theme; workspaces: ReadonlyArray<{ pro
     <View style={{ gap: 14 }}>
       {error ? <Text style={{ color: semanticColor(theme, "failed") }}>{error}</Text> : null}
       {!data && !error ? <Text style={{ color: muted }}>{t("quota.loading")}</Text> : null}
-      {data ? <Body theme={theme} data={data} onChanged={load} /> : null}
+      {data ? <Body theme={theme} data={data} /> : null}
     </View>
   );
 }
 
-function Body(props: { theme: Theme; data: QuotaLimitation; onChanged: () => void }) {
-  const { theme, data, onChanged } = props;
+function Body(props: { theme: Theme; data: QuotaLimitation }) {
+  const { theme, data } = props;
   const { t } = useTranslation(messages);
   const muted = theme.colors.foregroundMuted;
   const rows = projectRows(data);
@@ -81,7 +80,7 @@ function Body(props: { theme: Theme; data: QuotaLimitation; onChanged: () => voi
       {rows.length === 0 ? <Text style={{ color: muted, fontSize: 12 }}>{t("quota.noProjects")}</Text> : null}
       <Card theme={theme}>
         {rows.map((row, index) => (
-          <ProjectRowView key={row.projectId} theme={theme} row={row} first={index === 0} onChanged={onChanged} />
+          <ProjectRowView key={row.projectId} theme={theme} row={row} first={index === 0} />
         ))}
       </Card>
     </View>
@@ -91,8 +90,8 @@ function Body(props: { theme: Theme; data: QuotaLimitation; onChanged: () => voi
 /** Green, red and grey are fixed hues (`semantic-colors`), the same in every theme; the text beside a bar carries the numbers too. */
 const toneColor = (theme: Theme, tone: Tone) => (tone === "over" ? semanticColor(theme, "failed") : tone === "warn" ? semanticColor(theme, "waiting") : tone === "ok" ? semanticColor(theme, "done") : theme.colors.foregroundMuted);
 
-function ProjectRowView(props: { theme: Theme; row: ProjectRow; first: boolean; onChanged: () => void }) {
-  const { theme, row, first, onChanged } = props;
+function ProjectRowView(props: { theme: Theme; row: ProjectRow; first: boolean }) {
+  const { theme, row, first } = props;
   const { t } = useTranslation(messages);
   const [open, setOpen] = useState(false);
   const muted = theme.colors.foregroundMuted;
@@ -119,7 +118,7 @@ function ProjectRowView(props: { theme: Theme; row: ProjectRow; first: boolean; 
               {row.sets.length > 1 ? <Text style={{ color: muted, fontSize: 11 }}>{`${t("quota.repos", { repos: set.limits.repos.join(", ") })} · ${set.limits.pacing ? t("quota.pacingOnAt", { percent: set.limits.usablePercent }) : t("quota.pacingOff")}`}</Text> : null}
               {set.providers.length === 0 ? <Text style={{ color: muted, fontSize: 12 }}>{t("quota.noProviders")}</Text> : null}
               {set.providers.map((provider) => (
-                <ProviderView key={provider.provider} theme={theme} provider={provider} canEdit={set.limits.pacing} onChanged={onChanged} />
+                <ProviderView key={provider.provider} theme={theme} provider={provider} />
               ))}
             </View>
           ))}
@@ -129,8 +128,8 @@ function ProjectRowView(props: { theme: Theme; row: ProjectRow; first: boolean; 
   );
 }
 
-function ProviderView(props: { theme: Theme; provider: ProviderRow; canEdit: boolean; onChanged: () => void }) {
-  const { theme, provider, canEdit, onChanged } = props;
+function ProviderView(props: { theme: Theme; provider: ProviderRow }) {
+  const { theme, provider } = props;
   const { t, locale } = useTranslation(messages);
   const muted = theme.colors.foregroundMuted;
   const flag = provider.status === "unavailable" ? t("quota.state.unavailable") : provider.status === "unreported" ? t("quota.state.unreported") : provider.state === "override" ? t("quota.state.override") : null;
@@ -147,7 +146,10 @@ function ProviderView(props: { theme: Theme; provider: ProviderRow; canEdit: boo
       {provider.reservations.length > 0 ? (
         <Lines theme={theme} title={t("quota.reservations")}>
           {provider.reservations.map((run) => (
-            <PriorityRunLine key={run.runId} theme={theme} run={run} canEdit={canEdit} onChanged={onChanged} tag={run.hold === null ? null : t(run.hold === "paused" ? "quota.tagPaused" : "quota.tagHeld")} detail={`${run.title}${Object.keys(run.remaining).length > 0 ? ` · ${Object.entries(run.remaining).map(([name, value]) => t("quota.remaining", { window: name, value })).join(", ")}` : ""}`} />
+            <View key={run.runId} style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
+              <Text style={{ color: theme.colors.foreground, fontSize: 12 }}>{`${run.title}${Object.keys(run.remaining).length > 0 ? ` · ${Object.entries(run.remaining).map(([name, value]) => t("quota.remaining", { window: name, value })).join(", ")}` : ""}`}</Text>
+              {run.hold === null ? null : <Text style={{ color: semanticColor(theme, "paused"), fontSize: 10, fontWeight: "600", borderRadius: 4, borderWidth: 1, borderColor: semanticColor(theme, "paused"), paddingHorizontal: 4 }}>{t(run.hold === "paused" ? "quota.tagPaused" : "quota.tagHeld")}</Text>}
+            </View>
           ))}
         </Lines>
       ) : null}

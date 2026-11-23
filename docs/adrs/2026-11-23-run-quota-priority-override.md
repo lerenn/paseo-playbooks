@@ -1,6 +1,6 @@
 # A run's quota priority can be changed by hand, and passed down to its children
 
-Status: Accepted. Builds on `2026-11-23-quota-limits-in-defaults.md` (the priority and pacing), `2026-11-23-quota-limitation-project-rows.md` (the tab's rows); the run's own `priority` from `start_playbook` stays.
+Status: Accepted (UI paragraph refined by `2026-11-23-run-priority-in-runs-view.md`). Builds on `2026-11-23-quota-limits-in-defaults.md` (the priority and pacing), `2026-11-23-quota-limitation-project-rows.md` (the tab's rows); the run's own `priority` from `start_playbook` stays.
 
 ## Context
 

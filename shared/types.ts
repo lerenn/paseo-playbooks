@@ -1299,6 +1299,20 @@ export const FanoutPassSummarySchema = z.object({ loop: z.number().int(), childr
 /** Earlier passes the summary carries per fan-out step. */
 export const SUMMARY_FANOUT_PASSES = 5;
 
+/** What the Runs view needs to show and change an active run's quota priority (see ADR 2026-11-23-run-priority-in-runs-view). */
+export const RunPriorityViewSchema = z.object({
+  /** The priority now, and the one the run would have without a manual override. */
+  priority: z.number(),
+  defaultPriority: z.number(),
+  /** The manual override (null = none). */
+  override: z.number().nullable(),
+  /** The run has child runs (fan-out or pool), at any depth. */
+  hasChildren: z.boolean(),
+  /** The run passes its priority to the children it starts (`inheritChildPriority`). */
+  inheritChildren: z.boolean(),
+});
+export type RunPriorityView = z.infer<typeof RunPriorityViewSchema>;
+
 /**
  * A run as the Playbooks screen and the sidebar badge see it: the fields they draw rows, badges
  * and gate buttons from. No history, reports, outputs, attempts, inbox, step prompts or job
@@ -1335,12 +1349,14 @@ export const RunSummarySchema = z.object({
   parent: RunSchema.shape.parent.default(null),
   /** Fan-out steps that started: the current pass's children, and the last passes before it (oldest first), by step id. */
   fanouts: z.record(z.string(), z.object({ loop: z.number().int(), children: z.array(FanoutChildSummarySchema), pool: PoolSummarySchema.nullable().default(null), past: z.array(FanoutPassSummarySchema) })).default({}),
+  /** The quota priority, only for an active run of a project that paces; null = no priority control (finished, pacing off, or an older server). */
+  quotaPriority: RunPriorityViewSchema.nullable().default(null),
 });
 export type RunSummary = z.infer<typeof RunSummarySchema>;
 
 const TITLE_MAX = 200;
 
-export function summarizeRun(run: Run): RunSummary {
+export function summarizeRun(run: Run, quotaPriority: RunPriorityView | null = null): RunSummary {
   const text = Object.values(run.inputs).find((value): value is string => typeof value === "string" && value.trim() !== "");
   const { id, title, description, singleton, blocks, slowWarning, outcomes } = run.playbook;
   return {
@@ -1386,6 +1402,7 @@ export function summarizeRun(run: Run): RunSummary {
     jobs: run.jobs.map(({ id, label, status, waiting, requeued, detached, outcome, followUps, reopens }) => ({ id, label, status, waiting, requeued, detached, outcome, followUps, reopens })),
     batch: run.batch,
     parent: run.parent,
+    quotaPriority,
     fanouts: Object.fromEntries(
       Object.entries(run.steps).flatMap(([stepId, step]) =>
         step.fanout && step.status !== "pending" && step.status !== "ready"

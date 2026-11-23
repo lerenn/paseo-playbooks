@@ -15,6 +15,7 @@ import { laneTone } from "./lane-tone";
 import { TONE_RANK } from "./tone-color";
 import { AnalyticsView } from "./analytics";
 import { QuotaView } from "./quota";
+import { RunPriorityMenu } from "./run-priority-menu";
 import { useReduceMotion } from "./graph";
 import { LABEL_WIDTH, labelLayout, ROW_HEIGHT } from "./layout";
 import { needsYouRowKey } from "./overview-row-key";
@@ -1366,7 +1367,9 @@ function Lane(props: { theme: Theme; child: FanoutChildInfo; compact: boolean; r
     </View>
   ) : null;
   const [history, setHistory] = useState(false);
+  const refresh = useStoreRefresh();
   const restarts = child.previous.length;
+  const priority = run?.quotaPriority && isActive(run) ? <RunPriorityMenu theme={theme} runId={run.id} view={run.quotaPriority} onChanged={refresh} /> : null;
   return (
     <View style={{ gap: 2 }}>
     <Pressable
@@ -1381,10 +1384,12 @@ function Lane(props: { theme: Theme; child: FanoutChildInfo; compact: boolean; r
         {state ? <ToneIcon tone={state.tone} color={color} size={11} /> : <Icon name="Circle" size={11} color={color} />}
         <Text numberOfLines={1} style={{ flex: 1, color: theme.colors.foreground, fontSize: 12, fontWeight: "500" }}>{child.key}</Text>
         {props.compact ? marker : null}
+        {props.compact ? priority : null}
       </View>
       {line ? <View style={{ flex: props.compact ? undefined : 1, minWidth: 80, flexDirection: "row" }}>{line}</View> : <View style={{ flex: props.compact ? undefined : 1 }} />}
       <Text numberOfLines={1} style={{ color: theme.colors.foregroundMuted, fontSize: 11, width: props.compact ? undefined : 190 }}>{status}</Text>
       {props.compact ? null : marker}
+      {props.compact ? null : priority}
     </Pressable>
     {restarts > 0 ? (
       <View style={{ gap: 2, paddingLeft: props.compact ? 0 : 156 }}>
@@ -1405,8 +1410,8 @@ function Lane(props: { theme: Theme; child: FanoutChildInfo; compact: boolean; r
   );
 }
 
-/** Room for the right-hand buttons of a row: manager, workspace and archive. */
-const ACTIONS_WIDTH = 90;
+/** Room for the right-hand buttons of a row: priority, manager, workspace and archive. */
+const ACTIONS_WIDTH = 130;
 
 /** Open the run's Playbook Manager and its workspace, or archive a finished run: the right-hand buttons of a run or Needs you row. */
 function RunActions(props: {
@@ -1425,7 +1430,8 @@ function RunActions(props: {
   // Only a finished run whose after-tasks are done can be archived.
   const archivable = isTerminal(run.status) && !isActive(run);
   return (
-    <View style={{ width: props.compact ? undefined : ACTIONS_WIDTH, flexDirection: "row", justifyContent: "flex-end", gap: 10 }}>
+    <View style={{ width: props.compact ? undefined : ACTIONS_WIDTH, flexDirection: "row", justifyContent: "flex-end", alignItems: "center", gap: 10 }}>
+      {run.quotaPriority && isActive(run) ? <RunPriorityMenu theme={theme} runId={run.id} view={run.quotaPriority} onChanged={refresh} /> : null}
       {props.onOpenAgent && run.managerAgentId ? (
         <IconButton theme={theme} icon="Bot" label={t("cards.actions.openManager", { id: shortId(run) })} onPress={() => props.onOpenAgent!(run.managerAgentId)} />
       ) : null}

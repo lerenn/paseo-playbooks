@@ -1,4 +1,4 @@
-import type { RateHold, Run } from "../shared/types";
+import type { RateHold, Run, RunPriorityView } from "../shared/types";
 import { isActive, isPaused, isPipeline } from "../shared/types";
 import type { RateLimitsConfig } from "./config";
 import { windowModel, type ProviderUsage, type UsageSnapshot, type UsageWindow } from "./usage";
@@ -257,6 +257,23 @@ export function runPriority(run: Run, runs: Run[]): number {
   const owner = root ?? run;
   return owner.priority ?? owner.playbook.rateLimit.priority;
 }
+
+/**
+ * What the Runs view shows of an active run's priority (null for a run that is over: nothing to reorder). The caller decides
+ * whether the run's project paces; `parents` is the set of run ids that have children (see `parentIds`).
+ */
+export function priorityViewOf(run: Run, runs: Run[], parents: Set<string>): RunPriorityView {
+  return {
+    priority: runPriority(run, runs),
+    defaultPriority: runPriority({ ...run, priorityOverride: null }, runs),
+    override: run.priorityOverride ?? null,
+    hasChildren: parents.has(run.id),
+    inheritChildren: run.inheritChildPriority ?? false,
+  };
+}
+
+/** The ids of the runs some other run lists as its parent. */
+export const parentIds = (runs: Run[]): Set<string> => new Set(runs.flatMap((run) => (run.parent ? [run.parent.runId] : [])));
 
 /** Whether any agent or script step of the run has started (the run is past admission). */
 export const hasStarted = (run: Run): boolean => Object.values(run.steps).some((state) => state.attempts.length > 0);

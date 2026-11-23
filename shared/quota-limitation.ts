@@ -36,12 +36,6 @@ export const QuotaRunRefSchema = z.object({
   runId: z.string(),
   title: z.string(),
   projectId: z.string().optional(),
-  /** The run's quota priority now, the one it would have without a manual override, the override itself (null = none), and the children inheritance (absent from an older server). */
-  priority: z.number().optional(),
-  defaultPriority: z.number().optional(),
-  override: z.number().nullable().optional(),
-  hasChildren: z.boolean().optional(),
-  inheritChildren: z.boolean().optional(),
 });
 export type QuotaRunRef = z.infer<typeof QuotaRunRefSchema>;
 
