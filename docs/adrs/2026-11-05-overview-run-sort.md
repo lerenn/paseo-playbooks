@@ -10,7 +10,7 @@ runs only came in order of last update.
 ## Decision
 
 - That cell holds a **Runs** heading and a sort menu, one per playbook: **Last update** (the
-  default), **Started** (newest first), **Status** (waiting, working, failed, done, paused,
+  default), **Started** (newest first), **Status** (waiting, working, paused, failed, done,
   seen) and **Progress** (share of the line covered, furthest first). Ties go to the most
   recent update.
 - The choice lives in the screen's memory and resets when it is reopened. On compact layouts the
