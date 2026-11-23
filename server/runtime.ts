@@ -41,7 +41,7 @@ import { assertBranchName } from "./branch-name";
 import { checkoutSnapshot, currentRef, defaultBranch, exportPaths, fastForward, freshenCheckout, freshRef, freshRefInfo, git as gitOutput, resolveCommit, removedGitlinks, snapshotDiff, checkoutViolationSince, unsavedWork } from "./git";
 import { workspaceTitle } from "../shared/workspace-name";
 import { createWorktree, diskUsedFraction, dirtyPaths, purgeScratch, linkedSubmodules, listWorktreeDirs, pruneWorktrees, unpushedCommits, removeWorktree, repoOfWorktree, worktreeBranch, worktreePath } from "./worktree";
-import { chooseDefinition, definitionMismatch, isAdoptable, readAtRef, shortReason, workspaceWarning } from "./fresh";
+import { chooseDefinition, definitionMismatch, isAdoptable, readAtRef, resolveForNewRun, shortReason, workspaceWarning } from "./fresh";
 import { runWorktreeTeardown } from "./teardown";
 import { gatesOnBehalfSetting, wardenPrSetting, loadPlaybooks, loadSidekick, type SidekickConfig, type SidekickProviders } from "./loader";
 import { findEntry } from "../shared/repos";
@@ -2576,7 +2576,7 @@ export class Runtime {
 
   /**
    * The Quota limitation tab (see `buildQuotaLimitation`): the limits a new run of each given project gets, resolved like a run does
-   * (the playbook folder's defaults, then config.yaml, then the built-in ones; one set per distinct result among the project's
+   * (the playbook folder's defaults of the project's main checkout, with isolated playbooks read from their base on origin like `list_playbooks`, then config.yaml, then the built-in ones; one set per distinct result among the project's
    * playbooks), and the pacing's numbers per provider. A reading's freshness is judged at the user-level settings.
    */
   async quotaLimitation(workspaces: Array<{ projectId: string; workspaceId: string }> = []): Promise<QuotaLimitation> {
@@ -2590,9 +2590,13 @@ export class Runtime {
         .map(async ({ projectId, workspaceId }) => {
           const workspace = await this.peekWorkspace(workspaceId).catch(() => null);
           if (!workspace) return null;
-          const loaded = await loadPlaybooks(workspace.workspaceDirectory ?? workspace.projectRootPath, { projectId }).catch(() => null);
+          // The project's main checkout, not whichever workspace the panel listed first (an old run worktree may predate a change of
+          // the defaults); isolated playbooks then come from their base on origin, as `list_playbooks` and a new run resolve them.
+          const root = workspace.projectRootPath;
+          const loaded = await loadPlaybooks(root, { projectId }).catch(() => null);
+          const resolved = loaded ? await resolveForNewRun(root, loaded).catch(() => loaded.entries.map((entry) => ({ entry }))) : [];
           const sets = new Map<string, { repos: string[]; config: RateLimitsConfig }>();
-          for (const entry of loaded?.entries ?? []) {
+          for (const { entry } of resolved) {
             if (!entry.playbook) continue;
             const config = resolveQuotaLimits(layer, entry.playbook.quotaLimits);
             const key = JSON.stringify(config);

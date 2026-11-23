@@ -70,35 +70,46 @@ function Body(props: { theme: Theme; data: QuotaLimitation }) {
   const muted = theme.colors.foregroundMuted;
   return (
     <View style={{ gap: 14 }}>
-      <Card theme={theme}>
-        <Text style={{ color: theme.colors.foreground, fontSize: 13, fontWeight: "700" }}>{t("quota.projects")}</Text>
-        {data.projects.length === 0 ? <Text style={{ color: muted, fontSize: 12 }}>{t("quota.noProjects")}</Text> : null}
-        {data.projects.map((project) => (
-          <ProjectLimits key={project.projectId} theme={theme} project={project} />
-        ))}
-        <Text style={{ color: muted, fontSize: 12 }}>{t("quota.counts", { steps: data.stepsRunning, runs: data.runsActive })}</Text>
-        {data.limitHeld.length > 0 ? (
-          <Section theme={theme} title={t("quota.limitHeld")}>
-            {data.limitHeld.map((run) => (
-              <Text key={run.runId} style={{ color: theme.colors.foreground, fontSize: 12 }}>{`${run.title} · ${kindLabel(t, run.kind)}: ${run.reason}`}</Text>
-            ))}
-          </Section>
-        ) : null}
-      </Card>
-      {data.providers.length === 0 ? <Text style={{ color: muted }}>{t("quota.noProviders")}</Text> : null}
-      {data.providers.map((provider) => (
-        <Provider key={provider.provider} theme={theme} provider={provider} />
-      ))}
+      <View style={{ gap: 8 }}>
+        <Heading theme={theme} title={t("quota.projects")} />
+        <Card theme={theme}>
+          {data.projects.length === 0 ? <Text style={{ color: muted, fontSize: 12 }}>{t("quota.noProjects")}</Text> : null}
+          {data.projects.map((project, index) => (
+            <ProjectLimits key={project.projectId} theme={theme} project={project} first={index === 0} />
+          ))}
+          <Text style={{ color: muted, fontSize: 12 }}>{t("quota.counts", { steps: data.stepsRunning, runs: data.runsActive })}</Text>
+          {data.limitHeld.length > 0 ? (
+            <Section theme={theme} title={t("quota.limitHeld")}>
+              {data.limitHeld.map((run) => (
+                <Text key={run.runId} style={{ color: theme.colors.foreground, fontSize: 12 }}>{`${run.title} · ${kindLabel(t, run.kind)}: ${run.reason}`}</Text>
+              ))}
+            </Section>
+          ) : null}
+        </Card>
+      </View>
+      <View style={{ gap: 8 }}>
+        <Heading theme={theme} title={t("quota.providersTitle")} />
+        <Card theme={theme}>
+          {data.providers.length === 0 ? <Text style={{ color: muted, fontSize: 12 }}>{t("quota.noProviders")}</Text> : null}
+          {data.providers.map((provider, index) => (
+            <Provider key={provider.provider} theme={theme} provider={provider} first={index === 0} />
+          ))}
+        </Card>
+      </View>
     </View>
   );
 }
 
-function ProjectLimits(props: { theme: Theme; project: QuotaProject }) {
-  const { theme, project } = props;
+function Heading(props: { theme: Theme; title: string }) {
+  return <Text style={{ color: props.theme.colors.foreground, fontSize: 15, fontWeight: "700" }}>{props.title}</Text>;
+}
+
+function ProjectLimits(props: { theme: Theme; project: QuotaProject; first: boolean }) {
+  const { theme, project, first } = props;
   const { t } = useTranslation(messages);
   const muted = theme.colors.foregroundMuted;
   return (
-    <View style={{ gap: 3, borderTopWidth: 1, borderTopColor: theme.colors.border, paddingTop: 8 }}>
+    <View style={{ gap: 3, ...(first ? {} : { borderTopWidth: 1, borderTopColor: theme.colors.border, paddingTop: 8 }) }}>
       <Text style={{ color: theme.colors.foreground, fontSize: 13, fontWeight: "600" }}>{project.label}</Text>
       {project.limits.map((limits) => (
         <View key={limits.repos.join(",")} style={{ gap: 2 }}>
@@ -113,16 +124,17 @@ function ProjectLimits(props: { theme: Theme; project: QuotaProject }) {
   );
 }
 
-function Provider(props: { theme: Theme; provider: QuotaProvider }) {
-  const { theme, provider } = props;
+/** A provider's row, laid out like a project's: bold name, then plain lines. */
+function Provider(props: { theme: Theme; provider: QuotaProvider; first: boolean }) {
+  const { theme, provider, first } = props;
   const { t } = useTranslation(messages);
   const muted = theme.colors.foregroundMuted;
   // Nothing is paced when no project has pacing on, whatever the reading says.
   const paced = provider.pacedBy.length > 0;
   const tone = !paced ? muted : provider.state === "ok" ? theme.colors.foreground : provider.state === "unavailable" ? semanticColor(theme, "failed") : muted;
   return (
-    <Card theme={theme}>
-      <Text style={{ color: theme.colors.foreground, fontSize: 15, fontWeight: "700" }}>{provider.provider}</Text>
+    <View style={{ gap: 3, ...(first ? {} : { borderTopWidth: 1, borderTopColor: theme.colors.border, paddingTop: 8 }) }}>
+      <Text style={{ color: theme.colors.foreground, fontSize: 13, fontWeight: "600" }}>{provider.provider}</Text>
       <Text style={{ color: tone, fontSize: 12 }}>{paced ? `${t(`quota.state.${provider.state}`)} · ${t("quota.pacedBy", { projects: provider.pacedBy.join(", ") })}` : t("quota.noPacing")}</Text>
       {provider.readAt ? <Text style={{ color: muted, fontSize: 11 }}>{t("quota.readAt", { when: when(provider.readAt) })}</Text> : null}
       {provider.overrideUntil ? <Text style={{ color: muted, fontSize: 11 }}>{t("quota.overrideUntil", { when: when(provider.overrideUntil) })}</Text> : null}
@@ -131,31 +143,31 @@ function Provider(props: { theme: Theme; provider: QuotaProvider }) {
         <Slot key={slot.id} theme={theme} slot={slot} />
       ))}
       {provider.reservations.length > 0 ? (
-        <Section theme={theme} title={t("quota.reservations")}>
+        <Lines theme={theme} title={t("quota.reservations")}>
           {provider.reservations.map((run) => (
             <Text key={run.runId} style={{ color: theme.colors.foreground, fontSize: 12 }}>
               {`${run.title} · ${Object.entries(run.remaining).map(([name, value]) => t("quota.remaining", { window: name, value })).join(", ")}`}
             </Text>
           ))}
-        </Section>
+        </Lines>
       ) : null}
       {provider.held.length > 0 ? (
-        <Section theme={theme} title={t("quota.held")}>
+        <Lines theme={theme} title={t("quota.held")}>
           {provider.held.map((run) => (
             <Text key={run.runId} style={{ color: theme.colors.foreground, fontSize: 12 }}>
               {`${run.title} · ${kindLabel(t, run.kind)}: ${run.reason}${run.retryAt ? ` (${t("quota.retry", { when: when(run.retryAt) })})` : ""}`}
             </Text>
           ))}
-        </Section>
+        </Lines>
       ) : null}
       {provider.exhausted.length > 0 ? (
-        <Section theme={theme} title={t("quota.exhausted")}>
+        <Lines theme={theme} title={t("quota.exhausted")}>
           {provider.exhausted.map((mark) => (
             <Text key={`${mark.runId}/${mark.target}`} style={{ color: theme.colors.foreground, fontSize: 12 }}>{`${mark.target} · ${mark.title} · ${t("quota.until", { when: when(mark.until) })}`}</Text>
           ))}
-        </Section>
+        </Lines>
       ) : null}
-    </Card>
+    </View>
   );
 }
 
@@ -168,8 +180,8 @@ function Slot(props: { theme: Theme; slot: QuotaWindow }) {
   const over = slot.paces.some((pace) => pace.headroom < 0);
   const facts = [slot.used === null ? null : t("quota.used", { value: slot.used }), slot.reserved > 0 ? t("quota.reserved", { value: slot.reserved }) : null, slot.paces.length === 0 ? t("quota.notPaced") : null].filter((fact): fact is string => fact !== null);
   return (
-    <View style={{ gap: 4, borderTopWidth: 1, borderTopColor: theme.colors.border, paddingTop: 8 }}>
-      <Text style={{ color: theme.colors.foreground, fontSize: 13, fontWeight: "600" }}>
+    <View style={{ gap: 3, paddingTop: 4 }}>
+      <Text style={{ color: theme.colors.foreground, fontSize: 12 }}>
         {slot.name}
         {slot.modelScoped ? ` · ${t("quota.modelWindow")}` : ""}
       </Text>
@@ -188,6 +200,16 @@ function Slot(props: { theme: Theme; slot: QuotaWindow }) {
       ))}
       {slot.resetsAt ? <Text style={{ color: muted, fontSize: 11 }}>{t("quota.resets", { when: when(slot.resetsAt) })}</Text> : null}
       {slot.stale ? <Text style={{ color: muted, fontSize: 11 }}>{t("quota.stale")}</Text> : null}
+    </View>
+  );
+}
+
+/** A titled group of plain lines inside a row (no divider: the row's own divider separates rows). */
+function Lines(props: { theme: Theme; title: string; children: React.ReactNode }) {
+  return (
+    <View style={{ gap: 2, paddingTop: 4 }}>
+      <Text style={{ color: props.theme.colors.foregroundMuted, fontSize: 12 }}>{props.title}</Text>
+      {props.children}
     </View>
   );
 }
