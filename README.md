@@ -250,6 +250,7 @@ minus current usage minus what work already started still has to use. Work start
 average quota points the playbook's steps used, measured from the usage readings and kept in `rate-history.json` (there is no manual estimate;
 `quota_limit.estimate` was removed and is refused at load). A playbook with no history is **not paced by cost** (it starts
 without a headroom check and reserves nothing) until its first measure exists; the hard cap (`usable_percent`) and "quota data unavailable" still hold it.
+A playbook whose estimate is **zero** (at most 0.05 points) is treated the same: it can't move the pace, so it is never held for headroom, never paused to fit the pace, reserves nothing and isn't blocked behind a held higher-priority run; an exhausted window or unavailable data still hold it.
 The rest is held; the plugin lifts the hold itself.
 
 - A run is admitted only when the headroom covers its whole estimated cost. The capacity is dynamic over
@@ -257,7 +258,7 @@ The rest is held; the plugin lifts the hold itself.
   **paused** when they reach the end of a step (a running step is never interrupted). Those that keep running are chosen by priority, then
   oldest first; the lowest priority and newest are paused. Paused runs resume one by one, in the same order, when the pace relaxes or a
   continuing run finishes; the capacity is re-checked each time, so never more runs than it allows progress. Runs with no measured cost
-  are not paced and never paused. Held and paused runs are re-checked at once when a run ends or is archived or a step ends (debounced, one check per burst), with the 15 s timer as fallback. A run is also held between steps when its quota is exhausted (a window at `usable_percent`).
+  (or a zero one, at most 0.05 points) are not paced and never paused. Held and paused runs are re-checked at once when a run ends or is archived or a step ends (debounced, one check per burst), with the 15 s timer as fallback. A run is also held between steps when its quota is exhausted (a window at `usable_percent`).
 - **Priority**: `quota_limit: { priority: 0 }` on a playbook (or in `defaults/main.yaml`), overridden per run by `start_playbook`'s `priority`.
   Higher goes first, ties oldest first, also for the optional caps. A held run blocks lower ones on the same provider, so a large run is not starved.
 - **Old names**: `rate_limits` (config or defaults) and `rate_limit` (playbook or defaults) still work as deprecated aliases and log a one-time note naming the new key; when both are set, the new key wins. Only the config keys were renamed: `rateHold`, `run.held`, `run.released` and `rate-history.json` are unchanged.

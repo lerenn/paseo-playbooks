@@ -101,6 +101,13 @@ export interface Plan {
   admitted: Map<string, Record<string, number>>;
 }
 
+/**
+ * An estimated need at or below this many points (a window percent) counts as zero: such work cannot move the pace, so it is never
+ * held for headroom, never paused to fit the pace, takes nothing and is not blocked behind a held waiter. 0.05 is a twentieth of a
+ * point: below what one usage reading can resolve and below what the panel shows (one decimal).
+ */
+export const ZERO_COST_POINTS = 0.05;
+
 const pts = (value: number) => `${Math.round(value * 10) / 10}`;
 
 /** The estimated cost of a candidate on one window: steps × per-step cost, never above what the window can ever hold. */
@@ -148,8 +155,9 @@ export function planHeadroom(candidates: Candidate[], ctx: PlanContext): Plan {
           if (!hold || until > Date.parse(hold.retryAt ?? "")) hold = verdict;
           continue;
         }
-        // No estimate yet (no measure yet): not paced by cost, only by the hard cap above; it reserves nothing.
-        if (!estimated) {
+        // No estimate yet, or an estimate of zero (at most ZERO_COST_POINTS): not paced by cost, only by the hard cap above (and the
+        // exhausted or unavailable data checks); it reserves nothing and is not blocked behind a held waiter.
+        if (!estimated || cost <= ZERO_COST_POINTS) {
           takes.push({ room, cost: 0 });
           continue;
         }
@@ -227,7 +235,7 @@ export interface Admitted {
  * ones whose remaining cost fits under the pace, taken by priority then oldest first, each taking its need from the headroom
  * (pace ceiling minus usage, minus `other` reservations). The rest are paused between steps (never a running step), with their
  * place in the queue. A run that does not fit blocks lower runs on the same provider (a strict order), so resuming goes one by one
- * in that order and never exceeds the capacity. A run with no need (no cost measured) is not paced and never paused.
+ * in that order and never exceeds the capacity. A run with no need (no cost measured, or at most ZERO_COST_POINTS) is not paced and never paused.
  * `quota` and unavailable data are the business of `exhaustionVerdict`, not decided here.
  */
 export function planPace(runs: Admitted[], ctx: Pick<PlanContext, "now" | "probe">, other: (provider: string, windowId: string) => number): Map<string, HoldVerdict> {
@@ -244,7 +252,7 @@ export function planPace(runs: Admitted[], ctx: Pick<PlanContext, "now" | "probe
       if (probe.state !== "ok") continue;
       for (const room of probe.rooms) {
         const cost = entry.need[windowKey(provider, room.id)] ?? 0;
-        if (cost <= 1e-9) continue;
+        if (cost <= ZERO_COST_POINTS) continue;
         const free = available(room);
         if (free + 1e-9 >= cost && !blocked.has(provider)) takes.push({ room, cost });
         else if (!short || free - cost < short.free - short.cost) short = { room, cost, free };

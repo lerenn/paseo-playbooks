@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { DEFAULT_RATE_LIMITS } from "./config";
 import { newRun } from "./engine";
 import { loadPlaybooks } from "./loader";
-import { CostHistory, exhaustionVerdict, orderCandidates, planHeadroom, planPace, windowKey, type Candidate, type PlanContext } from "./rate-budget";
+import { CostHistory, ZERO_COST_POINTS, exhaustionVerdict, orderCandidates, planHeadroom, planPace, windowKey, type Candidate, type PlanContext } from "./rate-budget";
 import { admittedRunIds, windowRooms, type Probe } from "./rate-limit";
 import type { Run } from "../shared/types";
 
@@ -129,6 +129,52 @@ describe("headroom plan", () => {
     const runs = await mk(1);
     const plan = planHeadroom([want(runs[0]!, 100)], ctxOf(0, { stepCost: () => 5 }));
     expect(plan.holds.get("r0")!.estimatedCost).toBe(97);
+  });
+});
+
+describe("zero-cost runs", () => {
+  const key = windowKey("claude", "weekly");
+  const costs = (zero: string[], real = 2) => ({ stepCost: (run: Run) => (zero.includes(run.id) ? 0 : real) });
+
+  it("are admitted with no free headroom or a negative one, taking nothing", async () => {
+    const runs = await mk(2);
+    // Usage 28.9 = the ceiling (0 free), then 40 (negative).
+    for (const used of [28.87, 40]) {
+      const plan = planHeadroom(runs.map((run) => want(run)), ctxOf(used, costs(["r0", "r1"])));
+      expect(plan.holds.size).toBe(0);
+      expect(plan.admitted.get("r0")).toEqual({ [key]: 0 });
+    }
+    // Up to the epsilon counts as zero, above it is a real cost.
+    expect(planHeadroom([want(runs[0]!)], ctxOf(40, { stepCost: () => ZERO_COST_POINTS })).holds.size).toBe(0);
+    expect(planHeadroom([want(runs[0]!)], ctxOf(40, { stepCost: () => ZERO_COST_POINTS + 0.01 })).holds.size).toBe(1);
+  });
+
+  it("are not blocked behind a held higher-priority waiter, and do not block lower real-cost runs more than before", async () => {
+    const runs = await mk(3);
+    const plan = planHeadroom([want(runs[0]!, 1, 5), want(runs[1]!, 1, 1), want(runs[2]!, 1, 0)], ctxOf(27, costs(["r1"], 50)));
+    expect([...plan.holds.keys()]).toEqual(["r0", "r2"]);
+    expect(plan.admitted.has("r1")).toBe(true);
+    expect(plan.holds.get("r2")).toMatchObject({ kind: "headroom", position: 2 });
+  });
+
+  it("are still held when the quota is exhausted or its data unavailable", async () => {
+    const runs = await mk(1);
+    expect(planHeadroom([want(runs[0]!)], ctxOf(98, costs(["r0"]))).holds.get("r0")).toMatchObject({ kind: "quota" });
+    const none = ctxOf(10, { ...costs(["r0"]), probe: () => ({ state: "unavailable", verdict: { kind: "quota", reason: "quota data unavailable for claude", provider: "claude", window: null, retryAt: new Date(NOW).toISOString() } }) });
+    expect(planHeadroom([want(runs[0]!)], none).holds.has("r0")).toBe(true);
+  });
+
+  it("leave real-cost runs as they were", async () => {
+    const runs = await mk(3);
+    const plan = planHeadroom(runs.map((run) => want(run, 2)), ctxOf(22, costs(["none"])));
+    expect([...plan.holds.keys()]).toEqual(["r1", "r2"]);
+  });
+
+  it("are never paused to fit the pace, even below the epsilon", async () => {
+    const runs = await mk(3);
+    const entry = (run: Run, need: number) => ({ run, priority: 0, providers: ["claude"], need: { [key]: need } });
+    const paused = planPace([entry(runs[0]!, 0), entry(runs[1]!, ZERO_COST_POINTS), entry(runs[2]!, 50)], ctxOf(40), () => 0);
+    expect([...paused.keys()]).toEqual(["r2"]);
   });
 });
 
