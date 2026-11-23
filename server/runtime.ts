@@ -106,6 +106,7 @@ export const MANAGER_TOOL_NAMES = [
   "cancel_run",
   "refresh_scripts",
   "restart_run",
+  "set_run_priority",
   "archive_run",
   "requeue_job",
   "validate_playbooks",
@@ -533,7 +534,7 @@ export class Runtime {
     // Capacity freed (a run ends or is archived, a step ends): held and paused runs are looked at again at once, not at the next 15 s timer.
     store.onChange((before, after) => {
       const running = (run: Run) => Object.values(run.steps).filter((state) => state.status === "running").length;
-      if ((isActive(before) && !isActive(after)) || (!before.archivedAt && after.archivedAt) || running(after) < running(before)) this.kickLimits();
+      if ((isActive(before) && !isActive(after)) || (!before.archivedAt && after.archivedAt) || running(after) < running(before) || before.priorityOverride !== after.priorityOverride) this.kickLimits();
     });
     // Script steps with `wake_on` (script-wake.ts logic below): an internal listener, not an agent subscription.
     this.bus.onEmit((event) => {
@@ -1767,6 +1768,7 @@ export class Runtime {
         name: runName(options.name),
         ...(reservation?.parent ? { parent: reservation.parent } : {}),
         ...((options.priority ?? reservation?.priority) !== undefined ? { priority: (options.priority ?? reservation?.priority)! } : {}),
+        ...this.inheritedPriority(reservation?.parent),
         inputs,
         now: nowIso(),
       });
@@ -3215,7 +3217,13 @@ export class Runtime {
       return { restarts: item.child.previous.length };
     });
     if (!result) throw new UserError(`the fan-out step of run ${target.parent.id} changed while replacing: try again`);
-    if (created) await this.store.mutate(created.id, (current) => void (current.parent = link));
+    if (created) {
+      const inherited = this.inheritedPriority(link);
+      await this.store.mutate(created.id, (current) => {
+        current.parent = link;
+        if (inherited.priorityOverride !== undefined && current.priorityOverride === null) Object.assign(current, inherited);
+      });
+    }
     else if (reservation) reservation.parent = link;
     if (wasActive) await this.cancelRun(input.runId, `replaced by run ${input.newRunId}${input.reason ? `: ${input.reason}` : ""}`, input.cancelBy).catch((error: unknown) => console.error(`[playbooks] could not cancel replaced child run ${input.runId}:`, errorText(error)));
     await this.bus.emit("fanout.child_replaced", { runId: target.parent.id, stepId: target.stepId, key: link.key, replacedRunId: input.runId, newRunId: input.newRunId, reason: input.reason, restarts: result.restarts }, { runId: target.parent.id, source: "fanout" }).catch((error: unknown) => console.error("[playbooks] could not emit fanout.child_replaced:", errorText(error)));
@@ -4815,6 +4823,68 @@ export class Runtime {
       await this.deliver(runId);
     }
     return this.store.get(runId)!;
+  }
+
+  /** What a child of `parent` starts with when the parent applies its manual priority to children (empty otherwise). */
+  private inheritedPriority(parent: Run["parent"] | undefined): { priorityOverride?: number; inheritChildPriority?: boolean } {
+    const owner = parent ? this.store.get(parent.runId) : undefined;
+    return owner?.inheritChildPriority && owner.priorityOverride !== null ? { priorityOverride: owner.priorityOverride, inheritChildPriority: true } : {};
+  }
+
+  /** Every run below `run` (children, their children...), each once; a cycle or a chain deeper than 20 stops there. */
+  private descendantsOf(run: Run): Run[] {
+    const all = this.store.list();
+    const seen = new Set<string>([run.id]);
+    const out: Run[] = [];
+    let level = [run.id];
+    for (let depth = 0; depth < 20 && level.length > 0; depth++) {
+      const next: string[] = [];
+      for (const candidate of all) {
+        if (candidate.parent && level.includes(candidate.parent.runId) && !seen.has(candidate.id)) {
+          seen.add(candidate.id);
+          out.push(candidate);
+          next.push(candidate.id);
+        }
+      }
+      level = next;
+    }
+    return out;
+  }
+
+  /**
+   * Sets (or, with null, clears) the manual quota priority of a run (ADR 2026-11-23-run-quota-priority-override). `applyToChildren`
+   * sets the sticky flag: true copies the priority onto every descendant now and onto the children the run starts later, false stops
+   * inheriting (children keep theirs); undefined keeps the flag, and a run whose flag is on passes every change down. The pace plan is
+   * looked at again at once. Throws on an unknown or archived run or a priority outside the playbook's range.
+   */
+  async setRunPriority(runId: string, priority: number | null, applyToChildren: boolean | undefined, by: string): Promise<{ run: Run; from: number | null; to: number | null; changed: boolean; cascaded: number }> {
+    const existing = this.store.get(runId);
+    if (!existing) throw new UserError(`unknown run "${runId}"`);
+    if (existing.archivedAt) throw new UserError(`run ${runId} is archived`);
+    try {
+      engine.checkPriority(priority);
+    } catch (error) {
+      throw new UserError(errorText(error));
+    }
+    const note = `by ${by}`;
+    const result = await this.store.mutate(runId, (current) => engine.setRunPriority(current, priority, applyToChildren, nowIso(), note));
+    let run = this.store.get(runId)!;
+    let cascaded = 0;
+    if (run.inheritChildPriority) {
+      for (const child of this.descendantsOf(run)) {
+        const done = await this.store.mutate(child.id, (current) => {
+          const out = engine.setRunPriority(current, priority, true, nowIso(), `from parent ${runId}`);
+          return out.changed;
+        });
+        if (done) cascaded += 1;
+      }
+    }
+    run = this.store.get(runId)!;
+    if (result.changed || cascaded > 0) {
+      await this.bus.emit("run.priority_changed", { ...runFieldsOf(run), from: result.from, to: priority, inheritChildren: run.inheritChildPriority, cascaded, by }, { runId, source: "runs" }).catch((error: unknown) => console.error("[playbooks] could not emit run.priority_changed:", errorText(error)));
+      this.kickLimits();
+    }
+    return { run, from: result.from, to: priority, changed: result.changed || cascaded > 0, cascaded };
   }
 
   /**

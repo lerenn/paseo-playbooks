@@ -179,6 +179,33 @@ describe("dynamic capacity from quota headroom", () => {
     expect(store.get("r1")!.steps.a!.status).toBe("running");
   });
 
+  it("a manual override reorders the admission queue and the pace plan at once, and shows in the hold text", async () => {
+    const { runtime, store, internals, usage, read } = await setup(pacing(), { current: claude(0) });
+    await read();
+    // Both admitted (2 x 10 points under the 28.87 ceiling).
+    await runtime.startStep("m", "r0", "a", "go");
+    await runtime.startStep("m", "r1", "a", "go");
+    // Usage jumps ahead of the pace (13.87 free): one of them fits. Outside use, not the runs'.
+    usage.current = claude(15);
+    await read();
+    const inner = runtime as unknown as { reservedQuota: Map<string, { spent: Record<string, number> }>; attemptUse: Map<string, unknown> };
+    for (const entry of inner.reservedQuota.values()) entry.spent = {};
+    inner.attemptUse.clear();
+    for (const id of ["r0", "r1"]) await store.mutate(id, (run) => void ((run.steps.a!.status = "completed"), (run.steps.b!.status = "ready")));
+    // Same priority: the oldest (r0) keeps going, r1 is paused.
+    expect(await internals.rateCheck(store.get("r0")!, "r0/b", true)).toBeNull();
+    expect(await internals.rateCheck(store.get("r1")!, "r1/b", true)).toMatchObject({ kind: "pace", position: 1, priority: 0 });
+    // Raise r1 by hand: the order flips, the hold text carries the override, and r0 is the one paused now.
+    await runtime.setRunPriority("r1", 5, undefined, "test");
+    expect(await internals.rateCheck(store.get("r1")!, "r1/b", true)).toBeNull();
+    const verdict = (await internals.rateCheck(store.get("r0")!, "r0/b", true)) as { priority: number; reason: string };
+    expect(verdict).toMatchObject({ kind: "pace", priority: 0 });
+    // Cleared: back to the playbook's priority and the age order.
+    await runtime.setRunPriority("r1", null, undefined, "test");
+    expect(await internals.rateCheck(store.get("r0")!, "r0/b", true)).toBeNull();
+    expect(store.get("r0")!.priorityOverride).toBeNull();
+  });
+
   it("releases held runs by itself when headroom returns", async () => {
     const { runtime, store, internals, usage, read } = await setup(pacing(), { current: claude(10) });
     await read();

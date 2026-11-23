@@ -1110,6 +1110,24 @@ export function runTools(runtime: Runtime): AgentToolDefinition[] {
           return ok(`${refreshed ? `${refreshText(run.id, refreshed)}\n` : ""}Run ${run.id} restarted from "${stepId}". ${next}`, isManager ? runChange(run, stepId) : runListing(run));
         }),
     }),
+    defineAgentTool({
+      name: "set_run_priority",
+      description:
+        "Set, or with priority: null clear, a run's MANUAL quota priority: it wins over the playbook's `quota_limit.priority` and over start_playbook's priority, in the quota pace plan (which runs may progress when the quota headroom cannot hold them all), the admission queue and the `rateHold` text (higher goes first, ties go to the oldest run). Whole number from -1000 to 1000 (same range as the playbook's). Applied at once: the pace plan is looked at again, so a raised run resumes and a lowered one can be paused at its next step boundary (running steps are never interrupted). Kept for the life of the run, changed only by another call. applyToChildren sets a STICKY flag on a run with fan-out children: true copies the priority onto every child run now (and their children) and onto each child the run starts later (refills, replace_child); false stops inheriting but does not reset the children; omitted keeps the flag, and while it is on every change here is passed down again. A child that is edited by itself keeps its own priority until its parent is edited again. Records a history entry and emits run.priority_changed. Works on any run that is not archived, like cancel_run; get_run shows `priorityOverride` and `inheritChildPriority`.",
+      input: z.object({
+        runId: IdArg,
+        priority: z.number().int().min(-1000).max(1000).nullable().describe("The new priority, or null to clear the override (the playbook's priority applies again)"),
+        applyToChildren: z.boolean().optional().describe("Sticky: true passes the priority to every child run now and later, false stops passing it, omitted keeps it"),
+      }),
+      execute: ({ runId, priority, applyToChildren }, { agent }) =>
+        guard(async () => {
+          const result = await runtime.setRunPriority(runId, priority, applyToChildren, `agent ${agent.id}`);
+          const text = result.changed
+            ? `Run ${runId}: quota priority override ${result.from ?? "none"} → ${priority ?? "none (the playbook's)"}${result.cascaded > 0 ? `, copied onto ${result.cascaded} child run${result.cascaded === 1 ? "" : "s"}` : ""}. The pace plan was looked at again.`
+            : `Run ${runId}: nothing changed (the override is already ${priority ?? "none"}).`;
+          return ok(text, { runId, from: result.from, to: priority, changed: result.changed, cascaded: result.cascaded, inheritChildPriority: result.run.inheritChildPriority });
+        }),
+    }),
   ];
 }
 

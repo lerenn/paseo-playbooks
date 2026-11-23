@@ -235,6 +235,13 @@ export const restartRunRpc = defineRpc({
   output: z.object({ status: z.string() }),
 });
 
+/** Sets or clears a run's manual quota priority from the Quota limitation tab (also the set_run_priority agent tool). */
+export const setRunPriorityRpc = defineRpc({
+  name: "runs.set_priority",
+  input: z.object({ runId: z.string(), priority: z.number().int().min(-1000).max(1000).nullable(), applyToChildren: z.boolean().optional() }),
+  output: z.object({ priorityOverride: z.number().nullable(), inheritChildPriority: z.boolean(), from: z.number().nullable(), changed: z.boolean(), cascaded: z.number().int() }),
+});
+
 /** Manager-only quota recovery, also available as the recover_manager agent tool. */
 export const recoverManagerRpc = defineRpc({
   name: "runs.recover_manager",

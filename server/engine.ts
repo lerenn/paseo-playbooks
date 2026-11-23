@@ -83,6 +83,9 @@ export interface NewRunInput {
   parent?: Run["parent"];
   /** `start_playbook`'s priority, overriding the playbook's `quota_limit.priority`. */
   priority?: number | null;
+  /** A parent's manual priority a new child inherits. */
+  priorityOverride?: number | null;
+  inheritChildPriority?: boolean;
   inputs: Record<string, unknown>;
   now: string;
 }
@@ -223,6 +226,8 @@ function createRun(input: NewRunInput, inputs: Record<string, VarValue>, kind: "
     rateHold: null,
     rateNote: null,
     priority: input.priority ?? null,
+    priorityOverride: input.priorityOverride ?? null,
+    inheritChildPriority: input.inheritChildPriority ?? false,
     managerWatch: { steps: {}, question: null },
     warden: { findings: {} },
     steps: Object.fromEntries(
@@ -1764,6 +1769,31 @@ export function pauseRun(run: Run, now: string): boolean {
   run.pausedAt = now;
   log(run, now, "run_paused", null, "paused by a human");
   return true;
+}
+
+/** The accepted range of a quota priority: the playbook's `quota_limit.priority`. */
+export const PRIORITY_MIN = -1000;
+export const PRIORITY_MAX = 1000;
+
+/** Throws unless `priority` is null (clear) or a whole number in the playbook's range. */
+export function checkPriority(priority: number | null): void {
+  if (priority !== null && (!Number.isInteger(priority) || priority < PRIORITY_MIN || priority > PRIORITY_MAX)) throw new EngineError(`priority must be a whole number from ${PRIORITY_MIN} to ${PRIORITY_MAX}, or null to clear the override`);
+}
+
+/**
+ * Sets or clears the manual quota priority of a run (and the sticky `inheritChildPriority` flag when `inherit` is given). Returns
+ * what changed; the history records a change of the priority only when it moves (a flag change alone is recorded too).
+ */
+export function setRunPriority(run: Run, priority: number | null, inherit: boolean | undefined, now: string, note: string): { from: number | null; changed: boolean } {
+  checkPriority(priority);
+  const from = run.priorityOverride ?? null;
+  const flagBefore = run.inheritChildPriority ?? false;
+  run.priorityOverride = priority;
+  if (inherit !== undefined) run.inheritChildPriority = inherit;
+  const moved = from !== priority;
+  const flagMoved = inherit !== undefined && inherit !== flagBefore;
+  if (moved || flagMoved) log(run, now, "priority_changed", null, `${moved ? `quota priority override ${from === null ? "none" : from} → ${priority === null ? "none (the playbook's)" : priority}` : "children inherit the priority"}${flagMoved ? (inherit ? "; new children inherit it" : "; children no longer inherit it") : ""}${note ? ` (${note})` : ""}`);
+  return { from, changed: moved || flagMoved };
 }
 
 /** Lifts a pause. Returns false if the run was not paused. */

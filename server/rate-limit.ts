@@ -246,8 +246,13 @@ export function runningStepCount(runs: Run[]): number {
   return count;
 }
 
-/** The queue priority of a run: its own (`start_playbook`), else its playbook's `quota_limit.priority`; a fan-out child follows its parent's. Higher goes first. */
+/**
+ * The queue priority of a run: a manual override (`priorityOverride`), else its own (`start_playbook`), else its playbook's
+ * `quota_limit.priority`; a fan-out child without an override follows its parent's (not the parent's override: that reaches children by
+ * inheritance only, see ADR 2026-11-23-run-quota-priority-override). Higher goes first.
+ */
 export function runPriority(run: Run, runs: Run[]): number {
+  if (run.priorityOverride !== null && run.priorityOverride !== undefined) return run.priorityOverride;
   const root = run.parent ? runs.find((candidate) => candidate.id === run.parent?.runId) : undefined;
   const owner = root ?? run;
   return owner.priority ?? owner.playbook.rateLimit.priority;

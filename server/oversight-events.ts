@@ -192,6 +192,12 @@ export const OVERSIGHT_TYPES: EventTypeDef[] = [
     line: (event) => `- run.manager_recovered: the manager of ${runName(event.payload)} was blocked by its provider's quota; the plugin replaced it by itself with ${String(event.payload.target)}${event.payload.retargeted ? " (manager_recovery.fallback)" : ""}. Tools: get_run { runId: "${event.runId}" }.`,
   },
   {
+    type: "run.priority_changed",
+    description: "A run's manual quota priority was set or cleared (set_run_priority, or the Quota limitation tab): from and to are the override before and after (null = the playbook's priority), inheritChildren whether the run passes it to its children, cascaded how many descendant runs it was copied onto, by who. The pace plan is looked at again at once.",
+    payload: z.object({ ...runFields, from: z.number().nullable(), to: z.number().nullable(), inheritChildren: z.boolean(), cascaded: z.number().int(), by: z.string() }),
+    line: (event) => `- run.priority_changed: the quota priority override of ${runName(event.payload)} went from ${String(event.payload.from ?? "none")} to ${String(event.payload.to ?? "none")}${Number(event.payload.cascaded) > 0 ? `, copied onto ${String(event.payload.cascaded)} child run(s)` : ""}. Tools: get_run { runId: "${event.runId}" }.`,
+  },
+  {
     type: "run.canceled",
     description: 'A run was canceled (status "canceled"): the reason, when given.',
     payload: z.object({ ...runFields, reason: z.string().nullable() }),

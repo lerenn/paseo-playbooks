@@ -1217,6 +1217,10 @@ export const RunSchema = z.object({
   rateNote: z.string().nullable().default(null),
   /** The priority `start_playbook` gave this run, overriding the playbook's `quota_limit.priority`; null = the playbook's. */
   priority: z.number().nullable().default(null),
+  /** A manual quota priority set from the Quota limitation tab or `set_run_priority`: wins over `priority` and the playbook's; null = none. */
+  priorityOverride: z.number().nullable().default(null),
+  /** Set (sticky) by `set_run_priority` with applyToChildren: the children this run starts later start with its `priorityOverride`. */
+  inheritChildPriority: z.boolean().default(false),
   /** The manager watchdog's memory (nudges sent per reported step, the manager's open question). */
   managerWatch: ManagerWatchSchema.default({ steps: {}, question: null }),
   /** The warden's findings for this run (empty unless `warden.enabled`). */
