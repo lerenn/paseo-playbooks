@@ -22,7 +22,7 @@ manager:
 # permissions: { on_request: authorize }   # what the plugin does when a run agent raises a tool permission request: authorize (default) | escalate (a gate) | deny
 # quota_limit: { priority: 0 }   # who goes first when quota headroom is short (see quota_limits): higher first, ties oldest first; a playbook may set its own, start_playbook may override per run
 # quota_limits: { quota: { usable_percent: 90 } }   # pace this folder's runs against provider quota at 90% (also in the user config)
-# closed_hours: { timezone: Europe/Paris, slots: [{ days: weekend, from: "00:00", to: "24:00" }] }   # not counted by the quota allowance, and the warden pauses its clocks (also in the user config)
+# closed_hours: { timezone: Europe/Paris, slots: [{ days: weekend, from: "00:00", to: "24:00" }, { days: weekdays, slots: [{ from: "00:00", to: "08:00" }, { from: "20:00", to: "24:00" }] }] }   # not counted by the quota allowance, and the warden pauses its clocks (also in the user config)
 # The warden: one periodic, deterministic pass over the active runs (no LLM, no message to an agent). OFF by default.
 warden: { enabled: false }
 # warden:                      # defaults shown; set enabled: true to turn it on

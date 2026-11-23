@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseClosedHours, parseQuotaLimits, quotaLimitsLayerOf, resolveQuotaLimits } from "./config";
-import { instantOfOpenMs, isClosedAt, openMs } from "./closed-hours";
+import { instantOfOpenMs, isClosedAt, openAge, openMs } from "./closed-hours";
 import { describeClosedSlots } from "../shared/closed-hours";
 import { paceCeiling, roomFreeAt, windowRooms } from "./rate-limit";
 
@@ -125,5 +125,57 @@ describe("closed hours: config", () => {
     const label = (day: number) => ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][day]!;
     expect(describeClosedSlots(NIGHTS.slots, label)).toBe("Sat-Sun, Mon 00:00-08:00");
     expect(describeClosedSlots(closedOf({ slots: [{ days: "weekdays", from: "00:00", to: "08:00" }] }).slots, label)).toBe("Mon-Fri 00:00-08:00");
+  });
+});
+
+describe("closed hours: several ranges per day group", () => {
+  const NESTED = {
+    timezone: "UTC",
+    slots: [
+      { days: ["saturday", "sunday"], slots: [{ from: "00:00", to: "24:00" }] },
+      { days: ["monday", "tuesday", "wednesday", "thursday", "friday"], slots: [{ from: "00:00", to: "08:00" }, { from: "20:00", to: "24:00" }] },
+    ],
+  };
+  const FLAT = { timezone: "UTC", slots: [{ days: "weekend", from: "00:00", to: "24:00" }, { days: "weekdays", from: "00:00", to: "08:00" }, { days: "weekdays", from: "20:00", to: "24:00" }] };
+
+  it("a nested list reads as the same slots as the flat form", () => {
+    expect(closedOf(NESTED).slots).toHaveLength(3);
+    const a = at("2026-11-16T00:00:00Z");
+    const b = at("2026-11-23T00:00:00Z");
+    expect(openMs(closedOf(NESTED), a, b)).toBe(openMs(closedOf(FLAT), a, b));
+    // Weekdays: 12 open hours a day x 5 = 60 h of the 168.
+    expect(openMs(closedOf(NESTED), a, b)).toBe(60 * HOUR);
+  });
+
+  it("weekday evening + morning: closed 20:00-08:00, open in between", () => {
+    const closed = closedOf(NESTED);
+    expect(isClosedAt(closed, at("2026-11-17T06:00:00Z"))).toBe(true);
+    expect(isClosedAt(closed, at("2026-11-17T12:00:00Z"))).toBe(false);
+    expect(isClosedAt(closed, at("2026-11-17T21:00:00Z"))).toBe(true);
+    // Friday 20:00 runs straight into the weekend, Monday morning follows it: closed from Friday 20:00 to Monday 08:00.
+    expect(openMs(closed, at("2026-11-20T19:00:00Z"), at("2026-11-23T09:00:00Z"))).toBe(2 * HOUR);
+    expect(openAge(closed, at("2026-11-17T07:00:00Z"), at("2026-11-17T21:00:00Z"))).toBe(12 * HOUR);
+  });
+
+  it("overlapping and adjacent ranges are merged, never counted twice", () => {
+    const closed = closedOf({ timezone: "UTC", slots: [{ days: "monday", slots: [{ from: "00:00", to: "10:00" }, { from: "08:00", to: "12:00" }, { from: "12:00", to: "13:00" }] }, { days: "monday", from: "11:00", to: "14:00" }] });
+    expect(openMs(closed, at("2026-11-16T00:00:00Z"), at("2026-11-17T00:00:00Z"))).toBe(10 * HOUR);
+  });
+
+  it("daylight saving still holds with nested ranges (Europe/Paris, 2026-03-29 is 23 hours)", () => {
+    const closed = closedOf({ timezone: "Europe/Paris", slots: [{ days: "everyday", slots: [{ from: "00:00", to: "08:00" }, { from: "20:00", to: "24:00" }] }] });
+    // Sunday 2026-03-29: open 08:00-20:00 local, 12 hours, no matter the clock change at 02:00.
+    expect(openMs(closed, at("2026-03-28T23:00:00Z"), at("2026-03-29T22:00:00Z"))).toBe(12 * HOUR);
+  });
+
+  it("refuses a mixed, empty or incomplete slot (parser)", () => {
+    expect(parseClosedHours({ slots: [{ days: "monday", from: "00:00", to: "08:00", slots: [{ from: "09:00", to: "10:00" }] }] })).toBeUndefined();
+    expect(parseClosedHours({ slots: [{ days: "monday", slots: [] }] })).toBeUndefined();
+    expect(parseClosedHours({ slots: [{ days: "monday", slots: [{ from: "10:00", to: "09:00" }] }] })).toBeUndefined();
+  });
+
+  it("the Quota tab text groups the ranges of one day group", () => {
+    const label = (day: number) => ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][day]!;
+    expect(describeClosedSlots(closedOf(NESTED).slots, label)).toBe("Sat-Sun, Mon-Fri 00:00-08:00 20:00-24:00");
   });
 });

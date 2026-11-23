@@ -150,7 +150,7 @@ export function noteDeprecatedKey(oldKey: string, newKey: string): void {
 
 let modeNoted = false;
 
-/** `closed_hours: { timezone?, slots: [{ days, from, to }] }` as the pacing uses it; undefined when absent or malformed (the loader refuses it strictly). */
+/** `closed_hours: { timezone?, slots: [{ days, from, to } | { days, slots: [{ from, to }] }] }` as the pacing uses it; undefined when absent or malformed (the loader refuses it strictly). */
 export function parseClosedHours(value: unknown): ClosedHours | null | undefined {
   if (value === undefined || value === null) return undefined;
   const block = asRecord(value);
@@ -162,10 +162,15 @@ export function parseClosedHours(value: unknown): ClosedHours | null | undefined
     const names = typeof slot.days === "string" ? [slot.days] : Array.isArray(slot.days) ? slot.days : [];
     const days = new Set<number>();
     for (const name of names) for (const day of (typeof name === "string" ? dayNumbers(name) : null) ?? []) days.add(day);
-    const fromMin = typeof slot.from === "string" ? parseClock(slot.from) : null;
-    const toMin = typeof slot.to === "string" ? parseClock(slot.to) : null;
-    if (days.size === 0 || fromMin === null || toMin === null || fromMin >= toMin) return undefined;
-    slots.push({ days: [...days].sort((a, b) => a - b), fromMin, toMin });
+    // Flat form (`from` + `to`) or a nested `slots` list of { from, to } ranges; either way one closed slot per range.
+    const ranges = Array.isArray(slot.slots) ? slot.slots.map(asRecord) : [slot];
+    if (days.size === 0 || ranges.length === 0 || (Array.isArray(slot.slots) && (slot.from !== undefined || slot.to !== undefined))) return undefined;
+    for (const range of ranges) {
+      const fromMin = typeof range.from === "string" ? parseClock(range.from) : null;
+      const toMin = typeof range.to === "string" ? parseClock(range.to) : null;
+      if (fromMin === null || toMin === null || fromMin >= toMin) return undefined;
+      slots.push({ days: [...days].sort((a, b) => a - b), fromMin, toMin });
+    }
   }
   return { timezone, slots };
 }

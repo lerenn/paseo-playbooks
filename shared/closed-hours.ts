@@ -25,12 +25,21 @@ const clock = (minutes: number) => `${String(Math.floor(minutes / 60)).padStart(
  * day (0 = Sunday) in the reader's language.
  */
 export function describeClosedSlots(slots: ClosedSlotView[], dayLabel: (day: number) => string): string {
-  return slots
-    .map((slot) => {
-      const days = dayRuns(slot.days)
+  // Slots of the same days (the nested form, or written twice) share one days label: `Mon-Fri 00:00-08:00 20:00-24:00`.
+  const groups = new Map<string, { days: number[]; ranges: Array<[number, number]> }>();
+  for (const slot of slots) {
+    const key = [...slot.days].sort((a, b) => a - b).join(",");
+    const group = groups.get(key) ?? { days: slot.days, ranges: [] };
+    group.ranges.push([slot.fromMin, slot.toMin]);
+    groups.set(key, group);
+  }
+  return [...groups.values()]
+    .map(({ days: dayList, ranges }) => {
+      const days = dayRuns(dayList)
         .map((run) => (run.length === 1 ? dayLabel(Number(run[0])) : `${dayLabel(Number(run[0]))}-${dayLabel(Number(run[run.length - 1]))}`))
         .join(", ");
-      return slot.fromMin === 0 && slot.toMin === 1440 ? days : `${days} ${clock(slot.fromMin)}-${clock(slot.toMin)}`;
+      if (ranges.some(([from, to]) => from === 0 && to === 1440)) return days;
+      return `${days} ${ranges.map(([from, to]) => `${clock(from)}-${clock(to)}`).join(" ")}`;
     })
     .join(", ");
 }

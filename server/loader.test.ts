@@ -416,6 +416,22 @@ steps:
       const bad = await workspace({ "defaults/main.yaml": `closed_hours: { timezone: UTC, slots: [${slot}] }\n`, "pr.yaml": steps });
       expect(JSON.stringify(await loadPlaybooks(bad)), slot).toContain(message);
     }
+    // Nested form: several ranges per day group, accepted; mixed, empty, incomplete or bad ranges refused with a clear message.
+    const nested = await workspace({ "defaults/main.yaml": "closed_hours:\n  timezone: Europe/Paris\n  slots:\n    - days: [saturday, sunday]\n      slots:\n        - { from: \"00:00\", to: \"24:00\" }\n    - days: weekdays\n      slots:\n        - { from: \"00:00\", to: \"08:00\" }\n        - { from: \"20:00\", to: \"24:00\" }\n    - { days: monday, from: \"09:00\", to: \"10:00\" }\n", "pr.yaml": steps });
+    expect((await loadPlaybooks(nested)).entries[0]!.errors).toEqual([]);
+    const nestedCases: Array<[string, string]> = [
+      ["{ days: monday, from: \"00:00\", to: \"08:00\", slots: [{ from: \"09:00\", to: \"10:00\" }] }", "not both"],
+      ["{ days: monday, to: \"08:00\", slots: [{ from: \"09:00\", to: \"10:00\" }] }", "not both"],
+      ["{ days: monday, slots: [] }", "nested `slots` list is empty"],
+      ["{ days: monday }", "needs `from` and `to`"],
+      ["{ days: monday, slots: [{ from: \"09:00\", to: \"08:00\" }] }", "must be after"],
+      ["{ days: monday, slots: [{ from: \"9am\", to: \"10:00\" }] }", "not a time"],
+      ["{ days: funday, slots: [{ from: \"09:00\", to: \"10:00\" }] }", "unknown day"],
+    ];
+    for (const [slot, message] of nestedCases) {
+      const bad = await workspace({ "defaults/main.yaml": `closed_hours: { timezone: UTC, slots: [${slot}] }\n`, "pr.yaml": steps });
+      expect(JSON.stringify(await loadPlaybooks(bad)), slot).toContain(message);
+    }
     const tz = await workspace({ "defaults/main.yaml": "closed_hours: { timezone: Mars/Olympus, slots: [{ days: monday, from: \"00:00\", to: \"08:00\" }] }\n", "pr.yaml": steps });
     expect(JSON.stringify(await loadPlaybooks(tz))).toContain("IANA timezone");
     const empty = await workspace({ "defaults/main.yaml": "closed_hours: { slots: [] }\n", "pr.yaml": steps });

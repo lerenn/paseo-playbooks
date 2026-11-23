@@ -590,28 +590,50 @@ const RawClosedHoursSchema = z
   .object({
     /** An IANA timezone (`Europe/Paris`); default the plugin host's timezone. */
     timezone: z.string().refine(validTimezone, { message: "closed_hours.timezone must be an IANA timezone such as Europe/Paris" }).optional(),
-    /** The closed slots: each a set of days and a `from`-`to` time of the day. Overlaps are merged; a slot does not wrap past midnight (write two). */
+    /**
+     * The closed slots: each a set of days with either one flat `from`-`to` time of the day, or a nested `slots` list of several `{ from, to }`
+     * ranges (never both). Overlapping and adjacent ranges are merged; a range does not wrap past midnight (write two).
+     */
     slots: z
       .array(
         z
           .object({
             /** A day name (`monday`, `mon`), a list of them, or `weekdays` / `weekend` / `everyday`. */
             days: z.union([z.string(), z.array(z.string()).min(1)]),
-            /** `HH:MM`, 24-hour clock. */
-            from: z.string(),
-            /** `HH:MM`, after `from`; `24:00` is the end of the day. */
-            to: z.string(),
+            /** `HH:MM`, 24-hour clock (flat form; not with a nested `slots`). */
+            from: z.string().optional(),
+            /** `HH:MM`, after `from`; `24:00` is the end of the day (flat form; not with a nested `slots`). */
+            to: z.string().optional(),
+            /** Nested form: several time ranges of the day group. */
+            slots: z.array(z.object({ from: z.string(), to: z.string() }).strict()).optional(),
           })
           .strict()
           .superRefine((slot, ctx) => {
             for (const name of typeof slot.days === "string" ? [slot.days] : slot.days) {
               if (dayNumbers(name) === null) ctx.addIssue({ code: "custom", path: ["days"], message: `unknown day "${name}": use monday..sunday (or mon..sun), weekdays, weekend or everyday` });
             }
-            const from = parseClock(slot.from);
-            const to = parseClock(slot.to);
-            if (from === null) ctx.addIssue({ code: "custom", path: ["from"], message: `"${slot.from}" is not a time: write HH:MM (24-hour clock)` });
-            if (to === null) ctx.addIssue({ code: "custom", path: ["to"], message: `"${slot.to}" is not a time: write HH:MM (24-hour clock, 24:00 for the end of the day)` });
-            if (from !== null && to !== null && from >= to) ctx.addIssue({ code: "custom", path: ["to"], message: `\`to\` (${slot.to}) must be after \`from\` (${slot.from}); a slot does not wrap past midnight: write two slots` });
+            const flat = slot.from !== undefined || slot.to !== undefined;
+            if (slot.slots !== undefined && flat) {
+              ctx.addIssue({ code: "custom", path: ["slots"], message: "a slot uses either `from` + `to`, or a nested `slots` list of { from, to } ranges, not both" });
+              return;
+            }
+            if (slot.slots !== undefined && slot.slots.length === 0) {
+              ctx.addIssue({ code: "custom", path: ["slots"], message: "the nested `slots` list is empty: give at least one { from, to } range" });
+              return;
+            }
+            if (slot.slots === undefined && (slot.from === undefined || slot.to === undefined)) {
+              ctx.addIssue({ code: "custom", path: [], message: "a slot needs `from` and `to`, or a nested `slots` list of { from, to } ranges" });
+              return;
+            }
+            const ranges = slot.slots ?? [{ from: slot.from!, to: slot.to! }];
+            ranges.forEach((range, index) => {
+              const at = (key: string) => (slot.slots === undefined ? [key] : ["slots", index, key]);
+              const from = parseClock(range.from);
+              const to = parseClock(range.to);
+              if (from === null) ctx.addIssue({ code: "custom", path: at("from"), message: `"${range.from}" is not a time: write HH:MM (24-hour clock)` });
+              if (to === null) ctx.addIssue({ code: "custom", path: at("to"), message: `"${range.to}" is not a time: write HH:MM (24-hour clock, 24:00 for the end of the day)` });
+              if (from !== null && to !== null && from >= to) ctx.addIssue({ code: "custom", path: at("to"), message: `\`to\` (${range.to}) must be after \`from\` (${range.from}); a range does not wrap past midnight: write two ranges` });
+            });
           }),
       )
       .min(1),
