@@ -1,4 +1,4 @@
-import type { QuotaLimitation, QuotaProject, QuotaProjectLimits, QuotaProvider, QuotaWindow } from "../shared/quota-limitation";
+import type { QuotaLimitation, QuotaRunRef, QuotaProject, QuotaProjectLimits, QuotaProvider, QuotaWindow } from "../shared/quota-limitation";
 
 /**
  * The Quota limitation tab's rows: for each project (and each set of limits among its playbooks) what each provider's usage
@@ -45,9 +45,15 @@ export interface ProviderRow {
   slots: SlotRow[];
   /** Smallest `free` over the paced windows; null when none is paced. */
   free: number | null;
-  reservations: QuotaProvider["reservations"];
-  held: QuotaProvider["held"];
+  /** The project's runs that reserve quota, plus the held or paused ones that reserve none yet, each tagged when held or paused. */
+  reservations: ReservationRow[];
   exhausted: QuotaProvider["exhausted"];
+}
+
+/** A run under "Reservations": what it still has to use (empty for a held run that reserves nothing yet) and a short tag when rate limiting holds it. */
+export interface ReservationRow extends QuotaRunRef {
+  remaining: Record<string, number>;
+  hold: "held" | "paused" | null;
 }
 
 export interface SetRow {
@@ -121,7 +127,16 @@ function providerRow(provider: QuotaProvider, set: QuotaProjectLimits, project: 
         : pacedSlots.some((slot) => slot.over > 0)
           ? "over"
           : "ok";
-  return { provider: provider.provider, status, state: provider.state, readAt: provider.readAt, overrideUntil: provider.overrideUntil, slots, free, reservations: mine(provider.reservations), held: mine(provider.held), exhausted: mine(provider.exhausted) };
+  const held = new Map(mine(provider.held).map((run) => [run.runId, run.kind]));
+  const tag = (runId: string): ReservationRow["hold"] => (held.has(runId) ? (held.get(runId) === "pace" ? "paused" : "held") : null);
+  const reserving = mine(provider.reservations);
+  const reservations: ReservationRow[] = [
+    ...reserving.map((run) => ({ ...run, hold: tag(run.runId) })),
+    ...mine(provider.held)
+      .filter((run) => !reserving.some((reserved) => reserved.runId === run.runId))
+      .map(({ kind: _kind, reason: _reason, window: _window, retryAt: _retryAt, ...run }) => ({ ...run, remaining: {}, hold: tag(run.runId) })),
+  ];
+  return { provider: provider.provider, status, state: provider.state, readAt: provider.readAt, overrideUntil: provider.overrideUntil, slots, free, reservations, exhausted: mine(provider.exhausted) };
 }
 
 const STATUS_RANK: Record<ProviderStatus, number> = { over: 3, unavailable: 2, unreported: 1, ok: 0, off: 0 };

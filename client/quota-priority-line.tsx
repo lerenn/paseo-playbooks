@@ -16,8 +16,8 @@ type RunRef = QuotaRunRef;
  * playbook's priority and, for a run with children, "Apply to children". A manual override is marked and shown in the waiting colour.
  * The server is asked at once and the tab reads the figures again (`onChanged`); the pace plan reacts to it there.
  */
-export function PriorityRunLine(props: { theme: Theme; run: RunRef; detail: string; canEdit: boolean; onChanged: () => void }) {
-  const { theme, run, detail, canEdit, onChanged } = props;
+export function PriorityRunLine(props: { theme: Theme; run: RunRef; detail: string; tag?: string | null; canEdit: boolean; onChanged: () => void }) {
+  const { theme, run, detail, tag, canEdit, onChanged } = props;
   const { t } = useTranslation(messages);
   const send = useRpc(setRunPriorityRpc);
   const muted = theme.colors.foregroundMuted;
@@ -46,7 +46,10 @@ export function PriorityRunLine(props: { theme: Theme; run: RunRef; detail: stri
 
   return (
     <View style={{ gap: 3 }}>
-      <Text style={{ color: theme.colors.foreground, fontSize: 12 }}>{detail}</Text>
+      <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
+        <Text style={{ color: theme.colors.foreground, fontSize: 12 }}>{detail}</Text>
+        {tag ? <Text style={{ color: semanticColor(theme, "waiting"), fontSize: 10, fontWeight: "600", borderRadius: 4, borderWidth: 1, borderColor: semanticColor(theme, "waiting"), paddingHorizontal: 4 }}>{tag}</Text> : null}
+      </View>
       {hasPriority(run) ? (
         <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
           <Text style={{ color: priorityColor, fontSize: 12 }}>{`${t("quota.priority", { value: run.priority ?? 0 })}${manual ? ` · ${t("quota.priorityManual", { value: run.defaultPriority ?? 0 })}` : ""}`}</Text>

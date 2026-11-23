@@ -45,11 +45,15 @@ describe("quota project rows", () => {
     expect(row!.sets[0]!.providers[0]!.slots[0]!.paced).toBe(false);
   });
 
-  it("warns when the usage is unavailable and lists only the project's own runs", () => {
+  it("warns when the usage is unavailable and lists only the project's own runs, a held run among the reservations with a tag", () => {
     const mine = { runId: "a", title: "A", projectId: "p", kind: "pace", reason: "r", window: null, retryAt: null };
     const other = { ...mine, runId: "b", projectId: "q" };
     const [row] = projectRows(data([provider([slot()], { state: "unavailable", held: [mine, other] })]));
     expect(row!.tone).toBe("warn");
-    expect(row!.sets[0]!.providers[0]!.held.map((run) => run.runId)).toEqual(["a"]);
+    expect(row!.sets[0]!.providers[0]!.reservations.map((run) => [run.runId, run.hold, run.remaining])).toEqual([["a", "paused", {}]]);
+    // A run that reserves and is held keeps its reservation, tagged "held" for a hold that is not the pace.
+    const reserving = { runId: "a", title: "A", projectId: "p", remaining: { weekly: 3 } };
+    const [again] = projectRows(data([provider([slot()], { reservations: [reserving, { ...reserving, runId: "c" }], held: [{ ...mine, kind: "headroom" }] })]));
+    expect(again!.sets[0]!.providers[0]!.reservations.map((run) => [run.runId, run.hold, run.remaining])).toEqual([["a", "held", { weekly: 3 }], ["c", null, { weekly: 3 }]]);
   });
 });

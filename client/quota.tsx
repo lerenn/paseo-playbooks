@@ -131,7 +131,6 @@ function ProjectRowView(props: { theme: Theme; row: ProjectRow; first: boolean; 
 
 function ProviderView(props: { theme: Theme; provider: ProviderRow; canEdit: boolean; onChanged: () => void }) {
   const { theme, provider, canEdit, onChanged } = props;
-  const heldIds = new Set(provider.held.map((run) => run.runId));
   const { t } = useTranslation(messages);
   const muted = theme.colors.foregroundMuted;
   const flag = provider.status === "unavailable" ? t("quota.state.unavailable") : provider.status === "unreported" ? t("quota.state.unreported") : provider.state === "override" ? t("quota.state.override") : null;
@@ -148,14 +147,7 @@ function ProviderView(props: { theme: Theme; provider: ProviderRow; canEdit: boo
       {provider.reservations.length > 0 ? (
         <Lines theme={theme} title={t("quota.reservations")}>
           {provider.reservations.map((run) => (
-            <PriorityRunLine key={run.runId} theme={theme} run={run} canEdit={canEdit && !heldIds.has(run.runId)} onChanged={onChanged} detail={`${run.title} · ${Object.entries(run.remaining).map(([name, value]) => t("quota.remaining", { window: name, value })).join(", ")}`} />
-          ))}
-        </Lines>
-      ) : null}
-      {provider.held.length > 0 ? (
-        <Lines theme={theme} title={t("quota.held")}>
-          {provider.held.map((run) => (
-            <PriorityRunLine key={run.runId} theme={theme} run={run} canEdit={canEdit} onChanged={onChanged} detail={`${run.title} · ${kindLabel(t, run.kind)}: ${run.reason}${run.retryAt ? ` (${t("quota.retry", { when: when(run.retryAt) })})` : ""}`} />
+            <PriorityRunLine key={run.runId} theme={theme} run={run} canEdit={canEdit} onChanged={onChanged} tag={run.hold === null ? null : t(run.hold === "paused" ? "quota.tagPaused" : "quota.tagHeld")} detail={`${run.title}${Object.keys(run.remaining).length > 0 ? ` · ${Object.entries(run.remaining).map(([name, value]) => t("quota.remaining", { window: name, value })).join(", ")}` : ""}`} />
           ))}
         </Lines>
       ) : null}
