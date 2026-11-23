@@ -72,3 +72,15 @@ describe("paused tone", () => {
     expect(RUN_TONES.indexOf("paused")).toBeLessThan(RUN_TONES.indexOf("failed"));
   });
 });
+
+describe("header dots with held runs", () => {
+  const hold = { kind: "quota", reason: "limit", retryAt: null, provider: null } as unknown as Run["rateHold"];
+  it("shows one violet, still dot when every active run is held or paused", () => {
+    const groups = dotGroups([run("a", "running", 1, { rateHold: hold }), run("b", "running", 2, { pausedAt: "x" })], []);
+    expect(groups.map((g) => [g.tone, g.pulsing])).toEqual([["paused", false]]);
+  });
+  it("keeps a blue pulsing dot beside the violet one while a run really works", () => {
+    const groups = dotGroups([run("a", "running", 1, { rateHold: hold }), run("b", "running", 2)], []);
+    expect(groups.map((g) => [g.tone, g.pulsing])).toEqual([["running", true], ["paused", false]]);
+  });
+});

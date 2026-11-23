@@ -25,3 +25,4 @@ finished one (`statusSuccess` is green too).
 - A tone looks the same in every theme; only the shade is picked for the surface. Values are checked for contrast (at least
   4.5:1 on dark surfaces, 4.2:1 on light ones, in a unit test) but not against every possible custom theme.
 - The theme's status colours are no longer used by the panel.
+- The "held" and "paused" tags of the Quota limitation tab are violet too; a manual quota priority is no state and takes the theme accent.

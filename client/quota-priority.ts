@@ -1,4 +1,6 @@
 import type { QuotaRunRef } from "../shared/quota-limitation";
+import { semanticColor } from "./semantic-colors";
+import type { Theme } from "./theme";
 
 /** The accepted range of a priority: the playbook's `quota_limit.priority`. */
 export const PRIORITY_MIN = -1000;
@@ -43,4 +45,12 @@ export function resetRequest(run: RunRef, applyToChildren: boolean): PriorityReq
  */
 export function inheritRequest(run: RunRef, checked: boolean): PriorityRequest {
   return { runId: run.runId, priority: checked ? (run.override ?? run.priority ?? 0) : (run.override ?? null), applyToChildren: checked };
+}
+
+/**
+ * Colours of a run's line in the Reservations list: its "held" or "paused" tag is the paused violet (as the chips and dots of
+ * runs on hold); a manual priority is no state, so it takes the theme's accent, never the waiting orange or the violet.
+ */
+export function priorityLineColors(theme: Theme, manual: boolean): { tag: string; priority: string } {
+  return { tag: semanticColor(theme, "paused"), priority: manual ? theme.colors.accent : theme.colors.foregroundMuted };
 }
