@@ -36,6 +36,26 @@ export interface SlotRow {
 
 export type ProviderStatus = "over" | "unavailable" | "ok" | "unreported" | "off";
 
+/**
+ * How much a project's new work with a real cost is held on a provider, from what the row already has.
+ * `percent` = the largest over the paced windows of clamp(1 - free / need, 0, 1): `free` is the window's headroom minus every
+ * reservation (the planner's own test: a run starts when free covers its cost), `need` the median remaining need of the project's
+ * runs admitted or queued on the provider (a held run counts with its estimated cost), else the largest measured cost of one step of
+ * its playbooks. Nothing over ZERO_NEED counts: a zero-cost run, or none with history, gives `percent: null` ("no estimate").
+ */
+export interface Throttle {
+  /** 0 to 100, rounded; null: paced but no measured cost to compare with, so nothing is held for cost. */
+  percent: number | null;
+  /** Where the need comes from: the project's runs, or its playbooks' measured step cost. */
+  source: "runs" | "playbooks" | null;
+  held: number;
+  paused: number;
+  /** The oldest hold's age in ms, null with no hold. */
+  longestWaitMs: number | null;
+  /** The next time a held or paused run is looked at again (ISO), null when none has one. */
+  nextRetryAt: string | null;
+}
+
 export interface ProviderRow {
   provider: string;
   status: ProviderStatus;
@@ -48,6 +68,7 @@ export interface ProviderRow {
   /** The project's runs that reserve quota, plus the held or paused ones that reserve none yet, each tagged when held or paused. */
   reservations: ReservationRow[];
   exhausted: QuotaProvider["exhausted"];
+  throttle: Throttle;
 }
 
 /** A run under "Reservations": what it still has to use (empty for a held run that reserves nothing yet) and a short tag when rate limiting holds it. */
@@ -73,9 +94,53 @@ export interface ProjectRow {
   /** Distinct usable percents of the sets with pacing on. */
   percents: number[];
   /** What to say per provider in the collapsed line (only where the project paces). */
-  summary: Array<{ provider: string; status: ProviderStatus; free: number | null }>;
+  summary: Array<{ provider: string; status: ProviderStatus; free: number | null; over: number }>;
+  /** Some provider is throttled for this project: new work with a real cost is held (throttle above 0). */
+  throttled: boolean;
   stepsLimit: number | null;
   runsLimit: number | null;
+}
+
+/** A need at or below this many points is zero (the planner's ZERO_COST_POINTS). */
+const ZERO_NEED = 0.05;
+
+function median(values: number[]): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 1 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
+}
+
+/** The throttle of a provider for a project (see `Throttle`). Without pacing, or with no paced window, `percent` is null. */
+export function throttleOf(input: { slots: SlotRow[]; reservations: ReservationRow[]; held: QuotaProvider["held"]; unitCost: Record<string, number> | undefined; nowMs: number }): Throttle {
+  const { slots, reservations, held, unitCost, nowMs } = input;
+  let percent: number | null = null;
+  let source: Throttle["source"] = null;
+  for (const slot of slots.filter((candidate) => candidate.paced)) {
+    const own = reservations.map((run) => run.remaining[slot.id] ?? 0);
+    // A held run with no reservation yet counts with the cost the hold estimated.
+    for (const run of held) if (run.window === slot.id && run.estimatedCost && !reservations.some((reserved) => reserved.runId === run.runId && (reserved.remaining[slot.id] ?? 0) > 0)) own.push(run.estimatedCost);
+    const needs = own.filter((value) => value > ZERO_NEED);
+    const fallback = unitCost?.[slot.id];
+    const need = needs.length > 0 ? median(needs) : fallback !== undefined && fallback > ZERO_NEED ? fallback : null;
+    if (need === null) continue;
+    const value = Math.round(Math.min(1, Math.max(0, 1 - (slot.free ?? 0) / need)) * 100);
+    if (percent === null || value > percent) {
+      percent = value;
+      source = needs.length > 0 ? "runs" : "playbooks";
+    }
+  }
+  const since = held.flatMap((run) => (run.since && Number.isFinite(Date.parse(run.since)) ? [Date.parse(run.since)] : []));
+  const retries = held.flatMap((run) => (run.retryAt && Number.isFinite(Date.parse(run.retryAt)) ? [Date.parse(run.retryAt)] : []));
+  const upcoming = retries.filter((at) => at >= nowMs);
+  const next = upcoming.length > 0 ? Math.min(...upcoming) : retries.length > 0 ? Math.min(...retries) : null;
+  return {
+    percent,
+    source,
+    held: held.filter((run) => run.kind !== "pace").length,
+    paused: held.filter((run) => run.kind === "pace").length,
+    longestWaitMs: since.length > 0 ? Math.max(0, nowMs - Math.min(...since)) : null,
+    nextRetryAt: next === null ? null : new Date(next).toISOString(),
+  };
 }
 
 const round = (value: number) => Math.round(value * 10) / 10;
@@ -113,7 +178,7 @@ function slotRow(slot: QuotaWindow, set: QuotaProjectLimits, label: string): Slo
   };
 }
 
-function providerRow(provider: QuotaProvider, set: QuotaProjectLimits, project: QuotaProject): ProviderRow {
+function providerRow(provider: QuotaProvider, set: QuotaProjectLimits, project: QuotaProject, nowMs: number): ProviderRow {
   const slots = provider.windows.map((slot) => slotRow(slot, set, project.label));
   const pacedSlots = slots.filter((slot) => slot.paced);
   const free = pacedSlots.length > 0 ? Math.min(...pacedSlots.map((slot) => slot.free ?? 0)) : null;
@@ -136,7 +201,8 @@ function providerRow(provider: QuotaProvider, set: QuotaProjectLimits, project: 
       .filter((run) => !reserving.some((reserved) => reserved.runId === run.runId))
       .map(({ kind: _kind, reason: _reason, window: _window, retryAt: _retryAt, ...run }) => ({ ...run, remaining: {}, hold: tag(run.runId) })),
   ];
-  return { provider: provider.provider, status, state: provider.state, readAt: provider.readAt, overrideUntil: provider.overrideUntil, slots, free, reservations, exhausted: mine(provider.exhausted) };
+  const throttle = throttleOf({ slots, reservations, held: mine(provider.held), unitCost: project.unitCost?.[provider.provider], nowMs });
+  return { provider: provider.provider, status, state: provider.state, readAt: provider.readAt, overrideUntil: provider.overrideUntil, slots, free, reservations, exhausted: mine(provider.exhausted), throttle: set.pacing ? throttle : { ...throttle, percent: null, source: null } };
 }
 
 const STATUS_RANK: Record<ProviderStatus, number> = { over: 3, unavailable: 2, unreported: 1, ok: 0, off: 0 };
@@ -144,17 +210,18 @@ const STATUS_RANK: Record<ProviderStatus, number> = { over: 3, unavailable: 2, u
 /** One row per project, sorted as the server sent them. */
 export function projectRows(data: QuotaLimitation): ProjectRow[] {
   return data.projects.map((project) => {
-    const sets = project.limits.map((limits) => ({ limits, providers: data.providers.map((provider) => providerRow(provider, limits, project)) }));
+    const sets = project.limits.map((limits) => ({ limits, providers: data.providers.map((provider) => providerRow(provider, limits, project, Date.parse(data.now))) }));
     const pacing = sets.some((set) => set.limits.pacing);
     // The collapsed line: per provider the worst status over the sets that pace, the smallest free.
-    const byProvider = new Map<string, { provider: string; status: ProviderStatus; free: number | null }>();
+    const byProvider = new Map<string, { provider: string; status: ProviderStatus; free: number | null; over: number }>();
     for (const set of sets) {
       if (!set.limits.pacing) continue;
       for (const row of set.providers) {
         const before = byProvider.get(row.provider);
         const worse = !before || STATUS_RANK[row.status] > STATUS_RANK[before.status];
         const free = before?.free === null || before?.free === undefined ? row.free : row.free === null ? before.free : Math.min(before.free, row.free);
-        byProvider.set(row.provider, { provider: row.provider, status: worse ? row.status : before.status, free });
+        const over = Math.max(before?.over ?? 0, ...row.slots.map((slot) => slot.over));
+        byProvider.set(row.provider, { provider: row.provider, status: worse ? row.status : before.status, free, over });
       }
     }
     const summary = [...byProvider.values()];
@@ -170,8 +237,17 @@ export function projectRows(data: QuotaLimitation): ProjectRow[] {
       pacing,
       percents: [...new Set(project.limits.filter((limits) => limits.pacing).map((limits) => limits.usablePercent))],
       summary,
+      throttled: sets.some((set) => set.limits.pacing && set.providers.some((row) => (row.throttle.percent ?? 0) > 0)),
       stepsLimit: steps.find((limit) => limit !== null) ?? null,
       runsLimit: runs.find((limit) => limit !== null) ?? null,
     };
   });
+}
+
+/** "2h 5m", "14m", "<1m": a wait in hours and minutes. */
+export function formatWait(ms: number): string {
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 1) return "<1m";
+  const hours = Math.floor(minutes / 60);
+  return hours > 0 ? `${hours}h ${minutes % 60}m` : `${minutes}m`;
 }

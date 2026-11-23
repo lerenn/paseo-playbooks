@@ -5,7 +5,7 @@ import { Pressable, Text, View } from "react-native";
 import { quotaLimitationRpc } from "../shared/contracts";
 import type { QuotaLimitation } from "../shared/quota-limitation";
 import { messages } from "./i18n";
-import { projectRows, type ProjectRow, type ProviderRow, type SlotRow, type Tone } from "./quota-rows";
+import { formatWait, projectRows, type ProjectRow, type ProviderRow, type SlotRow, type Tone } from "./quota-rows";
 import { semanticColor } from "./semantic-colors";
 import type { Theme } from "./theme";
 
@@ -98,8 +98,9 @@ function ProjectRowView(props: { theme: Theme; row: ProjectRow; first: boolean }
   const caps = row.stepsLimit === null && row.runsLimit === null ? t("quota.noCaps") : [row.stepsLimit === null ? null : t("quota.stepsCap", { limit: row.stepsLimit }), row.runsLimit === null ? null : t("quota.runsCap", { limit: row.runsLimit })].filter(Boolean).join(" · ");
   const line = [
     row.pacing ? t("quota.pacingShort", { percent: row.percents.join("/") }) : t("quota.pacingOffShort"),
-    ...row.summary.map((item) => (item.status === "over" ? t("quota.sum.over", { provider: item.provider }) : item.status === "unavailable" ? t("quota.sum.unavailable", { provider: item.provider }) : item.status === "unreported" ? t("quota.sum.unreported", { provider: item.provider }) : item.free === null ? item.provider : t("quota.sum.free", { provider: item.provider, value: Math.round(item.free) }))),
-  ].join(" · ");
+    ...row.summary.map((item) => (item.status === "over" ? (Math.round(item.over) > 0 ? t("quota.sum.overBy", { provider: item.provider, value: Math.round(item.over) }) : t("quota.sum.over", { provider: item.provider })) : item.status === "unavailable" ? t("quota.sum.unavailable", { provider: item.provider }) : item.status === "unreported" ? t("quota.sum.unreported", { provider: item.provider }) : item.free === null ? item.provider : t("quota.sum.free", { provider: item.provider, value: Math.round(item.free) }))),
+    row.throttled ? t("quota.throttledShort") : null,
+  ].filter(Boolean).join(" · ");
   return (
     <View style={{ ...(first ? {} : { borderTopWidth: 1, borderTopColor: theme.colors.border, paddingTop: 8 }) }}>
       <Pressable accessibilityRole="button" accessibilityState={{ expanded: open }} onPress={() => setOpen(!open)} style={{ gap: 3 }}>
@@ -143,6 +144,7 @@ function ProviderView(props: { theme: Theme; provider: ProviderRow }) {
       {provider.slots.map((slot) => (
         <SlotView key={slot.id} theme={theme} slot={slot} />
       ))}
+      <ThrottleView theme={theme} provider={provider} />
       {provider.reservations.length > 0 ? (
         <Lines theme={theme} title={t("quota.reservations")}>
           {provider.reservations.map((run) => (
@@ -160,6 +162,37 @@ function ProviderView(props: { theme: Theme; provider: ProviderRow }) {
           ))}
         </Lines>
       ) : null}
+    </View>
+  );
+}
+
+/** The throttle line (violet, as on hold), its counts and a one-line caption (the formula). Shown when the provider has a window with a pace ceiling or something held or paused. */
+function ThrottleView(props: { theme: Theme; provider: ProviderRow }) {
+  const { theme, provider } = props;
+  const { t, locale } = useTranslation(messages);
+  const { throttle } = provider;
+  const paced = provider.slots.some((slot) => slot.paced);
+  if (!paced && throttle.held + throttle.paused === 0) return null;
+  const muted = theme.colors.foregroundMuted;
+  const violet = semanticColor(theme, "paused");
+  const counts = [
+    t("quota.heldCount", { count: throttle.held }),
+    t("quota.pausedCount", { count: throttle.paused }),
+    throttle.longestWaitMs === null ? null : t("quota.longestWait", { value: formatWait(throttle.longestWaitMs) }),
+    throttle.nextRetryAt === null ? null : t("quota.nextRetry", { when: new Date(throttle.nextRetryAt).toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" }) }),
+  ].filter((part): part is string => part !== null);
+  return (
+    <View style={{ gap: 3, paddingTop: 4 }}>
+      {paced ? (
+        <>
+          <Text style={{ color: theme.colors.foreground, fontSize: 12 }}>{throttle.percent === null ? t("quota.throttleNone") : t("quota.throttle", { value: throttle.percent })}</Text>
+          <View style={{ height: 6, borderRadius: 3, backgroundColor: theme.colors.surface2, overflow: "hidden" }}>
+            {throttle.percent ? <View style={{ position: "absolute", left: 0, width: `${throttle.percent}%`, height: 6, backgroundColor: violet }} /> : null}
+          </View>
+          <Text style={{ color: muted, fontSize: 11 }}>{t("quota.throttleCaption")}</Text>
+        </>
+      ) : null}
+      <Text style={{ color: throttle.held + throttle.paused > 0 ? violet : muted, fontSize: 12 }}>{counts.join(" · ")}</Text>
     </View>
   );
 }

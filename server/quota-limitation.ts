@@ -18,6 +18,7 @@ export interface ReservationView {
 export interface ProjectLimitsInput {
   projectId: string;
   label: string;
+  unitCost?: Record<string, Record<string, number>>;
   sets: Array<{ repos: string[]; config: RateLimitsConfig }>;
 }
 
@@ -88,7 +89,7 @@ export function buildQuotaLimitation(input: { projects: ProjectLimitsInput[]; no
         }
         return [{ runId: run.id, projectId: run.projectId, title: titleOf(run), remaining: left }];
       }),
-      held: live.flatMap((run) => (run.rateHold && run.rateHold.provider === view.provider ? [{ runId: run.id, projectId: run.projectId, title: titleOf(run), kind: run.rateHold.kind, reason: run.rateHold.reason, window: run.rateHold.window, retryAt: run.rateHold.retryAt }] : [])),
+      held: live.flatMap((run) => (run.rateHold && run.rateHold.provider === view.provider ? [{ runId: run.id, projectId: run.projectId, title: titleOf(run), kind: run.rateHold.kind, reason: run.rateHold.reason, window: run.rateHold.window, retryAt: run.rateHold.retryAt, since: run.rateHold.since, estimatedCost: run.rateHold.estimatedCost }] : [])),
       exhausted: live.flatMap((run) =>
         run.exhausted
           .filter((entry) => entry.target === view.provider || entry.target.startsWith(`${view.provider}/`))
@@ -98,9 +99,10 @@ export function buildQuotaLimitation(input: { projects: ProjectLimitsInput[]; no
     };
   });
 
-  const everyone: QuotaProject[] = projects.map(({ projectId, label, sets }) => ({
+  const everyone: QuotaProject[] = projects.map(({ projectId, label, sets, unitCost }) => ({
     projectId,
     label,
+    ...(unitCost ? { unitCost } : {}),
     limits: sets.map(({ repos, config }) => ({ repos, pacing: config.quota.pacing, usablePercent: config.quota.usablePercent, stepsLimit: config.steps, runsLimit: config.playbooks })),
   }));
   return {

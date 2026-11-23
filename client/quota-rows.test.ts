@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { QuotaLimitation } from "../shared/quota-limitation";
-import { barOf, projectRows } from "./quota-rows";
+import { barOf, formatWait, projectRows, throttleOf } from "./quota-rows";
 
 const slot = (over: Partial<QuotaLimitation["providers"][number]["windows"][number]> = {}) => ({ id: "weekly", name: "Weekly", modelScoped: false, used: 38, reserved: 5, paces: [{ usable: 90, ceiling: 60, headroom: 22, free: 17, projects: ["App"] }], resetsAt: null, stale: false, ...over });
 const provider = (windows = [slot()], over: Partial<QuotaLimitation["providers"][number]> = {}): QuotaLimitation["providers"][number] => ({ provider: "claude", pacedBy: ["App"], state: "ok", readAt: null, overrideUntil: null, windows, reservations: [], held: [], exhausted: [], ...over });
@@ -55,5 +55,59 @@ describe("quota project rows", () => {
     const reserving = { runId: "a", title: "A", projectId: "p", remaining: { weekly: 3 } };
     const [again] = projectRows(data([provider([slot()], { reservations: [reserving, { ...reserving, runId: "c" }], held: [{ ...mine, kind: "headroom" }] })]));
     expect(again!.sets[0]!.providers[0]!.reservations.map((run) => [run.runId, run.hold, run.remaining])).toEqual([["a", "held", { weekly: 3 }], ["c", null, { weekly: 3 }]]);
+  });
+});
+
+describe("quota throttle", () => {
+  const reserving = (runId: string, weekly: number) => ({ runId, title: runId, projectId: "p", remaining: { weekly } });
+  const held = (runId: string, over = {}) => ({ runId, title: runId, projectId: "p", kind: "headroom", reason: "r", window: "weekly", retryAt: null, since: "2026-11-22T22:00:00Z", estimatedCost: null, ...over });
+  const throttle = (providers: QuotaLimitation["providers"], projects?: Parameters<typeof data>[1]) => projectRows(data(providers, projects))[0]!.sets[0]!.providers[0]!.throttle;
+
+  it("is 0% when the free headroom covers the median need, and falls with it", () => {
+    expect(throttle([provider([slot()], { reservations: [reserving("a", 5), reserving("b", 10), reserving("c", 40)] })]).percent).toBe(0);
+    // free 17, median need 34 (of 20 and 48): 1 - 17/34 = 50%
+    expect(throttle([provider([slot()], { reservations: [reserving("a", 20), reserving("b", 48)] })])).toMatchObject({ percent: 50, source: "runs" });
+  });
+
+  it("is 100% when the usage is over the ceiling or nothing is free", () => {
+    const over = slot({ used: 65, paces: [{ usable: 90, ceiling: 60, headroom: -5, free: -5, projects: ["App"] }] });
+    expect(throttle([provider([over], { reservations: [reserving("a", 5)] })]).percent).toBe(100);
+    expect(projectRows(data([provider([over], { reservations: [reserving("a", 5)] })]))[0]!.throttled).toBe(true);
+  });
+
+  it("counts a held run with its estimated cost, and falls back to the playbooks' step cost", () => {
+    const full = slot({ paces: [{ usable: 90, ceiling: 60, headroom: 0, free: 0, projects: ["App"] }] });
+    expect(throttle([provider([full], { held: [held("h", { estimatedCost: 8 })] })]).percent).toBe(100);
+    const room = slot();
+    const project = { projectId: "p", label: "App", unitCost: { claude: { weekly: 34 } }, limits: [limits()] };
+    expect(throttle([provider([room])], [project])).toMatchObject({ percent: 50, source: "playbooks" });
+  });
+
+  it("has no estimate without a measured cost, and ignores zero-cost runs; it is not throttled", () => {
+    expect(throttle([provider([slot()])])).toMatchObject({ percent: null, source: null });
+    expect(throttle([provider([slot()], { reservations: [reserving("z", 0.02)] })]).percent).toBeNull();
+    expect(projectRows(data([provider([slot()])]))[0]!.throttled).toBe(false);
+  });
+
+  it("takes the tightest window, and shows nothing for a project with pacing off", () => {
+    const other = slot({ id: "five_hour", name: "5h", paces: [{ usable: 90, ceiling: 10, headroom: 1, free: 1, projects: ["App"] }] });
+    const reservations = [{ runId: "a", title: "a", projectId: "p", remaining: { weekly: 17, five_hour: 4 } }];
+    expect(throttle([provider([slot(), other], { reservations })]).percent).toBe(75);
+    expect(throttle([provider([slot()], { reservations })], [{ projectId: "p", label: "App", limits: [limits({ pacing: false })] }]).percent).toBeNull();
+  });
+
+  it("counts held and paused runs, the longest wait and the next retry", () => {
+    const now = Date.parse("2026-11-23T00:00:00Z");
+    const result = throttleOf({
+      slots: [],
+      reservations: [],
+      unitCost: undefined,
+      nowMs: now,
+      held: [held("a", { since: "2026-11-22T21:30:00Z", retryAt: "2026-11-23T00:20:00Z" }), held("b", { kind: "pace", since: "2026-11-22T23:00:00Z", retryAt: "2026-11-23T00:05:00Z" }), held("c", { retryAt: "2026-11-22T23:59:00Z" })],
+    });
+    expect(result).toMatchObject({ held: 2, paused: 1, longestWaitMs: 150 * 60_000, nextRetryAt: "2026-11-23T00:05:00.000Z" });
+    expect(formatWait(result.longestWaitMs!)).toBe("2h 30m");
+    expect(formatWait(14 * 60_000)).toBe("14m");
+    expect(formatWait(5_000)).toBe("<1m");
   });
 });

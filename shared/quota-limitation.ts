@@ -51,7 +51,7 @@ export const QuotaProviderSchema = z.object({
   /** Runs whose estimated cost is reserved on this provider (admitted or queued), with what they still have to use per window id. */
   reservations: z.array(QuotaRunRefSchema.extend({ remaining: z.record(z.string(), z.number()) })),
   /** Runs held or paused by this provider's quota (`quota`, `headroom` and `pace` holds). */
-  held: z.array(QuotaRunRefSchema.extend({ kind: z.string(), reason: z.string(), window: z.string().nullable(), retryAt: z.string().nullable() })),
+  held: z.array(QuotaRunRefSchema.extend({ kind: z.string(), reason: z.string(), window: z.string().nullable(), retryAt: z.string().nullable(), /** When the hold began, and (headroom holds) the estimated cost of what waits: both read from the run's `rateHold`, nothing new is stored. Absent from an older server. */ since: z.string().optional(), estimatedCost: z.number().nullable().optional() })),
   /** `provider/model` targets marked out of tokens by runs, until when. */
   exhausted: z.array(QuotaRunRefSchema.extend({ target: z.string(), until: z.string() })),
 });
@@ -71,6 +71,8 @@ export type QuotaProjectLimits = z.infer<typeof QuotaProjectLimitsSchema>;
 export const QuotaProjectSchema = z.object({
   projectId: z.string(),
   label: z.string(),
+  /** The largest measured cost of one step of the project's playbooks, per provider then window id (points of the window): the throttle's fallback when no run of the project has a need yet. Absent from an older server. */
+  unitCost: z.record(z.string(), z.record(z.string(), z.number())).optional(),
   /** Usually one set; several when a profile's defaults differ from the default repository's. */
   limits: z.array(QuotaProjectLimitsSchema),
 });

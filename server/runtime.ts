@@ -2644,6 +2644,7 @@ export class Runtime {
     const user = await this.rateLimits();
     const layer = this.rateConfig?.value;
     this.pruneQuotaReservations();
+    const views = this.pacer.view(user.quota);
     const seen = new Set<string>();
     const projects = await Promise.all(
       workspaces
@@ -2657,22 +2658,32 @@ export class Runtime {
           const loaded = await loadPlaybooks(root, { projectId }).catch(() => null);
           const resolved = loaded ? await resolveForNewRun(root, loaded).catch(() => loaded.entries.map((entry) => ({ entry }))) : [];
           const sets = new Map<string, { repos: string[]; config: RateLimitsConfig }>();
+          // The largest measured cost of one step among the project's playbooks, per provider and window (the throttle's fallback need).
+          const unitCost: Record<string, Record<string, number>> = {};
           for (const { entry } of resolved) {
             if (!entry.playbook) continue;
+            for (const { provider } of views) {
+              for (const windowId of this.costs.windows(entry.playbook.id, provider)) {
+                const unit = this.costs.stepCost(entry.playbook.id, provider, windowId);
+                if (unit === null) continue;
+                const byWindow = (unitCost[provider] ??= {});
+                byWindow[windowId] = Math.max(byWindow[windowId] ?? 0, unit);
+              }
+            }
             const config = resolveQuotaLimits(layer, entry.playbook.quotaLimits);
             const key = JSON.stringify(config);
             const set = sets.get(key) ?? { repos: [], config };
             if (!set.repos.includes(entry.repo)) set.repos.push(entry.repo);
             sets.set(key, set);
           }
-          return { projectId, label: workspace.projectDisplayName || path.basename(workspace.projectRootPath), sets: sets.size > 0 ? [...sets.values()] : [{ repos: [], config: user }] };
+          return { projectId, label: workspace.projectDisplayName || path.basename(workspace.projectRootPath), unitCost, sets: sets.size > 0 ? [...sets.values()] : [{ repos: [], config: user }] };
         }),
     );
     this.refreshAdmittedNeeds();
     return buildQuotaLimitation({
       projects: projects.filter((project) => project !== null).sort((a, b) => a.label.localeCompare(b.label)),
       nowMs: Date.now(),
-      views: this.pacer.view(user.quota),
+      views,
       runs: this.store.list(),
       reservations: [...this.reservedQuota.values()].map((entry) => ({ runId: entry.runId, est: entry.est, spent: entry.spent, endedAt: entry.endedAt })),
     });
