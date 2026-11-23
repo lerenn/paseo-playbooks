@@ -12,7 +12,7 @@ import { conditionText } from "../shared/labels";
 import { attemptTimeoutMs, isPaused, isStepLive, restartBlocker, type Gate, type GateChoice, type Playbook, type Run, type RunSummary } from "../shared/types";
 import { SCRIPT_OUTPUT_POLL_MS, checkHeading, lastLines, scriptActivity } from "./script-output";
 import { STEP_KINDS, stepTitle, stepTitleOf, type Theme } from "./theme";
-import { semanticColor, semanticOn } from "./semantic-colors";
+import { semanticColor } from "./semantic-colors";
 
 /** A poll interval as people say it: 30 s, 1 min, 2 h. */
 function formatInterval(ms: number): string {
@@ -23,8 +23,8 @@ function formatInterval(ms: number): string {
 
 export function Button(props: { theme: Theme; label: string; onPress(): void; kind?: "primary" | "danger" | "plain"; disabled?: boolean; accessibilityLabel?: string }) {
   const { theme, kind = "plain" } = props;
-  const background = kind === "primary" ? theme.colors.accent : kind === "danger" ? semanticColor(theme, "failed") : theme.colors.surface2;
-  const foreground = kind === "plain" ? theme.colors.foreground : kind === "danger" ? semanticOn(theme, "failed") : theme.colors.accentForeground;
+  const background = kind === "primary" ? theme.colors.accent : kind === "danger" ? theme.colors.statusDanger : theme.colors.surface2;
+  const foreground = kind === "plain" ? theme.colors.foreground : theme.colors.accentForeground;
   return (
     <Pressable
       accessibilityRole="button"
@@ -69,17 +69,17 @@ function Line(props: { theme: Theme; children: ReactNode; muted?: boolean }) {
   );
 }
 
-/** Button colours of a gate choice: the theme for primary and plain, the fixed semantic tones for the others. */
+/** Button colours of a gate choice, from the Paseo theme: buttons follow the theme. */
 function choiceColors(theme: Theme, color: NonNullable<GateChoice["color"]>): { background: string; foreground: string } {
   switch (color) {
     case "primary":
       return { background: theme.colors.accent, foreground: theme.colors.accentForeground };
     case "danger":
-      return { background: semanticColor(theme, "failed"), foreground: semanticOn(theme, "failed") };
+      return { background: theme.colors.statusDanger, foreground: theme.colors.accentForeground };
     case "success":
-      return { background: semanticColor(theme, "done"), foreground: semanticOn(theme, "done") };
+      return { background: theme.colors.statusSuccess, foreground: theme.colors.accentForeground };
     case "warning":
-      return { background: semanticColor(theme, "waiting"), foreground: semanticOn(theme, "waiting") };
+      return { background: theme.colors.statusWarning, foreground: theme.colors.accentForeground };
     default:
       return { background: theme.colors.surface2, foreground: theme.colors.foreground };
   }

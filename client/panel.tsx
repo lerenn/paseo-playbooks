@@ -697,8 +697,8 @@ function RunChip(props: { theme: Theme; run: Run; label?: string | undefined; se
               onPress={() => setMenu("confirm")}
               style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 10, paddingVertical: 8, borderRadius: 6 }}
             >
-              <Icon name="CircleStop" size={15} color={semanticColor(theme, "failed")} />
-              <Text style={{ color: semanticColor(theme, "failed"), fontSize: 13 }}>{wrapping ? "Cancel after-tasks…" : "Cancel run…"}</Text>
+              <Icon name="CircleStop" size={15} color={theme.colors.statusDanger} />
+              <Text style={{ color: theme.colors.statusDanger, fontSize: 13 }}>{wrapping ? "Cancel after-tasks…" : "Cancel run…"}</Text>
             </Pressable>
             </>
             ) : (

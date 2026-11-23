@@ -10,11 +10,11 @@ finished one (`statusSuccess` is green too).
 
 ## Decision
 
-- A colour that carries a meaning (running, waiting or needs you, done, failed, paused; also severity: warning, error) comes from
+- An indicator that carries a meaning (icons, progress lines, status text, badges, dots, run tabs, state charts: running, waiting or needs you, done, failed, paused; also severity: warning, error) comes from
   `client/semantic-colors.ts`: one fixed hue per tone (running blue, waiting orange, done green, failed red, paused violet), with
   a dark and a light value. The variant follows the theme's surface (`isDarkColor(surface1)`; the plugin `Theme` has no flag).
   Each tone also has an `on` colour for text on a fill of it.
-- Chrome keeps following the theme: text, backgrounds, borders, buttons (accent, accentForeground), links, selection and focus
+- Chrome keeps following the theme: text, backgrounds, borders, every button (primary, plain, gate choices, "Continue anyway", "Review"; a destructive one keeps the theme's danger colour), links, selection and focus
   highlights, muted text, and the chart series of Analytics (they already use their own fixed palette).
 - A new use of a state or a severity colour goes through `semanticColor` / `semanticOn`, never `theme.colors.status*` or `accent`.
 - No state changes its tone, and no sort order changes.

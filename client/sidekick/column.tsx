@@ -3,7 +3,7 @@ import { memo, useEffect, useRef, useState } from "react";
 import { Image, Pressable, Text, View } from "react-native";
 import { formatSize } from "../../shared/attachments";
 import type { Theme } from "../theme";
-import { semanticColor, semanticOn } from "../semantic-colors";
+import { semanticColor } from "../semantic-colors";
 import { useAttachments } from "./attach";
 import { sidekickUi, useSidekickUi } from "./ui-state";
 import { isQueueKey, mergeQueued, shouldFlush, shouldQueue, workLabel, IDLE_SETTLE_MS } from "./queue";
@@ -221,8 +221,7 @@ export function SidekickChat(props: Props) {
 
 function ColumnButton(props: { theme: Theme; label: string; onPress: () => void; disabled?: boolean; tone: "primary" | "danger" | "plain" }) {
   const { theme } = props;
-  const color = props.tone === "danger" ? semanticColor(theme, "failed") : theme.colors.accent;
-  const on = props.tone === "danger" ? semanticOn(theme, "failed") : theme.colors.accentForeground;
+  const color = props.tone === "danger" ? theme.colors.statusDanger : theme.colors.accent;
   const filled = props.tone === "primary";
   return (
     <Pressable
@@ -231,7 +230,7 @@ function ColumnButton(props: { theme: Theme; label: string; onPress: () => void;
       onPress={props.onPress}
       style={{ borderRadius: 7, borderWidth: 1, borderColor: props.tone === "plain" ? theme.colors.border : color, backgroundColor: filled ? color : "transparent", paddingHorizontal: 12, paddingVertical: 6, opacity: props.disabled ? 0.5 : 1 }}
     >
-      <Text style={{ color: filled ? on : props.tone === "plain" ? theme.colors.foreground : color, fontWeight: "600", fontSize: 12 }}>{props.label}</Text>
+      <Text style={{ color: filled ? theme.colors.accentForeground : props.tone === "plain" ? theme.colors.foreground : color, fontWeight: "600", fontSize: 12 }}>{props.label}</Text>
     </Pressable>
   );
 }
