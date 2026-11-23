@@ -216,6 +216,12 @@ export const OVERSIGHT_TYPES: EventTypeDef[] = [
     line: (event) => `- run.quota_exempt_changed: ${runName(event.payload)} is now ${event.payload.to ? "exempt from" : "back under"} the quota limits (by ${String(event.payload.by)})${Number(event.payload.cascaded) > 0 ? `, copied onto ${String(event.payload.cascaded)} child run(s)` : ""}. Tools: get_run { runId: "${event.runId}" }.`,
   },
   {
+    type: "finding.dismissed",
+    description: "An agent dismissed a review finding of a PR with a written rationale (dismiss_finding): pr (owner/repo#N), the finding's signature, file, severity and category, the rationale and by who. Never sent for a P1 or a security, auth, secrets, credentials, IAM or migration finding (those are refused). Not a gate: nobody is asked; the reply on the PR thread is the caller's. Worth watching: it is how a review loop ends without a human.",
+    payload: z.object({ ...runFields, pr: z.string(), signature: z.string(), file: z.string(), severity: z.string(), category: z.string(), rationale: z.string(), by: z.string() }),
+    line: (event) => `- finding.dismissed: ${String(event.payload.severity)} ${String(event.payload.category)} finding ${String(event.payload.signature)} in ${String(event.payload.file)} of ${String(event.payload.pr)} was dismissed by ${String(event.payload.by)} in ${runName(event.payload)}: ${String(event.payload.rationale).slice(0, 300)}. Tools: get_run { runId: "${event.runId}" }, list_dismissed_findings { pr: "${String(event.payload.pr)}" }.`,
+  },
+  {
     type: "run.canceled",
     description: 'A run was canceled (status "canceled"): the reason, when given.',
     payload: z.object({ ...runFields, reason: z.string().nullable() }),

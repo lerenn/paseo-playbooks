@@ -7,7 +7,7 @@ import { record } from "./event-core";
 import { blockEntrySteps, blockStepIds, holdsBlock, innermostBlock } from "../shared/slots";
 import { ADMISSION_CHOICES, PERMISSION_CHOICES, askChoices, askHumanText, askTransitionOf, choicesOfGate, GATE_SUMMARY_MAX, outcomeTransition, isDeferred, waitsForHuman } from "../shared/gates";
 import { parse as parseYaml, stringify as toYaml } from "yaml";
-import type { GateWaitCondition, PoolPass, AfterTask, AskChoice, Attempt, AttemptAgent, FanoutChild, FanoutState, Gate, GateDecider, Job, Playbook, RateHold, Run, RunDefinition, RunStep, RunWorktree, Step, Transition, VarValue, When } from "../shared/types";
+import type { DismissedFinding, GateWaitCondition, PoolPass, AfterTask, AskChoice, Attempt, AttemptAgent, FanoutChild, FanoutState, Gate, GateDecider, Job, Playbook, RateHold, Run, RunDefinition, RunStep, RunWorktree, Step, Transition, VarValue, When } from "../shared/types";
 import { isActive, isUnavailableHold, isAgentlessAttempt, isFanoutAttempt, isManagerless, MAX_FANOUT_PAST, MAX_POOL_PASSES, isPaused, isPipeline, isStepDone, isStepLive, isTerminal, restartBlocker, runningAfterTasks } from "../shared/types";
 import { coerceValue, formatValue, type ListItem, lookup, parseDuration, parseList, renderTemplate, replaceRefs, resolveValue, singleRef, templateRefs } from "../shared/vars";
 
@@ -233,6 +233,7 @@ function createRun(input: NewRunInput, inputs: Record<string, VarValue>, kind: "
     inheritChildPriority: input.inheritChildPriority ?? false,
     quotaExempt: input.quotaExempt ?? false,
     inheritChildExempt: input.inheritChildExempt ?? false,
+    dismissedFindings: [],
     managerWatch: { steps: {}, question: null },
     warden: { findings: {} },
     steps: Object.fromEntries(
@@ -1815,6 +1816,19 @@ export function setRunExempt(run: Run, exempt: boolean, inherit: boolean | undef
   const flagMoved = inherit !== undefined && inherit !== flagBefore;
   if (moved || flagMoved) log(run, now, "quota_exempt_changed", null, `${moved ? `quota: ${from ? "exempt" : "limited"} → ${exempt ? "exempt (not subject to quota limiting)" : "limited (back under the quota limits from its next step)"}` : "children follow the exemption"}${flagMoved ? (inherit ? "; new children follow it" : "; children no longer follow it") : ""}${note ? ` (${note})` : ""}`);
   return { from, changed: moved || flagMoved };
+}
+
+/**
+ * Records a review finding an agent dismissed (ADR 2026-11-23-dismiss-finding). The guardrails are checked by the caller. Idempotent per
+ * (pr, signature): a second dismissal keeps the first record and changes nothing.
+ */
+export function dismissFinding(run: Run, entry: Omit<DismissedFinding, "at">, now: string): { changed: boolean; entry: DismissedFinding } {
+  const known = run.dismissedFindings.find((candidate) => candidate.pr === entry.pr && candidate.signature === entry.signature);
+  if (known) return { changed: false, entry: known };
+  const added = { ...entry, at: now };
+  run.dismissedFindings.push(added);
+  log(run, now, "finding_dismissed", null, `${entry.pr} ${entry.signature} ${entry.file} [${entry.severity}/${entry.category}] by ${entry.by}: ${entry.rationale.slice(0, 200)}`);
+  return { changed: true, entry: added };
 }
 
 /** Lifts a pause. Returns false if the run was not paused. */

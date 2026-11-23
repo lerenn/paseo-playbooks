@@ -9,7 +9,8 @@ import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 /** The daemon API handed to plugin handlers (typed via the SDK, so the build needs no @getpaseo/client). */
 type PaseoApi = PluginHandlerContext["paseo"];
 import type { AdmissionStatus, RunPriorityView, ScriptOutput } from "../shared/types";
-import type { GateWaitCondition } from "../shared/types";
+import type { DismissedFinding, GateWaitCondition } from "../shared/types";
+import { dismissRefusal, findingSignature, normalizeFindingFile, normalizeFindingText, normalizePr } from "./findings";
 import type { AgentSettings, AgentTarget, Attempt, FanoutChild as FanoutChildState, PoolPass as PoolPassState, Gate, Job, Playbook, Run, RunDefinition, RunWorktree, Step, VarValue, WardenFinding } from "../shared/types";
 import { addUsage, isUnavailableHold, DEFAULT_EXHAUSTED_FOR_MS, DEFAULT_PERMISSION_POLICY, workspaceKeptUntil } from "../shared/types";
 import { UsageLedger } from "./usage-ledger";
@@ -81,6 +82,9 @@ import { pluginDataDir } from "./data-dir";
 
 export class UserError extends Error {}
 
+/** Characters of rationale `dismiss_finding` needs: a reason, not a word. */
+const MIN_RATIONALE = 20;
+
 /** A step could not start because rate limiting holds the run (ADR 2026-11-20-rate-limiting): not a failure, the plugin starts the step itself once the hold is lifted. */
 export class RateHeldError extends UserError {
   constructor(readonly hold: HoldVerdict) {
@@ -113,6 +117,8 @@ export const MANAGER_TOOL_NAMES = [
   "validate_playbooks",
   "settle_job",
   "record_followup",
+  "dismiss_finding",
+  "list_dismissed_findings",
 ];
 export const STEP_TOOL_NAMES = ["report_step_result", "validate_playbooks"];
 /** A run with no manager also lets its step agents put a human gate's question in their conversation. */
@@ -5087,6 +5093,46 @@ export class Runtime {
       this.kickLimits();
     }
     return { run, from: result.from, to: exempt, changed: result.changed || cascaded > 0, cascaded };
+  }
+
+  /**
+   * `dismiss_finding` (ADR 2026-11-23-dismiss-finding): records on the run that a review finding of a PR is dismissed, with the rationale.
+   * The guardrails (severity and category required, no P1, no security/auth/secrets/IAM/migration) are enforced here. Idempotent per PR
+   * and signature. Throws on an unknown or archived run.
+   */
+  async dismissFinding(runId: string, input: { pr: string; file: string; text: string; severity: string; category: string; rationale: string }, by: string): Promise<{ run: Run; entry: DismissedFinding; changed: boolean }> {
+    const existing = this.store.get(runId);
+    if (!existing) throw new UserError(`unknown run "${runId}"`);
+    if (existing.archivedAt) throw new UserError(`run ${runId} is archived`);
+    const pr = normalizePr(input.pr);
+    const file = normalizeFindingFile(input.file);
+    if (!pr) throw new UserError("pr is required");
+    if (!file) throw new UserError("file is required");
+    if (!normalizeFindingText(input.text)) throw new UserError("the finding text is empty once normalised: pass the finding as the reviewer wrote it");
+    if (input.rationale.trim().length < MIN_RATIONALE) throw new UserError(`rationale is required (at least ${MIN_RATIONALE} characters): say why the finding does not need a change`);
+    const refusal = dismissRefusal(input.severity, input.category);
+    if (refusal) throw new UserError(`not dismissed: ${refusal}. Leave it to a human (ask, or open a gate).`);
+    const entry = { pr, signature: findingSignature(file, input.text), file, text: input.text.trim().slice(0, 1000), severity: input.severity.trim(), category: input.category.trim(), rationale: input.rationale.trim(), by };
+    const result = await this.store.mutate(runId, (current) => engine.dismissFinding(current, entry, nowIso()));
+    const run = this.store.get(runId)!;
+    if (result.changed) {
+      await this.bus.emit("finding.dismissed", { ...runFieldsOf(run), pr, signature: entry.signature, file, severity: entry.severity, category: entry.category, rationale: entry.rationale, by }, { runId, source: "runs" }).catch((error: unknown) => console.error("[playbooks] could not emit finding.dismissed:", errorText(error)));
+    }
+    return { run, entry: result.entry, changed: result.changed };
+  }
+
+  /** `list_dismissed_findings`: the findings dismissed for a PR across every run (the oldest record of a signature wins), newest first. */
+  dismissedFindings(pr: string): DismissedFinding[] {
+    const key = normalizePr(pr);
+    const seen = new Map<string, DismissedFinding>();
+    for (const run of this.store.list()) {
+      for (const entry of run.dismissedFindings ?? []) {
+        if (entry.pr !== key) continue;
+        const known = seen.get(entry.signature);
+        if (!known || entry.at < known.at) seen.set(entry.signature, entry);
+      }
+    }
+    return [...seen.values()].sort((a, b) => b.at.localeCompare(a.at));
   }
 
   /**

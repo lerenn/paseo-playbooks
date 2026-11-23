@@ -1173,6 +1173,20 @@ export const AdmissionStatusSchema = z.object({
 });
 export type AdmissionStatus = z.infer<typeof AdmissionStatusSchema>;
 
+/** A review finding dismissed with a rationale: keyed by `pr` (normalised `owner/repo#N`) and `signature` (server/findings.ts). */
+export const DismissedFindingSchema = z.object({
+  pr: z.string(),
+  signature: z.string(),
+  file: z.string(),
+  text: z.string(),
+  severity: z.string(),
+  category: z.string(),
+  rationale: z.string(),
+  by: z.string(),
+  at: z.string(),
+});
+export type DismissedFinding = z.infer<typeof DismissedFindingSchema>;
+
 export const RunSchema = z.object({
   version: z.literal(1),
   id: z.string(),
@@ -1235,6 +1249,8 @@ export const RunSchema = z.object({
   quotaExempt: z.boolean().default(false),
   /** Set (sticky) by `set_run_quota_exempt` with applyToChildren: later changes of `quotaExempt` and the children this run starts later follow it (ADR 2026-11-23-run-quota-exempt-toggle). */
   inheritChildExempt: z.boolean().default(false),
+  /** Review findings an agent dismissed with a written reason (`dismiss_finding`, ADR 2026-11-23-dismiss-finding), per PR and finding signature. */
+  dismissedFindings: z.array(DismissedFindingSchema).default([]),
   /** The manager watchdog's memory (nudges sent per reported step, the manager's open question). */
   managerWatch: ManagerWatchSchema.default({ steps: {}, question: null }),
   /** The warden's findings for this run (empty unless `warden.enabled`). */

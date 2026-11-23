@@ -5,6 +5,7 @@ import { defineAgentTool, type AgentToolDefinition, type AgentToolResult } from 
 import { askHumanText, choicesOfGate, describeCondition, GATE_SUMMARY_MAX, waitsForHuman } from "../shared/gates";
 import { z } from "zod";
 import type { PlaybookEntry, Run, When } from "../shared/types";
+import { findingSignature, normalizeFindingFile, normalizePr } from "./findings";
 import { repairReport } from "./malformed";
 import { isActive, isAgentlessAttempt, isPaused, isPipeline, isTerminal, restartBlocker, runningAfterTasks, VarValueSchema, workspaceKeptUntil } from "../shared/types";
 import * as engine from "./engine";
@@ -219,6 +220,8 @@ export function runCompact(run: Run, only?: string[], slow: Record<string, SlowI
     /** true: not subject to quota limiting (start_playbook `quota: { exempt: true }`, or inherited from the parent run). */
     quotaExempt: run.quotaExempt,
     inheritChildExempt: run.inheritChildExempt,
+    /** Review findings dismissed with a rationale (`dismiss_finding`), per PR and signature. */
+    dismissedFindings: run.dismissedFindings,
     ...wardenView(run),
     steps: Object.fromEntries(
       viewSteps(run, only).map((id) => {
@@ -273,6 +276,8 @@ export function runFull(run: Run, only?: string[], slow: Record<string, SlowInfo
     /** true: not subject to quota limiting (start_playbook `quota: { exempt: true }`, or inherited from the parent run). */
     quotaExempt: run.quotaExempt,
     inheritChildExempt: run.inheritChildExempt,
+    /** Review findings dismissed with a rationale (`dismiss_finding`), per PR and signature. */
+    dismissedFindings: run.dismissedFindings,
     ...wardenView(run),
     steps: Object.fromEntries(
       viewSteps(run, only).map((id) => {
@@ -1044,6 +1049,52 @@ export function runTools(runtime: Runtime): AgentToolDefinition[] {
         guard(async () => {
           const { pipeline, job } = await runtime.recordFollowUp(jobId, { runId: followUpRunId ?? null, note: note ?? null, by: agent.id }, runId);
           return ok(`Follow-up recorded for job ${jobId}: ${followUpRunId ? `run ${followUpRunId}` : "none needed"}. Follow-ups of the job: ${job.followUps.length}.`, { runId: pipeline.id, jobId, followUps: job.followUps });
+        }),
+    }),
+    defineAgentTool({
+      name: "dismiss_finding",
+      description:
+        "Review loops: dismiss a finding a code-review bot keeps raising, with a written rationale, so the loop can end without a human. It is recorded on the run (get_run `dismissedFindings`, history `finding_dismissed`, event finding.dismissed with who and why) keyed per PR by the finding's SIGNATURE (a hash of the file and the normalised finding text, NOT the comment id or the head sha: it stays the same when the bot re-raises the finding on a new head). The plugin enforces the guardrails: severity and category are required; a P0/P1 (or critical, high, blocker, major) finding is refused; so is a category about security, auth, secrets, credentials, IAM or migration; and a severity it does not recognise. Those go to a human (ask, or open a gate). rationale (at least 20 characters) says why the finding needs no change. It does NOT post anything: replying on the PR thread (with the rationale) stays with you. Idempotent per PR and signature (changed: false the second time). Returns the signature. A project's check script (or you) skips the finding afterwards with list_dismissed_findings { pr, file, text }. Not for step agents: a step reports the finding to its manager, who dismisses it.",
+      input: z.object({
+        runId: IdArg.describe("The run that records the dismissal (usually yours, the review loop's)"),
+        pr: z.string().describe("The PR: a GitHub URL, owner/repo#N or owner/repo/pull/N (kept as owner/repo#N)"),
+        file: z.string().describe("The file the finding is about (path as the bot wrote it; ./ and a leading / are ignored)"),
+        text: z.string().describe("The finding text as the bot wrote it (normalised for the signature: case, markdown, severity badges, line numbers and punctuation do not count)"),
+        severity: z.string().describe("Required. P2, P3, medium, low, minor, nit, info or suggestion. P0/P1 and the like are refused"),
+        category: z.string().describe("Required. What kind of finding it is (style, naming, performance, test, docs, logic...). security, auth, secrets, credentials, IAM and migration are refused"),
+        rationale: z.string().describe("Why the finding needs no change, written for the PR thread too (at least 20 characters)"),
+      }),
+      execute: ({ runId, pr, file, text, severity, category, rationale }, { agent }) =>
+        guard(async () => {
+          const { entry, changed } = await runtime.dismissFinding(runId, { pr, file, text, severity, category, rationale }, `agent ${agent.id}`);
+          return ok(
+            changed
+              ? `Finding ${entry.signature} dismissed for ${entry.pr} (${entry.file}). Nothing was posted: reply on the PR thread yourself with the rationale.`
+              : `Finding ${entry.signature} was already dismissed for ${entry.pr} (by ${entry.by} at ${entry.at}); nothing changed.`,
+            { runId, changed, ...entry },
+          );
+        }),
+    }),
+    defineAgentTool({
+      name: "list_dismissed_findings",
+      description:
+        "The review findings dismissed (dismiss_finding) for a PR, from every run, newest first: signature, file, text, severity, category, rationale, by, at. Give file and text (the finding as the bot wrote it) to check one finding: you get its signature and `dismissed` true/false with the record. A check script that reads the bot's findings calls this for each one and skips the dismissed. The signature is `fs1:` plus 16 hex characters of the SHA-256 of `<file>\\n<normalised text>` (see the ADR 2026-11-23-dismiss-finding); it does not depend on the PR, comment id or head.",
+      input: z.object({
+        pr: z.string().describe("The PR: a GitHub URL, owner/repo#N or owner/repo/pull/N"),
+        file: z.string().optional().describe("With text: the file of one finding to check"),
+        text: z.string().optional().describe("With file: the finding text to check"),
+      }),
+      execute: ({ pr, file, text }) =>
+        guard(async () => {
+          const key = normalizePr(pr);
+          const list = runtime.dismissedFindings(pr);
+          if (file !== undefined && text !== undefined) {
+            const signature = findingSignature(file, text);
+            const record = list.find((entry) => entry.signature === signature) ?? null;
+            return ok(record ? `Dismissed: ${signature} (${record.rationale.slice(0, 200)})` : `Not dismissed: ${signature}`, { pr: key, file: normalizeFindingFile(file), signature, dismissed: record !== null, record });
+          }
+          if (file !== undefined || text !== undefined) throw new UserError("pass file and text together to check one finding, or neither to list them all");
+          return ok(`${list.length} finding(s) dismissed for ${key}.`, { pr: key, findings: list });
         }),
     }),
     defineAgentTool({
