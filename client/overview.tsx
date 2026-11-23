@@ -12,7 +12,7 @@ import { isActive, isPaused, isPipeline, isTerminal, type Gate, type RunSummary,
 import { slowDetail, slowView } from "../shared/slow";
 import { useSlowSteps } from "./slow";
 import { laneTone } from "./lane-tone";
-import { pausedColor, TONE_RANK } from "./tone-color";
+import { TONE_RANK } from "./tone-color";
 import { AnalyticsView } from "./analytics";
 import { QuotaView } from "./quota";
 import { useReduceMotion } from "./graph";
@@ -30,6 +30,7 @@ import { messages } from "./i18n";
 import { OverviewRunForm, RunPlaybookButton } from "./start-form";
 import { openJobsLabel, Stages, batchName } from "./stages";
 import { stepShortTitle, stepTitle, stepTitleOf, withAlpha, type Theme } from "./theme";
+import { semanticColor } from "./semantic-colors";
 
 /** Id of the Playbooks screen, opened from the sidebar row. */
 export const SCREEN_ID = "playbooks";
@@ -207,7 +208,7 @@ function gateKindLabel(gate: Gate): string {
 }
 
 /**
- * What a run is doing, as a colour: blue working, yellow waiting (a decision or a free slot),
+ * What a run is doing, as a colour: blue working, orange waiting (a decision or a free slot),
  * green done and not opened yet, violet paused, grey done and opened, red failed or canceled.
  */
 type Tone = "running" | "waiting" | "paused" | "done" | "seen" | "failed";
@@ -215,15 +216,15 @@ type Tone = "running" | "waiting" | "paused" | "done" | "seen" | "failed";
 function toneColor(theme: Theme, tone: Tone): string {
   switch (tone) {
     case "waiting":
-      return theme.colors.statusWarning;
+      return semanticColor(theme, "waiting");
     case "running":
-      return theme.colors.accent;
+      return semanticColor(theme, "running");
     case "done":
-      return theme.colors.statusSuccess;
+      return semanticColor(theme, "done");
     case "failed":
-      return theme.colors.statusDanger;
+      return semanticColor(theme, "failed");
     case "paused":
-      return pausedColor(theme.colors.surface1);
+      return semanticColor(theme, "paused");
     default:
       return theme.colors.foregroundMuted;
   }
@@ -435,20 +436,20 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
         <View style={{ flexDirection: "row", alignItems: "center", gap: 10, flexWrap: "wrap", zIndex: 50 }}>
           <PreReleaseFlag theme={theme} />
           <Text style={{ flex: 1, minWidth: 140, color: theme.colors.foregroundMuted, fontSize: 13 }}>
-            <Text style={{ color: theme.colors.statusWarning }}>{counts.needsYou}</Text> {counts.needsYou === 1 ? "needs" : "need"} you ·{" "}
-            <Text style={{ color: theme.colors.accent }}>{counts.working}</Text> working
+            <Text style={{ color: semanticColor(theme, "waiting") }}>{counts.needsYou}</Text> {counts.needsYou === 1 ? "needs" : "need"} you ·{" "}
+            <Text style={{ color: semanticColor(theme, "running") }}>{counts.working}</Text> working
             {counts.waiting > 0 ? ` · ${counts.waiting} waiting` : ""}
             {counts.paused > 0 ? ` · ${counts.paused} paused` : ""}
             {counts.failed > 0 ? (
               <>
                 {" · "}
-                <Text style={{ color: theme.colors.statusDanger }}>{counts.failed}</Text> failed
+                <Text style={{ color: semanticColor(theme, "failed") }}>{counts.failed}</Text> failed
               </>
             ) : null}
             {counts.done > 0 ? (
               <>
                 {" · "}
-                <Text style={{ color: theme.colors.statusSuccess }}>{counts.done}</Text> done
+                <Text style={{ color: semanticColor(theme, "done") }}>{counts.done}</Text> done
               </>
             ) : null}
           </Text>
@@ -556,12 +557,12 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
           ) : null}
         </View>
 
-        {overview.error ? <Text style={{ color: theme.colors.statusDanger }}>{overview.error}</Text> : null}
+        {overview.error ? <Text style={{ color: semanticColor(theme, "failed") }}>{overview.error}</Text> : null}
         {overview.runs === null && !overview.error ? <Text style={{ color: theme.colors.foregroundMuted }}>Loading…</Text> : null}
 
         {needs.length > 0 ? (
           <View style={{ gap: 8 }}>
-            <SectionTitle theme={theme} icon="CircleDot" iconColor={theme.colors.statusWarning} title="Needs you" count={needs.length} />
+            <SectionTitle theme={theme} icon="CircleDot" iconColor={semanticColor(theme, "waiting")} title="Needs you" count={needs.length} />
             <View style={{ borderRadius: 10, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface1, overflow: "hidden" }}>
               {needs.map(({ run, gate }, index) => (
                 <NeedsYouRow key={needsYouRowKey(run.id, gate.id)} allRuns={runs} theme={theme} run={run} gate={gate} first={index === 0} workspace={names.get(run.workspaceId) ?? run.workspaceId} hostLabel={props.host.label} compact={layout.compact} onOpenWorkspace={onOpenWorkspace} onOpenAgent={onOpenAgent} />
@@ -749,7 +750,7 @@ function NeedsYouRow(props: {
   const [open, setOpen] = useState(false);
   const [deferring, setDeferring] = useState(false);
   const refresh = useStoreRefresh();
-  const warning = theme.colors.statusWarning;
+  const warning = semanticColor(theme, "waiting");
   const summary = gateText(gate).summary.split("\n")[0] || `${stepTitleOf(run.playbook, gate.stepId)} is waiting`;
   return (
     <View style={{ borderTopWidth: props.first ? 0 : 1, borderTopColor: theme.colors.border }}>
@@ -1001,7 +1002,7 @@ function PlaybookGroup(props: {
               ? `${working} working`
               : undefined
         }
-        extraColor={theme.colors.accent}
+        extraColor={semanticColor(theme, "running")}
       />
       {props.pipeline ? <Stages theme={theme} pipeline={props.pipeline} runs={props.allRuns} /> : null}
       {/* No overflow clipping: the sort menu opens over the rows below. */}
@@ -1129,7 +1130,7 @@ function RunRow(props: {
         </Text>
         {slowIds.length > 0 ? (
           <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }} accessible accessibilityLabel={`Slow step ${slowIds[0]}: ${slowDetail(slow[slowIds[0]!]!)}`}>
-            <Icon name="TriangleAlert" size={11} color={theme.colors.statusWarning} />
+            <Icon name="TriangleAlert" size={11} color={semanticColor(theme, "waiting")} />
             <Text numberOfLines={1} style={{ flex: 1, color: theme.colors.foregroundMuted, fontSize: 11 }}>
               {slowIds[0]}: {slowDetail(slow[slowIds[0]!]!)}
             </Text>
@@ -1348,8 +1349,8 @@ function Lane(props: { theme: Theme; child: FanoutChildInfo; compact: boolean; r
   const line = state && run ? <ProgressLine theme={theme} total={columns} position={state.position} marks={state.marks} color={color} moving={isMoving(state.tone)} /> : null;
   const marker = gates > 0 ? (
     <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
-      <Icon name="CircleDot" size={12} color={theme.colors.statusWarning} />
-      <Text style={{ color: theme.colors.statusWarning, fontSize: 11, fontWeight: "600" }}>Needs you</Text>
+      <Icon name="CircleDot" size={12} color={semanticColor(theme, "waiting")} />
+      <Text style={{ color: semanticColor(theme, "waiting"), fontSize: 11, fontWeight: "600" }}>Needs you</Text>
     </View>
   ) : null;
   const [history, setHistory] = useState(false);

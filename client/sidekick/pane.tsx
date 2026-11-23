@@ -6,6 +6,7 @@ import { createSidekickFilesRpc, listSidekicksRpc, openSidekickRpc, restartSidek
 import { GETTING_STARTED_URL } from "../panel";
 import { Button } from "../sheet";
 import type { Theme } from "../theme";
+import { semanticColor } from "../semantic-colors";
 import { SidekickChat } from "./column";
 import { statusLine, visibleTabs } from "./tabs";
 import { clampColumnWidth } from "./width";
@@ -156,7 +157,7 @@ export function SidekickPane(props: Props) {
       </ScrollView>
 
       {!adding && current && statusLine(current) ? (
-        <Text accessibilityLabel={`Status of ${current.label}: ${statusLine(current)}`} style={{ color: current.needYou > 0 ? theme.colors.statusWarning : muted, fontSize: 12, paddingHorizontal: 12, paddingVertical: 6, borderBottomWidth: 1, borderColor: theme.colors.border }}>
+        <Text accessibilityLabel={`Status of ${current.label}: ${statusLine(current)}`} style={{ color: current.needYou > 0 ? semanticColor(theme, "waiting") : muted, fontSize: 12, paddingHorizontal: 12, paddingVertical: 6, borderBottomWidth: 1, borderColor: theme.colors.border }}>
           {statusLine(current)}
         </Text>
       ) : null}
@@ -190,7 +191,7 @@ export function SidekickPane(props: Props) {
         <SetUp theme={theme} project={current} onCreated={() => refresh()} />
       ) : current.errors.length > 0 ? (
         <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 16, gap: 8 }}>
-          <Text style={{ color: theme.colors.statusDanger, fontWeight: "600" }}>The Sidekick files of {current.label} have errors</Text>
+          <Text style={{ color: semanticColor(theme, "failed"), fontWeight: "600" }}>The Sidekick files of {current.label} have errors</Text>
           {current.errors.map((error) => (
             <Text key={error} selectable style={{ color: muted, fontSize: 12 }}>{error}</Text>
           ))}
@@ -234,7 +235,7 @@ function TabButton(props: { theme: Theme; label: string; active: boolean; dot?: 
       <Text style={{ color: props.active ? theme.colors.foreground : theme.colors.foregroundMuted, fontSize: 13, fontWeight: props.active ? "700" : "500" }} numberOfLines={1}>
         {props.label}
       </Text>
-      {props.dot ? <View accessibilityLabel="This project has active runs" style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: theme.colors.accent }} /> : null}
+      {props.dot ? <View accessibilityLabel="This project has active runs" style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: semanticColor(theme, "running") }} /> : null}
     </Pressable>
   );
 }

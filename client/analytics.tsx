@@ -7,6 +7,7 @@ import { analyticsStateRpc } from "../shared/contracts";
 import type { Usage } from "../shared/types";
 import { axisTicks, compactNumber, isDarkColor, labelIndexes, niceAxis, seriesColor, shortDate } from "./analytics-chart";
 import type { Theme } from "./theme";
+import { semanticColor } from "./semantic-colors";
 
 const RANGES: Array<{ label: string; days: number | undefined }> = [
   { label: "Last day", days: 1 },
@@ -223,7 +224,7 @@ export function AnalyticsView(props: { theme: Theme }) {
         <Pill theme={theme} label="Sort: tokens" selected={sort === "tokens"} onPress={() => setSort("tokens")} />
         <Pill theme={theme} label="Sort: lost share" selected={sort === "lost"} onPress={() => setSort("lost")} />
       </View>
-      {error ? <Text style={{ color: theme.colors.statusDanger }}>{error}</Text> : null}
+      {error ? <Text style={{ color: semanticColor(theme, "failed") }}>{error}</Text> : null}
       {!data && !error ? <Text style={{ color: muted }}>Loading…</Text> : null}
       {data ? (
         <>

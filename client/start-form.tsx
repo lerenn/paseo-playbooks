@@ -11,6 +11,7 @@ import { useTranslation } from "@getpaseo/plugin/client";
 import { messages } from "./i18n";
 import { Button } from "./sheet";
 import type { Theme } from "./theme";
+import { semanticColor } from "./semantic-colors";
 
 export type StartTarget = "current" | "agent" | "workspace";
 
@@ -155,7 +156,7 @@ export function StartForm(props: {
             />
           </View>
         ) : null}
-        <Text style={{ color: current && !agents.isLoading && !manager ? theme.colors.statusWarning : theme.colors.foregroundMuted, fontSize: 12 }}>
+        <Text style={{ color: current && !agents.isLoading && !manager ? semanticColor(theme, "waiting") : theme.colors.foregroundMuted, fontSize: 12 }}>
           {props.target === "workspace"
             ? t("form.newWorkspaceNote")
             : props.target === "agent"
@@ -184,7 +185,7 @@ export function StartForm(props: {
                   <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
                     <Text style={{ color: theme.colors.foreground, fontSize: 13, fontWeight: "600", flexShrink: 1 }}>
                       {name}
-                      {def.required ? <Text style={{ color: theme.colors.statusDanger }}> *</Text> : null}
+                      {def.required ? <Text style={{ color: semanticColor(theme, "failed") }}> *</Text> : null}
                     </Text>
                     {def.description ? (
                       <Pressable
@@ -227,10 +228,10 @@ export function StartForm(props: {
                     keyboardType={def.type === "number" ? "numeric" : "default"}
                     multiline={def.type === "string" && name === "request"}
                     placeholderTextColor={theme.colors.foregroundMuted}
-                    style={[fieldStyle, def.type === "string" && name === "request" ? { minHeight: 72 } : {}, fieldErrors[name] ? { borderColor: theme.colors.statusDanger } : {}]}
+                    style={[fieldStyle, def.type === "string" && name === "request" ? { minHeight: 72 } : {}, fieldErrors[name] ? { borderColor: semanticColor(theme, "failed") } : {}]}
                   />
                 )}
-                {fieldErrors[name] ? <Text style={{ color: theme.colors.statusDanger, fontSize: 11 }}>{fieldErrors[name]}</Text> : null}
+                {fieldErrors[name] ? <Text style={{ color: semanticColor(theme, "failed"), fontSize: 11 }}>{fieldErrors[name]}</Text> : null}
                 </View>
               </View>
               {def.description && info.has(name) ? (
@@ -243,13 +244,13 @@ export function StartForm(props: {
           </View>
         ) : null}
         {error ? (
-          <Text accessibilityRole="alert" selectable style={{ color: theme.colors.statusDanger, fontSize: 13 }}>
+          <Text accessibilityRole="alert" selectable style={{ color: semanticColor(theme, "failed"), fontSize: 13 }}>
             {error}
           </Text>
         ) : null}
         {duplicate ? (
           <View style={{ gap: 6 }}>
-            <Text style={{ color: theme.colors.statusWarning, fontSize: 13 }}>{duplicate}</Text>
+            <Text style={{ color: semanticColor(theme, "waiting"), fontSize: 13 }}>{duplicate}</Text>
             <Button theme={theme} kind="primary" label={t("common.startAnyway")} disabled={busy} onPress={() => void submit(true)} />
           </View>
         ) : (

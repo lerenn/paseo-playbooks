@@ -16,6 +16,7 @@ import { runningFor } from "../shared/elapsed";
 import { slowDetail, type SlowInfo } from "../shared/slow";
 import { useNow } from "./now";
 import { agentBackground, gateBackground, stepTitle, nodeColor, nodeIcon, nodeStateLabel, STEP_KINDS, type NodeState, type Theme } from "./theme";
+import { semanticColor } from "./semantic-colors";
 
 /** Nodes grow with the panel between these widths; below the minimum the graph scrolls sideways. */
 const NODE_MIN = 132;
@@ -410,10 +411,10 @@ function AfterTaskFrame(props: GraphProps & { available: number; task: AfterTask
     !run || status === "pending"
       ? theme.colors.foregroundMuted
       : status === "running"
-        ? theme.colors.accent
+        ? semanticColor(theme, "running")
         : status === "completed"
-          ? theme.colors.statusSuccess
-          : theme.colors.statusDanger;
+          ? semanticColor(theme, "done")
+          : semanticColor(theme, "failed");
   const ended = run !== null && isTerminal(run.status);
   const label = !run
     ? task.trigger === "auto"
@@ -546,12 +547,12 @@ function Terminal(props: {
   const values = !start && run?.outputs ? Object.entries(run.outputs) : [];
   const color = start
     ? run
-      ? theme.colors.statusSuccess
+      ? semanticColor(theme, "done")
       : theme.colors.foregroundMuted
     : run?.status === "completed"
-      ? theme.colors.statusSuccess
+      ? semanticColor(theme, "done")
       : run?.status === "failed" || run?.status === "canceled"
-        ? theme.colors.statusDanger
+        ? semanticColor(theme, "failed")
         : theme.colors.foregroundMuted;
   const label = start ? "Start" : run?.status === "failed" ? "Failed" : run?.status === "canceled" ? "Canceled" : "End";
   const detail = names.length > 0 ? names.join(", ") : start ? "no inputs" : "no outputs";
@@ -734,7 +735,7 @@ function GroupNode(props: {
   const now = useNow();
   const elapsed = status === "running" ? runningFor(stats.startedAt, now) : null;
   const color =
-    status === "failed" ? theme.colors.statusDanger : status === "running" ? theme.colors.accent : status === "waiting" ? theme.colors.statusWarning : status === "completed" ? theme.colors.statusSuccess : theme.colors.border;
+    status === "failed" ? semanticColor(theme, "failed") : status === "running" ? semanticColor(theme, "running") : status === "waiting" ? semanticColor(theme, "waiting") : status === "completed" ? semanticColor(theme, "done") : theme.colors.border;
   const summary = [BLOCK_STATUS_LABEL[status], progressText(stats), elapsed].filter(Boolean).join(" · ");
   return (
     <View style={{ width: props.nodeWidth }}>
@@ -1013,7 +1014,7 @@ function Node(props: GraphProps & { step: Step; longNeeds: string[]; nodeWidth: 
           ) : null}
           {props.slow?.[step.id] ? (
             <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }} accessible accessibilityLabel={`Slow step: ${slowDetail(props.slow[step.id]!)}`}>
-              <Icon name="TriangleAlert" size={11} color={theme.colors.statusWarning} />
+              <Icon name="TriangleAlert" size={11} color={semanticColor(theme, "waiting")} />
               <Text numberOfLines={1} style={{ flex: 1, color: theme.colors.foregroundMuted, fontSize: 10 }}>
                 {slowDetail(props.slow[step.id]!)}
               </Text>

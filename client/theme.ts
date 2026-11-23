@@ -1,5 +1,6 @@
 import type { PluginHostProps } from "@getpaseo/plugin/client";
 import type { RunStatus, StepStatus } from "../shared/types";
+import { semanticColor, type SemanticTone } from "./semantic-colors";
 
 export type Theme = PluginHostProps["theme"];
 
@@ -9,15 +10,15 @@ export type NodeState = StepStatus | "definition" | "needs_permission";
 export function nodeColor(theme: Theme, state: NodeState): string {
   switch (state) {
     case "completed":
-      return theme.colors.statusSuccess;
+      return semanticColor(theme, "done");
     case "failed":
-      return theme.colors.statusDanger;
+      return semanticColor(theme, "failed");
     case "waiting":
     case "needs_permission":
     case "reported":
-      return theme.colors.statusWarning;
+      return semanticColor(theme, "waiting");
     case "running":
-      return theme.colors.accent;
+      return semanticColor(theme, "running");
     case "ready":
       return theme.colors.foreground;
     default:
@@ -82,19 +83,23 @@ export function runStatusLabel(status: RunStatus): string {
   return status === "waiting_gate" ? "waiting for approval" : status === "boarding" ? "waiting list" : status;
 }
 
-export function runStatusColor(theme: Theme, status: RunStatus): string {
+export function runStatusTone(status: RunStatus): SemanticTone {
   switch (status) {
     case "completed":
-      return theme.colors.statusSuccess;
+      return "done";
     case "failed":
     case "canceled":
-      return theme.colors.statusDanger;
+      return "failed";
     case "waiting_gate":
     case "boarding":
-      return theme.colors.statusWarning;
+      return "waiting";
     default:
-      return theme.colors.accent;
+      return "running";
   }
+}
+
+export function runStatusColor(theme: Theme, status: RunStatus): string {
+  return semanticColor(theme, runStatusTone(status));
 }
 
 /** Adds an alpha channel to a #rgb or #rrggbb theme colour; null for any other format. */
@@ -110,9 +115,9 @@ export function agentBackground(theme: Theme): string {
   return theme.colors.surface2;
 }
 
-/** Human gates: a light tint of the theme's warning colour, or surface0 if it cannot be tinted. */
+/** Human gates: a light tint of the waiting colour, or surface0 if it cannot be tinted. */
 export function gateBackground(theme: Theme): string {
-  return withAlpha(theme.colors.statusWarning, 0.14) ?? theme.colors.surface0;
+  return withAlpha(semanticColor(theme, "waiting"), 0.14) ?? theme.colors.surface0;
 }
 
 export { stepLabel, stepShortTitle, stepTitle, stepTitleOf } from "../shared/labels";

@@ -6,6 +6,7 @@ import { Pressable, Text, View } from "react-native";
 import { listProjectProfilesRpc, setProfileRpc } from "../shared/contracts";
 import type { ProfileInfo } from "../shared/types";
 import type { Theme } from "./theme";
+import { semanticColor } from "./semantic-colors";
 
 /** Turns a profile on or off for a whole project, then refreshes every view of it (the Profiles tab and each open Playbooks panel). */
 export function useSetProjectProfile(): (projectId: string, profile: string, active: boolean) => Promise<void> {
@@ -106,7 +107,7 @@ export function ProfilesView(props: { theme: Theme; workspaces: Array<{ id: stri
       <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>
         A profile is an extra, opt-in set of playbooks kept in a project's main checkout. Turning one on applies to every workspace of the project.
       </Text>
-      {query.error ? <Text style={{ color: theme.colors.statusDanger }}>{(query.error as Error).message}</Text> : null}
+      {query.error ? <Text style={{ color: semanticColor(theme, "failed") }}>{(query.error as Error).message}</Text> : null}
       {query.isLoading ? <Text style={{ color: theme.colors.foregroundMuted }}>Loading…</Text> : null}
       {projects.map((project, index) => (
         <View key={project.projectId} style={{ zIndex: projects.length - index, gap: 6, padding: 10, borderRadius: 10, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface1 }}>

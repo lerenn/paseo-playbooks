@@ -8,6 +8,7 @@ import { deferRequest, type DeferDraft } from "../shared/defer";
 import { describeCondition, isTracked } from "../shared/gates";
 import type { Gate, RunSummary } from "../shared/types";
 import type { Theme } from "./theme";
+import { semanticColor } from "./semantic-colors";
 
 type Kind = DeferDraft["kind"];
 const KINDS: { kind: Kind; label: string }[] = [
@@ -75,7 +76,7 @@ export function DeferForm(props: { theme: Theme; run: RunSummary; gate: Gate; ho
       </View>
       {kind === "manual" ? (
         <>
-          <Text style={{ color: theme.colors.statusWarning, fontSize: 12 }}>Not tracked: the plugin cannot see a PR merge, a reply or a deploy. Bring it back yourself (or set a reminder date).</Text>
+          <Text style={{ color: semanticColor(theme, "waiting"), fontSize: 12 }}>Not tracked: the plugin cannot see a PR merge, a reply or a deploy. Bring it back yourself (or set a reminder date).</Text>
           <TextInput accessibilityLabel="What it waits for" placeholder="What are you waiting for? (e.g. the PR merges)" placeholderTextColor={theme.colors.foregroundMuted} value={text} onChangeText={setText} style={input} />
         </>
       ) : null}
@@ -114,7 +115,7 @@ export function WaitingInfo(props: { theme: Theme; gate: Gate }) {
   return (
     <View style={{ gap: 2 }}>
       <Text numberOfLines={2} style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>Why: {deferral.reason}</Text>
-      <Text numberOfLines={2} style={{ color: tracked ? theme.colors.foregroundMuted : theme.colors.statusWarning, fontSize: 11 }}>{describeCondition(deferral)}</Text>
+      <Text numberOfLines={2} style={{ color: tracked ? theme.colors.foregroundMuted : semanticColor(theme, "waiting"), fontSize: 11 }}>{describeCondition(deferral)}</Text>
     </View>
   );
 }

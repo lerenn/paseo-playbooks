@@ -19,7 +19,8 @@ import { StartForm, type StartTarget } from "./start-form";
 import { dotGroups, isRead, runTone, splitTabs, type DotGroup, type RunTone } from "./run-tabs";
 import { openJobsLabel, Stages, batchName } from "./stages";
 import { splitError } from "../shared/errors";
-import { runStatusColor, runStatusLabel, withAlpha, type Theme } from "./theme";
+import { runStatusColor, runStatusLabel, runStatusTone, withAlpha, type Theme } from "./theme";
+import { semanticColor, semanticOn } from "./semantic-colors";
 
 interface Card {
   id: string;
@@ -111,7 +112,7 @@ export function PlaybooksPanel(props: PluginWorkspacePanelProps) {
       ) : (
         <ScrollView contentContainerStyle={{ paddingHorizontal: pad, paddingBottom: pad, gap: 12 }}>
           {playbooks.isLoading ? <Text style={{ color: theme.colors.foregroundMuted }}>{t("common.loading")}</Text> : null}
-          {playbooks.error ? <Text style={{ color: theme.colors.statusDanger }}>{(playbooks.error as Error).message}</Text> : null}
+          {playbooks.error ? <Text style={{ color: semanticColor(theme, "failed") }}>{(playbooks.error as Error).message}</Text> : null}
           {/* Earlier cards stack above later ones, so a card's dropdown menus are not covered by the cards below it. */}
           {cards.map((card, index) => renderCard(card, total - index))}
           {hiddenCards.length > 0 ? (
@@ -429,18 +430,18 @@ function RunBar(props: { theme: Theme; run: Run; hostLabel: string }) {
   const { t } = useTranslation(messages);
   return (
     <View style={{ gap: 6 }}>
-      {run.failure ? <Text style={{ color: theme.colors.statusDanger, fontSize: 12 }}>{run.failure}</Text> : null}
+      {run.failure ? <Text style={{ color: semanticColor(theme, "failed"), fontSize: 12 }}>{run.failure}</Text> : null}
       {workspaceKeptUntil(run) ? <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>{t("panel.workspaceKept", { when: new Date(workspaceKeptUntil(run)!).toLocaleString() })}</Text> : null}
       {run.definition?.warning ? (
         <View accessibilityRole="alert" style={{ flexDirection: "row", alignItems: "flex-start", gap: 6 }}>
-          <Icon name="TriangleAlert" size={13} color={theme.colors.statusWarning} />
-          <Text selectable style={{ flex: 1, color: theme.colors.statusWarning, fontSize: 12 }}>{run.definition.warning}</Text>
+          <Icon name="TriangleAlert" size={13} color={semanticColor(theme, "waiting")} />
+          <Text selectable style={{ flex: 1, color: semanticColor(theme, "waiting"), fontSize: 12 }}>{run.definition.warning}</Text>
         </View>
       ) : null}
       {Object.values(run.warden.findings).map((finding) => (
         <View key={`${finding.check}:${finding.subject ?? ""}`} accessibilityRole="alert" style={{ flexDirection: "row", alignItems: "flex-start", gap: 6 }}>
-          <Icon name="TriangleAlert" size={13} color={theme.colors.statusWarning} />
-          <Text selectable style={{ flex: 1, flexShrink: 1, color: theme.colors.statusWarning, fontSize: 12 }}>{`Warden · ${finding.check.replace("_", " ")}: ${finding.detail}`}</Text>
+          <Icon name="TriangleAlert" size={13} color={semanticColor(theme, "waiting")} />
+          <Text selectable style={{ flex: 1, flexShrink: 1, color: semanticColor(theme, "waiting"), fontSize: 12 }}>{`Warden · ${finding.check.replace("_", " ")}: ${finding.detail}`}</Text>
         </View>
       ))}
     </View>
@@ -547,7 +548,7 @@ function RunChip(props: { theme: Theme; run: Run; label?: string | undefined; se
   const wrapping = active && isTerminal(run.status);
   // Selected: filled with the colour. Not selected: outlined in it.
   const border = color;
-  const text = selected ? (color === theme.colors.foregroundMuted ? theme.colors.surface1 : theme.colors.accentForeground) : color;
+  const text = selected ? (color === theme.colors.foregroundMuted ? theme.colors.surface1 : semanticOn(theme, runStatusTone(run.status))) : color;
   return (
     <View style={{ zIndex: menu === "closed" ? 0 : 30 }}>
       <View style={{ flexDirection: "row", borderRadius: 10, borderWidth: 1, borderColor: border, backgroundColor: selected ? color : "transparent", overflow: "hidden" }}>
@@ -696,8 +697,8 @@ function RunChip(props: { theme: Theme; run: Run; label?: string | undefined; se
               onPress={() => setMenu("confirm")}
               style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 10, paddingVertical: 8, borderRadius: 6 }}
             >
-              <Icon name="CircleStop" size={15} color={theme.colors.statusDanger} />
-              <Text style={{ color: theme.colors.statusDanger, fontSize: 13 }}>{wrapping ? "Cancel after-tasks…" : "Cancel run…"}</Text>
+              <Icon name="CircleStop" size={15} color={semanticColor(theme, "failed")} />
+              <Text style={{ color: semanticColor(theme, "failed"), fontSize: 13 }}>{wrapping ? "Cancel after-tasks…" : "Cancel run…"}</Text>
             </Pressable>
             </>
             ) : (
@@ -759,7 +760,7 @@ function RunChip(props: { theme: Theme; run: Run; label?: string | undefined; se
 /** A playbook's validation errors as one callout: a heading, then each problem with its location in bold. */
 function ErrorCallout(props: { theme: Theme; file: string; errors: string[] }) {
   const { theme } = props;
-  const danger = theme.colors.statusDanger;
+  const danger = semanticColor(theme, "failed");
   return (
     <View
       accessibilityRole="alert"
@@ -814,13 +815,13 @@ function runLabel(run: Run): string {
 function toneColor(theme: Theme, tone: RunTone): string {
   switch (tone) {
     case "waiting":
-      return theme.colors.statusWarning;
+      return semanticColor(theme, "waiting");
     case "running":
-      return theme.colors.accent;
+      return semanticColor(theme, "running");
     case "failed":
-      return theme.colors.statusDanger;
+      return semanticColor(theme, "failed");
     case "done":
-      return theme.colors.statusSuccess;
+      return semanticColor(theme, "done");
     case "seen":
       return theme.colors.foregroundMuted;
   }

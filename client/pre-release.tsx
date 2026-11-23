@@ -2,6 +2,7 @@ import { Icon } from "@getpaseo/plugin/client/ui";
 import { useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import type { Theme } from "./theme";
+import { semanticColor } from "./semantic-colors";
 
 /** Shown on hover, focus or press, so it also works on touch screens and for screen readers. */
 export const PRE_RELEASE_NOTICE =
@@ -26,7 +27,7 @@ export function PreReleaseFlag(props: { theme: Theme }) {
         onBlur={() => setFocus(false)}
         onPress={() => setPressed(!pressed)}
       >
-        <Icon name="TriangleAlert" size={16} color={theme.colors.statusWarning} />
+        <Icon name="TriangleAlert" size={16} color={semanticColor(theme, "waiting")} />
       </Pressable>
       {shown ? (
         <View
@@ -38,7 +39,7 @@ export function PreReleaseFlag(props: { theme: Theme }) {
             padding: 10,
             borderRadius: 8,
             borderWidth: 1,
-            borderColor: theme.colors.statusWarning,
+            borderColor: semanticColor(theme, "waiting"),
             backgroundColor: theme.colors.surface2,
           }}
         >

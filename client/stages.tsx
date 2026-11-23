@@ -7,6 +7,7 @@ import { isTerminal, type RunSummary, type Stage } from "../shared/types";
 import { ADMISSION_POLL_MS, admissionLine, failureHeading, heldView } from "./admission";
 import { lastLines } from "./script-output";
 import type { Theme } from "./theme";
+import { semanticColor } from "./semantic-colors";
 
 /** What the stages need of a run: a summary or a whole run. */
 export type StageRun = Pick<RunSummary, "id" | "createdAt" | "status" | "batch" | "jobs" | "playbook" | "gates">;
@@ -52,10 +53,10 @@ function AdmissionInfo(props: { theme: Theme; pipeline: StageRun; stage: Stage; 
   const line = admissionLine(status, props.waiting, now);
   return (
     <View accessibilityLabel={`${stage.title} admission: ${line.text}`} style={{ gap: 2 }}>
-      <Text style={{ color: line.kind === "failed" ? theme.colors.statusDanger : theme.colors.foregroundMuted, fontSize: 11 }}>{line.text}</Text>
+      <Text style={{ color: line.kind === "failed" ? semanticColor(theme, "failed") : theme.colors.foregroundMuted, fontSize: 11 }}>{line.text}</Text>
       {line.error && status ? (
-        <View accessibilityRole="alert" style={{ gap: 2, borderRadius: 6, borderWidth: 1, borderColor: theme.colors.statusDanger, padding: 6 }}>
-          <Text style={{ color: theme.colors.statusDanger, fontSize: 11, fontWeight: "600" }}>{failureHeading(status, line.error)}</Text>
+        <View accessibilityRole="alert" style={{ gap: 2, borderRadius: 6, borderWidth: 1, borderColor: semanticColor(theme, "failed"), padding: 6 }}>
+          <Text style={{ color: semanticColor(theme, "failed"), fontSize: 11, fontWeight: "600" }}>{failureHeading(status, line.error)}</Text>
           <Text style={{ color: theme.colors.foreground, fontSize: 11 }}>{line.error.message}</Text>
           {line.error.tail ? (
             <Text numberOfLines={6} style={{ color: theme.colors.foregroundMuted, fontSize: 10, fontFamily: "monospace" }}>
@@ -76,11 +77,11 @@ function WaitingJob(props: { theme: Theme; job: StageRun["jobs"][number]; stage:
   return (
     <View accessibilityLabel={held ? `${job.label}: ${held.badge.toLowerCase()}, ${held.reason}` : job.label} style={{ gap: 1 }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-        <Text numberOfLines={1} style={{ flexShrink: 1, color: theme.colors.statusWarning, fontSize: 12 }}>
+        <Text numberOfLines={1} style={{ flexShrink: 1, color: semanticColor(theme, "waiting"), fontSize: 12 }}>
           {job.label}
         </Text>
         {held ? (
-          <Text style={{ color: theme.colors.statusWarning, fontSize: 10, fontWeight: "600", borderRadius: 4, borderWidth: 1, borderColor: theme.colors.statusWarning, paddingHorizontal: 4 }}>{held.badge}</Text>
+          <Text style={{ color: semanticColor(theme, "waiting"), fontSize: 10, fontWeight: "600", borderRadius: 4, borderWidth: 1, borderColor: semanticColor(theme, "waiting"), paddingHorizontal: 4 }}>{held.badge}</Text>
         ) : null}
         {job.requeued && job.requeued.stage === props.stage ? (
           <Text style={{ color: theme.colors.foregroundMuted, fontSize: 10, fontWeight: "600", borderRadius: 4, borderWidth: 1, borderColor: theme.colors.foregroundMuted, paddingHorizontal: 4 }}>Requeued</Text>
@@ -146,7 +147,7 @@ export function Stages(props: { theme: Theme; pipeline: StageRun; runs: readonly
             ) : null}
             <View
               accessibilityLabel={`Stage ${stage.title}: ${jobsLabel(waiting.length)} waiting, ${batch ? `batch ${batch.id} running with ${jobsLabel(inBatch)}` : "no batch running"}`}
-              style={{ flexGrow: 1, flexBasis: 0, minWidth: 200, alignSelf: "stretch", borderRadius: 10, borderWidth: 1, borderColor: batch ? theme.colors.accent : theme.colors.border, backgroundColor: theme.colors.surface1, padding: 10, gap: 6 }}
+              style={{ flexGrow: 1, flexBasis: 0, minWidth: 200, alignSelf: "stretch", borderRadius: 10, borderWidth: 1, borderColor: batch ? semanticColor(theme, "running") : theme.colors.border, backgroundColor: theme.colors.surface1, padding: 10, gap: 6 }}
             >
               <Text style={{ color: theme.colors.foreground, fontSize: 13, fontWeight: "600" }}>
                 {stage.title}
@@ -165,7 +166,7 @@ export function Stages(props: { theme: Theme; pipeline: StageRun; runs: readonly
                 <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>Batch</Text>
                 {batch ? (
                   <Pressable accessibilityRole="button" accessibilityLabel={`Open batch ${batch.id}`} disabled={!props.onOpenBatch} onPress={() => props.onOpenBatch?.(batch)}>
-                    <Text numberOfLines={2} style={{ color: theme.colors.accent, fontSize: 12 }}>
+                    <Text numberOfLines={2} style={{ color: semanticColor(theme, "running"), fontSize: 12 }}>
                       {batch.id.replace(/^run_/, "")} · {jobsLabel(inBatch)} · {batch.status === "waiting_gate" ? "waiting for a human" : "running"}
                     </Text>
                   </Pressable>
@@ -175,7 +176,7 @@ export function Stages(props: { theme: Theme; pipeline: StageRun; runs: readonly
                   </Text>
                 )}
                 {handOff.length > 0 ? (
-                  <Text accessibilityLabel={`${jobsLabel(handOff.length)} ended without a follow-up started`} style={{ color: theme.colors.statusWarning, fontSize: 11 }}>
+                  <Text accessibilityLabel={`${jobsLabel(handOff.length)} ended without a follow-up started`} style={{ color: semanticColor(theme, "waiting"), fontSize: 11 }}>
                     Hand-off pending: {jobsLabel(handOff.length)} ended ({[...new Set(handOff.map((job) => job.outcome))].join(", ")}), no follow-up started
                   </Text>
                 ) : null}

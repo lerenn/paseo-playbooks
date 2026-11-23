@@ -178,6 +178,12 @@ user-facing string in a translated component goes into all three languages in th
 request. Playbook text written by authors is shown as written. See
 `docs/adrs/2026-11-20-panel-ui-translations.md`.
 
+## Colours
+
+A colour that carries a meaning is fixed, whatever the Paseo theme: running blue, waiting (needs you) orange, done green,
+failed red, paused violet. Only the light or dark shade follows the theme. Text, backgrounds, borders and buttons keep the
+theme's colours. The values live in `client/semantic-colors.ts`; see `docs/adrs/2026-11-23-semantic-colors-fixed.md`.
+
 ## Develop
 
 ```bash

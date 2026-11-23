@@ -4,6 +4,7 @@ import { View } from "react-native";
 import { headerStateRpc } from "../shared/contracts";
 import { messages } from "./i18n";
 import { isHidden, onVisible } from "./visibility";
+import { semanticColor } from "./semantic-colors";
 
 /** How often the buttons refresh which workspaces have playbooks or a waiting gate. */
 const POLL_MS = 10_000;
@@ -29,7 +30,7 @@ function WaitingIcon(props: PluginButtonIconProps) {
           width: dot,
           height: dot,
           borderRadius: dot / 2,
-          backgroundColor: props.theme.colors.statusWarning,
+          backgroundColor: semanticColor(props.theme, "waiting"),
           borderWidth: 1,
           borderColor: props.theme.colors.surface0,
         }}

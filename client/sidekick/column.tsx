@@ -3,6 +3,7 @@ import { memo, useEffect, useRef, useState } from "react";
 import { Image, Pressable, Text, View } from "react-native";
 import { formatSize } from "../../shared/attachments";
 import type { Theme } from "../theme";
+import { semanticColor, semanticOn } from "../semantic-colors";
 import { useAttachments } from "./attach";
 import { sidekickUi, useSidekickUi } from "./ui-state";
 import { isQueueKey, mergeQueued, shouldFlush, shouldQueue, workLabel, IDLE_SETTLE_MS } from "./queue";
@@ -136,7 +137,7 @@ export function SidekickChat(props: Props) {
               }}
               onBlur={() => setConfirmRestart(false)}
             >
-              {confirmRestart ? <Text style={{ color: theme.colors.statusWarning, fontSize: 11 }}>Restart?</Text> : <Icon name="RotateCcw" size={15} color={muted} />}
+              {confirmRestart ? <Text style={{ color: semanticColor(theme, "waiting"), fontSize: 11 }}>Restart?</Text> : <Icon name="RotateCcw" size={15} color={muted} />}
             </Pressable>
           ) : null}
           {props.onOpenTab ? (
@@ -149,8 +150,8 @@ export function SidekickChat(props: Props) {
 
       <ScrollView ref={scroller as never} onScroll={onScroll as never} onContentSizeChange={onContentSizeChange} scrollEventThrottle={50} style={{ flex: 1 }} contentContainerStyle={{ padding: 14, gap: 18 }}>
         {status.loading ? <Text style={{ color: muted }}>Starting the Sidekick…</Text> : null}
-        {status.error ? <Text style={{ color: theme.colors.statusDanger }}>{status.error}</Text> : null}
-        {state.connection === "error" && state.error ? <Text style={{ color: theme.colors.statusWarning }}>Reconnecting… {state.error}</Text> : null}
+        {status.error ? <Text style={{ color: semanticColor(theme, "failed") }}>{status.error}</Text> : null}
+        {state.connection === "error" && state.error ? <Text style={{ color: semanticColor(theme, "waiting") }}>Reconnecting… {state.error}</Text> : null}
         {/* A fixed-height slot: its text appears without moving the items below it. */}
         {older.epoch !== null && state.items.length > 0 ? (
           <Text style={{ color: muted, fontSize: 11, textAlign: "center", height: 16 }}>{older.loading ? "Loading older…" : older.hasMore ? "" : "Start of the conversation"}</Text>
@@ -220,7 +221,8 @@ export function SidekickChat(props: Props) {
 
 function ColumnButton(props: { theme: Theme; label: string; onPress: () => void; disabled?: boolean; tone: "primary" | "danger" | "plain" }) {
   const { theme } = props;
-  const color = props.tone === "danger" ? theme.colors.statusDanger : theme.colors.accent;
+  const color = props.tone === "danger" ? semanticColor(theme, "failed") : theme.colors.accent;
+  const on = props.tone === "danger" ? semanticOn(theme, "failed") : theme.colors.accentForeground;
   const filled = props.tone === "primary";
   return (
     <Pressable
@@ -229,7 +231,7 @@ function ColumnButton(props: { theme: Theme; label: string; onPress: () => void;
       onPress={props.onPress}
       style={{ borderRadius: 7, borderWidth: 1, borderColor: props.tone === "plain" ? theme.colors.border : color, backgroundColor: filled ? color : "transparent", paddingHorizontal: 12, paddingVertical: 6, opacity: props.disabled ? 0.5 : 1 }}
     >
-      <Text style={{ color: filled ? theme.colors.accentForeground : props.tone === "plain" ? theme.colors.foreground : color, fontWeight: "600", fontSize: 12 }}>{props.label}</Text>
+      <Text style={{ color: filled ? on : props.tone === "plain" ? theme.colors.foreground : color, fontWeight: "600", fontSize: 12 }}>{props.label}</Text>
     </Pressable>
   );
 }
@@ -251,7 +253,7 @@ const ItemView = memo(function ItemView({ theme, item }: { theme: Theme; item: I
     case "reasoning":
       return <ReasoningLine theme={theme} text={item.text} streaming={item.streaming} />;
     case "notice":
-      return <Row theme={theme} icon={item.level === "info" ? "Info" : "TriangleAlert"} label={item.text} color={item.level === "error" ? theme.colors.statusDanger : item.level === "warning" ? theme.colors.statusWarning : muted} />;
+      return <Row theme={theme} icon={item.level === "info" ? "Info" : "TriangleAlert"} label={item.text} color={item.level === "error" ? semanticColor(theme, "failed") : item.level === "warning" ? semanticColor(theme, "waiting") : muted} />;
     case "tool":
       return <ToolCard theme={theme} item={item} />;
   }
@@ -331,7 +333,7 @@ function ToolCard({ theme, item }: { theme: Theme; item: Extract<Item, { kind: "
         icon={item.status === "failed" ? "TriangleAlert" : toolIcon(item.name)}
         label={humanizeTool(item.name)}
         summary={toolSummary(item.detail)}
-        {...(item.status === "failed" ? { color: theme.colors.statusDanger } : {})}
+        {...(item.status === "failed" ? { color: semanticColor(theme, "failed") } : {})}
         onPress={() => setOpen(!open)}
         open={open}
       />
@@ -362,7 +364,7 @@ function PermissionView({ theme, request, onRespond }: { theme: Theme; request: 
   const questions = questionsOf(request.input);
   const [picked, setPicked] = useState<Record<string, string[]>>({});
   const [other, setOther] = useState<Record<string, string>>({});
-  const border = { borderRadius: 10, borderWidth: 1, borderColor: theme.colors.statusWarning, padding: 10, gap: 8 } as const;
+  const border = { borderRadius: 10, borderWidth: 1, borderColor: semanticColor(theme, "waiting"), padding: 10, gap: 8 } as const;
   if (questions.length > 0) {
     const answers = () =>
       Object.fromEntries(questions.map((q) => [q.header, [...(picked[q.header] ?? []), ...((other[q.header] ?? "").trim() ? [other[q.header]!.trim()] : [])].join(",")]));

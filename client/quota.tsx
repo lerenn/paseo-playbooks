@@ -6,6 +6,7 @@ import { quotaLimitationRpc } from "../shared/contracts";
 import type { QuotaLimitation, QuotaProject, QuotaProvider, QuotaWindow } from "../shared/quota-limitation";
 import { messages } from "./i18n";
 import type { Theme } from "./theme";
+import { semanticColor } from "./semantic-colors";
 
 /** How often the open tab reads the figures again (the server's own readings are younger than this or refreshed meanwhile). */
 const POLL_MS = 30_000;
@@ -56,7 +57,7 @@ export function QuotaView(props: { theme: Theme; workspaces: ReadonlyArray<{ pro
           <Icon name="RefreshCw" size={16} color={muted} />
         </Pressable>
       </View>
-      {error ? <Text style={{ color: theme.colors.statusDanger }}>{error}</Text> : null}
+      {error ? <Text style={{ color: semanticColor(theme, "failed") }}>{error}</Text> : null}
       {!data && !error ? <Text style={{ color: muted }}>{t("quota.loading")}</Text> : null}
       {data ? <Body theme={theme} data={data} /> : null}
     </View>
@@ -118,7 +119,7 @@ function Provider(props: { theme: Theme; provider: QuotaProvider }) {
   const muted = theme.colors.foregroundMuted;
   // Nothing is paced when no project has pacing on, whatever the reading says.
   const paced = provider.pacedBy.length > 0;
-  const tone = !paced ? muted : provider.state === "ok" ? theme.colors.foreground : provider.state === "unavailable" ? theme.colors.statusDanger : muted;
+  const tone = !paced ? muted : provider.state === "ok" ? theme.colors.foreground : provider.state === "unavailable" ? semanticColor(theme, "failed") : muted;
   return (
     <Card theme={theme}>
       <Text style={{ color: theme.colors.foreground, fontSize: 15, fontWeight: "700" }}>{provider.provider}</Text>
@@ -174,7 +175,7 @@ function Slot(props: { theme: Theme; slot: QuotaWindow }) {
       </Text>
       {/* Usage bar: the fill is the usage, the tick the pace ceiling, the shade past `usable` the reserve. */}
       <View style={{ height: 8, borderRadius: 4, backgroundColor: theme.colors.surface2, overflow: "hidden" }}>
-        {slot.used !== null ? <View style={{ width: bar(slot.used), height: 8, backgroundColor: over ? theme.colors.statusDanger : theme.colors.foregroundMuted }} /> : null}
+        {slot.used !== null ? <View style={{ width: bar(slot.used), height: 8, backgroundColor: over ? semanticColor(theme, "failed") : theme.colors.foregroundMuted }} /> : null}
         {slot.paces.map((pace) => (
           <View key={pace.usable} style={{ position: "absolute", left: bar(pace.ceiling), width: 2, height: 8, backgroundColor: theme.colors.foreground }} />
         ))}
