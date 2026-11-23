@@ -290,7 +290,7 @@ workspace, and "Start in a new workspace", which creates a new worktree and mana
 
 The overview screen lists one section per playbook (its runs inside). The **sort** button in the Runs tab (top right of the filter row, not in the Analytics, Quota limitation or Profiles tabs),
 orders those sections: **Name (A-Z)** (the default, so the order never jumps), **Last activity** (the playbook with the most
-recently updated run first), **Status** (the playbook with a run waiting for you first, then working, failed, done, paused,
+recently updated run first), **Status** (the playbook with a run waiting for you first, then working, paused, failed, done,
 seen) or **Start time** (the playbook with the newest run first). The choice is kept by the host, so it survives reloads;
 "Needs you" follows the same order. Playbooks never leave the list because of the sort, only their order changes (and, with
 Last activity or Status, as runs change). The Runs sort inside each playbook is separate and unchanged.

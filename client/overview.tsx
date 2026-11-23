@@ -12,6 +12,7 @@ import { isActive, isPaused, isPipeline, isTerminal, type Gate, type RunSummary,
 import { slowDetail, slowView } from "../shared/slow";
 import { useSlowSteps } from "./slow";
 import { laneTone } from "./lane-tone";
+import { pausedColor, TONE_RANK } from "./tone-color";
 import { AnalyticsView } from "./analytics";
 import { QuotaView } from "./quota";
 import { useReduceMotion } from "./graph";
@@ -207,7 +208,7 @@ function gateKindLabel(gate: Gate): string {
 
 /**
  * What a run is doing, as a colour: blue working, yellow waiting (a decision or a free slot),
- * green done and not opened yet, grey done and opened (or paused), red failed or canceled.
+ * green done and not opened yet, violet paused, grey done and opened, red failed or canceled.
  */
 type Tone = "running" | "waiting" | "paused" | "done" | "seen" | "failed";
 
@@ -221,6 +222,8 @@ function toneColor(theme: Theme, tone: Tone): string {
       return theme.colors.statusSuccess;
     case "failed":
       return theme.colors.statusDanger;
+    case "paused":
+      return pausedColor(theme.colors.surface1);
     default:
       return theme.colors.foregroundMuted;
   }
@@ -848,8 +851,6 @@ const SORTS: ReadonlyArray<{ key: SortKey; label: string; hint: string }> = [
   { key: "progress", label: "Progress", hint: "Furthest along first" },
 ];
 
-/** Order of tones under "Status": what needs a look first. */
-const TONE_RANK: Record<Tone, number> = { waiting: 0, running: 1, failed: 2, done: 3, paused: 4, seen: 5 };
 
 /** Runs in the chosen order; ties go to the most recent activity. */
 function sortRuns(runs: RunSummary[], key: SortKey): RunSummary[] {
@@ -1149,7 +1150,7 @@ function RunRow(props: {
           >
             {shortId(run)}
           </Text>{" "}
-          · <Text style={{ color: state.tone === "seen" || state.tone === "paused" ? theme.colors.foregroundMuted : color }}>{state.status}</Text> ·{" "}
+          · <Text style={{ color: state.tone === "seen" ? theme.colors.foregroundMuted : color }}>{state.status}</Text> ·{" "}
           {ago(run.updatedAt)}
           {props.workspace ? ` · ${props.workspace}` : ""}
           {run.parent ? ` · item ${run.parent.key} of ${run.parent.runId.replace(/^run_/, "")}` : ""}
