@@ -6,7 +6,7 @@ import { quotaLimitationRpc } from "../shared/contracts";
 import type { QuotaLimitation } from "../shared/quota-limitation";
 import { messages } from "./i18n";
 import { formatWait, projectRows, unavailableProviders, type ProjectRow, type ProviderRow, type SlotRow, type Tone } from "./quota-rows";
-import { semanticColor } from "./semantic-colors";
+import { overAllowanceColor, semanticColor } from "./semantic-colors";
 import type { Theme } from "./theme";
 
 /** How often the open tab reads the figures again (the server's own readings are younger than this or refreshed meanwhile). */
@@ -90,8 +90,8 @@ function Body(props: { theme: Theme; data: QuotaLimitation }) {
   );
 }
 
-/** Green, red and grey are fixed hues (`semantic-colors`), the same in every theme; the text beside a bar carries the numbers too. */
-const toneColor = (theme: Theme, tone: Tone) => (tone === "over" ? semanticColor(theme, "failed") : tone === "warn" ? semanticColor(theme, "waiting") : tone === "ok" ? semanticColor(theme, "done") : theme.colors.foregroundMuted);
+/** Green, violet (over the allowance: everything is on hold, no error) and grey are fixed hues (`semantic-colors`), the same in every theme; the text beside a bar carries the numbers too. */
+const toneColor = (theme: Theme, tone: Tone) => (tone === "over" ? semanticColor(theme, "paused") : tone === "warn" ? semanticColor(theme, "waiting") : tone === "ok" ? semanticColor(theme, "done") : theme.colors.foregroundMuted);
 
 /** The provider-level line of an unavailable usage reading: violet, not an error (the plugin keeps trying and holds runs by itself). Shown once per provider. */
 function UsageDownLine(props: { theme: Theme; provider: string; since: string | null; reason: string | null; lastReadAt: string | null }) {
@@ -108,11 +108,13 @@ function ProjectRowView(props: { theme: Theme; row: ProjectRow; first: boolean }
   const [open, setOpen] = useState(false);
   const muted = theme.colors.foregroundMuted;
   const caps = row.stepsLimit === null && row.runsLimit === null ? t("quota.noCaps") : [row.stepsLimit === null ? null : t("quota.stepsCap", { limit: row.stepsLimit }), row.runsLimit === null ? null : t("quota.runsCap", { limit: row.runsLimit })].filter(Boolean).join(" · ");
-  const line = [
-    row.pacing ? t("quota.pacingShort", { percent: row.percents.join("/") }) : t("quota.pacingOffShort"),
-    ...row.summary.map((item) => (item.status === "over" ? (Math.round(item.over) > 0 ? t("quota.sum.overBy", { provider: item.provider, value: Math.round(item.over) }) : t("quota.sum.over", { provider: item.provider })) : item.status === "unavailable" ? t("quota.sum.unavailable", { provider: item.provider }) : item.status === "unreported" ? t("quota.sum.unreported", { provider: item.provider }) : item.free === null ? item.provider : t("quota.sum.free", { provider: item.provider, value: Math.round(item.free) }))),
-    row.throttled ? t("quota.throttledShort") : null,
-  ].filter(Boolean).join(" · ");
+  const parts: Array<{ text: string; over: boolean }> = [
+    { text: row.pacing ? t("quota.pacingShort", { percent: row.percents.join("/") }) : t("quota.pacingOffShort"), over: false },
+    ...row.summary.map((item) => ({ over: item.status === "over", text: item.status === "over" ? (Math.round(item.over) > 0 ? t("quota.sum.overBy", { provider: item.provider, value: Math.round(item.over) }) : t("quota.sum.over", { provider: item.provider })) : item.status === "unavailable" ? t("quota.sum.unavailable", { provider: item.provider }) : item.status === "unreported" ? t("quota.sum.unreported", { provider: item.provider }) : item.free === null ? item.provider : t("quota.sum.free", { provider: item.provider, value: Math.round(item.free) }) })),
+    ...(row.throttled ? [{ text: t("quota.throttledShort"), over: false }] : []),
+  ];
+  const [folds, setFolds] = useState<ReadonlySet<string>>(new Set());
+  const toggleFold = (key: string) => setFolds((before) => { const next = new Set(before); if (!next.delete(key)) next.add(key); return next; });
   return (
     <View style={{ ...(first ? {} : { borderTopWidth: 1, borderTopColor: theme.colors.border, paddingTop: 8 }) }}>
       <Pressable accessibilityRole="button" accessibilityState={{ expanded: open }} onPress={() => setOpen(!open)} style={{ gap: 3 }}>
@@ -121,7 +123,11 @@ function ProjectRowView(props: { theme: Theme; row: ProjectRow; first: boolean }
           <Text style={{ flex: 1, minWidth: 0, color: theme.colors.foreground, fontSize: 13, fontWeight: "600" }}>{row.label}</Text>
           <Icon name={open ? "ChevronDown" : "ChevronRight"} size={14} color={muted} />
         </View>
-        <Text style={{ color: row.pacing ? theme.colors.foreground : muted, fontSize: 12 }}>{line}</Text>
+        <Text style={{ color: row.pacing ? theme.colors.foreground : muted, fontSize: 12 }}>
+          {parts.map((part, index) => (
+            <Text key={index} style={part.over ? { color: semanticColor(theme, "paused") } : undefined}>{`${index > 0 ? " · " : ""}${part.text}`}</Text>
+          ))}
+        </Text>
         <Text style={{ color: muted, fontSize: 11 }}>{caps}</Text>
       </Pressable>
       {open ? (
@@ -131,7 +137,7 @@ function ProjectRowView(props: { theme: Theme; row: ProjectRow; first: boolean }
               {row.sets.length > 1 ? <Text style={{ color: muted, fontSize: 11 }}>{`${t("quota.repos", { repos: set.limits.repos.join(", ") })} · ${set.limits.pacing ? t("quota.pacingOnAt", { percent: set.limits.usablePercent }) : t("quota.pacingOff")}`}</Text> : null}
               {set.providers.length === 0 ? <Text style={{ color: muted, fontSize: 12 }}>{t("quota.noProviders")}</Text> : null}
               {set.providers.map((provider) => (
-                <ProviderView key={provider.provider} theme={theme} provider={provider} />
+                <ProviderView key={provider.provider} theme={theme} provider={provider} folds={folds} toggleFold={toggleFold} foldKey={set.limits.repos.join(",")} />
               ))}
             </View>
           ))}
@@ -141,8 +147,8 @@ function ProjectRowView(props: { theme: Theme; row: ProjectRow; first: boolean }
   );
 }
 
-function ProviderView(props: { theme: Theme; provider: ProviderRow }) {
-  const { theme, provider } = props;
+function ProviderView(props: { theme: Theme; provider: ProviderRow; folds: ReadonlySet<string>; toggleFold: (key: string) => void; foldKey: string }) {
+  const { theme, provider, folds, toggleFold, foldKey } = props;
   const { t, locale } = useTranslation(messages);
   const muted = theme.colors.foregroundMuted;
   const flag = provider.status === "unavailable" ? t("quota.state.unavailable") : provider.status === "unreported" ? t("quota.state.unreported") : provider.state === "override" ? t("quota.state.override") : null;
@@ -158,7 +164,7 @@ function ProviderView(props: { theme: Theme; provider: ProviderRow }) {
       ))}
       {provider.unavailable && provider.slots.some((slot) => slot.paced) ? <Text style={{ color: semanticColor(theme, "paused"), fontSize: 12 }}>{t("quota.throttleUnknown")}</Text> : <ThrottleView theme={theme} provider={provider} />}
       {provider.reservations.length > 0 ? (
-        <Lines theme={theme} title={t("quota.reservations")}>
+        <Lines theme={theme} title={t("quota.reservations", { count: provider.reservations.length })} open={folds.has(`${foldKey}/${provider.provider}/reservations`)} onToggle={() => toggleFold(`${foldKey}/${provider.provider}/reservations`)}>
           {provider.reservations.map((run) => (
             <View key={run.runId} style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
               <Text style={{ color: theme.colors.foreground, fontSize: 12 }}>{`${run.title}${Object.keys(run.remaining).length > 0 ? ` · ${Object.entries(run.remaining).map(([name, value]) => t("quota.remaining", { window: name, value })).join(", ")}` : ""}`}</Text>
@@ -169,7 +175,7 @@ function ProviderView(props: { theme: Theme; provider: ProviderRow }) {
         </Lines>
       ) : null}
       {provider.exhausted.length > 0 ? (
-        <Lines theme={theme} title={t("quota.exhausted")}>
+        <Lines theme={theme} title={t("quota.exhausted", { count: provider.exhausted.length })} open={folds.has(`${foldKey}/${provider.provider}/exhausted`)} onToggle={() => toggleFold(`${foldKey}/${provider.provider}/exhausted`)}>
           {provider.exhausted.map((mark) => (
             <Text key={`${mark.runId}/${mark.target}`} style={{ color: theme.colors.foreground, fontSize: 12 }}>{`${mark.target} · ${mark.title} · ${t("quota.until", { when: whenAt(mark.until, locale) })}`}</Text>
           ))}
@@ -210,7 +216,7 @@ function ThrottleView(props: { theme: Theme; provider: ProviderRow }) {
   );
 }
 
-/** A usage window: name, a bar and the numbers. Paced: grey usage up to what is allowed so far, red above it, green for what is still free, a tick at the allowed-so-far mark. Not paced: usage only. */
+/** A usage window: name, a bar and the numbers. Paced: grey usage up to what is allowed so far, violet above it, green for what is still free, a tick at the allowed-so-far mark. Not paced: usage only. */
 function SlotView(props: { theme: Theme; slot: SlotRow; unavailable: boolean }) {
   const { theme, slot, unavailable } = props;
   const { t, locale } = useTranslation(messages);
@@ -234,22 +240,26 @@ function SlotView(props: { theme: Theme; slot: SlotRow; unavailable: boolean }) 
       <View style={{ height: 8, borderRadius: 4, backgroundColor: theme.colors.surface2, overflow: "hidden" }}>
         <View style={{ position: "absolute", left: 0, width: pct(bar.grey), height: 8, backgroundColor: theme.colors.foregroundMuted }} />
         {!unavailable && bar.green > 0 ? <View style={{ position: "absolute", left: pct(bar.greenFrom), width: pct(bar.green), height: 8, backgroundColor: semanticColor(theme, "done") }} /> : null}
-        {!unavailable && bar.red > 0 ? <View style={{ position: "absolute", left: pct(bar.redFrom), width: pct(bar.red), height: 8, backgroundColor: semanticColor(theme, "failed") }} /> : null}
+        {!unavailable && bar.red > 0 ? <View style={{ position: "absolute", left: pct(bar.redFrom), width: pct(bar.red), height: 8, backgroundColor: overAllowanceColor(theme) }} /> : null}
         {!unavailable && bar.tick !== null ? <View style={{ position: "absolute", left: pct(Math.min(bar.tick, 99)), width: 2, height: 8, backgroundColor: theme.colors.foreground }} /> : null}
       </View>
-      <Text style={{ color: slot.over > 0 && !unavailable ? semanticColor(theme, "failed") : muted, fontSize: 12 }}>{facts.join(" · ")}</Text>
+      <Text style={{ color: slot.over > 0 && !unavailable ? semanticColor(theme, "paused") : muted, fontSize: 12 }}>{facts.join(" · ")}</Text>
       {slot.resetsAt ? <Text style={{ color: muted, fontSize: 11 }}>{t("quota.resets", { when: whenAt(slot.resetsAt, locale) })}</Text> : null}
       {slot.stale ? <Text style={{ color: muted, fontSize: 11 }}>{t("quota.stale")}</Text> : null}
     </View>
   );
 }
 
-/** A titled group of plain lines inside a provider. */
-function Lines(props: { theme: Theme; title: string; children: React.ReactNode }) {
+/** A collapsible group of plain lines inside a provider: a chevron header with the title and count, closed until tapped. */
+function Lines(props: { theme: Theme; title: string; open: boolean; onToggle: () => void; children: React.ReactNode }) {
+  const muted = props.theme.colors.foregroundMuted;
   return (
     <View style={{ gap: 2, paddingTop: 4 }}>
-      <Text style={{ color: props.theme.colors.foregroundMuted, fontSize: 12 }}>{props.title}</Text>
-      {props.children}
+      <Pressable accessibilityRole="button" accessibilityState={{ expanded: props.open }} onPress={props.onToggle} style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+        <Icon name={props.open ? "ChevronDown" : "ChevronRight"} size={14} color={muted} />
+        <Text style={{ flex: 1, minWidth: 0, color: muted, fontSize: 12 }}>{props.title}</Text>
+      </Pressable>
+      {props.open ? props.children : null}
     </View>
   );
 }

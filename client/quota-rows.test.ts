@@ -11,7 +11,7 @@ describe("quota bar", () => {
   it("is grey to the usage, green for the free room after the reservations, a tick at the ceiling", () => {
     expect(barOf(38, 60, 17, 5)).toEqual({ grey: 38, greenFrom: 43, green: 17, redFrom: 60, red: 0, tick: 60 });
   });
-  it("turns the usage above the ceiling red, with no green", () => {
+  it("turns the usage above the ceiling into the over part, with no green", () => {
     expect(barOf(65, 60, -5, 0)).toEqual({ grey: 60, greenFrom: 65, green: 0, redFrom: 60, red: 5, tick: 60 });
   });
   it("is a plain grey bar without a ceiling", () => {

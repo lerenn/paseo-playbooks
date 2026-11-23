@@ -51,3 +51,11 @@ export function semanticColor(theme: Theme, tone: SemanticTone): string {
 export function semanticOn(theme: Theme, tone: SemanticTone): string {
   return semanticColors(theme, tone).on;
 }
+
+/** A stronger violet than `paused`, for the part of a quota bar above the allowed-so-far mark: apart from the grey usage and from the throttle bar's paused violet. */
+export const OVER_DARK = "#7c4dff";
+export const OVER_LIGHT = "#5b21b6";
+
+export function overAllowanceColor(theme: Theme): string {
+  return isDarkTheme(theme) ? OVER_DARK : OVER_LIGHT;
+}

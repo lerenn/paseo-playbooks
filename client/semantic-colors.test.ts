@@ -83,3 +83,11 @@ describe("semantic colours", () => {
     expect(nodeColor(t, "running")).toBe(semanticColor(t, "running"));
   });
 });
+
+describe("the over-the-allowance violet", () => {
+  it("differs from the paused violet in both variants", async () => {
+    const { OVER_DARK, OVER_LIGHT } = await import("./semantic-colors");
+    expect(OVER_DARK).not.toBe(SEMANTIC_DARK.paused.color);
+    expect(OVER_LIGHT).not.toBe(SEMANTIC_LIGHT.paused.color);
+  });
+});

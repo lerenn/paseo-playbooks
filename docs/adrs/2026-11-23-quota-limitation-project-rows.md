@@ -25,3 +25,7 @@ what one project could expect meant matching a percent to a project name by hand
 
 - Read-only; no change to the playbook format, run state or agent tools. The RPC payload grows by one optional field.
 - A project with several sets of limits (profiles with different defaults) shows each set's providers under the project, labelled by repositories.
+
+## Amendment: over the allowance is violet, long lists fold
+
+Being above the allowed-so-far amount is no error: it holds or pauses runs, the "on hold" meaning. Everything in the tab that showed it red (the bar's excess, the numbers line, the project dot, the "over" words of the collapsed summary) takes the paused violet; the bar excess uses a stronger violet (`overAllowanceColor`) to stay apart from the grey usage and from the throttle bar. A failed load stays red, "usage unavailable" stays as it was. The Reservations and Exhausted lists are collapsed by default under a chevron header with their count, kept per project, repo set and provider while the row is mounted.

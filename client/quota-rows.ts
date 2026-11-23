@@ -151,7 +151,7 @@ export function throttleOf(input: { slots: SlotRow[]; reservations: ReservationR
 const round = (value: number) => Math.round(value * 10) / 10;
 const clamp = (value: number) => Math.min(100, Math.max(0, value));
 
-/** The bar of a window: usage grey up to the ceiling, the excess red, the free room green after the reservations, a tick at the ceiling. */
+/** The bar of a window: usage grey up to the ceiling, the excess violet, the free room green after the reservations, a tick at the ceiling. */
 export function barOf(used: number | null, ceiling: number | null, free: number | null, reserved: number): Bar {
   const u = used ?? 0;
   const full = Math.max(100, u);
