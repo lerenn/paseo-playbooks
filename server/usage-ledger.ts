@@ -49,6 +49,12 @@ export class UsageLedger {
     return delta;
   }
 
+  /** The agent's turns counted so far (0 for an unknown agent). */
+  async turnsOf(agentId: string): Promise<number> {
+    await this.load();
+    return this.agents.get(agentId)?.usage.turns ?? 0;
+  }
+
   async list(): Promise<AgentUsage[]> {
     await this.load();
     return [...this.agents.values()];

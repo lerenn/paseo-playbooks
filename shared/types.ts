@@ -38,6 +38,8 @@ export type AgentTarget = z.infer<typeof AgentTargetSchema>;
 export const AgentSettingsSchema = AgentTargetSchema.extend({
   /** Targets tried, in order, after this one when its provider is out of tokens (the rest of a multi-entry tier). */
   fallback: z.array(AgentTargetSchema).optional(),
+  /** The `tiers` entry these settings were resolved from (run state only, for the usage log; never read from YAML here). */
+  tier: z.string().optional(),
 });
 export type AgentSettings = z.infer<typeof AgentSettingsSchema>;
 
@@ -772,6 +774,10 @@ export const AttemptSchema = z.object({
   job: z.object({ runId: z.string(), jobId: z.string() }).nullable().default(null),
   /** Hand-off steps: the job passed every stage, so a failure here is never retried (its work shipped). */
   noRetry: z.boolean().default(false),
+  /** Agent steps: the tier the attempt's agent was resolved from (of the origin when it moved to a fallback or the manager's model); null without a tier and on attempts from before it. */
+  tier: z.string().nullable().default(null),
+  /** Why this attempt exists, when it follows another: `recheck` (a goto with a delay), `feedback` (a goto), `interrupted` (a retry after the previous attempt failed, timed out or was lost); null for a first attempt. */
+  retry: z.enum(["recheck", "feedback", "interrupted"]).nullable().default(null),
   /** Agent steps: the `provider/model` the attempt's agent runs on, and the prompt it was started with (to restart it on the next target). */
   target: z.string().default(""),
   prompt: z.string().default(""),
@@ -913,6 +919,8 @@ export const RunStepSchema = z.object({
   fanoutPast: z.array(FanoutStateSchema).default([]),
   /** A goto with `delay` sent the run back to this step: it becomes ready only at this time (ISO); null when it is not waiting for a delay. */
   waitUntil: z.string().nullable().default(null),
+  /** Set by a goto that sends the run back to this step; the next attempt takes it as its `retry` and clears it. */
+  nextRetry: z.enum(["recheck", "feedback"]).nullable().default(null),
   /** When the step started waiting for a free `concurrency` slot of its block (orders the queue). */
   queuedAt: z.string().nullable().default(null),
   /** The `model` restart_run gave for this step: its next attempt runs on it unless start_step passes its own. Null when none. */
@@ -1207,6 +1215,8 @@ export const RunSchema = z.object({
   managerRecoveryPrompt: z.string().nullable().default(null),
   /** What the manager's agent spent while this run was its active one. */
   managerUsage: UsageSchema.nullable().optional(),
+  /** The tier the manager's agent was resolved from (null without one, and on runs from before it). */
+  managerTier: z.string().nullable().default(null),
   /** Usage is recorded as per-turn deltas (v0.66.1+). Runs without it hold a cumulative-summed, inflated `managerUsage`, which analytics ignores. */
   usageDeltas: z.boolean().default(false),
   /** The plugin created this run's workspace (`newWorkspace`), so it may archive it. Never set for a pipeline's or a moved run's. */

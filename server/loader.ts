@@ -1022,7 +1022,10 @@ function mergeAgent(...layers: Array<AgentSettings | undefined>): AgentSettings 
   for (const layer of layers) {
     if (!layer) continue;
     // A layer that picks its own provider or model starts its own chain: the inherited fallback no longer fits.
-    if (layer.provider !== undefined || layer.model !== undefined) delete merged.fallback;
+    if (layer.provider !== undefined || layer.model !== undefined) {
+      delete merged.fallback;
+      if (layer.tier === undefined) delete merged.tier;
+    }
     for (const [key, value] of Object.entries(layer)) {
       if (value !== undefined) (merged as Record<string, unknown>)[key] = value;
     }
@@ -1043,14 +1046,14 @@ function resolveAgent(raw: RawAgent | undefined, tiers: Tiers, at: string, fail:
   const found = tiers[tier];
   if (found && found.fallback && Object.values(own).some((value) => value !== undefined)) {
     fail(`${at}: tier "${tier}" lists several providers and cannot be combined with ${codeList(Object.keys(own).filter((key) => (own as Record<string, unknown>)[key] !== undefined))}: define another tier for that`);
-    return mergeAgent(found);
+    return mergeAgent(found, { tier });
   }
   if (!found) {
     const known = Object.keys(tiers);
     fail(`${at}: unknown tier "${tier}"${known.length ? ` (defined in defaults/main.yaml: ${known.join(", ")})` : "; define it under `tiers:` in defaults/main.yaml"}`);
     return own;
   }
-  return mergeAgent(found, own);
+  return mergeAgent(found, own, { tier });
 }
 
 function toVarDef(raw: z.infer<typeof RawVarDefSchema> | null): VarDef {

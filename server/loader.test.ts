@@ -38,7 +38,7 @@ describe("loadPlaybooks", () => {
     const implement = playbook.steps.find((step) => step.id === "implement")!;
     expect(implement.inputs.plan).toMatchObject({ auto: true, label: "investigate.plan", source: "{{ steps.investigate.outputs.plan }}" });
     expect(implement.inputs.request).toMatchObject({ auto: true, label: "playbook.request" });
-    expect(implement.agent).toEqual({ provider: "claude", model: "claude-opus-5-5", mode: "bypassPermissions" });
+    expect(implement.agent).toEqual({ provider: "claude", model: "claude-opus-5-5", mode: "bypassPermissions", tier: "worker" });
     expect(implement.timeoutMs).toBe(3_600_000);
     const babysit = playbook.steps.find((step) => step.id === "babysit")!;
     expect(babysit.inputs.review).toMatchObject({ auto: false, label: "review.findings" });
@@ -46,10 +46,10 @@ describe("loadPlaybooks", () => {
       kind: "goto",
       target: "implement",
       maxLoops: 3,
-      decider: { by: "role", role: "gatekeeper", agent: { provider: "claude", model: "claude-opus-5-5", mode: "bypassPermissions" } },
+      decider: { by: "role", role: "gatekeeper", agent: { provider: "claude", model: "claude-opus-5-5", mode: "bypassPermissions", tier: "worker" } },
     });
     expect(playbook.outputs.pr_url).toMatchObject({ auto: true, label: "implement.pr_url" });
-    expect(playbook.manager).toEqual({ provider: "claude", model: "claude-opus-5-5", mode: "default" });
+    expect(playbook.manager).toMatchObject({ provider: "claude", model: "claude-opus-5-5", mode: "default" });
     expect(playbook.roles.reviewer!.readonly).toBe(true);
   });
 

@@ -208,6 +208,7 @@ function createRun(input: NewRunInput, inputs: Record<string, VarValue>, kind: "
     managerAgentId: input.managerAgentId,
     managerRecoveries: [],
     managerQuotaBlockedId: null,
+    managerTier: input.playbook.manager?.tier ?? null,
     managerRecoveryPrompt: null,
     usageDeltas: true,
     name: input.name ?? null,
@@ -239,7 +240,7 @@ function createRun(input: NewRunInput, inputs: Record<string, VarValue>, kind: "
     steps: Object.fromEntries(
       input.playbook.steps.map((step) => [
         step.id,
-        { status: "pending", attempts: [], outputs: {}, summary: null, feedback: null, loop: 0, completedSeq: null, branch: null, fanout: null, fanoutPast: [], queuedAt: null, nextModel: null, waitUntil: null },
+        { status: "pending", attempts: [], outputs: {}, summary: null, feedback: null, loop: 0, completedSeq: null, branch: null, fanout: null, fanoutPast: [], queuedAt: null, nextModel: null, waitUntil: null, nextRetry: null },
       ]),
     ),
     loops: {},
@@ -432,7 +433,7 @@ export function repairRun(run: Run): string[] {
   const added: string[] = [];
   for (const step of run.playbook.steps) {
     if (run.steps[step.id]) continue;
-    run.steps[step.id] = { status: "pending", attempts: [], outputs: {}, summary: null, feedback: null, loop: 0, completedSeq: null, branch: null, fanout: null, fanoutPast: [], queuedAt: null, nextModel: null, waitUntil: null };
+    run.steps[step.id] = { status: "pending", attempts: [], outputs: {}, summary: null, feedback: null, loop: 0, completedSeq: null, branch: null, fanout: null, fanoutPast: [], queuedAt: null, nextModel: null, waitUntil: null, nextRetry: null };
     added.push(step.id);
   }
   for (const task of run.playbook.after) {
@@ -620,11 +621,14 @@ export function startAttempt(
     nextCheckAt: null,
     job: null,
     noRetry: false,
+    tier: step.agent?.tier ?? null,
+    retry: state.nextRetry ?? (n > 1 ? "interrupted" : null),
     target: "",
     prompt: "",
     waiting: null,
     agents: [],
   };
+  state.nextRetry = null;
   const context = {
     inputs: Object.fromEntries(Object.entries(values).map(([name, entry]) => [name, entry.value])),
     run: { id: run.id, status: run.status, failure: run.failure, jobs: jobsText(run) },
@@ -1228,6 +1232,7 @@ function performGoto(run: Run, source: string, target: string, feedback: string,
     }
   }
   run.steps[target]!.feedback = feedback || null;
+  run.steps[target]!.nextRetry = delayMs !== undefined ? "recheck" : "feedback";
   log(run, now, "goto", source, `${key} (loop ${run.loops[key]})`);
   const { ready, queued } = refreshReady(run, now, fx);
   fx.notes.push(`Looping back to "${target}" (loop ${run.loops[key]})${delayMs !== undefined ? `, which starts in ${Math.round(delayMs / 1000)}s (delay)` : ""}. Ready: ${readyList(run, ready) || "none"}.`);

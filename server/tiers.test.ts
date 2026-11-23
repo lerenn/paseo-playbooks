@@ -52,12 +52,12 @@ describe("model tiers", () => {
     expect(entry!.errors).toEqual([]);
     const agent = (id: string) => entry!.playbook!.steps.find((step) => step.id === id)!.agent;
     // playbook tier over the defaults' tier; fields the playbook tier leaves unset (thinking) and mode still come from the defaults
-    expect(agent("plain")).toEqual({ provider: "claude", model: "claude-sonnet-5-5", thinking: "high", mode: "default" });
+    expect(agent("plain")).toEqual({ provider: "claude", model: "claude-sonnet-5-5", thinking: "high", mode: "default", tier: "worker" });
     // the step's tier beats the role's (worker) and the playbook's
-    expect(agent("cheap")).toEqual({ provider: "claude", model: "claude-haiku-5-5", thinking: "low", mode: "default" });
-    expect(agent("tweaked")).toEqual({ provider: "claude", model: "claude-opus-5-5", thinking: "medium", mode: "default" });
+    expect(agent("cheap")).toEqual({ provider: "claude", model: "claude-haiku-5-5", thinking: "low", mode: "default", tier: "cheap" });
+    expect(agent("tweaked")).toEqual({ provider: "claude", model: "claude-opus-5-5", thinking: "medium", mode: "default", tier: "advisor" });
     expect(entry!.playbook!.steps.find((step) => step.id === "ok")!.decider).toMatchObject({ by: "role", agent: { model: "claude-haiku-5-5" } });
-    expect(entry!.playbook!.manager).toEqual({ provider: "claude", model: "claude-sonnet-5-5" });
+    expect(entry!.playbook!.manager).toEqual({ provider: "claude", model: "claude-sonnet-5-5", tier: "worker" });
   });
 
   it("switching provider is one edit in the defaults", async () => {
@@ -117,14 +117,15 @@ steps:
       provider: "claude",
       model: "claude-haiku-5-5",
       thinking: "low",
+      tier: "cheap",
       fallback: [
         { provider: "codex", model: "gpt-5-mini" },
         { provider: "ollama", model: "qwen3:8b" },
       ],
     });
     // a single-entry list is a plain block; a step without its own tier keeps the defaults' single tier
-    expect(pb.steps.find((step) => step.id === "b")!.agent).toEqual({ provider: "claude", model: "claude-sonnet-5-5" });
-    expect(pb.steps.find((step) => step.id === "c")!.agent).toEqual({ provider: "claude", model: "claude-sonnet-5-5" });
+    expect(pb.steps.find((step) => step.id === "b")!.agent).toMatchObject({ provider: "claude", model: "claude-sonnet-5-5" });
+    expect(pb.steps.find((step) => step.id === "c")!.agent).toMatchObject({ provider: "claude", model: "claude-sonnet-5-5" });
     expect(pb.steps.find((step) => step.id === "ok")!.decider).toMatchObject({ agent: { fallback: [{ provider: "codex" }, { provider: "ollama" }] } });
     expect(pb.manager.fallback).toHaveLength(2);
   });
@@ -133,7 +134,7 @@ steps:
     const [entry] = await load({ "p.yaml": STEPS }, `${CHAIN}agent: { tier: cheap }\n`);
     const agent = (id: string) => entry!.playbook!.steps.find((step) => step.id === id)!.agent;
     expect(agent("c").fallback).toHaveLength(2);
-    expect(agent("b")).toEqual({ provider: "claude", model: "claude-sonnet-5-5", thinking: "low" });
+    expect(agent("b")).toEqual({ provider: "claude", model: "claude-sonnet-5-5", thinking: "low", tier: "solo" });
   });
 
   it("refuses an empty list, an unknown key, and a multi-entry tier combined with inline settings", async () => {

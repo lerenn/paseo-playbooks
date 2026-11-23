@@ -36,6 +36,7 @@
 <a href="#sidekick">Sidekick</a>
 <a href="#validation">Validation</a>
 <a href="#slow-steps">Slow steps</a>
+<a href="#usage-log">Usage log</a>
 <a href="#pitfalls">YAML pitfall</a>
 </nav></aside>
 <main>
@@ -751,6 +752,19 @@ warden:
 # the default: off
 warden: { enabled: false }</code></pre>
 
+<h2 id="usage-log">Usage log</h2>
+<p>Every agent turn that ends appends one JSON line to <code>$PASEO_HOME/plugin-data/lerenn/paseo-playbooks/usage/usage-YYYY-MM.jsonl</code> (monthly files by the row's UTC month, append-only, never deleted by the plugin; about 1&nbsp;MB a day on a busy daemon). It is for simulating cheaper models per role. Only counters and identifiers are written: no prompt, message or tool output.</p>
+<table><thead><tr><th>Field</th><th>Meaning</th></tr></thead><tbody>
+<tr><td><code>v</code>, <code>ts</code>, <code>agentId</code>, <code>turnSeq</code></td><td>schema version (1), ISO time, the agent, its turn count</td></tr>
+<tr><td><code>runId</code>, <code>playbook</code>, <code>step</code>, <code>attempt</code>, <code>role</code></td><td>where the turn belongs; <code>null</code> outside the runs</td></tr>
+<tr><td><code>tier</code></td><td>the tier the agent step or manager was resolved from; after a fallback or a manager-chosen model, the origin's. Deciders: <code>null</code></td></tr>
+<tr><td><code>provider</code>, <code>model</code></td><td>what the agent ran on</td></tr>
+<tr><td><code>kind</code></td><td><code>step</code>, <code>decider</code>, <code>manager</code>, <code>sidekick</code> or <code>other</code> (coordinators and interactive agents are <code>other</code>)</td></tr>
+<tr><td><code>delta</code></td><td><code>{ input, cacheRead, cacheWrite, output }</code>: what the turn added; <code>cacheWrite</code> is always <code>null</code> (not exposed by the daemon)</td></tr>
+<tr><td><code>contextUsed</code>, <code>costUsd</code></td><td>context size after the turn; cost of the turn when the daemon reports one, else <code>null</code></td></tr>
+<tr><td><code>retry</code></td><td><code>recheck</code> (goto with a delay), <code>feedback</code> (goto), <code>interrupted</code> (another attempt without a goto), or <code>null</code></td></tr>
+</tbody></table>
+<p>A line is never edited: when a step attempt ends, a separate row <code>{ v, type: "attempt_end", ts, agentId, runId, step, attempt, outcome }</code> is appended; join on <code>runId</code>, <code>step</code>, <code>attempt</code> (a reopened attempt can end twice: the last row wins). <code>readUsageLog(dir, { from, to })</code> in <code>server/usage-log.ts</code> streams the rows. See <code>docs/adrs/2026-11-24-usage-log.md</code>.</p>
 <h2 id="pitfalls">YAML pitfall</h2>
 <p>Inside a flow mapping (<code>{ ... }</code>), a comma ends the value. Quote text that contains a comma, or use block style:</p>
 <pre><code>outputs:

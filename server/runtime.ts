@@ -14,6 +14,7 @@ import { dismissRefusal, findingSignature, normalizeFindingFile, normalizeFindin
 import type { AgentSettings, AgentTarget, Attempt, FanoutChild as FanoutChildState, PoolPass as PoolPassState, Gate, Job, Playbook, Run, RunDefinition, RunWorktree, Step, VarValue, WardenFinding } from "../shared/types";
 import { addUsage, isUnavailableHold, DEFAULT_EXHAUSTED_FOR_MS, DEFAULT_PERMISSION_POLICY, workspaceKeptUntil } from "../shared/types";
 import { UsageLedger } from "./usage-ledger";
+import { type UsageRow, UsageLogWriter, USAGE_DIR } from "./usage-log";
 import { analyze, type Analytics } from "../shared/analytics";
 import {
   SCRIPT_NOT_YET,
@@ -495,6 +496,9 @@ export class Runtime {
   private readonly stoppedDeciders = new Set<string>();
 
   private readonly usageLedger: UsageLedger;
+  private readonly usageLog: UsageLogWriter;
+  /** The last cumulative cost reading per agent, to turn it into a per-turn cost (in memory: after a restart a cost is not guessed). */
+  private readonly lastCost = new Map<string, number>();
   private readonly sidekickRegistry: SidekickRegistry;
   /** Sidekick agents that asked for a compaction (`sidekick_handoff` with `restart`) once their turn ends; those being compacted now (a `/compact` is running); finish notices held for a busy Sidekick. */
   private readonly sidekickCompactNext = new Set<string>();
@@ -527,6 +531,8 @@ export class Runtime {
     this.runScriptsDir = path.join(dir, "run-scripts");
     this.sessions = new StaleSessions(path.join(dir, "sessions.json"));
     this.usageLedger = new UsageLedger(path.join(dir, "agent-usage.json"));
+    this.usageLog = new UsageLogWriter(path.join(dir, USAGE_DIR));
+    void this.usageLog.logSize();
     this.sidekickRegistry = new SidekickRegistry(path.join(dir, "sidekick.json"));
     this.subagentArchives = new SubagentArchiveStore(path.join(dir, "sidekick-archive.json"));
     this.bus = new EventBus({ events: path.join(dir, "events.json"), subscriptions: path.join(dir, "subscriptions.json"), pending: path.join(dir, "pending-events.json") }, options.debounceMs === undefined ? {} : { debounceMs: options.debounceMs });
@@ -538,6 +544,17 @@ export class Runtime {
     store.onEvents((run, events) => {
       for (const event of publicJobEvents(run, events)) {
         jobEvents = jobEvents.then(() => this.bus.emit(event.type, event.payload, { runId: run.id, source: "pipelines" })).catch((error: unknown) => console.error(`[playbooks] could not emit ${event.type}:`, errorText(error)));
+      }
+    });
+    // A step attempt ended: one small row in the usage log, so the turn rows can be classified afterwards (never edited).
+    store.onChange((before, after) => {
+      for (const [stepId, state] of Object.entries(after.steps)) {
+        for (const attempt of state.attempts) {
+          if (attempt.endedAt === null) continue;
+          const was = before.steps[stepId]?.attempts.find((candidate) => candidate.n === attempt.n);
+          if (was?.endedAt === attempt.endedAt) continue;
+          void this.usageLog.append({ v: 1, type: "attempt_end", ts: attempt.endedAt, agentId: attempt.agentId, runId: after.id, step: stepId, attempt: attempt.n, outcome: attempt.outcome ?? attempt.report?.outcome ?? attempt.turnEnd ?? "ended" });
+        }
       }
     });
     // Capacity freed (a run ends or is archived, a step ends): held and paused runs are looked at again at once, not at the next 15 s timer.
@@ -733,7 +750,7 @@ export class Runtime {
     this.subagentArchiveTimers.clear();
     for (const id of [...this.scripts.keys()]) this.stopScript(id);
     if (this.limitKick) clearTimeout(this.limitKick);
-    return Promise.all([this.store.close(), this.bus.close(), this.sessions.flush(), this.usageLedger.flush()]).then(() => undefined);
+    return Promise.all([this.store.close(), this.bus.close(), this.sessions.flush(), this.usageLedger.flush(), this.usageLog.flush()]).then(() => undefined);
   }
 
   /**
@@ -6050,6 +6067,34 @@ export class Runtime {
         { title: agent.title ?? "", kind, role: decider ? decider.gate.decider.role ?? null : stepRole, model: [agent.provider, agent.model].filter(Boolean).join("/") || null, runId: run?.id ?? null },
         reading,
       );
+      const turnSeq = await this.usageLedger.turnsOf(agentId);
+      const cost = (reading as { totalCostUsd?: number | null }).totalCostUsd;
+      let costUsd: number | null = null;
+      if (typeof cost === "number") {
+        const before = this.lastCost.get(agentId);
+        costUsd = before === undefined ? (turnSeq === 1 ? cost : null) : cost >= before ? cost - before : cost;
+        this.lastCost.set(agentId, cost);
+      }
+      const row: UsageRow = {
+        v: 1,
+        ts: new Date().toISOString(),
+        agentId,
+        turnSeq,
+        runId: run?.id ?? null,
+        playbook: run?.playbook.id ?? null,
+        step: decider ? decider.gate.stepId : found?.stepId ?? null,
+        attempt: found && !decider ? found.attempt.n : null,
+        role: decider ? decider.gate.decider.role ?? null : stepRole,
+        tier: !decider && found ? found.attempt.tier ?? null : run?.managerAgentId === agentId ? run.managerTier ?? null : null,
+        provider: agent.provider ?? null,
+        model: agent.model ?? null,
+        kind,
+        delta: { input: delta.inputTokens ?? 0, cacheRead: delta.cachedInputTokens ?? 0, cacheWrite: null, output: delta.outputTokens ?? 0 },
+        contextUsed: delta.contextWindowUsedTokens ?? 0,
+        costUsd,
+        retry: !decider && found ? found.attempt.retry ?? null : null,
+      };
+      void this.usageLog.append(row);
       if (!run) return;
       await this.store.mutate(run.id, (current) => {
         const gate = current.gates.find((candidate) => candidate.deciderAgentId === agentId);

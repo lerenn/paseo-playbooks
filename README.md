@@ -167,6 +167,29 @@ While the Sidekick works, **Enter** sends the message into the running turn (ste
 an x to cancel, and is sent when the turn ends. When the Sidekick is idle, Cmd+Enter just sends. The queue is
 kept by the column (per project, this session only), not by the daemon.
 
+## Usage log
+
+Every agent turn that ends adds one JSON line to `$PASEO_HOME/plugin-data/lerenn/paseo-playbooks/usage/usage-YYYY-MM.jsonl`
+(monthly files, UTC month of the row; append-only, never rewritten or deleted by the plugin; about 250 bytes a turn, roughly
+1 MB a day on a busy daemon; the startup logs the total size at debug level). It exists to simulate moving roles to cheaper
+models. Only counters and identifiers are written, never a prompt, message or tool output.
+
+A turn row: `v` (1), `ts`, `agentId`, `turnSeq` (the agent's turn count), `runId`, `playbook`, `step`, `attempt` (the
+attempt's `n`, steps only), `role`, `tier`, `provider`, `model` (as run), `kind` (`step`, `decider`, `manager`, `sidekick`,
+`other`), `delta` (`{ input, cacheRead, cacheWrite, output }`: what the turn added, a restarted counter starts over),
+`contextUsed`, `costUsd` (null unless the daemon reports a cost) and `retry`. Agents outside the runs have the fields they
+have; `runId` and the rest are `null`. `cacheWrite` is always `null` (the daemon does not expose it), and coordinators and
+interactive agents are not told apart: they are `other`.
+
+`retry` is `recheck` (the attempt came from a goto with a delay), `feedback` (from a goto), `interrupted` (a further attempt of a
+step without a goto: after a failure, timeout or lost agent) or `null` (a first attempt, and every other kind). When an attempt
+ends a separate row `{ v, type: "attempt_end", ts, agentId, runId, step, attempt, outcome }` is appended (a line is never edited;
+a reopened attempt can end twice, the last row wins): join it with the turn rows on `runId`, `step`, `attempt`. `tier` is the
+tier an agent step or manager was resolved from (`agent: { tier }`, the defaults' `agent` and `manager`), also kept in the run
+(`attempt.tier`, `managerTier`); after a move to a fallback target or the manager's model it stays the origin's, the actual
+model is `provider/model`. Gate deciders have no tier. `readUsageLog(dir, { from, to })` in `server/usage-log.ts` streams the rows.
+Decision: `docs/adrs/2026-11-24-usage-log.md`.
+
 ## Panel languages
 
 The panel follows the Paseo app language: English, French (`fr`) and Simplified Chinese
