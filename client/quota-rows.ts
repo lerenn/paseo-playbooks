@@ -22,7 +22,7 @@ export interface SlotRow {
   modelScoped: boolean;
   used: number | null;
   reserved: number;
-  /** Paced for this project: pacing on, a pace figure for its percent, not a model window. */
+  /** Paced for this project: pacing on, a pace figure for its percent, not a model-scoped one */
   paced: boolean;
   ceiling: number | null;
   /** Ceiling minus usage and reservations (negative: over). */
