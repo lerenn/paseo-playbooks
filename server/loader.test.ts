@@ -67,6 +67,20 @@ describe("loadPlaybooks", () => {
     expect(entries.find((entry) => entry.id === "pr")).toMatchObject({ hidden: false, errors: [] });
   });
 
+  it("reads workspace.title, the playbook's over the default, and refuses an undeclared input", async () => {
+    const step = "steps:\n  - id: a\n    role: { name: investigator, prompt: go }\n";
+    const dir = await workspace({
+      "defaults/main.yaml": "workspace: { title: \"Run {ticket}\" }\n",
+      "own.yaml": `workspace: { title: "Ship {ticket}" }\ninputs: { ticket: { type: string, required: true } }\n${step}`,
+      "plain.yaml": `inputs: { ticket: { type: string } }\n${step}`,
+      "bad.yaml": `workspace: { title: "Ship {tickt}" }\ninputs: { ticket: { type: string } }\n${step}`,
+    });
+    const { entries } = await loadPlaybooks(dir);
+    expect(entries.find((entry) => entry.id === "own")?.playbook?.workspace.title).toBe("Ship {ticket}");
+    expect(entries.find((entry) => entry.id === "plain")?.playbook?.workspace.title).toBe("Run {ticket}");
+    expect(entries.find((entry) => entry.id === "bad")?.errors.join("\n")).toMatch(/workspace\.title uses "\{tickt\}" but the playbook declares no such input/);
+  });
+
   it("reports when no folder exists", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "playbooks-"));
     temps.push(dir);

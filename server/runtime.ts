@@ -6748,7 +6748,7 @@ export class Runtime {
     const branch = worktreeBranch(playbook.id, id);
     const base = (await currentRef(workspaceDir)) ?? undefined;
     const created = await this.createWorkspace({
-      title: workspaceTitle(playbook.title, inputs, workspaceName),
+      title: workspaceTitle(playbook.title, inputs, workspaceName, playbook.workspace.title),
       source: { kind: "worktree", cwd: workspaceDir, action: "branch-off", branchName: branch, ...(base ? { refName: base } : {}) },
     });
     this.addReservation(created.id, { runId, branch, playbook, inputs, created: true, ...(child ? { parent: child.parent } : {}), ...(priority !== undefined ? { priority } : {}) });

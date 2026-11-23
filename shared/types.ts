@@ -559,10 +559,10 @@ export const PlaybookSchema = z.object({
   usageThreshold: z.number().default(100),
   /** What the plugin does with a tool permission request of an agent of the run (`permissions.on_request`). */
   permissions: z.object({ onRequest: PermissionPolicySchema }).default({ onRequest: "authorize" }),
-  /** Whether the plugin archives the workspace it created for a run once the run ends. */
+  /** Whether the plugin archives the workspace it created for a run once the run ends; `title` is the template of its title (`workspace.title`), null for the default. */
   workspace: z
-    .object({ archive: z.enum(["never", "on_end"]), keepFailed: z.boolean(), archiveWithRun: z.boolean().default(false), archiveAfterMs: z.number().nullable().default(null) })
-    .default({ archive: "never", keepFailed: true, archiveWithRun: false, archiveAfterMs: null }),
+    .object({ archive: z.enum(["never", "on_end"]), keepFailed: z.boolean(), archiveWithRun: z.boolean().default(false), archiveAfterMs: z.number().nullable().default(null), title: z.string().nullable().default(null) })
+    .default({ archive: "never", keepFailed: true, archiveWithRun: false, archiveAfterMs: null, title: null }),
   /** `auto_archive`: the plugin archives a finished run (and its idle manager) `afterMs` after it ended. Off unless `enabled`. Unset on runs from before it (= off). */
   autoArchive: z
     .object({ enabled: z.boolean(), afterMs: z.number().int().positive(), keepFailedWorkspaceMs: z.number().int().positive().default(24 * 3_600_000) })

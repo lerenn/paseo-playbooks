@@ -32,6 +32,7 @@ import { OVERSIGHT_TYPES } from "./oversight-events";
 import { readProjectDefault, readProjectProfiles } from "./config";
 import { bareId, DEFAULT_REPO, qualified } from "../shared/repos";
 import { MAX_SUBAGENT_ARCHIVE_AFTER_MS } from "./sidekick-archive";
+import { workspaceTitleRefs } from "../shared/workspace-name";
 import { coerceValue, parseDuration, replaceRefs, singleRef, templateRefs, typeCompatible } from "../shared/vars";
 
 /** Folders searched for playbooks, relative to the workspace. Each folder is self-contained. */
@@ -450,6 +451,8 @@ const RawWorkspaceSchema = z
     /** Archive the run's own Paseo workspace (with its agents) when the run is archived, if nothing is lost. Default true. */
     archive_with_run: z.boolean().optional(),
     /** Archive the workspace of a run that completed or was canceled this long after it ended (a duration such as 6h), or `never`. Default 6h. */
+    /** Title of the workspace a run creates for itself: text with `{input}` placeholders filled from the run's inputs, e.g. `Ship {ticket}`. Without it: `<playbook title>: <first input>`. */
+    title: z.string().min(1).optional(),
     archive_after: z.string().refine((value) => value === "never" || parseDuration(value) !== null, { message: "archive_after must be a duration such as 6h or 30m, or never" }).optional(),
   })
   .strict();
@@ -2496,6 +2499,10 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     if (resolveIsolation(pb.isolation, undefined).mode === "worktree") err("`isolation: worktree` does not apply to a singleton: its batches share one pipeline workspace");
     isolation = { ...isolation, mode: "none" };
   }
+  // A template of its own may name only declared inputs (a repository default is checked when a run starts: an unknown name keeps the default title).
+  for (const name of workspaceTitleRefs(pb.workspace?.title ?? "")) {
+    if (!(name in inputs)) err(`workspace.title uses "{${name}}" but the playbook declares no such input (declared: ${Object.keys(inputs).join(", ") || "none"})`);
+  }
   if (errors.length > 0) return fail(errors);
   const nudgeOwn = resolveManagerNudge(pb.manager?.nudge, "manager.nudge", err);
   const managerNudge: ManagerNudge = { ...DEFAULT_MANAGER_NUDGE, ...defaults.managerNudge, ...nudgeOwn };
@@ -2554,6 +2561,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
       keepFailed: pb.workspace?.keep_failed ?? defaults.workspace?.keep_failed ?? true,
       archiveWithRun: pb.workspace?.archive_with_run ?? defaults.workspace?.archive_with_run ?? true,
       archiveAfterMs: archiveAfterMs(pb.workspace?.archive_after ?? defaults.workspace?.archive_after),
+      title: pb.workspace?.title ?? defaults.workspace?.title ?? null,
     },
     isolation,
     permissions: { onRequest: pb.permissions?.on_request ?? defaults.permissions?.on_request ?? DEFAULT_PERMISSION_POLICY },

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { sanitizeWorkspaceName, workspaceTitle, WORKSPACE_NAME_MAX } from "./workspace-name";
+import { sanitizeWorkspaceName, workspaceTitle, workspaceTitleRefs, WORKSPACE_NAME_MAX } from "./workspace-name";
 
 describe("sanitizeWorkspaceName", () => {
   it("trims and collapses whitespace and control characters", () => {
@@ -27,5 +27,28 @@ describe("workspaceTitle", () => {
   });
   it("uses the chosen name", () => {
     expect(workspaceTitle("Fix", { request: "login" }, " My ws ")).toBe("My ws");
+  });
+  describe("workspace.title template", () => {
+    it("fills {input} from the inputs", () => {
+      expect(workspaceTitle("Ship it", { ticket: "OPS-1" }, undefined, "Ship {ticket}")).toBe("Ship OPS-1");
+      expect(workspaceTitle("P", { a: "x", n: 3 }, null, "{a}/{n}")).toBe("x/3");
+    });
+    it("an explicit name wins over the template", () => {
+      expect(workspaceTitle("Ship it", { ticket: "OPS-1" }, "Mine", "Ship {ticket}")).toBe("Mine");
+    });
+    it("keeps the default title when an input is missing or empty", () => {
+      expect(workspaceTitle("Ship it", { ticket: "OPS-1" }, undefined, "Ship {nope}")).toBe("Ship it: OPS-1");
+      expect(workspaceTitle("Ship it", { ticket: "" }, undefined, "Ship {ticket}")).toBe("Ship it");
+      expect(workspaceTitle("Ship it", { ticket: "T", other: "" }, undefined, "{ticket} {other}")).toBe("Ship it: T");
+    });
+    it("trims to one line of at most 80 characters", () => {
+      const title = workspaceTitle("P", { a: `x\ny ${"z".repeat(200)}` }, undefined, "Ship {a}");
+      expect(title).toHaveLength(80);
+      expect(title).not.toMatch(/\n/);
+      expect(title.startsWith("Ship x y z")).toBe(true);
+    });
+    it("lists the placeholders", () => {
+      expect(workspaceTitleRefs("a {x} {{ y }} {z-1}")).toEqual(["x", "z-1"]);
+    });
   });
 });

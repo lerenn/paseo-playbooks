@@ -128,6 +128,7 @@ workspace:             # what happens to the workspace a run created with newWor
   archive: on_end      # never (default) | on_end: archive it when the run completes or is canceled
   keep_failed: true    # keep it when the run failed or lost its manager (default true)
   archive_with_run: true   # archiving a run also archives the workspace it created, when safe: no uncommitted/unpushed work (default true)
+  title: "Ship {ticket}"   # title of that workspace, {input} filled from the run's inputs (default "<playbook title>: <first input>"; an unfilled placeholder keeps the default)
   archive_after: 6h        # archive the workspace of a completed/canceled run this long after it ended; never = off (default 6h)
 auto_archive:          # archive a finished run and its manager, restartable with restart_run (off by default)
   enabled: true        # default false
