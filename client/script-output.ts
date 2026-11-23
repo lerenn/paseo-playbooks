@@ -1,5 +1,6 @@
 import type { ScriptOutput } from "../shared/types";
 import { detailEn } from "./i18n-detail";
+import type { Tr } from "./tr";
 
 /** How often the step sheet asks for a script's live output. */
 export const SCRIPT_OUTPUT_POLL_MS = 2000;
@@ -7,10 +8,10 @@ export const SCRIPT_OUTPUT_POLL_MS = 2000;
 type ScriptKey = `detail.script.${keyof typeof detailEn.script}`;
 
 /** The panel's `t`, narrowed to the keys these helpers use. The full `t` from `useTranslation(messages)` fits. */
-export type ScriptT = (key: ScriptKey, options?: Record<string, string | number>) => string;
+export type ScriptT = Tr;
 
 /** English, for a caller that does not pass `t` yet (and the unit tests). */
-const english: ScriptT = (key, options = {}) => {
+const english: ScriptT = (key: ScriptKey, options: Record<string, string | number> = {}) => {
   const text = detailEn.script[key.slice("detail.script.".length) as keyof typeof detailEn.script];
   return text.replace(/\{\{(\w+)\}\}/g, (_, name: string) => String(options[name] ?? ""));
 };

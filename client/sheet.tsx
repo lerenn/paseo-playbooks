@@ -1,4 +1,4 @@
-import { useRpc } from "@getpaseo/plugin/client";
+import { useRpc, useTranslation } from "@getpaseo/plugin/client";
 import { Icon, Markdown, Modal, TextInput, useToast } from "@getpaseo/plugin/client/ui";
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState, type ReactNode } from "react";
@@ -10,15 +10,19 @@ import { runningFor } from "../shared/elapsed";
 import { useNow } from "./now";
 import { conditionText } from "../shared/labels";
 import { attemptTimeoutMs, isPaused, isStepLive, restartBlocker, type Gate, type GateChoice, type Playbook, type Run, type RunSummary } from "../shared/types";
-import { SCRIPT_OUTPUT_POLL_MS, checkHeading, lastLines, scriptActivity } from "./script-output";
+import { SCRIPT_OUTPUT_POLL_MS, checkHeading, formatSeconds, lastLines, scriptActivity } from "./script-output";
 import { STEP_KINDS, stepTitle, stepTitleOf, type Theme } from "./theme";
 import { semanticColor } from "./semantic-colors";
+import { messages } from "./i18n";
+import { detailEn } from "./i18n-detail";
+import { graphEn } from "./i18n-graph";
+import type { Tr } from "./tr";
 
-/** A poll interval as people say it: 30 s, 1 min, 2 h. */
-function formatInterval(ms: number): string {
-  if (ms % 3_600_000 === 0) return `${ms / 3_600_000} h`;
-  if (ms % 60_000 === 0) return `${ms / 60_000} min`;
-  return `${Math.round(ms / 1000)} s`;
+/** A raw status as words: a known run, gate or step status is translated, anything else (a playbook's own outcome) is shown as stored. */
+export function statusText(t: Tr, status: string): string {
+  if (status in detailEn.status) return t(`detail.status.${status}`);
+  if (status in graphEn.state) return t(`graph.state.${status}`);
+  return status.replace("_", " ");
 }
 
 export function Button(props: { theme: Theme; label: string; onPress(): void; kind?: "primary" | "danger" | "plain"; disabled?: boolean; accessibilityLabel?: string }) {
@@ -43,13 +47,14 @@ export function Button(props: { theme: Theme; label: string; onPress(): void; ki
 /** A collapsible section of the step sheet, closed by default. */
 export function Section(props: { theme: Theme; title: string; children: ReactNode; defaultOpen?: boolean }) {
   const { theme } = props;
+  const { t } = useTranslation(messages);
   const [open, setOpen] = useState(props.defaultOpen === true);
   return (
     <View style={{ borderRadius: 8, borderWidth: 1, borderColor: theme.colors.border, overflow: "hidden" }}>
       <Pressable
         accessibilityRole="button"
         accessibilityState={{ expanded: open }}
-        accessibilityLabel={`${open ? "Collapse" : "Expand"} ${props.title}`}
+        accessibilityLabel={t(open ? "detail.sheet.collapseSection" : "detail.sheet.expandSection", { title: props.title })}
         onPress={() => setOpen((value) => !value)}
         style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 10, paddingVertical: 8, backgroundColor: theme.colors.surface2 }}
       >
@@ -85,32 +90,34 @@ function choiceColors(theme: Theme, color: NonNullable<GateChoice["color"]>): { 
   }
 }
 
-/** Where a choice leads, for its button: "→ End", "→ End Release" (inside a block), "→ Write", "→ Fail run". */
-function destinationLabel(run: Pick<RunSummary, "playbook">, gate: Gate, choiceId: string): string {
+/** Where a choice leads, for its button (shown after an arrow): "End", "End Release" (inside a block), "Write", "Fail run". */
+function destinationLabel(t: Tr, run: Pick<RunSummary, "playbook">, gate: Gate, choiceId: string): string {
+  const d = (key: string, options?: Record<string, string>) => t(`detail.sheet.dest.${key}`, options);
   const step = run.playbook.steps.find((candidate) => candidate.id === gate.stepId);
   let outcome = choiceId;
-  if (gate.kind === "permission") return choiceId === "allow" ? "→ The agent goes on" : "→ The agent picks another way";
-  if (gate.kind === "manager_question") return "→ The manager goes on";
-  if (gate.kind === "admission") return choiceId === "admit" ? "→ Joins the next batch" : choiceId === "withdraw" ? "→ Leaves the pipeline" : "→ Checks again";
+  if (gate.kind === "permission") return choiceId === "allow" ? d("agentGoesOn") : d("agentOtherWay");
+  if (gate.kind === "manager_question") return d("managerGoesOn");
+  if (gate.kind === "admission") return choiceId === "admit" ? d("joinsBatch") : choiceId === "withdraw" ? d("leavesPipeline") : d("checksAgain");
   if (gate.kind === "ask") {
     const ask = askTransitionOf(gate, step);
     const choice = ask ? askChoices(ask).find((candidate) => candidate.id === choiceId) : undefined;
     // A choice with `outcome` leads where that outcome does; the others go back to a step.
-    if (choice?.outcome === undefined) return `→ ${stepTitleOf(run.playbook, choice?.target ?? gate.gotoTarget ?? "")}`;
+    if (choice?.outcome === undefined) return stepTitleOf(run.playbook, choice?.target ?? gate.gotoTarget ?? "");
     outcome = choice.outcome;
   }
-  if (gate.kind === "loop_limit") return choiceId === "approved" ? `→ ${stepTitleOf(run.playbook, gate.gotoTarget ?? "")}` : "→ Fail run";
+  if (gate.kind === "loop_limit") return choiceId === "approved" ? stepTitleOf(run.playbook, gate.gotoTarget ?? "") : d("failRun");
   if (!step) return "";
   const destination = destinationOf(run.playbook, step, outcome);
-  if (destination.kind === "end") return "→ End";
-  if (destination.kind === "end_block") return `→ End ${run.playbook.blocks[destination.targets[0]!]?.title ?? destination.targets[0]}`;
-  if (destination.kind === "fail") return "→ Fail run";
-  return `→ ${destination.targets.map((target) => stepTitleOf(run.playbook, target)).join(", ")}`;
+  if (destination.kind === "end") return d("end");
+  if (destination.kind === "end_block") return d("endBlock", { title: run.playbook.blocks[destination.targets[0]!]?.title ?? destination.targets[0]! });
+  if (destination.kind === "fail") return d("failRun");
+  return destination.targets.map((target) => stepTitleOf(run.playbook, target)).join(", ");
 }
 
 /** A pending gate: its summary, collapsed details, and one full-width button per choice. Choices that take a comment open a text box with Send. */
 export function GateActions(props: { theme: Theme; run: Pick<RunSummary, "id" | "playbook">; gate: Gate; hostLabel: string; onDecided?: () => void }) {
   const { theme, run, gate } = props;
+  const { t } = useTranslation(messages);
   const decide = useRpc(decideGateRpc);
   const queryClient = useQueryClient();
   const toast = useToast();
@@ -124,7 +131,7 @@ export function GateActions(props: { theme: Theme; run: Pick<RunSummary, "id" | 
     setBusy(true);
     try {
       const result = await decide({ runId: run.id, gateId: gate.id, decision: choice.id, comment: withComment, hostLabel: props.hostLabel });
-      toast.show(result.alreadyDecided ? `Already decided: ${result.decision}` : `${choice.label}: sent`, { variant: "success" });
+      toast.show(result.alreadyDecided ? t("detail.sheet.alreadyDecided", { decision: result.decision }) : t("detail.sheet.sentChoice", { label: choice.label }), { variant: "success" });
       setOpen(null);
       setComment("");
       props.onDecided?.();
@@ -139,12 +146,12 @@ export function GateActions(props: { theme: Theme; run: Pick<RunSummary, "id" | 
     <View style={{ gap: 6 }}>
       <Markdown>{linkify(text.summary)}</Markdown>
       {text.details ? (
-        <Section theme={theme} title="Details">
+        <Section theme={theme} title={t("detail.sheet.details")}>
           <Markdown>{linkify(text.details)}</Markdown>
         </Section>
       ) : null}
       {choices.map((choice, index) => {
-        const destination = destinationLabel(run, gate, choice.id);
+        const destination = destinationLabel(t, run, gate, choice.id);
         const expanded = open === choice.id;
         const tone = choice.color ?? (index === 0 ? "primary" : "neutral");
         const { background, foreground } = choiceColors(theme, tone);
@@ -154,7 +161,7 @@ export function GateActions(props: { theme: Theme; run: Pick<RunSummary, "id" | 
           <View key={choice.id} style={{ gap: 6 }}>
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel={`${choice.label}, ${destination.replace("→", "goes to")}${choice.comment !== "none" ? ", asks for a comment" : ""}`}
+              accessibilityLabel={destination ? t(choice.comment !== "none" ? "detail.sheet.choiceGoesComment" : "detail.sheet.choiceGoes", { label: choice.label, destination }) : choice.comment !== "none" ? t("detail.sheet.choiceComment", { label: choice.label }) : choice.label}
               accessibilityState={{ disabled: busy, expanded: choice.comment !== "none" ? expanded : undefined }}
               disabled={busy}
               onPress={() => {
@@ -179,14 +186,14 @@ export function GateActions(props: { theme: Theme; run: Pick<RunSummary, "id" | 
               }}
             >
               <Text style={{ flex: 1, color: foreground, fontSize: 13, fontWeight: "600" }}>{choice.label}</Text>
-              <Text style={{ color: foreground, opacity: 0.75, fontSize: 12 }}>{destination}</Text>
+              <Text style={{ color: foreground, opacity: 0.75, fontSize: 12 }}>{destination ? `→ ${destination}` : ""}</Text>
               {choice.comment !== "none" ? <Icon name={expanded ? "ChevronUp" : "MessageSquare"} size={13} color={foreground} /> : null}
             </Pressable>
             {expanded ? (
               <View style={{ gap: 6, paddingLeft: 8, borderLeftWidth: 2, borderLeftColor: ring }}>
                 <TextInput
-                  accessibilityLabel={`Comment for ${choice.label}`}
-                  placeholder={choice.comment === "required" ? "Comment (required)" : "Comment (optional)"}
+                  accessibilityLabel={t("detail.sheet.commentFor", { label: choice.label })}
+                  placeholder={t(choice.comment === "required" ? "detail.sheet.commentRequired" : "detail.sheet.commentOptional")}
                   placeholderTextColor={theme.colors.foregroundMuted}
                   value={comment}
                   onChangeText={setComment}
@@ -197,7 +204,7 @@ export function GateActions(props: { theme: Theme; run: Pick<RunSummary, "id" | 
                 <View style={{ flexDirection: "row", gap: 8 }}>
                   <Pressable
                     accessibilityRole="button"
-                    accessibilityLabel={`Send ${choice.label}`}
+                    accessibilityLabel={t("detail.sheet.sendChoice", { label: choice.label })}
                     accessibilityState={{ disabled: busy || (choice.comment === "required" && !comment.trim()) }}
                     disabled={busy || (choice.comment === "required" && !comment.trim())}
                     onPress={() => void submit(choice, comment)}
@@ -209,9 +216,9 @@ export function GateActions(props: { theme: Theme; run: Pick<RunSummary, "id" | 
                       opacity: busy || (choice.comment === "required" && !comment.trim()) ? 0.5 : 1,
                     }}
                   >
-                    <Text style={{ color: foreground, fontSize: 13, fontWeight: "600" }}>{busy ? "Sending…" : "Send"}</Text>
+                    <Text style={{ color: foreground, fontSize: 13, fontWeight: "600" }}>{busy ? t("detail.sheet.sending") : t("detail.sheet.send")}</Text>
                   </Pressable>
-                  <Button theme={theme} label="Cancel" onPress={() => setOpen(null)} />
+                  <Button theme={theme} label={t("common.cancel")} onPress={() => setOpen(null)} />
                 </View>
               </View>
             ) : null}
@@ -225,6 +232,7 @@ export function GateActions(props: { theme: Theme; run: Pick<RunSummary, "id" | 
 /** "Restart from here" on a finished run: the step and what follows run again, with the same manager (or a new one if it was archived). */
 function RestartRun(props: { theme: Theme; run: Run; stepId: string; hostLabel: string; onDone(): void }) {
   const { theme, run, stepId } = props;
+  const { t } = useTranslation(messages);
   const restart = useRpc(restartRunRpc);
   const queryClient = useQueryClient();
   const toast = useToast();
@@ -234,16 +242,16 @@ function RestartRun(props: { theme: Theme; run: Run; stepId: string; hostLabel: 
   return (
     <View style={{ gap: 8 }}>
       <Line theme={theme} muted>
-        Reopens this {run.status} run: "{stepTitleOf(run.playbook, stepId)}" and every step after it run again, with the same manager (a new one if it was archived). Completed steps before it keep their outputs.
+        {t("detail.sheet.restart.reopens", { status: statusText(t, run.status), step: stepTitleOf(run.playbook, stepId) })}
       </Line>
       {ran.length > 0 ? (
         <Line theme={theme}>
-          ⚠ After-tasks already ran ({ran.join(", ")}). They run again when the restarted run ends.
+          {t("detail.sheet.restart.afterRan", { list: ran.join(", ") })}
         </Line>
       ) : null}
       <TextInput
-        accessibilityLabel="Note for the restarted step (optional)"
-        placeholder="Note for the step (optional)"
+        accessibilityLabel={t("detail.sheet.restart.noteLabel")}
+        placeholder={t("detail.sheet.restart.notePlaceholder")}
         placeholderTextColor={theme.colors.foregroundMuted}
         value={comment}
         onChangeText={setComment}
@@ -254,14 +262,14 @@ function RestartRun(props: { theme: Theme; run: Run; stepId: string; hostLabel: 
         <Button
           theme={theme}
           kind="primary"
-          label={busy ? "Restarting…" : "Restart run from here"}
+          label={busy ? t("detail.sheet.restart.restarting") : t("detail.sheet.restart.button")}
           disabled={busy}
           onPress={() => {
             setBusy(true);
             void restart({ runId: run.id, stepId, hostLabel: props.hostLabel, ...(comment.trim() ? { comment } : {}) })
               .then(async () => {
                 await queryClient.invalidateQueries({ queryKey: ["playbooks"] });
-                toast.show("Run restarted", { variant: "success" });
+                toast.show(t("detail.sheet.restart.done"), { variant: "success" });
                 props.onDone();
               })
               .catch((error: unknown) => toast.error(error instanceof Error ? error.message : String(error)))
@@ -276,6 +284,7 @@ function RestartRun(props: { theme: Theme; run: Run; stepId: string; hostLabel: 
 /** A script step's live output: running now or waiting for the next check, the running check's tail, and the last checks. */
 function ScriptLive(props: { theme: Theme; run: Run; stepId: string; latest: Run["steps"][string]["attempts"][number] | undefined }) {
   const { theme, run, stepId, latest } = props;
+  const { t, locale } = useTranslation(messages);
   const fetchOutput = useRpc(scriptOutputRpc);
   const stepRunning = run.steps[stepId]?.status === "running";
   const query = useQuery({
@@ -292,7 +301,7 @@ function ScriptLive(props: { theme: Theme; run: Run; stepId: string; latest: Run
   }, [stepRunning]);
   if (!latest) return null;
   const output = query.data;
-  const activity = scriptActivity(output, latest.nextCheckAt, stepRunning, now);
+  const activity = scriptActivity(output, latest.nextCheckAt, stepRunning, now, t);
   const checks = output?.checks ?? [];
   const tail = output?.running ? output.tail : "";
   // Nothing in memory (the daemon restarted, or the attempt ended): the last check's tail the run recorded.
@@ -301,27 +310,27 @@ function ScriptLive(props: { theme: Theme; run: Run; stepId: string; latest: Run
   return (
     <View style={{ gap: 6 }}>
       {activity.kind !== "idle" ? (
-        <Text accessibilityRole="text" accessibilityLabel={`Script ${activity.text}`} style={{ color, fontSize: 13, fontWeight: "600" }}>
+        <Text accessibilityRole="text" accessibilityLabel={t("detail.sheet.scriptActivity", { text: activity.text })} style={{ color, fontSize: 13, fontWeight: "600" }}>
           {activity.kind === "running" ? "● " : "○ "}
           {activity.text}
         </Text>
       ) : null}
       {activity.kind === "running" ? (
-        <Section theme={theme} title="Live output" defaultOpen>
+        <Section theme={theme} title={t("detail.sheet.liveOutput")} defaultOpen>
           <Line theme={theme} muted>
-            {tail ? lastLines(tail, 40) : "No output yet."}
+            {tail ? lastLines(tail, 40) : t("detail.sheet.noOutputYet")}
           </Line>
         </Section>
       ) : null}
       {[...checks].reverse().map((check) => (
-        <Section key={check.n} theme={theme} title={checkHeading(check)} defaultOpen={check === checks.at(-1) && activity.kind !== "running"}>
+        <Section key={check.n} theme={theme} title={checkHeading(check, t, locale)} defaultOpen={check === checks.at(-1) && activity.kind !== "running"}>
           <Line theme={theme} muted>
-            {check.tail ? lastLines(check.tail, 40) : "No output."}
+            {check.tail ? lastLines(check.tail, 40) : t("detail.sheet.noOutput")}
           </Line>
         </Section>
       ))}
       {fallback ? (
-        <Section theme={theme} title={latest.report ? "Output" : "Output of the last check"} defaultOpen>
+        <Section theme={theme} title={latest.report ? t("detail.sheet.output") : t("detail.sheet.outputLast")} defaultOpen>
           <Line theme={theme} muted>
             {fallback}
           </Line>
@@ -341,6 +350,8 @@ export function StepSheet(props: {
   onOpenAgent(agentId: string): void;
 }) {
   const { theme, playbook, run, stepId } = props;
+  const { t, locale } = useTranslation(messages);
+  const kindName = (kind: keyof typeof STEP_KINDS) => t(`graph.kind.${kind}`);
   // The list is lean (ADR 2026-11-13-lean-list-runs): what it lacks (attempt prompts and reports, the step's prompt, the role's instructions) comes with the sheet. Until then the sheet shows what the list has.
   const fetchDetail = useRpc(stepDetailRpc);
   const detail = useQuery({
@@ -375,78 +386,79 @@ export function StepSheet(props: {
 
   // The latest attempt's timeout (a templated one resolved at its start), else the step's.
   const timeoutMs = latest ? attemptTimeoutMs(step, latest) : step.timeout ? undefined : step.timeoutMs;
-  const timeoutText = timeoutMs ? ` · timeout ${Math.round(timeoutMs / 60000)} min` : step.timeout ? ` · timeout ${step.timeout}` : "";
+  const timeoutText = timeoutMs ? ` · ${t("detail.sheet.timeoutMin", { minutes: Math.round(timeoutMs / 60000) })}` : step.timeout ? ` · ${t("detail.sheet.timeoutValue", { value: step.timeout })}` : "";
+  const retriesText = step.retries ? ` · ${t("detail.sheet.retries", { count: step.retries })}` : "";
 
   return (
-    <Modal title={`${stepTitle(step)}${role ? ` · ${role.title}` : step.kind === "gate" ? " · Gate" : step.kind === "script" ? " · Script" : step.kind === "handoff" ? " · Hand-off" : step.kind === "branch" ? " · Branch" : step.kind === "fanout" ? " · Fan-out" : ""}`} open onOpenChange={(open) => !open && props.onClose()}>
+    <Modal title={`${stepTitle(step)}${role ? ` · ${role.title}` : step.kind === "agent" ? "" : ` · ${kindName(step.kind)}`}`} open onOpenChange={(open) => !open && props.onClose()}>
       <Modal.Content>
-        <View accessible accessibilityLabel={`${STEP_KINDS[step.kind].label} step`} style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+        <View accessible accessibilityLabel={t("detail.sheet.kindStep", { kind: kindName(step.kind) })} style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
           <Icon name={STEP_KINDS[step.kind].icon} size={14} color={theme.colors.foregroundMuted} />
-          <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12, fontWeight: "600" }}>{STEP_KINDS[step.kind].label}</Text>
+          <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12, fontWeight: "600" }}>{kindName(step.kind)}</Text>
         </View>
         {step.description ? (
-          <Text selectable accessibilityLabel={`About this step: ${step.description}`} style={{ color: theme.colors.foreground, fontSize: 13 }}>
+          <Text selectable accessibilityLabel={t("detail.sheet.aboutStep", { description: step.description })} style={{ color: theme.colors.foreground, fontSize: 13 }}>
             {step.description}
           </Text>
         ) : null}
-        {state ? <Line theme={theme}>Status: {state.status}{latest ? ` · attempt ${latest.n}` : ""}{latest?.waiting && state.status === "running" ? ` · waiting for tokens until ${new Date(latest.waiting.until).toLocaleString()}` : ""}{state.status === "running" && !pendingGate ? ` · running for ${runningFor(latest?.startedAt, now) ?? "—"}` : ""}</Line> : null}
+        {state ? <Line theme={theme}>{t("detail.sheet.status", { status: statusText(t, state.status) })}{latest ? ` · ${t("detail.sheet.attempt", { n: latest.n })}` : ""}{latest?.waiting && state.status === "running" ? ` · ${t("detail.sheet.waitingTokens", { when: new Date(latest.waiting.until).toLocaleString(locale) })}` : ""}{state.status === "running" && !pendingGate ? ` · ${t("detail.sheet.runningFor", { elapsed: runningFor(latest?.startedAt, now) ?? "—" })}` : ""}</Line> : null}
         {step.kind === "agent" ? (
-          <Section theme={theme} title="Agent">
+          <Section theme={theme} title={kindName("agent")}>
             <Line theme={theme} muted>
-              {[step.agent.provider, step.agent.model, step.agent.mode, step.agent.thinking].filter(Boolean).join(" · ") || "manager's provider and model"}
+              {[step.agent.provider, step.agent.model, step.agent.mode, step.agent.thinking].filter(Boolean).join(" · ") || t("detail.sheet.managerProvider")}
               {timeoutText}
-              {step.retries ? ` · retries ${step.retries}` : ""}
+              {retriesText}
             </Line>
           </Section>
         ) : null}
         {step.kind === "script" ? (
-          <Section theme={theme} title="Script">
+          <Section theme={theme} title={kindName("script")}>
             <Line theme={theme} muted>
               {step.script}
-              {step.pollMs ? ` · every ${formatInterval(step.pollMs)} until done` : " · runs once"}
+              {step.pollMs ? ` · ${t("detail.sheet.everyUntilDone", { interval: formatSeconds(step.pollMs / 1000, t) })}` : ` · ${t("detail.sheet.runsOnce")}`}
               {timeoutText}
-              {step.retries ? ` · retries ${step.retries}` : ""}
+              {retriesText}
             </Line>
             {latest ? (
               <Line theme={theme} muted>
-                {latest.checks} check(s){latest.nextCheckAt && state?.status === "running" ? ` · next at ${new Date(latest.nextCheckAt).toLocaleTimeString()}` : ""}
+                {t("detail.sheet.checks", { count: latest.checks })}{latest.nextCheckAt && state?.status === "running" ? ` · ${t("detail.sheet.nextAt", { when: new Date(latest.nextCheckAt).toLocaleTimeString(locale) })}` : ""}
               </Line>
             ) : null}
           </Section>
         ) : null}
         {step.kind === "handoff" ? (
-          <Section theme={theme} title="Hand-off">
+          <Section theme={theme} title={kindName("handoff")}>
             <Line theme={theme} muted>
-              Gives a job to the singleton playbook "{step.handoff}"; done once its pipeline takes it, this run does not wait for it
+              {t("detail.sheet.handoffGives", { playbook: step.handoff ?? "" })}
               {timeoutText}
-              {step.retries ? ` · retries ${step.retries}` : ""}
+              {retriesText}
             </Line>
             {latest?.job ? (
               <Line theme={theme} muted>
-                Handed off to "{step.handoff}" (job {latest.job.jobId}) · pipeline run {latest.job.runId}
+                {t("detail.sheet.handoffDone", { playbook: step.handoff ?? "", job: latest.job.jobId, run: latest.job.runId })}
               </Line>
             ) : null}
             {latest?.lastMessage && !latest.report ? <Line theme={theme}>{latest.lastMessage}</Line> : null}
           </Section>
         ) : null}
         {step.kind === "fanout" && step.fanout ? (
-          <Section theme={theme} title="Fan-out">
+          <Section theme={theme} title={kindName("fanout")}>
             <Line theme={theme} muted>
-              One run of "{step.fanout.playbook}" per item, each in its own workspace · at most {step.fanout.maxActive} at once
-              {step.fanout.cancelChildren ? " · canceled with this run" : " · kept running if this run ends"}
-              {step.fanout.pool ? ` · work pool: refilled by "${step.fanout.pool.playbook}" when children finish (at most ${step.fanout.pool.maxRefills} refills)` : ""}
+              {t("detail.sheet.fanout.summary", { playbook: step.fanout.playbook, max: step.fanout.maxActive })}
+              {` · ${t(step.fanout.cancelChildren ? "detail.sheet.fanout.canceledWith" : "detail.sheet.fanout.keptRunning")}`}
+              {step.fanout.pool ? ` · ${t("detail.sheet.fanout.pool", { playbook: step.fanout.pool.playbook, max: step.fanout.pool.maxRefills })}` : ""}
               {timeoutText}
             </Line>
             {state?.fanout?.pool ? (
               <>
                 <Line theme={theme}>
-                  Refills {state.fanout.pool.refills} · {state.fanout.pool.added} item(s) added · {state.fanout.pool.status === "stopped" ? `stopped: ${state.fanout.pool.stopReason ?? ""}` : "open"}
+                  {t("detail.sheet.fanout.poolLine", { refills: state.fanout.pool.refills, count: state.fanout.pool.added, state: state.fanout.pool.status === "stopped" ? t("detail.sheet.fanout.stopped", { reason: state.fanout.pool.stopReason ?? "" }) : t("detail.sheet.fanout.open") })}
                 </Line>
                 {state.fanout.pool.passes.map((pass) => (
                   <Line key={pass.n} theme={theme} muted>
-                    Refill #{pass.n} · {pass.status}
-                    {pass.runId ? ` · ${pass.runId}` : ""} · given {pass.keys.length} done key(s)
-                    {pass.status === "completed" ? ` · added ${pass.added.length ? pass.added.join(", ") : "nothing"}${pass.skipped ? ` (${pass.skipped} already present)` : ""}` : ""}
+                    {t("detail.sheet.fanout.pass", { n: pass.n, status: statusText(t, pass.status) })}
+                    {pass.runId ? ` · ${pass.runId}` : ""} · {t("detail.sheet.fanout.given", { count: pass.keys.length })}
+                    {pass.status === "completed" ? ` · ${pass.added.length ? t("detail.sheet.fanout.added", { list: pass.added.join(", ") }) : t("detail.sheet.fanout.addedNothing")}${pass.skipped ? ` (${t("detail.sheet.fanout.skipped", { count: pass.skipped })})` : ""}` : ""}
                     {pass.error ? ` · ${pass.error}` : ""}
                   </Line>
                 ))}
@@ -455,15 +467,15 @@ export function StepSheet(props: {
             {state?.fanout ? (
               <>
                 <Line theme={theme}>
-                  Pass {state.fanout.loop + 1}: {state.fanout.children.filter((child) => ["completed", "failed", "canceled", "not_started"].includes(child.status)).length} of {state.fanout.children.length} done
-                  {state.fanoutPast.length ? ` · ${state.fanoutPast.length} earlier pass(es) in the Playbooks screen` : ""}
+                  {t("detail.sheet.fanout.passN", { n: state.fanout.loop + 1, done: state.fanout.children.filter((child) => ["completed", "failed", "canceled", "not_started"].includes(child.status)).length, total: state.fanout.children.length })}
+                  {state.fanoutPast.length ? ` · ${t("detail.sheet.fanout.earlier", { count: state.fanoutPast.length })}` : ""}
                 </Line>
                 {state.fanout.children.map((child) => (
                   <Line key={child.key} theme={theme} muted>
-                    {child.key} · {child.status.replace("_", " ")}
+                    {child.key} · {statusText(t, child.status)}
                     {child.runId ? ` · ${child.runId}` : ""}
                     {child.error ? ` · ${child.error}` : ""}
-                    {child.previous.length ? ` · restarted ×${child.previous.length} (earlier: ${child.previous.map((entry) => `${entry.runId} ${entry.status.replace("_", " ")}`).join(", ")})` : ""}
+                    {child.previous.length ? ` · ${t("detail.sheet.fanout.restarted", { count: child.previous.length, list: child.previous.map((entry) => `${entry.runId} ${statusText(t, entry.status)}`).join(", ") })}` : ""}
                   </Line>
                 ))}
               </>
@@ -471,8 +483,8 @@ export function StepSheet(props: {
             {active && state?.status === "running" && state.fanout ? (
               <>
                 <TextInput
-                  accessibilityLabel="Item to add to the fan-out"
-                  placeholder={step.fanout.key ? "New item: its key, or a JSON object" : "New item"}
+                  accessibilityLabel={t("detail.sheet.fanout.itemLabel")}
+                  placeholder={step.fanout.key ? t("detail.sheet.fanout.itemKeyPlaceholder") : t("detail.sheet.fanout.itemPlaceholder")}
                   placeholderTextColor={theme.colors.foregroundMuted}
                   value={newItem}
                   onChangeText={setNewItem}
@@ -481,7 +493,7 @@ export function StepSheet(props: {
                 <View style={{ flexDirection: "row", gap: 8 }}>
                   <Button
                     theme={theme}
-                    label="Add item"
+                    label={t("detail.sheet.fanout.addItem")}
                     disabled={!newItem.trim()}
                     onPress={() => {
                       const text = newItem.trim();
@@ -490,14 +502,14 @@ export function StepSheet(props: {
                         try {
                           item = JSON.parse(text) as Record<string, string | number | boolean>;
                         } catch {
-                          toast.error("The item looks like a JSON object but is not valid JSON");
+                          toast.error(t("detail.sheet.fanout.badJson"));
                           return;
                         }
                       }
                       void addItem({ runId: run!.id, stepId, item })
                         .then((added) => {
                           setNewItem("");
-                          toast.show(`Added ${added.key}`, { variant: "success" });
+                          toast.show(t("detail.sheet.fanout.itemAdded", { key: added.key }), { variant: "success" });
                         })
                         .catch((error: unknown) => toast.error(error instanceof Error ? error.message : String(error)));
                     }}
@@ -508,7 +520,7 @@ export function StepSheet(props: {
           </Section>
         ) : null}
         {step.when?.length ? (
-          <Section theme={theme} title="Runs only when">
+          <Section theme={theme} title={t("detail.sheet.runsOnlyWhen")}>
             {step.when.map((when) => (
               <Line key={when.input} theme={theme} muted>
                 {conditionText(when)}
@@ -518,27 +530,27 @@ export function StepSheet(props: {
         ) : null}
         {state?.status === "skipped" ? (
           <Line theme={theme} muted>
-            Skipped: {run?.history.findLast((event) => event.type === "step_skipped" && event.stepId === stepId)?.detail ?? "not reached"}
+            {t("detail.sheet.skipped", { detail: run?.history.findLast((event) => event.type === "step_skipped" && event.stepId === stepId)?.detail ?? t("detail.sheet.notReached") })}
           </Line>
         ) : null}
         {step.branch ? (
-          <Section theme={theme} title="Branch (first case that holds runs)">
+          <Section theme={theme} title={t("detail.sheet.branchTitle")}>
             {step.branch.cases.map((candidate) => (
               <Line key={candidate.name} theme={theme} muted={state?.branch !== candidate.name}>
                 {state?.branch === candidate.name ? "▶ " : ""}
-                {candidate.name}: {candidate.when ? `if ${candidate.when.map(conditionText).join(" and ")}` : "else"}
+                {candidate.name}: {candidate.when ? t("detail.sheet.ifConditions", { conditions: candidate.when.map(conditionText).join(t("detail.sheet.and")) }) : t("detail.sheet.else")}
               </Line>
             ))}
           </Section>
         ) : null}
         {Object.keys(step.inputs).length > 0 ? (
-          <Section theme={theme} title="Inputs">
+          <Section theme={theme} title={t("detail.sheet.inputs")}>
             {Object.entries(step.inputs).map(([name, wiring]) => {
               const received = latest?.inputs[name];
               return (
                 <Line key={name} theme={theme}>
                   {name} ← {wiring.label}
-                  {wiring.auto ? " (auto)" : ""}
+                  {wiring.auto ? ` ${t("detail.sheet.auto")}` : ""}
                   {received ? `: ${received.value.length > 300 ? `${received.value.slice(0, 300)}…` : received.value}` : ""}
                 </Line>
               );
@@ -546,12 +558,12 @@ export function StepSheet(props: {
           </Section>
         ) : null}
         {latest?.brief ? (
-          <Section theme={theme} title="Manager's brief">
+          <Section theme={theme} title={t("detail.sheet.brief")}>
             <Line theme={theme}>{latest.brief}</Line>
           </Section>
         ) : null}
         {latest?.report ? (
-          <Section theme={theme} title={`Report · ${latest.report.outcome}`}>
+          <Section theme={theme} title={t("detail.sheet.report", { outcome: latest.report.outcome })}>
             <Line theme={theme}>{latest.report.summary}</Line>
             {Object.entries(latest.report.outputs).map(([name, value]) => (
               <Line key={name} theme={theme} muted>
@@ -563,67 +575,72 @@ export function StepSheet(props: {
         {step.kind === "script" && run ? (
           <ScriptLive theme={theme} run={run} stepId={stepId} latest={latest} />
         ) : step.kind !== "handoff" && !latest?.report && latest?.lastMessage ? (
-          <Section theme={theme} title="Ended without a report · last message">
+          <Section theme={theme} title={t("detail.sheet.endedNoReport")}>
             <Line theme={theme}>{latest.lastMessage}</Line>
           </Section>
         ) : null}
         {pendingGate && run ? (
-          <Section theme={theme} title="Decision">
+          <Section theme={theme} title={t("detail.sheet.decision")}>
             {!waitsForHuman(pendingGate) ? (
               <Line theme={theme} muted>
-                Advisor deciding: role {pendingGate.decider.role}. It reaches you only if it escalates.
+                {t("detail.sheet.advisor", { role: pendingGate.decider.role ?? "" })}
               </Line>
             ) : pendingGate.chatAgentId ? (
               <Line theme={theme} muted>
-                Also asked in the step agent's conversation; answering there closes it here.
+                {t("detail.sheet.alsoAsked")}
               </Line>
             ) : pendingGate.decider?.by === "manager" && pendingGate.escalated === null ? (
               <Line theme={theme} muted>
-                The manager may decide this gate; you can still decide first.
+                {t("detail.sheet.managerMay")}
               </Line>
             ) : null}
             {waitsForHuman(pendingGate) ? <GateActions theme={theme} run={run} gate={pendingGate} hostLabel={props.hostLabel} /> : null}
           </Section>
         ) : step.kind === "gate" && step.gate ? (
-          <Section theme={theme} title="Gate">
+          <Section theme={theme} title={t("detail.sheet.gate")}>
             <Line theme={theme}>{step.gate}</Line>
           </Section>
         ) : null}
         {decidedGates.map((gate) => (
           <Line key={gate.id} theme={theme} muted>
-            {gate.status}
-            {gate.decidedVia === "role" ? ` by role ${gate.decidedBy ?? "?"}` : gate.decidedVia === "manager" ? " by the manager" : ` via ${gate.decidedVia ?? "?"}${gate.decidedBy ? ` by ${gate.decidedBy}` : ""}`}
+            {gate.decidedVia === "role"
+              ? t("detail.sheet.byRole", { status: gate.status, who: gate.decidedBy ?? "?" })
+              : gate.decidedVia === "manager"
+                ? t("detail.sheet.byManager", { status: gate.status })
+                : gate.decidedBy
+                  ? t("detail.sheet.viaBy", { status: gate.status, via: gate.decidedVia ?? "?", who: gate.decidedBy })
+                  : t("detail.sheet.via", { status: gate.status, via: gate.decidedVia ?? "?" })}
             {gate.comment ? `: ${gate.comment}` : ""}
           </Line>
         ))}
         {attempts.length > 0 ? (
-          <Section theme={theme} title="Attempts">
+          <Section theme={theme} title={t("detail.sheet.attempts")}>
             {step.kind === "script" || step.kind === "handoff"
               ? attempts.map((attempt) => (
                   <Line key={attempt.n} theme={theme} muted>
-                    #{attempt.n} · {attempt.outcome ?? attempt.report?.outcome ?? attempt.turnEnd ?? "running"}
-                    {step.kind === "script" ? ` · ${attempt.checks} check(s)` : attempt.job ? ` · job ${attempt.job.jobId}` : ""}
+                    {t("detail.sheet.attemptOutcome", { n: attempt.n, outcome: attempt.outcome ?? attempt.report?.outcome ?? attempt.turnEnd ?? t("graph.state.running") })}
+                    {step.kind === "script" ? ` · ${t("detail.sheet.checks", { count: attempt.checks })}` : attempt.job ? ` · ${t("detail.sheet.jobId", { job: attempt.job.jobId })}` : ""}
                   </Line>
                 ))
               : attempts.map((attempt) => (
                   <Pressable
                     key={attempt.n}
                     accessibilityRole="button"
-                    accessibilityLabel={`Open the conversation of attempt ${attempt.n}`}
+                    accessibilityLabel={t("detail.sheet.openConversationLabel", { n: attempt.n })}
                     onPress={() => props.onOpenAgent(attempt.agentId)}
                   >
                     <Text style={{ color: theme.colors.accent, fontSize: 13 }}>
-                      #{attempt.n} · {attempt.outcome ?? attempt.report?.outcome ?? attempt.turnEnd ?? "running"} · open conversation ↗
+                      {t("detail.sheet.attemptOutcome", { n: attempt.n, outcome: attempt.outcome ?? attempt.report?.outcome ?? attempt.turnEnd ?? t("graph.state.running") })} · {t("detail.sheet.openConversation")}
                     </Text>
                   </Pressable>
                 ))}
           </Section>
         ) : null}
         {canNudge ? (
-          <Section theme={theme} title="Nudge">
+          <Section theme={theme} title={t("detail.sheet.nudge")}>
             <TextInput
-              accessibilityLabel="Follow-up message for the step agent"
-              placeholder="Follow-up for the step agent"
+              accessibilityLabel={t("detail.sheet.nudgeLabel")}
+              placeholder={t("detail.sheet.nudgePlaceholder")}
               placeholderTextColor={theme.colors.foregroundMuted}
               value={message}
               onChangeText={setMessage}
@@ -633,13 +650,13 @@ export function StepSheet(props: {
             <View style={{ flexDirection: "row", gap: 8 }}>
               <Button
                 theme={theme}
-                label="Send"
+                label={t("detail.sheet.send")}
                 disabled={!message.trim()}
                 onPress={() =>
                   void nudge({ runId: run!.id, stepId, message })
                     .then(() => {
                       setMessage("");
-                      toast.show("Sent", { variant: "success" });
+                      toast.show(t("detail.sheet.nudgeSent"), { variant: "success" });
                     })
                     .catch((error: unknown) => toast.error(error instanceof Error ? error.message : String(error)))
                 }
@@ -647,10 +664,10 @@ export function StepSheet(props: {
               {canRetry ? (
                 <Button
                   theme={theme}
-                  label="Ask manager to retry"
+                  label={t("detail.sheet.askRetry")}
                   onPress={() =>
                     void retry({ runId: run!.id, stepId })
-                      .then(() => toast.show("Asked the manager", { variant: "success" }))
+                      .then(() => toast.show(t("detail.sheet.askedManager"), { variant: "success" }))
                       .catch((error: unknown) => toast.error(error instanceof Error ? error.message : String(error)))
                   }
                 />
@@ -659,17 +676,17 @@ export function StepSheet(props: {
           </Section>
         ) : null}
         {canRestart ? (
-          <Section theme={theme} title="Restart run from here">
+          <Section theme={theme} title={t("detail.sheet.restart.button")}>
             <RestartRun theme={theme} run={run!} stepId={stepId} hostLabel={props.hostLabel} onDone={props.onClose} />
           </Section>
         ) : null}
         {role?.instructions ? (
-          <Section theme={theme} title={`Role instructions${role.readonly ? " · readonly" : ""}`}>
+          <Section theme={theme} title={t(role.readonly ? "detail.sheet.roleInstructionsRo" : "detail.sheet.roleInstructions")}>
             <Markdown>{role.instructions}</Markdown>
           </Section>
         ) : null}
         {step.prompt ? (
-          <Section theme={theme} title="Prompt template">
+          <Section theme={theme} title={t("detail.sheet.promptTemplate")}>
             <Line theme={theme} muted>
               {step.prompt}
             </Line>

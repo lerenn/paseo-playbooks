@@ -30,6 +30,7 @@ language, and accepts translated messages as registration titles.
 - Glossary: run = exécution / 运行, step = étape / 步骤, gate = validation / 审批, manager =
   gestionnaire / 管理器, hold = mise en attente / 暂缓, pause = pause / 暂停, quota = quota / 配额,
   workspace = espace de travail / 工作区. "playbook" stays untranslated.
+- Guard: `client/i18n-literals.test.ts` scans `client/*.tsx` and `client/sidekick/*.tsx` for literal English in JSX text and in text attributes (`label`, `placeholder`, `accessibilityLabel`, `title`, `hint`, `description`) and fails on a hit. It cannot see strings built in ternaries or helpers, so reviews still check those. The names "Playbooks" and "Sidekick" are allowed.
 - Never translated: the name "Playbooks", the term "Playbook Manager", and anything a playbook
   author wrote (titles, descriptions, input names, step names, values). Agent prompts, tool
   contracts, run state and playbook YAML are unchanged.
@@ -44,7 +45,7 @@ language, and accepts translated messages as registration titles.
 
 - Supersedes the listing ADR's rule that UI labels stay in English in the translations; its other
   rules stand. That bullet now points here.
-- Text produced by the server (error messages, run state text) is not translated and shows in
-  English.
+- Text produced by the server or by the shared modules (error messages, run state text, the
+  description of a deferred gate's condition) is not translated and shows in English.
 - Every new UI string costs three catalogue entries.
 - Adding a language means a new `resources` entry plus listing files, through a new ADR.

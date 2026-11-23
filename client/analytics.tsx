@@ -321,7 +321,7 @@ type PassesKey =
   | "analytics.passes.lost"
   | "analytics.passes.stalled"
   | "analytics.listSeparator";
-type TFn = (key: PassesKey, params?: Record<string, string | number>) => string;
+type TFn = (key: PassesKey, params: Record<string, string | number>) => string;
 
 /** "12 passes (5 feedback, 3 polls, 2 retries, 1 interrupted) · lost 4.2k (35%) · 3 stalled", leaving out what is zero. */
 function passesText(t: TFn, locale: string, row: UsageRow): string {
@@ -332,7 +332,7 @@ function passesText(t: TFn, locale: string, row: UsageRow): string {
     row.interruptedAttempts ? t("analytics.passes.interrupted", { count: row.interruptedAttempts }) : "",
   ].filter(Boolean);
   const passes = t("analytics.passes.total", { count: row.attempts });
-  let text = parts.length > 0 ? t("analytics.passes.withParts", { passes, parts: parts.join(t("analytics.listSeparator")) }) : passes;
+  let text = parts.length > 0 ? t("analytics.passes.withParts", { passes, parts: parts.join(t("analytics.listSeparator", {})) }) : passes;
   if (row.lostAttempts > 0) text += ` · ${t("analytics.passes.lost", { tokens: compactNumber(row.lostTokens, locale), percent: Math.round(row.lostShare * 100) })}`;
   if (row.stalledAttempts > 0) text += ` · ${t("analytics.passes.stalled", { count: row.stalledAttempts })}`;
   return text;
@@ -365,7 +365,7 @@ function Breakdown(props: { theme: Theme; title: string; rows: UsageRow[]; chart
                 </View>
                 <Text style={{ color: theme.colors.foreground, fontSize: 13, fontWeight: "600" }}>{compactNumber(tokensOf(row.usage), locale)}</Text>
                 <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>
-                  {props.showWaste ? passesText(t, locale, row) : t("analytics.row.runs", { count: row.runs })}
+                  {props.showWaste ? passesText((key, params) => t(key, params as never), locale, row) : t("analytics.row.runs", { count: row.runs })}
                   {row.usage.contextPeak > 0 ? ` · ${t("analytics.row.ctx", { value: compactNumber(row.usage.contextPeak, locale) })}` : ""}
                 </Text>
               </View>

@@ -1,10 +1,11 @@
-import { openExternalUrl, useRpc } from "@getpaseo/plugin/client";
+import { openExternalUrl, useRpc, useTranslation } from "@getpaseo/plugin/client";
 import { Icon, ScrollView, useToast } from "@getpaseo/plugin/client/ui";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PanResponder, Pressable, Text, View } from "react-native";
 import { createSidekickFilesRpc, listSidekicksRpc, openSidekickRpc, restartSidekickRpc, type SidekickProject } from "../../shared/contracts";
 import { GETTING_STARTED_URL } from "../panel";
 import { Button } from "../sheet";
+import { messages } from "../i18n";
 import type { Theme } from "../theme";
 import { semanticColor } from "../semantic-colors";
 import { SidekickChat } from "./column";
@@ -36,6 +37,7 @@ interface Props {
  */
 export function SidekickPane(props: Props) {
   const { theme } = props;
+  const { t } = useTranslation(messages);
   const ui = useSidekickUi();
   const width = ui.width;
   const startWidth = useRef(width);
@@ -115,26 +117,27 @@ export function SidekickPane(props: Props) {
         setOpening(null);
         void refreshRef.current();
       })
-      .catch((error: unknown) => live && setOpening({ projectId: current.projectId, error: error instanceof Error ? error.message : "Could not open the Sidekick" }));
+      .catch((error: unknown) => live && setOpening({ projectId: current.projectId, error: error instanceof Error ? error.message : t("sidekick.openFailed") }));
     return () => {
       live = false;
     };
   }, [current?.projectId, current?.configured, current?.errors.length, agentId, open]);
 
+  const status = current ? statusLine(t, current) : null;
   const others = projects.filter((project) => !tabs.some((tab) => tab.projectId === project.projectId));
   const muted = theme.colors.foregroundMuted;
   return (
     <View style={{ width, borderLeftWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface0 }}>
       <View
         accessibilityRole="adjustable"
-        accessibilityLabel="Resize the Sidekick column"
+        accessibilityLabel={t("sidekick.resize")}
         {...resizer.panHandlers}
         style={[{ position: "absolute", left: -3, top: 0, bottom: 0, width: 6, zIndex: 10 }, { cursor: "col-resize" } as object]}
       />
       <View style={{ flexDirection: "row", alignItems: "center", gap: 8, padding: 12, paddingBottom: 8 }}>
         <Icon name="Bot" size={16} color={theme.colors.foreground} />
-        <Text style={{ color: theme.colors.foreground, fontWeight: "700", flex: 1 }}>Sidekick</Text>
-        <Pressable accessibilityRole="button" accessibilityLabel="Close the Sidekick" hitSlop={8} onPress={props.onClose}>
+        <Text style={{ color: theme.colors.foreground, fontWeight: "700", flex: 1 }}>{t("sidekick.name")}</Text>
+        <Pressable accessibilityRole="button" accessibilityLabel={t("sidekick.close")} hitSlop={8} onPress={props.onClose}>
           <Icon name="X" size={16} color={muted} />
         </Pressable>
       </View>
@@ -153,18 +156,18 @@ export function SidekickPane(props: Props) {
             }}
           />
         ))}
-        <TabButton theme={theme} label="+" accessibilityLabel="Add a Sidekick for another project" active={adding} onPress={() => setAdding(!adding)} />
+        <TabButton theme={theme} label="+" accessibilityLabel={t("sidekick.addTab")} active={adding} onPress={() => setAdding(!adding)} />
       </ScrollView>
 
-      {!adding && current && statusLine(current) ? (
-        <Text accessibilityLabel={`Status of ${current.label}: ${statusLine(current)}`} style={{ color: current.needYou > 0 ? semanticColor(theme, "waiting") : muted, fontSize: 12, paddingHorizontal: 12, paddingVertical: 6, borderBottomWidth: 1, borderColor: theme.colors.border }}>
-          {statusLine(current)}
+      {!adding && current && status ? (
+        <Text accessibilityLabel={t("sidekick.status", { label: current.label, status })} style={{ color: current.needYou > 0 ? semanticColor(theme, "waiting") : muted, fontSize: 12, paddingHorizontal: 12, paddingVertical: 6, borderBottomWidth: 1, borderColor: theme.colors.border }}>
+          {status}
         </Text>
       ) : null}
 
       {adding ? (
         <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 12, gap: 8 }}>
-          <Text style={{ color: muted, fontSize: 12 }}>{others.length > 0 ? "Add a Sidekick for a project:" : "Every project already has a tab."}</Text>
+          <Text style={{ color: muted, fontSize: 12 }}>{others.length > 0 ? t("sidekick.addIntro") : t("sidekick.allAdded")}</Text>
           {others.map((project) => (
             <Pressable
               key={project.projectId}
@@ -177,21 +180,21 @@ export function SidekickPane(props: Props) {
               style={{ borderRadius: 8, borderWidth: 1, borderColor: theme.colors.border, padding: 10, flexDirection: "row", alignItems: "center", gap: 8 }}
             >
               <Text style={{ color: theme.colors.foreground, flex: 1 }} numberOfLines={1}>{project.label}</Text>
-              {!project.configured ? <Text style={{ color: muted, fontSize: 11 }}>not set up</Text> : null}
+              {!project.configured ? <Text style={{ color: muted, fontSize: 11 }}>{t("sidekick.notSetUp")}</Text> : null}
             </Pressable>
           ))}
         </ScrollView>
       ) : !current ? (
         <View style={{ padding: 16 }}>
           <Text style={{ color: muted, fontSize: 13 }}>
-            {projects.length === 0 ? "Loading…" : "No project has active runs or a Sidekick yet. Press + to add one."}
+            {projects.length === 0 ? t("sidekick.loading") : t("sidekick.noProjects")}
           </Text>
         </View>
       ) : !current.configured ? (
         <SetUp theme={theme} project={current} onCreated={() => refresh()} />
       ) : current.errors.length > 0 ? (
         <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 16, gap: 8 }}>
-          <Text style={{ color: semanticColor(theme, "failed"), fontWeight: "600" }}>The Sidekick files of {current.label} have errors</Text>
+          <Text style={{ color: semanticColor(theme, "failed"), fontWeight: "600" }}>{t("sidekick.filesErrors", { label: current.label })}</Text>
           {current.errors.map((error) => (
             <Text key={error} selectable style={{ color: muted, fontSize: 12 }}>{error}</Text>
           ))}
@@ -208,10 +211,10 @@ export function SidekickPane(props: Props) {
             try {
               const result = await restart({ workspaceId: current.workspaceId });
               setAgents((all) => ({ ...all, [result.projectId]: result.agentId }));
-              toast.show("Started a new Sidekick session from the last hand-off.", { variant: "success" });
+              toast.show(t("sidekick.restarted"), { variant: "success" });
               void refreshRef.current();
             } catch (error) {
-              toast.error(error instanceof Error ? error.message : "Could not restart the Sidekick");
+              toast.error(error instanceof Error ? error.message : t("sidekick.restartFailed"));
             }
           }}
           onOpenTab={agentId && props.openAgent ? () => props.openAgent!(agentId) : undefined}
@@ -223,11 +226,12 @@ export function SidekickPane(props: Props) {
 
 function TabButton(props: { theme: Theme; label: string; active: boolean; dot?: boolean; accessibilityLabel?: string; onPress: () => void }) {
   const { theme } = props;
+  const { t } = useTranslation(messages);
   return (
     <Pressable
       accessibilityRole="tab"
-      accessibilityLabel={props.accessibilityLabel ?? (props.dot ? `${props.label}, this project has active runs` : props.label)}
-      {...({ title: props.dot ? "This project has active runs" : undefined } as object)}
+      accessibilityLabel={props.accessibilityLabel ?? (props.dot ? t("sidekick.tabActive", { label: props.label }) : props.label)}
+      {...({ title: props.dot ? t("sidekick.tabActiveTitle") : undefined } as object)}
       accessibilityState={{ selected: props.active }}
       onPress={props.onPress}
       style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 10, paddingVertical: 8, borderBottomWidth: 2, borderColor: props.active ? theme.colors.accent : "transparent" }}
@@ -235,7 +239,7 @@ function TabButton(props: { theme: Theme; label: string; active: boolean; dot?: 
       <Text style={{ color: props.active ? theme.colors.foreground : theme.colors.foregroundMuted, fontSize: 13, fontWeight: props.active ? "700" : "500" }} numberOfLines={1}>
         {props.label}
       </Text>
-      {props.dot ? <View accessibilityLabel="This project has active runs" style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: semanticColor(theme, "running") }} /> : null}
+      {props.dot ? <View accessibilityLabel={t("sidekick.tabActiveTitle")} style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: semanticColor(theme, "running") }} /> : null}
     </Pressable>
   );
 }
@@ -243,6 +247,7 @@ function TabButton(props: { theme: Theme; label: string; active: boolean; dot?: 
 /** A project without Sidekick files: what a Sidekick is and the button that writes the starter files. */
 function SetUp(props: { theme: Theme; project: SidekickProject; onCreated: () => void }) {
   const { theme, project } = props;
+  const { t } = useTranslation(messages);
   const toast = useToast();
   const create = useRpc(createSidekickFilesRpc);
   const [confirming, setConfirming] = useState(false);
@@ -252,7 +257,7 @@ function SetUp(props: { theme: Theme; project: SidekickProject; onCreated: () =>
     setBusy(true);
     try {
       const { files } = await create({ workspaceId: project.workspaceId });
-      toast.show(`Created ${files.join(" and ")}. The Sidekick starts when this tab opens.`, { variant: "success" });
+      toast.show(t("sidekick.setup.created", { count: files.length, files: files.join(t("sidekick.setup.and")) }), { variant: "success" });
       props.onCreated();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : String(error));
@@ -264,24 +269,24 @@ function SetUp(props: { theme: Theme; project: SidekickProject; onCreated: () =>
   return (
     <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 20, gap: 12, alignItems: "center" }}>
       <Icon name="Bot" size={32} color={theme.colors.foregroundMuted} />
-      <Text style={{ color: theme.colors.foreground, fontSize: 15, fontWeight: "600", textAlign: "center" }}>No Sidekick for {project.label}</Text>
+      <Text style={{ color: theme.colors.foreground, fontSize: 15, fontWeight: "600", textAlign: "center" }}>{t("sidekick.setup.none", { label: project.label })}</Text>
       <Text style={{ color: theme.colors.foregroundMuted, fontSize: 13, textAlign: "center" }}>
-        The Sidekick is a coordinator agent for this project's playbooks: it watches the runs, tells you what needs you, and sends subagents to improve the playbooks in pull requests you merge. It never edits files itself.
+        {t("sidekick.setup.about")}
       </Text>
       {confirming ? (
         <>
           <Text style={{ color: theme.colors.foregroundMuted, fontSize: 13, textAlign: "center" }}>
-            This adds sidekick/sidekick.yaml and sidekick/instructions.md next to the playbooks of this project. Nothing existing is overwritten.
+            {t("sidekick.setup.confirm")}
           </Text>
           <View style={{ flexDirection: "row", gap: 8 }}>
-            <Button theme={theme} kind="primary" label={busy ? "Creating…" : "Create files"} disabled={busy} onPress={() => void write()} />
-            <Button theme={theme} label="Cancel" disabled={busy} onPress={() => setConfirming(false)} />
+            <Button theme={theme} kind="primary" label={busy ? t("sidekick.setup.creating") : t("sidekick.setup.createFiles")} disabled={busy} onPress={() => void write()} />
+            <Button theme={theme} label={t("sidekick.setup.cancel")} disabled={busy} onPress={() => setConfirming(false)} />
           </View>
         </>
       ) : (
         <>
-          <Button theme={theme} kind="primary" label="Create the Sidekick files" onPress={() => setConfirming(true)} />
-          <Button theme={theme} label="Read the guide ↗" onPress={guide} accessibilityLabel="Open the getting started guide in your browser" />
+          <Button theme={theme} kind="primary" label={t("sidekick.setup.createSidekickFiles")} onPress={() => setConfirming(true)} />
+          <Button theme={theme} label={t("sidekick.setup.readGuide")} onPress={guide} accessibilityLabel={t("sidekick.setup.readGuideLabel")} />
         </>
       )}
     </ScrollView>

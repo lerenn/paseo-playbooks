@@ -1,4 +1,4 @@
-import { useRpc } from "@getpaseo/plugin/client";
+import { useRpc, useTranslation } from "@getpaseo/plugin/client";
 import { TextInput, useToast } from "@getpaseo/plugin/client/ui";
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
@@ -7,15 +7,16 @@ import { deferGateRpc, returnGateRpc } from "../shared/contracts";
 import { deferRequest, type DeferDraft } from "../shared/defer";
 import { describeCondition, isTracked } from "../shared/gates";
 import type { Gate, RunSummary } from "../shared/types";
+import { messages } from "./i18n";
 import type { Theme } from "./theme";
 import { semanticColor } from "./semantic-colors";
 
 type Kind = DeferDraft["kind"];
-const KINDS: { kind: Kind; label: string }[] = [
-  { kind: "manual", label: "Something else (I track it)" },
-  { kind: "date", label: "On a date" },
-  { kind: "run_ended", label: "Another run ends" },
-  { kind: "gate_decided", label: "Another gate is decided" },
+const KINDS: { kind: Kind; label: "detail.defer.manual" | "detail.defer.date" | "detail.defer.runEnded" | "detail.defer.gateDecided" }[] = [
+  { kind: "manual", label: "detail.defer.manual" },
+  { kind: "date", label: "detail.defer.date" },
+  { kind: "run_ended", label: "detail.defer.runEnded" },
+  { kind: "gate_decided", label: "detail.defer.gateDecided" },
 ];
 
 function Chip(props: { theme: Theme; label: string; on: boolean; onPress(): void }) {
@@ -35,6 +36,7 @@ function Chip(props: { theme: Theme; label: string; on: boolean; onPress(): void
 /** Sets an open gate aside in Waiting. The gate stays open and can still be decided; only the reason and what it waits for are recorded. */
 export function DeferForm(props: { theme: Theme; run: RunSummary; gate: Gate; hostLabel: string; others: RunSummary[]; onDone(): void }) {
   const { theme, run, gate } = props;
+  const { t } = useTranslation(messages);
   const defer = useRpc(deferGateRpc);
   const toast = useToast();
   const queryClient = useQueryClient();
@@ -55,7 +57,7 @@ export function DeferForm(props: { theme: Theme; run: RunSummary; gate: Gate; ho
     setBusy(true);
     try {
       await defer({ runId: run.id, gateId: gate.id, reason: reason.trim(), condition: request.condition, remindAt: request.remindAt, hostLabel: props.hostLabel });
-      toast.show("Moved to Waiting. It is still open: nothing was decided.", { variant: "success" });
+      toast.show(t("detail.defer.moved"), { variant: "success" });
       props.onDone();
       await queryClient.invalidateQueries({ queryKey: ["playbooks"] });
     } catch (error) {
@@ -66,24 +68,24 @@ export function DeferForm(props: { theme: Theme; run: RunSummary; gate: Gate; ho
   };
   return (
     <View style={{ gap: 8, paddingTop: 8, borderTopWidth: 1, borderTopColor: theme.colors.border }}>
-      <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>Defer: you reviewed this and will not decide now. It stays open (you can still decide it); it just leaves Needs you.</Text>
-      <TextInput accessibilityLabel="Why it is deferred" placeholder="Why not now? (required)" placeholderTextColor={theme.colors.foregroundMuted} value={reason} onChangeText={setReason} multiline style={{ ...input, minHeight: 48 }} />
-      <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>Waiting for</Text>
+      <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>{t("detail.defer.intro")}</Text>
+      <TextInput accessibilityLabel={t("detail.defer.whyLabel")} placeholder={t("detail.defer.whyPlaceholder")} placeholderTextColor={theme.colors.foregroundMuted} value={reason} onChangeText={setReason} multiline style={{ ...input, minHeight: 48 }} />
+      <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>{t("detail.defer.waitingFor")}</Text>
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
         {KINDS.map((entry) => (
-          <Chip key={entry.kind} theme={theme} label={entry.label} on={kind === entry.kind} onPress={() => setKind(entry.kind)} />
+          <Chip key={entry.kind} theme={theme} label={t(entry.label)} on={kind === entry.kind} onPress={() => setKind(entry.kind)} />
         ))}
       </View>
       {kind === "manual" ? (
         <>
-          <Text style={{ color: semanticColor(theme, "waiting"), fontSize: 12 }}>Not tracked: the plugin cannot see a PR merge, a reply or a deploy. Bring it back yourself (or set a reminder date).</Text>
-          <TextInput accessibilityLabel="What it waits for" placeholder="What are you waiting for? (e.g. the PR merges)" placeholderTextColor={theme.colors.foregroundMuted} value={text} onChangeText={setText} style={input} />
+          <Text style={{ color: semanticColor(theme, "waiting"), fontSize: 12 }}>{t("detail.defer.notTracked")}</Text>
+          <TextInput accessibilityLabel={t("detail.defer.whatLabel")} placeholder={t("detail.defer.whatPlaceholder")} placeholderTextColor={theme.colors.foregroundMuted} value={text} onChangeText={setText} style={input} />
         </>
       ) : null}
-      {kind === "date" ? <TextInput accessibilityLabel="Return date" placeholder="Back on (2026-12-01 or 2026-12-01 14:30)" placeholderTextColor={theme.colors.foregroundMuted} value={text} onChangeText={setText} style={input} /> : null}
+      {kind === "date" ? <TextInput accessibilityLabel={t("detail.defer.returnLabel")} placeholder={t("detail.defer.returnPlaceholder")} placeholderTextColor={theme.colors.foregroundMuted} value={text} onChangeText={setText} style={input} /> : null}
       {kind === "run_ended" ? (
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
-          {sameProject.length === 0 ? <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>No other run in this project.</Text> : null}
+          {sameProject.length === 0 ? <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>{t("detail.defer.noOtherRun")}</Text> : null}
           {sameProject.map((other) => (
             <Chip key={other.id} theme={theme} label={`${other.playbook.title} · ${other.name ?? other.id}`} on={runId === other.id} onPress={() => setRunId(other.id)} />
           ))}
@@ -96,10 +98,10 @@ export function DeferForm(props: { theme: Theme; run: RunSummary; gate: Gate; ho
           ))}
         </View>
       ) : null}
-      <TextInput accessibilityLabel="Reminder date" placeholder="Remind me on (optional, e.g. 2026-12-01)" placeholderTextColor={theme.colors.foregroundMuted} value={remind} onChangeText={setRemind} style={input} />
+      <TextInput accessibilityLabel={t("detail.defer.remindLabel")} placeholder={t("detail.defer.remindPlaceholder")} placeholderTextColor={theme.colors.foregroundMuted} value={remind} onChangeText={setRemind} style={input} />
       <View style={{ flexDirection: "row", gap: 8 }}>
-        <Pressable accessibilityRole="button" accessibilityLabel="Move to Waiting" disabled={busy} onPress={() => void submit()} style={{ borderRadius: 7, paddingHorizontal: 12, paddingVertical: 6, backgroundColor: theme.colors.accent, opacity: busy ? 0.6 : 1 }}>
-          <Text style={{ color: theme.colors.accentForeground, fontSize: 12, fontWeight: "600" }}>Move to Waiting</Text>
+        <Pressable accessibilityRole="button" accessibilityLabel={t("detail.defer.moveLabel")} disabled={busy} onPress={() => void submit()} style={{ borderRadius: 7, paddingHorizontal: 12, paddingVertical: 6, backgroundColor: theme.colors.accent, opacity: busy ? 0.6 : 1 }}>
+          <Text style={{ color: theme.colors.accentForeground, fontSize: 12, fontWeight: "600" }}>{t("detail.defer.move")}</Text>
         </Pressable>
       </View>
     </View>
@@ -109,12 +111,13 @@ export function DeferForm(props: { theme: Theme; run: RunSummary; gate: Gate; ho
 /** What a Waiting gate is waiting for, and how: tracked by the plugin, or by hand. */
 export function WaitingInfo(props: { theme: Theme; gate: Gate }) {
   const { theme, gate } = props;
+  const { t } = useTranslation(messages);
   const deferral = gate.deferral;
   if (!deferral) return null;
   const tracked = isTracked(deferral.condition);
   return (
     <View style={{ gap: 2 }}>
-      <Text numberOfLines={2} style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>Why: {deferral.reason}</Text>
+      <Text numberOfLines={2} style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>{t("detail.defer.why", { reason: deferral.reason })}</Text>
       <Text numberOfLines={2} style={{ color: tracked ? theme.colors.foregroundMuted : semanticColor(theme, "waiting"), fontSize: 11 }}>{describeCondition(deferral)}</Text>
     </View>
   );
@@ -123,6 +126,7 @@ export function WaitingInfo(props: { theme: Theme; gate: Gate }) {
 /** Brings a deferred gate back to Needs you (it does not decide it). */
 export function BringBack(props: { theme: Theme; run: Pick<RunSummary, "id">; gate: Gate; hostLabel: string }) {
   const { theme } = props;
+  const { t } = useTranslation(messages);
   const back = useRpc(returnGateRpc);
   const toast = useToast();
   const queryClient = useQueryClient();
@@ -130,7 +134,7 @@ export function BringBack(props: { theme: Theme; run: Pick<RunSummary, "id">; ga
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel="Bring back to Needs you"
+      accessibilityLabel={t("detail.defer.bringBackLabel")}
       disabled={busy}
       onPress={async () => {
         setBusy(true);
@@ -145,7 +149,7 @@ export function BringBack(props: { theme: Theme; run: Pick<RunSummary, "id">; ga
       }}
       style={{ borderRadius: 7, paddingHorizontal: 12, paddingVertical: 6, backgroundColor: theme.colors.surface2, opacity: busy ? 0.6 : 1 }}
     >
-      <Text style={{ color: theme.colors.foreground, fontSize: 12, fontWeight: "600" }}>Bring back</Text>
+      <Text style={{ color: theme.colors.foreground, fontSize: 12, fontWeight: "600" }}>{t("detail.defer.bringBack")}</Text>
     </Pressable>
   );
 }

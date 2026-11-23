@@ -1,11 +1,13 @@
-import { useRpc } from "@getpaseo/plugin/client";
+import { useRpc, useTranslation } from "@getpaseo/plugin/client";
 import { useQuery } from "@tanstack/react-query";
 import { Fragment, useEffect, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { admissionStatusRpc } from "../shared/contracts";
 import { isTerminal, type RunSummary, type Stage } from "../shared/types";
 import { ADMISSION_POLL_MS, admissionLine, failureHeading, heldView } from "./admission";
+import { messages } from "./i18n";
 import { lastLines } from "./script-output";
+import { englishTr, type Tr } from "./tr";
 import type { Theme } from "./theme";
 import { runTone } from "./run-tabs";
 import { semanticColor } from "./semantic-colors";
@@ -19,25 +21,26 @@ export function batchesOf(pipeline: StageRun, runs: readonly StageRun[]): StageR
 }
 
 /** A batch's name, from its stage: "Dev batch". */
-export function batchName(run: StageRun): string {
+export function batchName(run: StageRun, t: Tr = englishTr): string {
   const title = run.playbook.title;
   const cut = title.lastIndexOf(" · ");
-  return `${cut === -1 ? (run.batch?.stage ?? title) : title.slice(cut + 3)} batch`;
+  return t("graph.stages.batchName", { stage: cut === -1 ? (run.batch?.stage ?? title) : title.slice(cut + 3) });
 }
 
 /** "1 job", "3 jobs". */
-function jobsLabel(count: number): string {
-  return `${count} ${count === 1 ? "job" : "jobs"}`;
+function jobsLabel(count: number, t: Tr): string {
+  return t("graph.stages.jobs", { count });
 }
 
 /** Jobs not ended yet, on a pipeline: "1 job", "3 jobs". */
-export function openJobsLabel(pipeline: StageRun): string {
-  return jobsLabel(pipeline.jobs.filter((job) => job.status === "open").length);
+export function openJobsLabel(pipeline: StageRun, t: Tr = englishTr): string {
+  return jobsLabel(pipeline.jobs.filter((job) => job.status === "open").length, t);
 }
 
 /** A stage's admission check (`queue.admit`): running or waiting for the next one, with an alert when the last check failed. */
 function AdmissionInfo(props: { theme: Theme; pipeline: StageRun; stage: Stage; waiting: number }) {
   const { theme, pipeline, stage } = props;
+  const { t } = useTranslation(messages);
   const fetchStatus = useRpc(admissionStatusRpc);
   const query = useQuery({
     queryKey: ["playbooks", "admission", pipeline.id],
@@ -51,13 +54,13 @@ function AdmissionInfo(props: { theme: Theme; pipeline: StageRun; stage: Stage; 
     return () => clearInterval(timer);
   }, [props.waiting]);
   const status = query.data?.stages[stage.id];
-  const line = admissionLine(status, props.waiting, now);
+  const line = admissionLine(status, props.waiting, now, t);
   return (
-    <View accessibilityLabel={`${stage.title} admission: ${line.text}`} style={{ gap: 2 }}>
+    <View accessibilityLabel={t("graph.stages.admission", { title: stage.title, text: line.text })} style={{ gap: 2 }}>
       <Text style={{ color: line.kind === "failed" ? semanticColor(theme, "failed") : theme.colors.foregroundMuted, fontSize: 11 }}>{line.text}</Text>
       {line.error && status ? (
         <View accessibilityRole="alert" style={{ gap: 2, borderRadius: 6, borderWidth: 1, borderColor: semanticColor(theme, "failed"), padding: 6 }}>
-          <Text style={{ color: semanticColor(theme, "failed"), fontSize: 11, fontWeight: "600" }}>{failureHeading(status, line.error)}</Text>
+          <Text style={{ color: semanticColor(theme, "failed"), fontSize: 11, fontWeight: "600" }}>{failureHeading(status, line.error, t)}</Text>
           <Text style={{ color: theme.colors.foreground, fontSize: 11 }}>{line.error.message}</Text>
           {line.error.tail ? (
             <Text numberOfLines={6} style={{ color: theme.colors.foregroundMuted, fontSize: 10, fontFamily: "monospace" }}>
@@ -73,10 +76,11 @@ function AdmissionInfo(props: { theme: Theme; pipeline: StageRun; stage: Stage; 
 /** A waiting job: its label, and when a stage's admission holds it, a "Held" badge with the reason, since when and the last check. */
 function WaitingJob(props: { theme: Theme; job: StageRun["jobs"][number]; stage: string; asked: boolean; now: number }) {
   const { theme, job } = props;
+  const { t } = useTranslation(messages);
   const entry = job.waiting.find((place) => place.stage === props.stage)!;
-  const held = heldView(entry, props.now);
+  const held = heldView(entry, props.now, t);
   return (
-    <View accessibilityLabel={held ? `${job.label}: ${held.badge.toLowerCase()}, ${held.reason}` : job.label} style={{ gap: 1 }}>
+    <View accessibilityLabel={held ? t("graph.admission.heldLabel", { job: job.label, badge: held.badge.toLowerCase(), reason: held.reason }) : job.label} style={{ gap: 1 }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
         <Text numberOfLines={1} style={{ flexShrink: 1, color: semanticColor(theme, "waiting"), fontSize: 12 }}>
           {job.label}
@@ -85,17 +89,17 @@ function WaitingJob(props: { theme: Theme; job: StageRun["jobs"][number]; stage:
           <Text style={{ color: semanticColor(theme, "waiting"), fontSize: 10, fontWeight: "600", borderRadius: 4, borderWidth: 1, borderColor: semanticColor(theme, "waiting"), paddingHorizontal: 4 }}>{held.badge}</Text>
         ) : null}
         {job.requeued && job.requeued.stage === props.stage ? (
-          <Text style={{ color: theme.colors.foregroundMuted, fontSize: 10, fontWeight: "600", borderRadius: 4, borderWidth: 1, borderColor: theme.colors.foregroundMuted, paddingHorizontal: 4 }}>Requeued</Text>
+          <Text style={{ color: theme.colors.foregroundMuted, fontSize: 10, fontWeight: "600", borderRadius: 4, borderWidth: 1, borderColor: theme.colors.foregroundMuted, paddingHorizontal: 4 }}>{t("graph.stages.requeued")}</Text>
         ) : null}
         {job.reopens.length > 0 ? (
-          <Text style={{ color: theme.colors.foregroundMuted, fontSize: 10, fontWeight: "600", borderRadius: 4, borderWidth: 1, borderColor: theme.colors.foregroundMuted, paddingHorizontal: 4 }}>{job.reopens.length > 1 ? `Requeued by hand ×${job.reopens.length}` : "Requeued by hand"}</Text>
+          <Text style={{ color: theme.colors.foregroundMuted, fontSize: 10, fontWeight: "600", borderRadius: 4, borderWidth: 1, borderColor: theme.colors.foregroundMuted, paddingHorizontal: 4 }}>{job.reopens.length > 1 ? t("graph.stages.requeuedByHandTimes", { times: job.reopens.length }) : t("graph.stages.requeuedByHand")}</Text>
         ) : null}
-        {props.asked ? <Text style={{ color: semanticColor(theme, "waiting"), fontSize: 10, fontWeight: "600" }}>Needs you</Text> : null}
+        {props.asked ? <Text style={{ color: semanticColor(theme, "waiting"), fontSize: 10, fontWeight: "600" }}>{t("graph.stages.needsYou")}</Text> : null}
       </View>
       {job.requeued && job.requeued.stage === props.stage ? (
         <Text numberOfLines={2} style={{ color: theme.colors.foreground, fontSize: 11 }}>
-          {job.requeued.outcome}: {job.requeued.reason}
-          {job.requeued.blocker ? ` · blocker: ${job.requeued.blocker}` : ""}
+          {t("graph.stages.reasonLine", { outcome: job.requeued.outcome, reason: job.requeued.reason })}
+          {job.requeued.blocker ? ` · ${t("graph.stages.blocker", { blocker: job.requeued.blocker })}` : ""}
         </Text>
       ) : null}
       {held ? (
@@ -118,6 +122,7 @@ function WaitingJob(props: { theme: Theme; job: StageRun["jobs"][number]; stage:
  */
 export function Stages(props: { theme: Theme; pipeline: StageRun; runs: readonly StageRun[]; onOpenBatch?: (run: StageRun) => void }) {
   const { theme, pipeline } = props;
+  const { t } = useTranslation(messages);
   const stages = pipeline.playbook.singleton?.stages ?? [];
   const batches = batchesOf(pipeline, props.runs);
   const [now, setNow] = useState(() => Date.now());
@@ -141,6 +146,7 @@ export function Stages(props: { theme: Theme; pipeline: StageRun; runs: readonly
         // A paused or on-hold batch is violet, a running one blue.
         const batchTone = batch && runTone(batch, false) === "paused" ? "paused" : "running";
         const inBatch = batch ? batch.jobs.filter((job) => job.status === "open").length : 0;
+        const onHold = batch !== undefined && batch.rateHold && batch.pausedAt === null;
         return (
           <Fragment key={stage.id}>
             {index > 0 ? (
@@ -149,7 +155,11 @@ export function Stages(props: { theme: Theme; pipeline: StageRun; runs: readonly
               </Text>
             ) : null}
             <View
-              accessibilityLabel={`Stage ${stage.title}: ${jobsLabel(waiting.length)} waiting, ${batch ? `batch ${batch.id} ${batchTone === "paused" ? (batch.rateHold && batch.pausedAt === null ? "on hold" : "paused") : "running"} with ${jobsLabel(inBatch)}` : "no batch running"}`}
+              accessibilityLabel={t("graph.stages.stageLabel", {
+                title: stage.title,
+                jobs: jobsLabel(waiting.length, t),
+                batch: batch ? t(batchTone === "paused" ? (onHold ? "graph.stages.batchOnHold" : "graph.stages.batchPaused") : "graph.stages.batchRunning", { id: batch.id, jobs: jobsLabel(inBatch, t) }) : t("graph.stages.noBatch"),
+              })}
               style={{ flexGrow: 1, flexBasis: 0, minWidth: 200, alignSelf: "stretch", borderRadius: 10, borderWidth: 1, borderColor: batch ? semanticColor(theme, batchTone) : theme.colors.border, backgroundColor: theme.colors.surface1, padding: 10, gap: 6 }}
             >
               <Text style={{ color: theme.colors.foreground, fontSize: 13, fontWeight: "600" }}>
@@ -157,30 +167,30 @@ export function Stages(props: { theme: Theme; pipeline: StageRun; runs: readonly
                 <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11, fontWeight: "400" }}> · {stage.mode}</Text>
               </Text>
               <View style={{ gap: 2 }}>
-                <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>Waiting list</Text>
+                <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>{t("graph.stages.waitingList")}</Text>
                 {waiting.length === 0 ? (
-                  <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>empty</Text>
+                  <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>{t("graph.stages.empty")}</Text>
                 ) : (
                   waiting.map((job) => <WaitingJob key={job.id} theme={theme} job={job} stage={stage.id} asked={pipeline.gates.some((gate) => gate.kind === "admission" && gate.jobId === job.id && gate.status === "pending")} now={now} />)
                 )}
                 {stage.admit ? <AdmissionInfo theme={theme} pipeline={pipeline} stage={stage} waiting={waiting.filter((job) => !job.waiting.find((place) => place.stage === stage.id)!.forced).length} /> : null}
               </View>
               <View style={{ gap: 2 }}>
-                <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>Batch</Text>
+                <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>{t("graph.stages.batch")}</Text>
                 {batch ? (
-                  <Pressable accessibilityRole="button" accessibilityLabel={`Open batch ${batch.id}`} disabled={!props.onOpenBatch} onPress={() => props.onOpenBatch?.(batch)}>
+                  <Pressable accessibilityRole="button" accessibilityLabel={t("graph.stages.openBatch", { id: batch.id })} disabled={!props.onOpenBatch} onPress={() => props.onOpenBatch?.(batch)}>
                     <Text numberOfLines={2} style={{ color: semanticColor(theme, batchTone), fontSize: 12 }}>
-                      {batch.id.replace(/^run_/, "")} · {jobsLabel(inBatch)} · {batch.status === "waiting_gate" ? "waiting for a human" : batchTone === "paused" ? (batch.rateHold && batch.pausedAt === null ? "on hold" : "paused") : "running"}
+                      {t("graph.stages.batchLine", { id: batch.id.replace(/^run_/, ""), jobs: jobsLabel(inBatch, t), state: batch.status === "waiting_gate" ? t("graph.stages.waitingHuman") : batchTone === "paused" ? t(onHold ? "graph.stages.onHold" : "graph.stages.paused") : t("graph.stages.running") })}
                     </Text>
                   </Pressable>
                 ) : (
                   <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>
-                    {last ? `None running · last ${last.id.replace(/^run_/, "")} ${last.status}` : "None yet"}
+                    {last ? t("graph.stages.noneRunning", { id: last.id.replace(/^run_/, ""), status: t(`graph.status.${last.status}`) }) : t("graph.stages.noneYet")}
                   </Text>
                 )}
                 {handOff.length > 0 ? (
-                  <Text accessibilityLabel={`${jobsLabel(handOff.length)} ended without a follow-up started`} style={{ color: semanticColor(theme, "waiting"), fontSize: 11 }}>
-                    Hand-off pending: {jobsLabel(handOff.length)} ended ({[...new Set(handOff.map((job) => job.outcome))].join(", ")}), no follow-up started
+                  <Text accessibilityLabel={t("graph.stages.handOffLabel", { jobs: jobsLabel(handOff.length, t) })} style={{ color: semanticColor(theme, "waiting"), fontSize: 11 }}>
+                    {t("graph.stages.handOff", { jobs: jobsLabel(handOff.length, t), outcomes: [...new Set(handOff.map((job) => job.outcome))].join(t("graph.sep")) })}
                   </Text>
                 ) : null}
               </View>

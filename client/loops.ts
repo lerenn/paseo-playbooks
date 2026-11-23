@@ -1,3 +1,5 @@
+import { englishTr, type Tr } from "./tr";
+
 /** One loop-back outcome of a step: taking it sends the run back to `to`. */
 export interface LoopEdge {
   from: string;
@@ -26,7 +28,7 @@ export function loopText(edge: LoopEdge): string {
   return `${edge.outcome}${edge.max !== undefined ? ` · ${edge.count}/${edge.max}` : ""}`;
 }
 
-export function groupLoops(loops: readonly LoopEdge[]): LoopGroup[] {
+export function groupLoops(loops: readonly LoopEdge[], t: Tr = englishTr): LoopGroup[] {
   const groups = new Map<string, LoopGroup>();
   for (const edge of loops) {
     const key = `${edge.from}->${edge.to}`;
@@ -38,16 +40,16 @@ export function groupLoops(loops: readonly LoopEdge[]): LoopGroup[] {
     const [only] = group.edges;
     group.exhausted = group.edges.every((edge) => edge.max !== undefined && edge.count >= edge.max);
     group.taken = group.edges.reduce((sum, edge) => sum + edge.count, 0);
-    group.label = group.edges.length === 1 && only ? loopText(only) : `${group.edges.length} loops${group.taken > 0 ? ` · ${group.taken} taken` : ""}`;
+    group.label = group.edges.length === 1 && only ? loopText(only) : `${t("graph.loops.count", { count: group.edges.length })}${group.taken > 0 ? ` · ${t("graph.loops.taken", { count: group.taken })}` : ""}`;
   }
   return [...groups.values()];
 }
 
 /** The badge on a looping step: "↩ Target · 2 outcomes · 80 taken" (one outcome: its name and n/max). */
-export function badgeText(group: LoopGroup, targetTitle: string): string {
+export function badgeText(group: LoopGroup, targetTitle: string, t: Tr = englishTr): string {
   const [only] = group.edges;
-  const middle = group.edges.length === 1 && only ? loopText(only) : `${group.edges.length} outcomes`;
-  return `↩ ${targetTitle} · ${middle}${group.edges.length > 1 && group.taken > 0 ? ` · ${group.taken} taken` : ""}`;
+  const middle = group.edges.length === 1 && only ? loopText(only) : t("graph.loops.outcomes", { count: group.edges.length });
+  return `↩ ${targetTitle} · ${middle}${group.edges.length > 1 && group.taken > 0 ? ` · ${t("graph.loops.taken", { count: group.taken })}` : ""}`;
 }
 
 /** More attempts than this collapse to the last few plus a summary chip. */

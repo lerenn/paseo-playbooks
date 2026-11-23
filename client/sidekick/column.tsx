@@ -1,13 +1,15 @@
+import { useTranslation } from "@getpaseo/plugin/client";
 import { Icon, Markdown, ScrollView, TextInput, useToast } from "@getpaseo/plugin/client/ui";
 import { memo, useEffect, useRef, useState } from "react";
 import { Image, Pressable, Text, View } from "react-native";
 import { formatSize } from "../../shared/attachments";
+import { messages } from "../i18n";
 import type { Theme } from "../theme";
 import { semanticColor } from "../semantic-colors";
 import { useAttachments } from "./attach";
 import { sidekickUi, useSidekickUi } from "./ui-state";
 import { isQueueKey, mergeQueued, shouldFlush, shouldQueue, workLabel, IDLE_SETTLE_MS } from "./queue";
-import { describePermission, humanizeTool, toolIcon, toolSummary } from "./describe";
+import { describePermission, humanizeTool, toolIcon, toolSummary, type DescribeT } from "./describe";
 import { pluginMessage } from "./instructions";
 import type { Item, PermissionRequest } from "./reduce";
 import { useSidekickChat, type PermissionResponse } from "./use-chat";
@@ -31,6 +33,7 @@ interface Props {
 /** The chat of one project's Sidekick, inside the column's frame (pane.tsx): a plain chat over the agent's timeline. */
 export function SidekickChat(props: Props) {
   const { theme, agentId, status } = props;
+  const { t } = useTranslation(messages);
   const chat = useSidekickChat(agentId);
   const toast = useToast();
   const { state } = chat;
@@ -91,7 +94,7 @@ export function SidekickChat(props: Props) {
         setDraft("");
         attachments.clear();
       })
-      .catch((error: unknown) => toast.error(error instanceof Error ? error.message : "Could not send"))
+      .catch((error: unknown) => toast.error(error instanceof Error ? error.message : t("sidekick.chat.sendFailed")))
       .finally(() => setSending(false));
   };
   // The queued message goes out as soon as the turn has ended.
@@ -105,18 +108,19 @@ export function SidekickChat(props: Props) {
       chat
         .send(queued.text, queued.attachments)
         .catch((error: unknown) => {
-          toast.error(error instanceof Error ? error.message : "Could not send the queued message");
+          toast.error(error instanceof Error ? error.message : t("sidekick.chat.queuedSendFailed"));
           if (!sidekickUi.get().drafts[props.projectId]) sidekickUi.setDraft(props.projectId, queued.text);
         })
         .finally(() => setSending(false));
     }, IDLE_SETTLE_MS);
     return () => clearTimeout(timer);
   }, [queued, live, state.running, sending]); // eslint-disable-line react-hooks/exhaustive-deps
-  const stop = () => chat.stop().catch((error: unknown) => toast.error(error instanceof Error ? error.message : "Could not stop"));
+  const stop = () => chat.stop().catch((error: unknown) => toast.error(error instanceof Error ? error.message : t("sidekick.chat.stopFailed")));
   const respond = (id: string, response: PermissionResponse) =>
-    chat.respond(id, response).catch((error: unknown) => toast.error(error instanceof Error ? error.message : "Could not answer"));
+    chat.respond(id, response).catch((error: unknown) => toast.error(error instanceof Error ? error.message : t("sidekick.chat.answerFailed")));
 
   const muted = theme.colors.foregroundMuted;
+  const work = workLabel(t, { running: state.running, compacting });
   return (
     <View style={{ flex: 1 }}>
       {chat.info.model || props.onOpenTab || props.onRestart ? (
@@ -127,8 +131,8 @@ export function SidekickChat(props: Props) {
           {props.onRestart && agentId ? (
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel={confirmRestart ? "Confirm: restart the Sidekick as a new session" : "Start a new Sidekick session"}
-              {...({ title: confirmRestart ? "Press again to restart" : "New session (continues from the last hand-off)" } as object)}
+              accessibilityLabel={confirmRestart ? t("sidekick.chat.confirmRestart") : t("sidekick.chat.newSession")}
+              {...({ title: confirmRestart ? t("sidekick.chat.pressAgain") : t("sidekick.chat.newSessionTitle") } as object)}
               hitSlop={8}
               onPress={() => {
                 if (!confirmRestart) return setConfirmRestart(true);
@@ -137,11 +141,11 @@ export function SidekickChat(props: Props) {
               }}
               onBlur={() => setConfirmRestart(false)}
             >
-              {confirmRestart ? <Text style={{ color: semanticColor(theme, "waiting"), fontSize: 11 }}>Restart?</Text> : <Icon name="RotateCcw" size={15} color={muted} />}
+              {confirmRestart ? <Text style={{ color: semanticColor(theme, "waiting"), fontSize: 11 }}>{t("sidekick.chat.restartQuestion")}</Text> : <Icon name="RotateCcw" size={15} color={muted} />}
             </Pressable>
           ) : null}
           {props.onOpenTab ? (
-            <Pressable accessibilityRole="button" accessibilityLabel="Open the Sidekick as an agent tab" hitSlop={8} onPress={props.onOpenTab}>
+            <Pressable accessibilityRole="button" accessibilityLabel={t("sidekick.chat.openTab")} hitSlop={8} onPress={props.onOpenTab}>
               <Icon name="ExternalLink" size={15} color={muted} />
             </Pressable>
           ) : null}
@@ -149,17 +153,17 @@ export function SidekickChat(props: Props) {
       ) : null}
 
       <ScrollView ref={scroller as never} onScroll={onScroll as never} onContentSizeChange={onContentSizeChange} scrollEventThrottle={50} style={{ flex: 1 }} contentContainerStyle={{ padding: 14, gap: 18 }}>
-        {status.loading ? <Text style={{ color: muted }}>Starting the Sidekick…</Text> : null}
+        {status.loading ? <Text style={{ color: muted }}>{t("sidekick.chat.starting")}</Text> : null}
         {status.error ? <Text style={{ color: semanticColor(theme, "failed") }}>{status.error}</Text> : null}
-        {state.connection === "error" && state.error ? <Text style={{ color: semanticColor(theme, "waiting") }}>Reconnecting… {state.error}</Text> : null}
+        {state.connection === "error" && state.error ? <Text style={{ color: semanticColor(theme, "waiting") }}>{t("sidekick.chat.reconnecting", { error: state.error })}</Text> : null}
         {/* A fixed-height slot: its text appears without moving the items below it. */}
         {older.epoch !== null && state.items.length > 0 ? (
-          <Text style={{ color: muted, fontSize: 11, textAlign: "center", height: 16 }}>{older.loading ? "Loading older…" : older.hasMore ? "" : "Start of the conversation"}</Text>
+          <Text style={{ color: muted, fontSize: 11, textAlign: "center", height: 16 }}>{older.loading ? t("sidekick.chat.loadingOlder") : older.hasMore ? "" : t("sidekick.chat.startOfConversation")}</Text>
         ) : null}
         {state.items.map((item) => (
           <ItemView key={item.key} theme={theme} item={item} />
         ))}
-        {workLabel({ running: state.running, compacting }) ? <Text style={{ color: muted, fontSize: 12 }}>{workLabel({ running: state.running, compacting })}</Text> : null}
+        {work ? <Text style={{ color: muted, fontSize: 12 }}>{work}</Text> : null}
         {state.permissions.map((request) => (
           <PermissionView key={request.id} theme={theme} request={request} onRespond={(response) => respond(request.id, response)} />
         ))}
@@ -170,12 +174,12 @@ export function SidekickChat(props: Props) {
           <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flexGrow: 0 }} contentContainerStyle={{ gap: 8 }}>
             {attachments.items.map((item) => (
               <View key={item.id} style={{ borderRadius: 8, borderWidth: 1, borderColor: theme.colors.border, padding: 4, flexDirection: "row", alignItems: "center", gap: 6, maxWidth: 200 }}>
-                {item.previewUri ? <Image source={{ uri: item.previewUri }} accessibilityLabel={`Preview of ${item.name}`} style={{ width: 36, height: 36, borderRadius: 4 }} /> : <Icon name="File" size={20} color={muted} />}
+                {item.previewUri ? <Image source={{ uri: item.previewUri }} accessibilityLabel={t("sidekick.chat.preview", { name: item.name })} style={{ width: 36, height: 36, borderRadius: 4 }} /> : <Icon name="File" size={20} color={muted} />}
                 <View style={{ flexShrink: 1 }}>
                   <Text numberOfLines={1} style={{ color: theme.colors.foreground, fontSize: 11 }}>{item.name}</Text>
                   <Text style={{ color: muted, fontSize: 10 }}>{formatSize(item.size)}</Text>
                 </View>
-                <Pressable accessibilityRole="button" accessibilityLabel={`Remove ${item.name}`} hitSlop={8} onPress={() => attachments.remove(item.id)}>
+                <Pressable accessibilityRole="button" accessibilityLabel={t("sidekick.chat.remove", { name: item.name })} hitSlop={8} onPress={() => attachments.remove(item.id)}>
                   <Icon name="X" size={14} color={muted} />
                 </Pressable>
               </View>
@@ -186,9 +190,9 @@ export function SidekickChat(props: Props) {
           <View style={{ flexDirection: "row", alignItems: "center", gap: 8, borderRadius: 8, borderWidth: 1, borderStyle: "dashed", borderColor: theme.colors.border, paddingHorizontal: 8, paddingVertical: 6 }}>
             <Icon name="Clock" size={13} color={muted} />
             <Text style={{ color: muted, fontSize: 12, flex: 1 }} numberOfLines={2}>
-              Queued: {queued.text || `${queued.attachments.length} attachment(s)`}
+              {t("sidekick.chat.queued", { text: queued.text || t("sidekick.chat.queuedAttachments", { count: queued.attachments.length }) })}
             </Text>
-            <Pressable accessibilityRole="button" accessibilityLabel="Cancel the queued message" hitSlop={8} onPress={() => sidekickUi.setQueued(props.projectId, null)}>
+            <Pressable accessibilityRole="button" accessibilityLabel={t("sidekick.chat.cancelQueued")} hitSlop={8} onPress={() => sidekickUi.setQueued(props.projectId, null)}>
               <Icon name="X" size={14} color={muted} />
             </Pressable>
           </View>
@@ -196,7 +200,7 @@ export function SidekickChat(props: Props) {
         <TextInput
           value={draft}
           onChangeText={setDraft}
-          placeholder={agentId ? (compacting ? "Compacting: your message is queued and sent after" : state.running ? "Enter sends into the running turn, ⌘/Ctrl+Enter queues" : "Message the Sidekick (paste or drop files)") : "Starting…"}
+          placeholder={agentId ? (compacting ? t("sidekick.chat.placeholderCompacting") : state.running ? t("sidekick.chat.placeholderRunning") : t("sidekick.chat.placeholderIdle")) : t("sidekick.chat.placeholderStarting")}
           placeholderTextColor={muted}
           editable={agentId !== null}
           multiline
@@ -210,9 +214,9 @@ export function SidekickChat(props: Props) {
           style={{ minHeight: 40, maxHeight: 140, color: theme.colors.foreground, borderWidth: 1, borderColor: theme.colors.border, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8 }}
         />
         <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 8 }}>
-          {state.running ? <ColumnButton theme={theme} label="Stop" onPress={stop} tone="danger" /> : null}
-          {state.running ? <ColumnButton theme={theme} label="Queue" onPress={() => submit(true)} disabled={(!draft.trim() && attachments.items.length === 0) || sending || agentId === null} tone="plain" /> : null}
-          <ColumnButton theme={theme} label="Send" onPress={() => submit()} disabled={(!draft.trim() && attachments.items.length === 0) || sending || agentId === null} tone="primary" />
+          {state.running ? <ColumnButton theme={theme} label={t("sidekick.chat.stop")} onPress={stop} tone="danger" /> : null}
+          {state.running ? <ColumnButton theme={theme} label={t("sidekick.chat.queue")} onPress={() => submit(true)} disabled={(!draft.trim() && attachments.items.length === 0) || sending || agentId === null} tone="plain" /> : null}
+          <ColumnButton theme={theme} label={t("sidekick.chat.send")} onPress={() => submit()} disabled={(!draft.trim() && attachments.items.length === 0) || sending || agentId === null} tone="primary" />
         </View>
       </View>
     </View>
@@ -237,6 +241,7 @@ function ColumnButton(props: { theme: Theme; label: string; onPress: () => void;
 
 /** One item of the chat. Memoized: a streaming event changes one item, the others keep their identity and are not rendered again. */
 const ItemView = memo(function ItemView({ theme, item }: { theme: Theme; item: Item }) {
+  const { t } = useTranslation(messages);
   const muted = theme.colors.foregroundMuted;
   switch (item.kind) {
     case "user":
@@ -252,7 +257,7 @@ const ItemView = memo(function ItemView({ theme, item }: { theme: Theme; item: I
     case "reasoning":
       return <ReasoningLine theme={theme} text={item.text} streaming={item.streaming} />;
     case "notice":
-      return <Row theme={theme} icon={item.level === "info" ? "Info" : "TriangleAlert"} label={item.text} color={item.level === "error" ? semanticColor(theme, "failed") : item.level === "warning" ? semanticColor(theme, "waiting") : muted} />;
+      return <Row theme={theme} icon={item.level === "info" ? "Info" : "TriangleAlert"} label={item.code ? t(`sidekick.chat.notice.${item.code}`) : item.text} color={item.level === "error" ? semanticColor(theme, "failed") : item.level === "warning" ? semanticColor(theme, "waiting") : muted} />;
     case "tool":
       return <ToolCard theme={theme} item={item} />;
   }
@@ -260,10 +265,11 @@ const ItemView = memo(function ItemView({ theme, item }: { theme: Theme; item: I
 
 /** The agent's reasoning: one closed line that opens on click, so thoughts do not crowd out the answers. */
 function ReasoningLine({ theme, text, streaming }: { theme: Theme; text: string; streaming: boolean }) {
+  const { t } = useTranslation(messages);
   const [open, setOpen] = useState(false);
   return (
     <View style={{ gap: 4 }}>
-      <Row theme={theme} icon="Brain" label={streaming ? "Thinking…" : "Thinking"} onPress={() => setOpen(!open)} open={open} />
+      <Row theme={theme} icon="Brain" label={streaming ? t("sidekick.chat.thinkingLive") : t("sidekick.chat.thinking")} onPress={() => setOpen(!open)} open={open} />
       {open ? <Text selectable style={{ color: theme.colors.foregroundMuted, fontSize: 12, fontStyle: "italic", borderLeftWidth: 2, borderColor: theme.colors.border, paddingLeft: 8 }}>{text}</Text> : null}
     </View>
   );
@@ -292,15 +298,16 @@ function Row({ theme, icon, label, summary, color, onPress, open }: { theme: The
 
 /** A message the plugin sent (events, notices): a closed line with a badge, so it is not mistaken for something the human wrote; opens on click. */
 function PluginMessageLine({ theme, message }: { theme: Theme; message: { summary: string; body: string } }) {
+  const { t } = useTranslation(messages);
   const [open, setOpen] = useState(false);
   return (
     <View style={{ gap: 8, borderRadius: 8, borderWidth: 1, borderColor: theme.colors.border, borderStyle: "dashed", padding: 8 }}>
-      <Pressable accessibilityRole="button" accessibilityLabel={`Message from the plugin: ${message.summary}`} accessibilityState={{ expanded: open }} onPress={() => setOpen(!open)} style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+      <Pressable accessibilityRole="button" accessibilityLabel={t("sidekick.chat.pluginMessage", { summary: message.summary })} accessibilityState={{ expanded: open }} onPress={() => setOpen(!open)} style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
         <Icon name="Workflow" size={13} color={theme.colors.foregroundMuted} />
         <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12, flex: 1 }} numberOfLines={open ? undefined : 1}>
           {message.summary}
         </Text>
-        <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>{open ? "hide" : "show"}</Text>
+        <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>{open ? t("sidekick.chat.hide") : t("sidekick.chat.show")}</Text>
       </Pressable>
       {open ? <Text selectable style={{ color: theme.colors.foregroundMuted, fontSize: 11, borderLeftWidth: 2, borderColor: theme.colors.border, paddingLeft: 8 }}>{message.body}</Text> : null}
     </View>
@@ -309,12 +316,13 @@ function PluginMessageLine({ theme, message }: { theme: Theme; message: { summar
 
 /** The plugin's first message to the Sidekick: one closed line that opens on click, so it is not mistaken for something the human wrote. */
 function InstructionsLine({ theme, text }: { theme: Theme; text: string }) {
+  const { t } = useTranslation(messages);
   const [open, setOpen] = useState(false);
   return (
     <View style={{ gap: 6 }}>
       <Pressable accessibilityRole="button" accessibilityState={{ expanded: open }} onPress={() => setOpen(!open)}>
         <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>
-          Instructions sent to the Sidekick ({open ? "hide" : "show"})
+          {t("sidekick.chat.instructions", { state: open ? t("sidekick.chat.hide") : t("sidekick.chat.show") })}
         </Text>
       </Pressable>
       {open ? <Text selectable style={{ color: theme.colors.foregroundMuted, fontSize: 11, borderLeftWidth: 2, borderColor: theme.colors.border, paddingLeft: 8 }}>{text}</Text> : null}
@@ -324,13 +332,14 @@ function InstructionsLine({ theme, text }: { theme: Theme; text: string }) {
 
 /** A tool call: one flat row (icon, humanized name, short summary); its input and error when opened. */
 function ToolCard({ theme, item }: { theme: Theme; item: Extract<Item, { kind: "tool" }> }) {
+  const { t } = useTranslation(messages);
   const [open, setOpen] = useState(false);
   return (
     <View style={{ gap: 4 }}>
       <Row
         theme={theme}
         icon={item.status === "failed" ? "TriangleAlert" : toolIcon(item.name)}
-        label={humanizeTool(item.name)}
+        label={humanizeTool(t as DescribeT, item.name)}
         summary={toolSummary(item.detail)}
         {...(item.status === "failed" ? { color: semanticColor(theme, "failed") } : {})}
         onPress={() => setOpen(!open)}
@@ -339,7 +348,7 @@ function ToolCard({ theme, item }: { theme: Theme; item: Extract<Item, { kind: "
       {open ? (
         <Text selectable style={{ color: theme.colors.foregroundMuted, fontSize: 11, fontFamily: "monospace", paddingLeft: 21 }}>
           {item.error ? `${item.error}\n\n` : ""}
-          {item.detail ? JSON.stringify(item.detail, null, 2).slice(0, 4000) : "no detail"}
+          {item.detail ? JSON.stringify(item.detail, null, 2).slice(0, 4000) : t("sidekick.chat.noDetail")}
         </Text>
       ) : null}
     </View>
@@ -360,6 +369,7 @@ function questionsOf(input: unknown): Question[] {
 
 /** A permission request: allow or deny, or a question (AskUserQuestion) answered by picking options. */
 function PermissionView({ theme, request, onRespond }: { theme: Theme; request: PermissionRequest; onRespond: (response: PermissionResponse) => void }) {
+  const { t } = useTranslation(messages);
   const questions = questionsOf(request.input);
   const [picked, setPicked] = useState<Record<string, string[]>>({});
   const [other, setOther] = useState<Record<string, string>>({});
@@ -396,30 +406,30 @@ function PermissionView({ theme, request, onRespond }: { theme: Theme; request: 
             <TextInput
               value={other[q.header] ?? ""}
               onChangeText={(text) => setOther((current) => ({ ...current, [q.header]: text }))}
-              placeholder="Other…"
+              placeholder={t("sidekick.chat.other")}
               placeholderTextColor={theme.colors.foregroundMuted}
               style={{ color: theme.colors.foreground, borderWidth: 1, borderColor: theme.colors.border, borderRadius: 7, paddingHorizontal: 8, paddingVertical: 6 }}
             />
           </View>
         ))}
         <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 8 }}>
-          <ColumnButton theme={theme} label="Skip" tone="plain" onPress={() => onRespond({ behavior: "deny", message: "The user skipped the question" })} />
-          <ColumnButton theme={theme} label="Answer" tone="primary" disabled={!ready} onPress={() => onRespond({ behavior: "allow", updatedInput: { answers: answers() } })} />
+          <ColumnButton theme={theme} label={t("sidekick.chat.skip")} tone="plain" onPress={() => onRespond({ behavior: "deny", message: "The user skipped the question" })} />
+          <ColumnButton theme={theme} label={t("sidekick.chat.answer")} tone="primary" disabled={!ready} onPress={() => onRespond({ behavior: "allow", updatedInput: { answers: answers() } })} />
         </View>
       </View>
     );
   }
-  const described = describePermission(request.name, request.input);
+  const described = describePermission(t as DescribeT, request.name, request.input);
   const remember = request.suggestions && request.suggestions.length > 0 ? request.suggestions : null;
   return (
     <View style={border}>
       <Text style={{ color: theme.colors.foreground, fontWeight: "600" }}>{described.sentence}</Text>
       {described.summary ? <Text numberOfLines={1} style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>{described.summary}</Text> : null}
-      <Text accessibilityLabel={`Tool: ${described.toolId}`} {...({ title: described.toolId } as object)} style={{ color: theme.colors.foregroundMuted, fontSize: 10, opacity: 0.7 }}>{described.toolId}</Text>
+      <Text accessibilityLabel={t("sidekick.chat.tool", { id: described.toolId })} {...({ title: described.toolId } as object)} style={{ color: theme.colors.foregroundMuted, fontSize: 10, opacity: 0.7 }}>{described.toolId}</Text>
       <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 8, flexWrap: "wrap" }}>
-        <ColumnButton theme={theme} label="Deny" tone="danger" onPress={() => onRespond({ behavior: "deny" })} />
-        {remember ? <ColumnButton theme={theme} label="Allow always" tone="plain" onPress={() => onRespond({ behavior: "allow", updatedPermissions: remember })} /> : null}
-        <ColumnButton theme={theme} label="Allow" tone="primary" onPress={() => onRespond({ behavior: "allow" })} />
+        <ColumnButton theme={theme} label={t("sidekick.chat.deny")} tone="danger" onPress={() => onRespond({ behavior: "deny" })} />
+        {remember ? <ColumnButton theme={theme} label={t("sidekick.chat.allowAlways")} tone="plain" onPress={() => onRespond({ behavior: "allow", updatedPermissions: remember })} /> : null}
+        <ColumnButton theme={theme} label={t("sidekick.chat.allow")} tone="primary" onPress={() => onRespond({ behavior: "allow" })} />
       </View>
     </View>
   );
