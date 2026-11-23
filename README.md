@@ -394,7 +394,7 @@ with that tag.
   held for quota (`rateHold`, not paused by a human) for longer than `after`, default `2h` (`held`: the finding gives the reason,
   provider and usage window, the run's queue position and priority, the held runs ahead of it, the estimated cost against the headroom
   and the retry time). A hold is expected and self-resolving, so no other check counts it: a held run is never `stalled` (its idle
-  clock restarts at the release), `stale_definition` ages a pin without the time spent held, and `slow` only looks at running steps.
+  clock restarts at the release), `stale_definition` ages a pin without the time spent held, and `slow` only looks at running steps. The run's manager is told once per hold episode: when the run is first held for quota, whatever the kind, and never again for a change of reason, kind, provider, window or position, or a hold lifted and re-taken, until a step of the run starts again.
   `action` is `report` or `none` (`none` turns a check off). A finding is reported once (event `warden.finding`, for the first
   three; `slow` and `gate_open` reuse `step.slow` and `gate.stale`), shown in the run's panel and in `get_run`'s `warden`, and again
   only after `cooldown` if still true *and* it changed meaningfully: a count (`loops`) or an idle time (`stalled`) at least doubled since the

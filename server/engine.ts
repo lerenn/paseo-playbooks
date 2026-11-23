@@ -1829,6 +1829,21 @@ export function setRateHold(run: Run, hold: (Omit<RateHold, "since" | "estimated
   return "held";
 }
 
+/**
+ * The hold episode of a run (ADR 2026-11-23-hold-notice-per-episode): it starts when the run is first held for quota and
+ * ends only when a step (or after-task) starts again. Read from the run's history, so it survives a restart:
+ * "armed" (no notice yet in this episode), "told" (the manager was told of the hold) or "released" (and of its end).
+ */
+export function holdEpisodeState(run: Run): "armed" | "told" | "released" {
+  for (let index = run.history.length - 1; index >= 0; index -= 1) {
+    const type = run.history[index]!.type;
+    if (type === "step_started" || type === "after_started") return "armed";
+    if (type === "hold_notice") return "told";
+    if (type === "hold_release_notice") return "released";
+  }
+  return "armed";
+}
+
 /** Marks a failed or timed-out readonly check on the current attempt. */
 export function markReadonlyViolation(run: Run, stepId: string, detail: string, now: string, kind: "readonly" | "isolation" | "gitlink" = "readonly"): void {
   const attempt = currentAttempt(run, stepId);

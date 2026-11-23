@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted. Extends `2026-11-23-warden-stalled-and-repeat-suppression.md` and the quota pacing decisions
+Accepted. The rule "one manager notice per hold, again when the kind, provider or window change" is superseded by `2026-11-23-hold-notice-per-episode.md`; the rest stands. Extends `2026-11-23-warden-stalled-and-repeat-suppression.md` and the quota pacing decisions
 (`2026-11-20-rate-limiting.md`, `2026-11-21-pause-admitted-runs-to-fit-pace.md`).
 
 ## Context

@@ -2,6 +2,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as engine from "./engine";
 import { newRun } from "./engine";
 import { loadPlaybooks } from "./loader";
 import { RateHeldError, Runtime } from "./runtime";
@@ -141,25 +142,51 @@ describe("the hold notice to the manager (ADR 2026-11-23-warden-held-check)", ()
     expect(s.store.get("r1")!.rateHold!.position).toBe(2);
   });
 
-  it("is sent again when the kind or the provider and window change", async () => {
+  it("an episode with flapping kinds, providers and windows sends exactly one notice", async () => {
     const s = await spy();
     await s.apply(verdict());
-    await s.apply(verdict({ kind: "headroom" }));
-    await s.apply(verdict({ kind: "headroom", window: "five_hour" }));
+    await s.apply(verdict({ kind: "headroom", reason: "insufficient quota headroom on claude weekly" }));
+    await s.apply(verdict({ kind: "unavailable", reason: "quota data unavailable for claude", window: null }));
     await s.apply(verdict({ kind: "headroom", window: "five_hour", provider: "codex" }));
-    expect(s.texts()).toHaveLength(4);
+    expect(s.texts()).toHaveLength(1);
   });
 
-  it("is not sent again when a hold is lifted and re-taken with the same kind, provider and window", async () => {
+  it("a hold lifted and re-taken before any step starts sends nothing more", async () => {
     const s = await spy();
     await s.apply(verdict());
     await s.store.mutate("r1", (run) => void (run.steps.a!.status = "running")); // nothing waits for the manager at the release
     await s.apply(null);
     await s.apply(verdict());
+    await s.apply(null);
+    await s.apply(verdict({ kind: "headroom" }));
     expect(s.texts()).toHaveLength(1);
   });
 
-  it("a release is told only when the manager knew of the hold and a step now waits for it", async () => {
+  it("a step start ends the episode and re-arms the notice", async () => {
+    const s = await spy();
+    await s.apply(verdict());
+    await s.apply(null);
+    await s.store.mutate("r1", (run) => void engine.noteEvent(run, "step_started", "a", "attempt 1, agent x", "2026-11-24T00:00:00Z"));
+    await s.apply(verdict({ kind: "headroom" }));
+    expect(s.texts().filter((text) => text.startsWith("Rate limit hold"))).toHaveLength(2);
+  });
+
+  it("the episode is read from the run history, so it survives a restart", async () => {
+    const s = await spy();
+    await s.apply(verdict());
+    expect(engine.holdEpisodeState(s.store.get("r1")!)).toBe("told");
+    await s.apply(null);
+    expect(engine.holdEpisodeState(s.store.get("r1")!)).toBe("released");
+  });
+
+  it("a different run has its own episode", async () => {
+    const s = await spy();
+    await s.apply(verdict());
+    await (s.runtime as unknown as { applyHold(id: string, v: unknown): Promise<void> }).applyHold("r0", verdict());
+    expect(s.texts()).toHaveLength(2);
+  });
+
+  it("a release is told only when the manager knew of the hold and a step now waits for it, and only once per episode", async () => {
     const quiet = await spy();
     await quiet.apply(null);
     expect(quiet.texts()).toEqual([]);
@@ -168,8 +195,9 @@ describe("the hold notice to the manager (ADR 2026-11-23-warden-held-check)", ()
     await s.apply(null);
     expect(s.texts()).toHaveLength(2);
     expect(s.texts()[1]).toBe("Rate limit lifted. Ready for you: a.");
-    await s.apply(verdict()); // the release reset it: the next hold is told again
-    expect(s.texts()).toHaveLength(3);
+    await s.apply(verdict()); // the release does not re-arm the hold notice
+    await s.apply(null); // nor is the release told twice
+    expect(s.texts()).toHaveLength(2);
   });
 
   it("a script start that skips the quota does not lift a quota hold", async () => {

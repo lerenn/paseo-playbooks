@@ -2556,26 +2556,34 @@ export class Runtime {
     await this.store.mutate(runId, (run) => void (change = engine.setRateHold(run, verdict, nowIso())));
     const run = this.store.get(runId);
     if (!run) return;
-    if (!isActive(run)) this.holdNotified.delete(runId);
-    const key = verdict ? `${verdict.kind}|${verdict.provider ?? ""}|${verdict.window ?? ""}` : "";
+    if (!isActive(run)) return;
+    // One notice per hold episode (ADR 2026-11-23-hold-notice-per-episode): the episode lasts until a step starts again, whatever
+    // the kind, reason, provider, window or position does in between. The decision and its record are one mutation.
     if (change === "held" && verdict) {
-      // Once per hold (ADR 2026-11-23-warden-held-check): not again when the hold is released and re-taken with the same kind, provider and window.
-      if (this.holdNotified.get(runId) === key) return;
-      this.holdNotified.set(runId, key);
+      let send = false;
+      await this.store.mutate(runId, (current) => {
+        if (engine.holdEpisodeState(current) !== "armed") return;
+        send = true;
+        engine.noteEvent(current, "hold_notice", null, verdict.reason, nowIso());
+      });
+      if (!send) return;
       await this.enqueue(runId, [`Rate limit hold (${verdict.reason}). The plugin resumes the run by itself: do not start, retry or restart steps, or cancel the run.`]);
       await this.deliver(runId);
     } else if (change === "released") {
-      // Only a manager that was told of the hold has something to learn, and only when a step now waits for it.
-      const ready = engine.readyForManager(run);
-      if (!this.holdNotified.has(runId) || ready.length === 0) return;
-      this.holdNotified.delete(runId);
+      // Only a manager that was told of the hold has something to learn, only once, and only when a step now waits for it.
+      let ready: string[] = [];
+      let send = false;
+      await this.store.mutate(runId, (current) => {
+        ready = engine.readyForManager(current);
+        if (engine.holdEpisodeState(current) !== "told" || ready.length === 0) return;
+        send = true;
+        engine.noteEvent(current, "hold_release_notice", null, ready.join(", "), nowIso());
+      });
+      if (!send) return;
       await this.enqueue(runId, [`Rate limit lifted. Ready for you: ${ready.join(", ")}.`]);
       await this.deliver(runId);
     }
   }
-
-  /** Per run: the kind, provider and window of the hold its manager was last told about (memory only: a restart tells once more at most). */
-  private readonly holdNotified = new Map<string, string>();
 
   /** Per run: when a quota-blocked manager's recovery is tried again, and how many tries have not recovered it (the interval doubles, 30 s to 10 min). */
   private readonly managerRetry = new Map<string, { next: number; failures: number }>();
