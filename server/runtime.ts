@@ -2384,6 +2384,7 @@ export class Runtime {
   private paceVerdict(run: Run, config: RateLimitsConfig, reserve: boolean): HoldVerdict | null {
     const providers = runProviders(run, DEFAULT_PROVIDER);
     if (providers.length === 0) return null;
+    this.refreshAdmittedNeeds();
     const ctx = this.planContext(config);
     if (this.rateAdmitted(run)) return exhaustionVerdict(providers, ctx, run).verdict ?? this.paceFit(run, ctx);
     this.pruneQuotaReservations();
@@ -2421,6 +2422,40 @@ export class Runtime {
       return total;
     };
     return planPace(admitted, ctx, others).get(run.id) ?? null;
+  }
+
+  /**
+   * The remaining need of every admitted run, recomputed from the CURRENT cost history (ADR 2026-11-23-admitted-need-from-current-history):
+   * per-step cost × its remaining agent steps, minus what its running steps already used. A run admitted before its playbook had a
+   * history (so with an empty or zero reservation) becomes pace-able as soon as the history exists. The reservation is stored as
+   * est = spent + need, so everything reading `est - spent` (pace, headroom, the quota tab) sees the new figure. A provider whose
+   * playbook still has no history keeps what it had (no need: not paced).
+   */
+  private refreshAdmittedNeeds(): void {
+    for (const run of this.store.list()) {
+      if (run.archivedAt || isPipeline(run) || !isActive(run) || !this.rateAdmitted(run)) continue;
+      const need: Record<string, number> = {};
+      const demand = this.rateDemand(run);
+      for (const [provider, count] of demand) {
+        for (const windowId of this.costs.windows(run.playbook.id, provider)) {
+          const unit = this.costs.stepCost(run.playbook.id, provider, windowId);
+          if (unit !== null) need[windowKey(provider, windowId)] = count * unit;
+        }
+      }
+      if (Object.keys(need).length === 0) continue;
+      for (const [key, entry] of this.attemptUse) {
+        if (!key.startsWith(`${run.id}/`)) continue;
+        for (const [windowId, points] of Object.entries(entry.points)) {
+          const k = windowKey(entry.provider, windowId);
+          if (k in need) need[k] = Math.max(0, need[k]! - points);
+        }
+      }
+      const reserved = this.reservedQuota.get(`run:${run.id}`) ?? { runId: run.id, est: {}, spent: {}, at: Date.now(), endedAt: null };
+      reserved.est = Object.fromEntries(Object.entries(need).map(([k, value]) => [k, (reserved.spent[k] ?? 0) + value]));
+      reserved.at = Date.now();
+      reserved.endedAt = null;
+      this.reservedQuota.set(`run:${run.id}`, reserved);
+    }
   }
 
   /** A reservation whose work ended stays until the next successful usage read (the readings then include its use); an old one is dropped. */
@@ -2609,6 +2644,7 @@ export class Runtime {
           return { projectId, label: workspace.projectDisplayName || path.basename(workspace.projectRootPath), sets: sets.size > 0 ? [...sets.values()] : [{ repos: [], config: user }] };
         }),
     );
+    this.refreshAdmittedNeeds();
     return buildQuotaLimitation({
       projects: projects.filter((project) => project !== null).sort((a, b) => a.label.localeCompare(b.label)),
       nowMs: Date.now(),

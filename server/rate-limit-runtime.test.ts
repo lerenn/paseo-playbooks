@@ -185,8 +185,8 @@ describe("dynamic capacity from quota headroom", () => {
     // Both admitted (2 x 10 points under the 28.87 ceiling).
     await runtime.startStep("m", "r0", "a", "go");
     await runtime.startStep("m", "r1", "a", "go");
-    // Usage jumps ahead of the pace (13.87 free): one of them fits. Outside use, not the runs'.
-    usage.current = claude(15);
+    // Usage jumps ahead of the pace (8.87 free): one of them fits (5 left each once step a is done). Outside use, not the runs'.
+    usage.current = claude(20);
     await read();
     const inner = runtime as unknown as { reservedQuota: Map<string, { spent: Record<string, number> }>; attemptUse: Map<string, unknown> };
     for (const entry of inner.reservedQuota.values()) entry.spent = {};
@@ -204,6 +204,57 @@ describe("dynamic capacity from quota headroom", () => {
     await runtime.setRunPriority("r1", null, undefined, "test");
     expect(await internals.rateCheck(store.get("r0")!, "r0/b", true)).toBeNull();
     expect(store.get("r0")!.priorityOverride).toBeNull();
+  });
+
+  describe("admitted before any cost history existed", () => {
+    type Inner = { reservedQuota: Map<string, { est: Record<string, number>; spent: Record<string, number> }>; attemptUse: Map<string, unknown>; costs: { add(p: string, provider: string, points: Record<string, number>): void }; refreshAdmittedNeeds(): void };
+    const key = "claude\u0000weekly";
+    const done = (store: { mutate: (id: string, fn: (run: never) => void) => Promise<unknown> }, id: string) => store.mutate(id, (run: any) => void ((run.steps.a.status = "completed"), (run.steps.b.status = "ready")));
+
+    it("stays unpaced while the playbook still has no history", async () => {
+      const { runtime, store, internals, read } = await setup(pacing(), { current: claude(40) }, { history: false });
+      await read();
+      await runtime.startStep("m", "r0", "a", "go");
+      await done(store, "r0");
+      expect(await internals.rateCheck(store.get("r0")!, "r0/b", true)).toBeNull();
+      expect((runtime as unknown as Inner).reservedQuota.get("run:r0")?.est[key] ?? 0).toBe(0);
+    });
+
+    it("gets a need from the history as soon as it exists; the lowest priority and newest is paused at its next step", async () => {
+      const { runtime, store, internals, usage, read } = await setup(pacing(), { current: claude(10) }, { history: false });
+      await read();
+      await runtime.startStep("m", "r0", "a", "go");
+      await runtime.startStep("m", "r1", "a", "go");
+      const inner = runtime as unknown as Inner;
+      expect(inner.reservedQuota.get("run:r1")!.est[key] ?? 0).toBe(0);
+      // The history appears (5 points a step) while both are admitted, and the usage is over what fits both.
+      inner.costs.add("work", "claude", { weekly: 5 });
+      usage.current = claude(20);
+      await read();
+      inner.attemptUse.clear();
+      for (const entry of inner.reservedQuota.values()) entry.spent = {};
+      await done(store, "r0");
+      await done(store, "r1");
+      // 8.87 free; each needs the 5 points of its step b: the oldest continues, the newest is paused.
+      expect(await internals.rateCheck(store.get("r0")!, "r0/b", true)).toBeNull();
+      expect(await internals.rateCheck(store.get("r1")!, "r1/b", true)).toMatchObject({ kind: "pace", position: 1, provider: "claude", window: "weekly" });
+      // The quota tab's reservation carries the new remaining figure.
+      expect(inner.reservedQuota.get("run:r1")!.est[key]! - (inner.reservedQuota.get("run:r1")!.spent[key] ?? 0)).toBeCloseTo(5, 5);
+    });
+
+    it("deducts what the run's running steps already used", async () => {
+      const { runtime, store, read } = await setup(pacing(), { current: claude(10) }, { history: false });
+      await read();
+      await runtime.startStep("m", "r0", "a", "go");
+      const inner = runtime as unknown as Inner;
+      inner.costs.add("work", "claude", { weekly: 5 });
+      (inner.attemptUse as Map<string, unknown>).set("r0/a/1", { playbookId: "work", provider: "claude", points: { weekly: 3 } });
+      inner.refreshAdmittedNeeds();
+      const reserved = inner.reservedQuota.get("run:r0")!;
+      // 2 remaining steps x 5, minus the 3 the running step used.
+      expect(reserved.est[key]! - (reserved.spent[key] ?? 0)).toBeCloseTo(7, 5);
+      expect(store.get("r0")!.steps.a!.status).toBe("running");
+    });
   });
 
   it("releases held runs by itself when headroom returns", async () => {

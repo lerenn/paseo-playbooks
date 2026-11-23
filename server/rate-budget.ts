@@ -46,6 +46,12 @@ export class CostHistory {
     return sample && sample.steps > 0 ? sample.points / sample.steps : null;
   }
 
+  /** The window ids the playbook has a measured cost for on the provider. */
+  windows(playbookId: string, provider: string): string[] {
+    const prefix = `${playbookId}|${provider}\u0000`;
+    return [...this.data.keys()].filter((key) => key.startsWith(prefix)).map((key) => key.slice(prefix.length));
+  }
+
   /** How many finished steps the average of this playbook on the provider rests on (the smallest over its windows seen). */
   samples(playbookId: string, provider: string): number {
     let count = 0;
