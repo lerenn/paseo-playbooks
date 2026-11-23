@@ -6,7 +6,7 @@ import { askHumanText, choicesOfGate, describeCondition, GATE_SUMMARY_MAX, waits
 import { z } from "zod";
 import type { PlaybookEntry, Run, When } from "../shared/types";
 import { repairReport } from "./malformed";
-import { isActive, isAgentlessAttempt, isPaused, isPipeline, isTerminal, restartBlocker, runningAfterTasks, VarValueSchema } from "../shared/types";
+import { isActive, isAgentlessAttempt, isPaused, isPipeline, isTerminal, restartBlocker, runningAfterTasks, VarValueSchema, workspaceKeptUntil } from "../shared/types";
 import * as engine from "./engine";
 import { resolveForNewRun } from "./fresh";
 import { hasPlaybooks, loadPlaybooks } from "./loader";
@@ -753,6 +753,8 @@ export function runListing(run: Run, slow: Record<string, SlowInfo> = {}) {
     after: run.playbook.after.map((task) => ({ id: task.id, title: task.title, trigger: task.trigger, status: run.after[task.id]?.status ?? "pending" })),
     /** Steps restart_run accepts (empty while the run is active). */
     restartableFrom: isTerminal(run.status) ? run.playbook.steps.filter((step) => restartBlocker(run, step.id) === null).map((step) => step.id) : [],
+    /** ISO time until which auto_archive keeps the workspace of this failed, restartable run (`auto_archive.keep_failed_workspace`); null when it is not held. */
+    workspaceKeptUntil: workspaceKeptUntil(run),
   };
 }
 
@@ -810,7 +812,7 @@ export function runTools(runtime: Runtime): AgentToolDefinition[] {
     defineAgentTool({
       name: "get_run",
       description:
-        'Show a run\'s state. Read-only on a run you do not manage (any run id works); the tools that change it refuse it. Without runId, your active (or latest) run. view "compact" (default): per step its status, outcome, attempts, turn end and the start of its summary, plus gates, loops and after-tasks. view "full": every step\'s definition, full report, outputs and summary, the run inputs and the gates in full (e.g. for a retro brief). steps limits either view to those steps. Each step has startedAt, endedAt (ISO; endedAt absent while it runs), durationMs and, while it still runs, live: true (durationMs is then the time so far); a retried step shows its current attempt plus totalMs across attempts (view full also attemptTimes per attempt). The run has startedAt, endedAt, durationMs the same way. While rate limiting (provider quota headroom, optional step or playbook caps) holds new steps of the run, `rateHold` {kind, reason, provider, window, since, retryAt, estimatedCost, headroom, position, priority} says why (kind headroom: the quota headroom does not cover the estimated cost yet; position 1 is next in the queue by priority, then age), and `rateNote` warns that a provider the run uses reports no usage so its work is not paced and until when; running steps are not interrupted and the plugin resumes the run by itself (do not start, retry or restart anything). The open findings of the warden, when it is on, are in `warden` (check, subject, detail, since, reportedAt). A step slower than usual (the attention triangle of the panel) has `slow` {elapsedMs, baselineMs, factor, ratio, samples, running}; `slowSteps` lists them.',
+        'Show a run\'s state. Read-only on a run you do not manage (any run id works); the tools that change it refuse it. Without runId, your active (or latest) run. view "compact" (default): per step its status, outcome, attempts, turn end and the start of its summary, plus gates, loops and after-tasks. view "full": every step\'s definition, full report, outputs and summary, the run inputs and the gates in full (e.g. for a retro brief). steps limits either view to those steps. Each step has startedAt, endedAt (ISO; endedAt absent while it runs), durationMs and, while it still runs, live: true (durationMs is then the time so far); a retried step shows its current attempt plus totalMs across attempts (view full also attemptTimes per attempt). The run has startedAt, endedAt, durationMs the same way. While rate limiting (provider quota headroom, optional step or playbook caps) holds new steps of the run, `rateHold` {kind, reason, provider, window, since, retryAt, estimatedCost, headroom, position, priority} says why (kind headroom: the quota headroom does not cover the estimated cost yet; kind pace: the run was admitted but the pace no longer allows this many runs, so it is paused between steps and resumes by priority then age; position 1 is next in the queue by priority, then age), and `rateNote` warns that a provider the run uses reports no usage so its work is not paced and until when; running steps are not interrupted and the plugin resumes the run by itself (do not start, retry or restart anything). The open findings of the warden, when it is on, are in `warden` (check, subject, detail, since, reportedAt). A step slower than usual (the attention triangle of the panel) has `slow` {elapsedMs, baselineMs, factor, ratio, samples, running}; `slowSteps` lists them.',
       input: z.object({
         runId: IdArg.optional(),
         view: z.enum(["compact", "full"]).default("compact").describe('"compact" (default) or "full" (reports, outputs, inputs, gate details)'),

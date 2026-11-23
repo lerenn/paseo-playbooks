@@ -4,6 +4,8 @@
 
 Accepted. Builds on [archive_run](2026-11-10-archive-run.md) and
 [archive the workspace with the run](2026-11-17-archive-workspace-with-run.md).
+The workspace rule for a failed run that can be restarted is superseded by
+[2026-11-23-auto-archive-failed-run-workspaces.md](2026-11-23-auto-archive-failed-run-workspaces.md).
 
 ## Context
 

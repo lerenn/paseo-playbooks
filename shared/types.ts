@@ -99,10 +99,12 @@ export const WardenConfigSchema = z.object({
     slow: z.object({ action: WardenActionSchema }),
     /** A gate open longer than `afterMs`. */
     gateOpen: z.object({ afterMs: z.number().int().positive(), action: WardenActionSchema }),
+    /** An active run with no running, ready or queued step and no open gate for longer than `afterMs` (ADR 2026-11-23-warden-stalled-and-repeat-suppression). */
+    stalled: z.object({ afterMs: z.number().int().positive().default(30 * 60_000), action: WardenActionSchema }).default({ afterMs: 30 * 60_000, action: "report" }),
   }),
 });
 export type WardenConfig = z.infer<typeof WardenConfigSchema>;
-export const WARDEN_RUN_CHECKS = ["stale_definition", "manager_blocked", "loops", "slow", "gate_open"] as const;
+export const WARDEN_RUN_CHECKS = ["stale_definition", "manager_blocked", "loops", "slow", "gate_open", "stalled"] as const;
 /** The PR-level checks (ADR 2026-11-20-warden-pr-checks): over the project's open pull requests, each off unless configured. */
 export const WARDEN_PR_CHECKS = ["pr_no_reviewer", "pr_conflicting", "pr_review_stale", "pr_required_checks", "pr_review_findings", "pr_unowned", "pr_draft_idle", "run_failed"] as const;
 export const WARDEN_CHECKS = [...WARDEN_RUN_CHECKS, ...WARDEN_PR_CHECKS] as const;
@@ -117,6 +119,7 @@ export const DEFAULT_WARDEN: WardenConfig = {
     loops: { above: 5, action: "report" },
     slow: { action: "report" },
     gateOpen: { afterMs: 30 * 60_000, action: "report" },
+    stalled: { afterMs: 30 * 60_000, action: "report" },
   },
 };
 
@@ -166,6 +169,10 @@ export const WardenFindingSchema = z.object({
   runId: z.string().nullable().default(null),
   pr: z.object({ number: z.number(), url: z.string() }).nullable().default(null),
   proposed: z.string().nullable().default(null),
+  /** The count or value (loop count, idle minutes) when it was last reported: it is reported again only once it has doubled. Null: not measured. */
+  value: z.number().nullable().default(null),
+  /** The run state when it was last reported: it is reported again when this changes (after the cooldown). Null: not tracked. */
+  state: z.string().nullable().default(null),
 });
 export type WardenFinding = z.infer<typeof WardenFindingSchema>;
 export const WardenStateSchema = z.object({ findings: z.record(z.string(), WardenFindingSchema).default({}) });
@@ -534,8 +541,8 @@ export const PlaybookSchema = z.object({
   managerNudge: ManagerNudgeSchema.default(DEFAULT_MANAGER_NUDGE),
   /** `warden`: the periodic checks. Unset on runs from before it (= off). */
   warden: WardenConfigSchema.default(DEFAULT_WARDEN),
-  /** `rate_limit`: the queue priority of the playbook's runs when rate limiting holds work (higher first), and an optional manual `estimate` (quota points per agent step) used instead of the measured history. Unset on runs from before it (= 0). */
-  rateLimit: z.object({ priority: z.number(), estimate: z.number().nullable().default(null) }).default({ priority: 0, estimate: null }),
+  /** `rate_limit`: the queue priority of the playbook's runs when rate limiting holds work (higher first) (costs come only from measured history). Unset on runs from before it (= 0). */
+  rateLimit: z.object({ priority: z.number() }).default({ priority: 0 }),
   /** `manager.mode`: `none` = no manager agent, the plugin drives the run. Unset on runs from before it (= always_on). */
   managerMode: ManagerModeSchema.default(DEFAULT_MANAGER_MODE),
   /** How long an exhausted `provider/model` is skipped before it is tried again (`providers.exhausted_for`), in ms. */
@@ -552,12 +559,14 @@ export const PlaybookSchema = z.object({
   usageThreshold: z.number().default(100),
   /** What the plugin does with a tool permission request of an agent of the run (`permissions.on_request`). */
   permissions: z.object({ onRequest: PermissionPolicySchema }).default({ onRequest: "authorize" }),
-  /** Whether the plugin archives the workspace it created for a run once the run ends. */
+  /** Whether the plugin archives the workspace it created for a run once the run ends; `title` is the template of its title (`workspace.title`), null for the default. */
   workspace: z
-    .object({ archive: z.enum(["never", "on_end"]), keepFailed: z.boolean(), archiveWithRun: z.boolean().default(false), archiveAfterMs: z.number().nullable().default(null) })
-    .default({ archive: "never", keepFailed: true, archiveWithRun: false, archiveAfterMs: null }),
+    .object({ archive: z.enum(["never", "on_end"]), keepFailed: z.boolean(), archiveWithRun: z.boolean().default(false), archiveAfterMs: z.number().nullable().default(null), title: z.string().nullable().default(null) })
+    .default({ archive: "never", keepFailed: true, archiveWithRun: false, archiveAfterMs: null, title: null }),
   /** `auto_archive`: the plugin archives a finished run (and its idle manager) `afterMs` after it ended. Off unless `enabled`. Unset on runs from before it (= off). */
-  autoArchive: z.object({ enabled: z.boolean(), afterMs: z.number().int().positive() }).default({ enabled: false, afterMs: 30 * 60_000 }),
+  autoArchive: z
+    .object({ enabled: z.boolean(), afterMs: z.number().int().positive(), keepFailedWorkspaceMs: z.number().int().positive().default(24 * 3_600_000) })
+    .default({ enabled: false, afterMs: 30 * 60_000, keepFailedWorkspaceMs: 24 * 3_600_000 }),
   /**
    * Where the run's agents work: the workspace checkout (`none`), or a private git worktree the
    * plugin creates for the run (`worktree`). Unset on runs from before isolation.
@@ -575,6 +584,8 @@ export const PlaybookSchema = z.object({
    * Unset on runs from before agent rules.
    */
   agentRules: z.array(z.string()).default([]),
+  /** `manager_recovery`: null = not set here, so the user config (`manager_recovery` of config.yaml) and then the defaults (retry on, no fallback) apply. */
+  managerRecovery: z.object({ retry: z.boolean().nullable().default(null), fallback: z.object({ provider: z.string(), model: z.string() }).nullable().default(null) }).default({ retry: null, fallback: null }),
   /** `slow_warning`: how the slow-step warning is computed (ADR 2026-11-12-slow-step-warning). */
   slowWarning: z.object({ runs: z.number().int().min(3), factor: z.number().gt(1) }).default({ runs: 10, factor: 2 }),
   /**
@@ -1102,7 +1113,7 @@ export const RateHoldSchema = z.object({
    * `steps`: the step cap is full; `playbooks`: the run cap does not admit this run; `quota`: a provider's usage is at its usable
    * share, or unreadable; `headroom`: the quota headroom does not cover the estimated cost yet (ADR 2026-11-20-dynamic-rate-limits).
    */
-  kind: z.enum(["steps", "playbooks", "quota", "headroom"]),
+  kind: z.enum(["steps", "playbooks", "quota", "headroom", "pace"]),
   /** One line for humans and agents ("quota data unavailable", "claude weekly at 41% above its pace ceiling 36%"). */
   reason: z.string(),
   /** The provider whose quota holds the run (quota holds), else null. */
@@ -1470,6 +1481,27 @@ export function restartBlocker(run: Run, stepId: string): string | null {
   const missing = step.needs.filter((need) => !isStepDone(run.steps[need]?.status ?? "pending"));
   if (missing.length > 0) return `"${stepId}" needs ${missing.join(", ")}, which did not complete; restart from an earlier step`;
   return null;
+}
+
+/** When the run last ended (its end event; the last update for a run with none). */
+export function runEndedAt(run: Pick<Run, "history" | "updatedAt">): string {
+  return run.history.findLast((event) => event.type === "run_completed" || event.type === "run_failed" || event.type === "run_canceled")?.at ?? run.updatedAt;
+}
+
+/** Whether a finished run can be restarted from at least one step. */
+export function isRestartable(run: Run): boolean {
+  return run.playbook.steps.some((step) => restartBlocker(run, step.id) === null);
+}
+
+/**
+ * `auto_archive.keep_failed_workspace`: when a failed, restartable run's workspace is kept until (ISO time), or null when the
+ * rule does not hold it (auto_archive off, not failed, not restartable, no workspace of the run's own, `archive_with_run` off, or
+ * the workspace was already dealt with). Counted from the failure only, so later updates of the run do not move it.
+ */
+export function workspaceKeptUntil(run: Run): string | null {
+  if (!run.playbook.autoArchive.enabled || !run.playbook.workspace.archiveWithRun || run.status !== "failed" || isActive(run)) return null;
+  if (!run.workspaceCreated || run.workspaceArchive !== null || !isRestartable(run)) return null;
+  return new Date(Date.parse(runEndedAt(run)) + run.playbook.autoArchive.keepFailedWorkspaceMs).toISOString();
 }
 
 /** A step attempt's timeout: resolved at its start, else the step's (attempts from before templated timeouts). */

@@ -25,6 +25,7 @@ export const messages = defineTranslations({
       },
       panel: {
         refresh: "Refresh playbooks",
+        workspaceKept: "Workspace kept until {{when}}: the run failed and can be restarted",
         startWithAgent: "Start {{title}} with this workspace's agent",
         moreStartWays: "More ways to start {{title}}",
         startOnNewAgent: "Start on a new agent",
@@ -51,6 +52,7 @@ export const messages = defineTranslations({
         startTitle: "Start · {{title}}",
         workspaceName: "Workspace name",
         workspaceNamePlaceholder: "Optional: default is “{{title}}: …”",
+        workspaceNamePlaceholderTitle: "Optional: default is “{{title}}”, filled from the inputs",
         newWorkspaceNote: "Creates a new workspace (a worktree on a new branch from this one), with a new Playbook Manager agent in it.",
         newAgentNote: "Creates a new Playbook Manager agent in this workspace; the run uses this workspace's current branch.",
         findingAgent: "Finding this workspace's agent…",
@@ -91,6 +93,7 @@ export const messages = defineTranslations({
       },
       panel: {
         refresh: "Actualiser les playbooks",
+        workspaceKept: "Espace de travail conservé jusqu'à {{when}} : l'exécution a échoué et peut être relancée",
         startWithAgent: "Démarrer {{title}} avec l'agent de cet espace de travail",
         moreStartWays: "Autres façons de démarrer {{title}}",
         startOnNewAgent: "Démarrer sur un nouvel agent",
@@ -117,6 +120,7 @@ export const messages = defineTranslations({
         startTitle: "Démarrer · {{title}}",
         workspaceName: "Nom de l'espace de travail",
         workspaceNamePlaceholder: "Facultatif : par défaut « {{title}} : … »",
+        workspaceNamePlaceholderTitle: "Facultatif : par défaut « {{title}} », complété avec les entrées",
         newWorkspaceNote: "Crée un nouvel espace de travail (un worktree sur une nouvelle branche issue de celle-ci), avec un nouvel agent Playbook Manager.",
         newAgentNote: "Crée un nouvel agent Playbook Manager dans cet espace de travail ; l'exécution utilise la branche actuelle de cet espace de travail.",
         findingAgent: "Recherche de l'agent de cet espace de travail…",
@@ -156,6 +160,7 @@ export const messages = defineTranslations({
       },
       panel: {
         refresh: "刷新 playbook",
+        workspaceKept: "工作区保留至 {{when}}：该运行已失败，可重新启动",
         startWithAgent: "使用此工作区的智能体开始 {{title}}",
         moreStartWays: "开始 {{title}} 的更多方式",
         startOnNewAgent: "在新智能体上开始",
@@ -182,6 +187,7 @@ export const messages = defineTranslations({
         startTitle: "开始 · {{title}}",
         workspaceName: "工作区名称",
         workspaceNamePlaceholder: "可选：默认为“{{title}}：…”",
+        workspaceNamePlaceholderTitle: "可选：默认为“{{title}}”，由输入填充",
         newWorkspaceNote: "创建一个新工作区（基于当前分支新建分支的 worktree），并在其中创建一个新的 Playbook Manager 智能体。",
         newAgentNote: "在此工作区中创建一个新的 Playbook Manager 智能体；本次运行使用此工作区的当前分支。",
         findingAgent: "正在查找此工作区的智能体…",

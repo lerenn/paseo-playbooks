@@ -12,7 +12,7 @@ manager:
   tier: worker
   mode: default
   compact: { above_tokens: 150000 }   # /compact the manager when idle and over this many tokens
-# rate_limit: { priority: 0, estimate: 3 }   # who goes first when quota headroom is short (rate_limits in the user config): higher first, ties oldest first
+# rate_limit: { priority: 0 }   # who goes first when quota headroom is short (rate_limits in the user config): higher first, ties oldest first
 # The warden: one periodic, deterministic pass over the active runs (no LLM, no message to an agent). OFF by default.
 warden: { enabled: false }
 # warden:                      # defaults shown; set enabled: true to turn it on
@@ -25,6 +25,7 @@ warden: { enabled: false }
 #     loops: { above: 5, action: report }    # a goto edge fired more than this
 #     slow: { action: report }               # a running step is slower than its baseline
 #     gate_open: { after: 30m, action: report }
+#     stalled: { after: 30m, action: report } # an active run with nothing running, ready or queued and no open gate
 # warden:                      # PR checks (defaults only; each check is off unless its block is set; needs a Sidekick and the gh CLI)
 #   enabled: true
 #   pr_checks:

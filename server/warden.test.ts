@@ -7,7 +7,7 @@ import { newRun, startAttempt } from "./engine";
 import { loadPlaybooks } from "./loader";
 import { Runtime } from "./runtime";
 import { RunStore } from "./store";
-import { diffFindings, WARDEN_MAX_RUNS_PER_PASS } from "./warden";
+import { diffFindings, stalledCandidates, stalledInfo, WARDEN_MAX_RUNS_PER_PASS } from "./warden";
 
 const EXAMPLES = path.resolve(__dirname, "..", "examples");
 const temps: string[] = [];
@@ -267,13 +267,16 @@ describe("dedup and cooldown", () => {
     await s.look(20);
     await s.look(40);
     expect(await s.events("warden.finding")).toHaveLength(1);
-    await s.look(61); // cooldown 1h
+    await s.look(61); // cooldown 1h, but the count did not grow: not repeated
+    expect(await s.events("warden.finding")).toHaveLength(1);
+    await s.store.mutate("run_x", (run) => void (run.loops["a->b"] = 18));
+    await s.look(80); // doubled
     expect(await s.events("warden.finding")).toHaveLength(2);
     await s.store.mutate("run_x", (run) => void (run.loops["a->b"] = 0));
-    await s.look(80);
+    await s.look(100);
     expect(s.store.get("run_x")!.warden.findings).toEqual({});
     await s.store.mutate("run_x", (run) => void (run.loops["a->b"] = 9));
-    await s.look(100);
+    await s.look(120);
     expect(await s.events("warden.finding")).toHaveLength(3);
   });
 
@@ -357,5 +360,143 @@ describe("robustness", () => {
     expect(reported()).toBe(WARDEN_MAX_RUNS_PER_PASS);
     await s.look(1); // the rest next pass (the first ones are not due yet)
     expect(reported()).toBe(WARDEN_MAX_RUNS_PER_PASS + 5);
+  });
+});
+
+describe("stalled", () => {
+  const settle = (s: Awaited<ReturnType<typeof setup>>, status = "reported") =>
+    s.store.mutate("run_x", (run) => void (run.steps.release!.status = status as never));
+  const findings = (s: Awaited<ReturnType<typeof setup>>) => Object.values(s.store.get("run_x")!.warden.findings);
+
+  it("is on by default, with a 30m threshold, and is configurable", async () => {
+    expect(DEFAULT_WARDEN.checks.stalled).toEqual({ afterMs: 30 * MIN, action: "report" });
+    const s = await setup(ON("{ stalled: { after: 2h } }"));
+    expect(s.store.get("run_x")!.playbook.warden.checks.stalled).toEqual({ afterMs: 120 * MIN, action: "report" });
+    const off = await setup(ON("{ stalled: { action: none } }"));
+    await settle(off);
+    await off.look(600);
+    expect(off.store.get("run_x")!.warden.findings).toEqual({});
+  });
+
+  it("reports an active run with nothing running, ready, queued or open, once it exceeds the threshold, with manager state and last event", async () => {
+    const s = await setup(ON("{ stalled: {} }"));
+    await settle(s);
+    await s.look(20);
+    expect(findings(s)).toEqual([]);
+    s.status.m = "closed";
+    await s.look(40);
+    const [found] = findings(s);
+    expect(found).toMatchObject({ check: "stalled", subject: null });
+    expect(found!.detail).toMatch(/no running, ready or queued step and no open gate for 40 min; the manager is gone; last: .* at 2026-11-18T10:00:00.*steps reported: release/);
+    expect(await s.events("warden.finding")).toHaveLength(1);
+  });
+
+  it("is not stalled while a step runs, is ready, is queued, or a gate is open", async () => {
+    for (const status of ["running", "ready", "queued", "waiting"]) {
+      const s = await setup(ON("{ stalled: {}, gate_open: { action: none } }"));
+      await settle(s, status);
+      await s.look(600);
+      expect(findings(s)).toEqual([]);
+    }
+    const s = await setup(ON("{ stalled: {}, gate_open: { action: none } }"));
+    await settle(s);
+    await s.gate({ by: "human" });
+    await s.look(600);
+    expect(findings(s)).toEqual([]);
+  });
+
+  it("names a quota-blocked manager", () => {
+    const info = { idleSince: T0, last: "step_reported on review (changes_requested) at x", steps: "reported: review" };
+    const [c] = stalledCandidates({} as Run, info, 30 * MIN, T0 + 9 * 60 * MIN, "idle", true, "report");
+    expect(c!.detail).toMatch(/for 540 min; the manager is quota-blocked; last: step_reported on review/);
+    expect(stalledCandidates({} as Run, info, 30 * MIN, T0 + 29 * MIN, "idle", true, "report")).toEqual([]);
+    expect(stalledCandidates({} as Run, null, 30 * MIN, T0 + 99 * MIN, "idle", true, "report")).toEqual([]);
+  });
+
+  it("is not reported for a paused or finished run", async () => {
+    const s = await setup(ON("{ stalled: {} }"));
+    await settle(s);
+    await s.store.mutate("run_x", (run) => void (run.pausedAt = new Date(T0).toISOString()));
+    expect(stalledInfo(s.store.get("run_x")!)).toBeNull();
+    await s.look(600);
+    expect(findings(s)).toEqual([]);
+  });
+
+  it("repeats only when the idle time doubled or the manager state changed (cooldown 1h as minimum)", async () => {
+    const s = await setup(ON("{ stalled: {} }"));
+    await settle(s);
+    await s.look(30); // reported at 30
+    for (const m of [60, 75, 89]) await s.look(m); // doubled at 60 but within the cooldown
+    expect(await s.events("warden.finding")).toHaveLength(1);
+    await s.look(90); // cooldown passed, idle time 3x
+    expect(await s.events("warden.finding")).toHaveLength(2);
+    for (const m of [120, 150, 175]) await s.look(m); // not doubled since 90
+    expect(await s.events("warden.finding")).toHaveLength(2);
+    await s.look(195); // idle 195 >= 2 x 90
+    expect(await s.events("warden.finding")).toHaveLength(3);
+    s.status.m = "closed"; // state changed (idle -> gone), past the cooldown
+    await s.look(260);
+    expect(await s.events("warden.finding")).toHaveLength(4);
+  });
+});
+
+describe("repeat suppression", () => {
+  const iso = (m: number) => new Date(T0 + m * MIN).toISOString();
+  const loop = (value: number) => ({ check: "loops" as const, subject: "e", signature: "e", detail: `d${value}`, action: "report" as const, value });
+
+  it("diffFindings: a still-true loop is reported again only once its count doubled, and not before the cooldown", () => {
+    let state = diffFindings({}, [loop(6)], iso(0), 60 * MIN).next;
+    expect(diffFindings(state, [loop(11)], iso(120), 60 * MIN).report).toHaveLength(0);
+    const again = diffFindings(state, [loop(12)], iso(30), 60 * MIN);
+    expect(again.report).toHaveLength(0); // doubled but within the cooldown
+    expect(again.next["loops:e"]!.value).toBe(6); // the baseline stays at the last report
+    expect(again.next["loops:e"]!.detail).toBe("d12");
+    const due = diffFindings(state, [loop(12)], iso(61), 60 * MIN);
+    expect(due.report).toHaveLength(1);
+    state = due.next;
+    expect(state["loops:e"]!.value).toBe(12);
+    expect(diffFindings(state, [loop(23)], iso(200), 60 * MIN).report).toHaveLength(0);
+    expect(diffFindings(state, [loop(24)], iso(200), 60 * MIN).report).toHaveLength(1);
+  });
+
+  it("diffFindings: a state change is reported after the cooldown; a finding with neither still repeats every cooldown", () => {
+    const c = (state: string) => ({ check: "stale_definition" as const, subject: null, signature: "s", detail: "d", action: "report" as const, state });
+    const first = diffFindings({}, [c("running")], iso(0), 60 * MIN).next;
+    expect(diffFindings(first, [c("running")], iso(120), 60 * MIN).report).toHaveLength(0);
+    expect(diffFindings(first, [c("paused")], iso(30), 60 * MIN).report).toHaveLength(0);
+    expect(diffFindings(first, [c("paused")], iso(61), 60 * MIN).report).toHaveLength(1);
+    const plain = { check: "manager_blocked" as const, subject: "g", signature: "g", detail: "d", action: "report" as const };
+    const p = diffFindings({}, [plain], iso(0), 60 * MIN).next;
+    expect(diffFindings(p, [plain], iso(61), 60 * MIN).report).toHaveLength(1);
+  });
+
+  it("a loop that stays in a known long loop is not reported every cooldown", async () => {
+    const s = await setup(ON("{ loops: { above: 1 } }"));
+    await s.store.mutate("run_x", (run) => void (run.loops["a->b"] = 6));
+    await s.look(0);
+    for (const m of [61, 122, 183, 244]) await s.look(m);
+    expect(await s.events("warden.finding")).toHaveLength(1);
+    await s.store.mutate("run_x", (run) => void (run.loops["a->b"] = 12));
+    await s.look(305);
+    expect(await s.events("warden.finding")).toHaveLength(2);
+  });
+
+  it("stale_definition is never reported for a run only waiting on a gate, and its repeats follow state, not the cooldown", async () => {
+    const s = await setup(ON("{ stale_definition: { after: 1m }, gate_open: { action: none } }"));
+    await s.isolate("old");
+    s.spies.origin.mockResolvedValue("new");
+    await s.store.mutate("run_x", (run) => void (run.steps.release!.status = "reported" as never));
+    await s.gate({ by: "human" });
+    await s.look(30);
+    expect(s.store.get("run_x")!.warden.findings).toEqual({});
+    await s.store.mutate("run_x", (run) => void (run.steps.release!.status = "running" as never));
+    await s.look(60);
+    expect(Object.keys(s.store.get("run_x")!.warden.findings)).toEqual(["stale_definition:"]);
+    await s.look(200);
+    await s.look(400);
+    expect(await s.events("warden.finding")).toHaveLength(1);
+    await s.store.mutate("run_x", (run) => void (run.pausedAt = new Date(T0).toISOString()));
+    await s.look(600); // state changed (paused), past the cooldown
+    expect(await s.events("warden.finding")).toHaveLength(2);
   });
 });

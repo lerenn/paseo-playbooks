@@ -7,6 +7,10 @@ import { newRun } from "./engine";
 import { loadPlaybooks } from "./loader";
 import { Runtime } from "./runtime";
 import { RunStore } from "./store";
+import { runEndedAt, workspaceKeptUntil } from "../shared/types";
+import { runListing } from "./tools";
+
+const workspaceKeptUntilOf = (store: RunStore) => workspaceKeptUntil(store.get("run_x")!);
 
 const EXAMPLES = path.resolve(__dirname, "..", "examples");
 const HOURS = 3_600_000;
@@ -20,7 +24,7 @@ afterEach(async () => {
 
 const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-C", cwd, "-c", "user.email=t@t", "-c", "user.name=t", ...args], { stdio: "ignore" });
 
-type Opts = { work?: "clean" | "uncommitted" | "unpushed"; created?: boolean; status?: "completed" | "canceled" | "failed"; defaults?: string; label?: boolean; managerStatus?: string; openGate?: boolean; openJob?: boolean };
+type Opts = { work?: "clean" | "uncommitted" | "unpushed"; created?: boolean; status?: "completed" | "canceled" | "failed"; defaults?: string; label?: boolean; managerStatus?: string; openGate?: boolean; openJob?: boolean; extra?: Array<Record<string, unknown>> };
 
 /** A run that ended, in a real git workspace directory (with a bare remote), and a fake daemon that records archived workspaces. */
 async function setup(opts: Opts = {}) {
@@ -58,10 +62,11 @@ async function setup(opts: Opts = {}) {
   await store.create(base);
   const archived: string[] = [];
   const agentsArchived: string[] = [];
+  const fleet: Array<Record<string, unknown>> = [...(opts.extra ?? [])];
   const paseo = {
     agents: {
-      list: async () => ({ entries: [{ agent: { id: "m", workspaceId: "ws", labels: { "playbooks/manager": "true" }, archivedAt: null, internal: false, status: "idle", pendingPermissions: [] } }] }),
-      ref: (id: string) => ({ refresh: async () => ({ agent: { id, status: opts.managerStatus ?? "idle", archivedAt: null, labels: opts.label === false ? {} : { "playbooks/manager": "true" } } }), archive: async () => void agentsArchived.push(id), send: async () => undefined }),
+      list: async () => ({ entries: [{ agent: { id: "m", workspaceId: "ws", labels: { "playbooks/manager": "true" }, archivedAt: null, internal: false, status: "idle", pendingPermissions: [] } }, ...fleet.map((agent) => ({ agent: { workspaceId: "ws", archivedAt: null, internal: false, status: "idle", pendingPermissions: [], ...agent } }))] }),
+      ref: (id: string) => ({ refresh: async () => ({ agent: { id, status: opts.managerStatus ?? "idle", archivedAt: null, labels: opts.label === false ? {} : { "playbooks/manager": "true" } } }), archive: async () => void (agentsArchived.push(id), fleet.splice(0, fleet.length, ...fleet.filter((agent) => agent.id !== id))), send: async () => undefined }),
     },
     workspaces: { ref: (id: string) => ({ refresh: async () => ({ id, projectId: "p", workspaceDirectory: work, projectRootPath: path.join(dir, "root") }), archive: async () => void archived.push(id) }) },
   };
@@ -78,7 +83,7 @@ async function setup(opts: Opts = {}) {
     vi.spyOn(Date, "now").mockReturnValue(Date.parse(store.get("run_x")!.updatedAt) + minutesLater * 60_000);
     await (runtime as unknown as { autoArchiveRuns(): Promise<void> }).autoArchiveRuns();
   };
-  return { store, runtime, archived, agentsArchived, sweep, events };
+  return { store, runtime, archived, agentsArchived, sweep, events, fleet };
 }
 
 const ON = "auto_archive: { enabled: true }\nworkspace: { archive_after: never }\n";
@@ -110,7 +115,7 @@ describe("auto_archive", () => {
 
   it("a playbook can switch it on over defaults that leave it off", async () => {
     const { store, sweep } = await setup({ defaults: "workspace: { archive_after: never }\n" });
-    expect(store.get("run_x")!.playbook.autoArchive).toEqual({ enabled: false, afterMs: 30 * 60_000 });
+    expect(store.get("run_x")!.playbook.autoArchive).toEqual({ enabled: false, afterMs: 30 * 60_000, keepFailedWorkspaceMs: 24 * HOURS });
     await sweep(1000);
     expect(store.get("run_x")!.archivedAt).toBeNull();
   });
@@ -154,5 +159,162 @@ describe("auto_archive", () => {
     expect(refresh).toHaveBeenCalledTimes(3);
     await sweep(61);
     expect(refresh).toHaveBeenCalledTimes(5); // the other two; the refused three wait
+  });
+
+  describe("failed runs", () => {
+    const FAILED = "auto_archive: { enabled: true, after: 5m }\nworkspace: { archive_after: never }\n";
+    const sweepWorkspaces = async (store: RunStore, hoursAfter: number) => {
+      vi.spyOn(Date, "now").mockReturnValue(Date.parse(store.get("run_x")!.history.findLast((e) => e.type === "run_canceled")!.at) + hoursAfter * HOURS);
+      await (runtime as unknown as { autoArchiveFailedWorkspaces(): Promise<void> }).autoArchiveFailedWorkspaces();
+    };
+    let runtime: Runtime;
+
+    it("a failed run that cannot be restarted loses its workspace after `after`, like a completed one", async () => {
+      const ctx = await setup({ defaults: FAILED, status: "failed" });
+      await ctx.store.mutate("run_x", (run) => void (run.playbook.steps[0]!.needs = ["nowhere"]));
+      await ctx.sweep(6);
+      expect(ctx.archived).toEqual(["ws"]);
+      expect(workspaceKeptUntilOf(ctx.store)).toBeNull();
+    });
+
+    it("a restartable failed run: agents after `after`, workspace only after keep_failed_workspace (default 24h)", async () => {
+      const ctx = await setup({ defaults: FAILED, status: "failed" });
+      runtime = ctx.runtime;
+      await ctx.sweep(6);
+      expect(ctx.agentsArchived).toEqual(["m"]);
+      expect(ctx.archived).toEqual([]);
+      expect(ctx.store.get("run_x")!.archivedAt).not.toBeNull();
+      expect(workspaceKeptUntilOf(ctx.store)).not.toBeNull();
+      await sweepWorkspaces(ctx.store, 23);
+      expect(ctx.archived).toEqual([]);
+      await sweepWorkspaces(ctx.store, 25);
+      expect(ctx.archived).toEqual(["ws"]);
+      expect(ctx.store.get("run_x")!.workspaceArchive).toBe("done");
+      expect(workspaceKeptUntilOf(ctx.store)).toBeNull();
+    });
+
+    it("keep_failed_workspace is configurable", async () => {
+      const ctx = await setup({ defaults: "auto_archive: { enabled: true, after: 5m, keep_failed_workspace: 2h }\nworkspace: { archive_after: never }\n", status: "failed" });
+      runtime = ctx.runtime;
+      await ctx.sweep(6);
+      await sweepWorkspaces(ctx.store, 3);
+      expect(ctx.archived).toEqual(["ws"]);
+    });
+
+    it("a run restarted in the meantime keeps its workspace", async () => {
+      const ctx = await setup({ defaults: FAILED, status: "failed" });
+      runtime = ctx.runtime;
+      await ctx.sweep(6);
+      await ctx.store.mutate("run_x", (run) => void (run.status = "running"));
+      await sweepWorkspaces(ctx.store, 100);
+      expect(ctx.archived).toEqual([]);
+    });
+
+    it("never archives the held workspace while another run in it is active, or when it holds unpushed work", async () => {
+      const busy = await setup({ defaults: FAILED, status: "failed" });
+      runtime = busy.runtime;
+      await busy.sweep(6);
+      await busy.store.create({ ...structuredClone(busy.store.get("run_x")!), id: "run_y", status: "running", archivedAt: null });
+      await sweepWorkspaces(busy.store, 30);
+      expect(busy.archived).toEqual([]);
+      const dirty = await setup({ defaults: FAILED, status: "failed", work: "unpushed" });
+      runtime = dirty.runtime;
+      await dirty.sweep(6);
+      await sweepWorkspaces(dirty.store, 30);
+      expect(dirty.archived).toEqual([]);
+    });
+
+    it("is untouched when auto_archive is off", async () => {
+      const ctx = await setup({ defaults: "workspace: { archive_after: never }\n", status: "failed" });
+      expect(workspaceKeptUntilOf(ctx.store)).toBeNull();
+    });
+
+    it("reports when the workspace is kept until, in list_runs", async () => {
+      const ctx = await setup({ defaults: FAILED, status: "failed" });
+      const run = ctx.store.get("run_x")!;
+      expect(runListing(run).workspaceKeptUntil).toBe(new Date(Date.parse(runEndedAt(run)) + 24 * HOURS).toISOString());
+    });
+  });
+
+  describe("leftover agents and retries (ADR 2026-11-23-auto-archive-leftover-agents)", () => {
+    const FAILED = "auto_archive: { enabled: true, after: 5m }\nworkspace: { archive_after: never }\n";
+    const sub = (id: string, parent: string, extra: Record<string, unknown> = {}) => ({ id, parentAgentId: parent, labels: {}, ...extra });
+    const sweepFailedWorkspaces = async (ctx: Awaited<ReturnType<typeof setup>>, hoursAfter: number) => {
+      vi.spyOn(Date, "now").mockReturnValue(Date.parse(ctx.store.get("run_x")!.history.findLast((e) => e.type === "run_canceled")!.at) + hoursAfter * HOURS);
+      await (ctx.runtime as unknown as { autoArchiveFailedWorkspaces(): Promise<void> }).autoArchiveFailedWorkspaces();
+    };
+
+    it("archives idle subagents of the run's agents (even nested) before the workspace, and the workspace goes", async () => {
+      const ctx = await setup({ defaults: ON, extra: [{ id: "step1", labels: { "playbooks/step": "a" } }, sub("s1", "step1"), sub("s2", "s1")] });
+      await ctx.sweep(60);
+      expect(ctx.archived).toEqual(["ws"]);
+      expect(ctx.agentsArchived).toEqual(expect.arrayContaining(["step1", "s1", "s2"]));
+      expect(ctx.store.get("run_x")!.workspaceArchive).toBe("done");
+    });
+
+    it("never touches an agent that is not the run's, and keeps the workspace for good", async () => {
+      const ctx = await setup({ defaults: ON, extra: [{ id: "human", labels: {} }, sub("child-of-human", "human")] });
+      await ctx.sweep(60);
+      expect(ctx.archived).toEqual([]);
+      expect(ctx.agentsArchived).toEqual(["m"]);
+      expect(ctx.store.get("run_x")!.workspaceArchive).toBe("skipped");
+      await ctx.sweep(60 * 5);
+      expect(ctx.store.get("run_x")!.history.filter((e) => e.type === "workspace_kept")).toHaveLength(1);
+    });
+
+    it("a busy subagent keeps the workspace now and retries on later sweeps until it is idle", async () => {
+      const ctx = await setup({ defaults: ON, extra: [{ id: "step1", labels: { "playbooks/step": "a" } }, sub("s1", "step1", { status: "running" })] });
+      const retry = () => (ctx.runtime as unknown as { retryAutoArchivedWorkspaces(): Promise<void> }).retryAutoArchivedWorkspaces();
+      await ctx.sweep(60);
+      expect(ctx.archived).toEqual([]);
+      expect(ctx.agentsArchived).toEqual(["m"]);
+      expect(ctx.store.get("run_x")!.workspaceArchive).toBeNull();
+      vi.spyOn(Date, "now").mockReturnValue(Date.now() + 5 * 60_000);
+      await retry();
+      expect(ctx.archived).toEqual([]); // inside the backoff
+      vi.spyOn(Date, "now").mockReturnValue(Date.now() + 15 * 60_000);
+      await retry();
+      expect(ctx.archived).toEqual([]); // still busy
+      expect(ctx.store.get("run_x")!.history.filter((e) => e.type === "workspace_kept")).toHaveLength(2); // first refusal + the same reason once, "asked again" text differs
+      ctx.fleet.find((agent) => agent.id === "s1")!.status = "idle";
+      vi.spyOn(Date, "now").mockReturnValue(Date.now() + 15 * 60_000);
+      await retry();
+      expect(ctx.archived).toEqual(["ws"]);
+      expect(ctx.store.get("run_x")!.workspaceArchive).toBe("done");
+    });
+
+    it("stops retrying after keep_failed_workspace and writes the refusal as final", async () => {
+      const ctx = await setup({ defaults: ON, extra: [{ id: "step1", labels: { "playbooks/step": "a", }, status: "running" }] });
+      const retry = () => (ctx.runtime as unknown as { retryAutoArchivedWorkspaces(): Promise<void> }).retryAutoArchivedWorkspaces();
+      await ctx.sweep(60);
+      vi.spyOn(Date, "now").mockReturnValue(Date.now() + 25 * HOURS);
+      await retry();
+      expect(ctx.archived).toEqual([]);
+      expect(ctx.store.get("run_x")!.workspaceArchive).toBe("skipped");
+    });
+
+    it("a restartable failed run: a busy agent at the keep deadline is retried, unpushed work is final", async () => {
+      const busy = await setup({ defaults: FAILED, status: "failed", extra: [sub("s1", "m", { status: "running" })] });
+      await busy.sweep(6);
+      await sweepFailedWorkspaces(busy, 25);
+      expect(busy.archived).toEqual([]);
+      expect(busy.store.get("run_x")!.workspaceArchive).toBeNull();
+      busy.fleet.find((agent) => agent.id === "s1")!.status = "idle";
+      await sweepFailedWorkspaces(busy, 26);
+      expect(busy.archived).toEqual(["ws"]);
+      const dirty = await setup({ defaults: FAILED, status: "failed", work: "unpushed" });
+      await dirty.sweep(6);
+      await sweepFailedWorkspaces(dirty, 25);
+      expect(dirty.store.get("run_x")!.workspaceArchive).toBe("skipped");
+    });
+
+    it("a run whose own worktree is already removed still gets its workspace (and agents) archived", async () => {
+      const ctx = await setup({ defaults: FAILED, status: "failed", extra: [sub("s1", "m")] });
+      await ctx.store.mutate("run_x", (run) => void (run.worktree = { path: "/gone", branch: "b", state: "removed" } as never));
+      await ctx.sweep(6);
+      await sweepFailedWorkspaces(ctx, 25);
+      expect(ctx.archived).toEqual(["ws"]);
+      expect(ctx.agentsArchived).toContain("s1");
+    });
   });
 });

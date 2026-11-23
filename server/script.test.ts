@@ -140,6 +140,23 @@ steps:
     expect(wake).not.toMatch(/starts by itself/);
   });
 
+  it("fail fast, naming the missing path and the workspace head, when the script file is not in the checkout", async () => {
+    const playbook = `
+title: Wait
+steps:
+  - id: check
+    script: { run: gone.sh }
+`;
+    const { loaded, store, runtime, dir } = await setup(playbook, { "gone.sh": "#!/bin/sh\nexit 0\n" });
+    await rm(path.join(dir, ".paseo/plugins/playbooks/scripts/gone.sh"));
+    const run = await runtime.startPlaybook({ id: "m", workspaceId: "ws", cwd: "/" }, "wait", {}, { playbook: loaded.playbook! });
+    await until(() => store.get(run.id)!.status === "failed");
+    const summary = store.get(run.id)!.steps.check!.attempts[0]!.report!.summary;
+    expect(summary).toContain(`script file not found: ${path.join(dir, ".paseo/plugins/playbooks/scripts/gone.sh")}`);
+    expect(summary).toMatch(/workspace .*, head (unknown|[0-9a-f]{40})\)/);
+    expect(summary).not.toMatch(/ENOENT/);
+  });
+
   it("fail on any other exit code, and retry by themselves", async () => {
     const playbook = `
 title: Wait

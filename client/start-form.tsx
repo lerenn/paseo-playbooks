@@ -149,7 +149,7 @@ export function StartForm(props: {
               value={workspaceName}
               onChangeText={setWorkspaceName}
               maxLength={WORKSPACE_NAME_MAX}
-              placeholder={t("form.workspaceNamePlaceholder", { title: playbook.title })}
+              placeholder={playbook.workspace.title ? t("form.workspaceNamePlaceholderTitle", { title: playbook.workspace.title }) : t("form.workspaceNamePlaceholder", { title: playbook.title })}
               placeholderTextColor={theme.colors.foregroundMuted}
               style={fieldStyle}
             />

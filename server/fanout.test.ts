@@ -208,6 +208,14 @@ steps:
 });
 
 describe("fan-out runs", () => {
+  it("titles a child's workspace from the child playbook's workspace.title and the child's own inputs", async () => {
+    const child = CHILD.replace("inputs:\n", "workspace: { title: \"Ship {item}\" }\ninputs:\n");
+    const ctx = await setup({ "parent.yaml": parent(SPAWN.replace(/      workspace_name:.*\n/, "")), "child.yaml": child });
+    await startParent(ctx);
+    await until(() => ctx.created.length === 2);
+    expect(ctx.created.map((workspace) => workspace.title)).toEqual(["Ship a", "Ship b"]);
+  });
+
   it("starts one child per item in its own new workspace, at most max_active at a time, then joins", async () => {
     const ctx = await setup();
     const run = await startParent(ctx);

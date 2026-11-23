@@ -6,7 +6,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Animated, Pressable, Text, View } from "react-native";
 import { archiveRunRpc, cancelRunRpc, createExampleRpc, listPlaybooks, listRuns, overrideQuotaRpc, pauseRunRpc, resumeRunRpc } from "../shared/contracts";
-import { isActive, isPaused, isPipeline, isTerminal, type Playbook, type PlaybookEntry, type Run } from "../shared/types";
+import { isActive, isPaused, isPipeline, isTerminal, workspaceKeptUntil, type Playbook, type PlaybookEntry, type Run } from "../shared/types";
 import { slowView } from "../shared/slow";
 import { useSlowSteps } from "./slow";
 import { NowProvider } from "./now";
@@ -426,9 +426,11 @@ function PlaybookCard(props: {
 
 function RunBar(props: { theme: Theme; run: Run; hostLabel: string }) {
   const { theme, run } = props;
+  const { t } = useTranslation(messages);
   return (
     <View style={{ gap: 6 }}>
       {run.failure ? <Text style={{ color: theme.colors.statusDanger, fontSize: 12 }}>{run.failure}</Text> : null}
+      {workspaceKeptUntil(run) ? <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>{t("panel.workspaceKept", { when: new Date(workspaceKeptUntil(run)!).toLocaleString() })}</Text> : null}
       {run.definition?.warning ? (
         <View accessibilityRole="alert" style={{ flexDirection: "row", alignItems: "flex-start", gap: 6 }}>
           <Icon name="TriangleAlert" size={13} color={theme.colors.statusWarning} />
@@ -613,10 +615,10 @@ function RunChip(props: { theme: Theme; run: Run; label?: string | undefined; se
               {run.rateHold ? (
                 <View style={{ gap: 4 }}>
                   <Text selectable style={{ color: theme.colors.foreground, fontSize: 12 }}>
-                    {`On hold (${run.rateHold.kind === "quota" ? "provider quota" : run.rateHold.kind === "headroom" ? "quota headroom" : run.rateHold.kind === "steps" ? "step cap" : "playbook cap"}): ${run.rateHold.reason}`}
+                    {`On hold (${run.rateHold.kind === "quota" ? "provider quota" : run.rateHold.kind === "headroom" ? "quota headroom" : run.rateHold.kind === "pace" ? "paused to fit the pace" : run.rateHold.kind === "steps" ? "step cap" : "playbook cap"}): ${run.rateHold.reason}`}
                     {run.rateHold.retryAt ? `. The plugin looks again at ${new Date(run.rateHold.retryAt).toLocaleTimeString()}` : ". It resumes by itself when a run ends or the cap rises"}
                   </Text>
-                  {(run.rateHold.kind === "quota" || run.rateHold.kind === "headroom") && run.rateHold.provider ? (
+                  {(run.rateHold.kind === "quota" || run.rateHold.kind === "headroom" || run.rateHold.kind === "pace") && run.rateHold.provider ? (
                     <Pressable
                       accessibilityRole="button"
                       accessibilityLabel={`Continue anyway on ${run.rateHold.provider} for one hour`}

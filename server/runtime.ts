@@ -11,7 +11,7 @@ type PaseoApi = PluginHandlerContext["paseo"];
 import type { AdmissionStatus, ScriptOutput } from "../shared/types";
 import type { GateWaitCondition } from "../shared/types";
 import type { AgentSettings, AgentTarget, Attempt, FanoutChild as FanoutChildState, PoolPass as PoolPassState, Gate, Job, Playbook, Run, RunDefinition, RunWorktree, Step, VarValue, WardenFinding } from "../shared/types";
-import { addUsage, DEFAULT_EXHAUSTED_FOR_MS, DEFAULT_PERMISSION_POLICY } from "../shared/types";
+import { addUsage, DEFAULT_EXHAUSTED_FOR_MS, DEFAULT_PERMISSION_POLICY, workspaceKeptUntil } from "../shared/types";
 import { UsageLedger } from "./usage-ledger";
 import { analyze, type Analytics } from "../shared/analytics";
 import {
@@ -37,7 +37,7 @@ import { isQuotaError, isQuotaMessage } from "./quota";
 import { UsageCache, usageBlock, type UsageBlock, type UsageSnapshot } from "./usage";
 import * as engine from "./engine";
 import { ADMISSION_TIMEOUT_MS, admissionInput, readAdmission } from "./admission";
-import { checkoutSnapshot, currentRef, defaultBranch, exportPaths, fastForward, freshRef, freshRefInfo, git as gitOutput, removedGitlinks, snapshotDiff, checkoutViolationSince, unsavedWork } from "./git";
+import { checkoutSnapshot, currentRef, defaultBranch, exportPaths, fastForward, freshenCheckout, freshRef, freshRefInfo, git as gitOutput, removedGitlinks, snapshotDiff, checkoutViolationSince, unsavedWork } from "./git";
 import { workspaceTitle } from "../shared/workspace-name";
 import { createWorktree, diskUsedFraction, dirtyPaths, purgeScratch, linkedSubmodules, listWorktreeDirs, pruneWorktrees, unpushedCommits, removeWorktree, repoOfWorktree, worktreeBranch, worktreePath } from "./worktree";
 import { chooseDefinition, definitionMismatch, isAdoptable, readAtRef, shortReason, workspaceWarning } from "./fresh";
@@ -56,7 +56,7 @@ import { BusError, EventBus, globToRegExp, type BusEvent, type Notifier, type Su
 import { blockedOnGate, MANAGER_WATCH_CHECK_MS, nudgeDue, STUCK_AFTER_NUDGES } from "./manager-watch";
 import type { WardenPrConfig } from "../shared/types";
 import { listOpenPrs, prCandidates, reposOfRun, rulesetChecks, rulesetKey, WardenPrStore, type OpenPr } from "./warden-prs";
-import { diffFindings, gateOpenCandidates, loopCandidates, managerBlockedCandidates, slowCandidates, staleDefinitionCandidate, WARDEN_CHECK_MS, WARDEN_MAX_RUNS_PER_PASS, wardenPrSummary, wardenSummary, type Act, type Candidate, type WardenIo } from "./warden";
+import { diffFindings, gateOpenCandidates, loopCandidates, managerBlockedCandidates, slowCandidates, stalledCandidates, stalledInfo, staleDefinitionCandidate, WARDEN_CHECK_MS, WARDEN_MAX_RUNS_PER_PASS, wardenPrSummary, wardenSummary, type Act, type Candidate, type WardenIo } from "./warden";
 import { SlowIndex } from "./slow";
 import { gatePayload, OversightProducer, registerOversightTypes, runFieldsOf } from "./oversight-events";
 import { JOB_TYPES, publicJobEvents } from "./job-events";
@@ -71,8 +71,8 @@ import { StaleSessions } from "./stale-sessions";
 import { fetchAllWorkspaces, WorkspaceLookup } from "./workspace-lookup";
 import type { RunStore } from "./store";
 import { holdsBlock, planAdmissions, slotHolders } from "../shared/slots";
-import { DEFAULT_RATE_LIMITS, readRateLimitsConfig, type RateLimitsConfig } from "./config";
-import { CostHistory, exhaustionVerdict, orderCandidates, planHeadroom, windowKey, type Candidate as RateCandidate, type PlanContext } from "./rate-budget";
+import { DEFAULT_MANAGER_RECOVERY, DEFAULT_RATE_LIMITS, readManagerRecoveryConfig, readRateLimitsConfig, type ManagerRecoveryConfig, type RateLimitsConfig } from "./config";
+import { CostHistory, exhaustionVerdict, planPace, type Admitted as AdmittedRun, orderCandidates, planHeadroom, windowKey, type Candidate as RateCandidate, type PlanContext } from "./rate-budget";
 import { limitVerdict, QuotaPacer, runPriority, runProviders, usedPct, type HoldVerdict, type ReadChange } from "./rate-limit";
 import { pluginDataDir } from "./data-dir";
 
@@ -507,7 +507,7 @@ export class Runtime {
 
   constructor(
     private readonly store: RunStore,
-    private readonly options: { dataDir?: string; debounceMs?: number; pollMs?: number; wakeGapMs?: number; /** Tests: how long a failed run's worktree is kept (default 24h). */ failedRetentionMs?: number; /** Tests: the used fraction of the volume holding the worktrees. */ diskUsedFraction?: (dir: string) => Promise<number>; admissionTimeoutMs?: number; /** Tests: false keeps the old manual flow (the plugin starts no ready agent step by itself). */ autoStartAgents?: boolean; /** Tests: the grace period of a Sidekick subagent's workspace archive when the project sets none. */ subagentArchiveAfterMs?: number; /** Tests: the open PRs of a project (default: `gh pr list`). */ listOpenPrs?: (dir: string, repo: string | null) => Promise<OpenPr[]>; /** Tests: the checks a base branch's ruleset requires (default: `gh api`). */ rulesetChecks?: (repo: string, base: string) => Promise<string[]>; /** Tests: sessions reloaded at once after a plugin update (default 4). */ reloadConcurrency?: number; /** Tests: pause after each reload (default 20 ms). */ reloadPauseMs?: number } = {},
+    private readonly options: { dataDir?: string; debounceMs?: number; pollMs?: number; wakeGapMs?: number; /** Tests: how long a failed run's worktree is kept (default 24h). */ failedRetentionMs?: number; /** Tests: the used fraction of the volume holding the worktrees. */ diskUsedFraction?: (dir: string) => Promise<number>; admissionTimeoutMs?: number; /** Tests: false keeps the old manual flow (the plugin starts no ready agent step by itself). */ autoStartAgents?: boolean; /** Tests: the grace period of a Sidekick subagent's workspace archive when the project sets none. */ subagentArchiveAfterMs?: number; /** Tests: the open PRs of a project (default: `gh pr list`). */ listOpenPrs?: (dir: string, repo: string | null) => Promise<OpenPr[]>; /** Tests: the checks a base branch's ruleset requires (default: `gh api`). */ rulesetChecks?: (repo: string, base: string) => Promise<string[]>; /** Tests: sessions reloaded at once after a plugin update (default 4). */ reloadConcurrency?: number; /** Tests: pause after each reload (default 20 ms). */ reloadPauseMs?: number; /** Tests: debounce of the immediate re-check of held runs when capacity frees (default 250 ms). */ limitKickMs?: number } = {},
   ) {
     const dir = options.dataDir ?? path.dirname(store.dir);
     this.worktreesDir = path.join(dir, "worktrees");
@@ -526,6 +526,11 @@ export class Runtime {
       for (const event of publicJobEvents(run, events)) {
         jobEvents = jobEvents.then(() => this.bus.emit(event.type, event.payload, { runId: run.id, source: "pipelines" })).catch((error: unknown) => console.error(`[playbooks] could not emit ${event.type}:`, errorText(error)));
       }
+    });
+    // Capacity freed (a run ends or is archived, a step ends): held and paused runs are looked at again at once, not at the next 15 s timer.
+    store.onChange((before, after) => {
+      const running = (run: Run) => Object.values(run.steps).filter((state) => state.status === "running").length;
+      if ((isActive(before) && !isActive(after)) || (!before.archivedAt && after.archivedAt) || running(after) < running(before)) this.kickLimits();
     });
     // Script steps with `wake_on` (script-wake.ts logic below): an internal listener, not an agent subscription.
     this.bus.onEmit((event) => {
@@ -612,7 +617,7 @@ export class Runtime {
     if (!this.limitTimer) {
       // Held runs are looked at again while any is held (a quota ceiling catches up with time, a backoff ends).
       this.limitTimer = setInterval(() => {
-        if (this.store.list().some((run) => run.rateHold)) void this.tick().catch((error) => console.error("[playbooks] tick for held runs failed:", errorText(error)));
+        if (this.store.list().some((run) => run.rateHold || (isActive(run) && run.managerQuotaBlockedId !== null && run.managerQuotaBlockedId === run.managerAgentId))) void this.tick().catch((error) => console.error("[playbooks] tick for held runs failed:", errorText(error)));
       }, 15_000);
       (this.limitTimer as unknown as { unref?: () => void }).unref?.();
     }
@@ -655,8 +660,8 @@ export class Runtime {
   );
   /** What steps cost in quota per playbook, measured from the usage readings (ADR 2026-11-20-dynamic-rate-limits); kept in a file. */
   private readonly costs = new CostHistory(path.join(pluginDataDir(), "rate-history.json"));
-  /** Quota that started work has yet to use, per run (playbook mode) or step (step mode): est − spent counts against the headroom until the readings catch up. */
-  private readonly reservedQuota = new Map<string, { runId: string; stepKey: string | null; est: Record<string, number>; spent: Record<string, number>; at: number; endedAt: number | null }>();
+  /** Quota that started work has yet to use, per run: est − spent counts against the headroom until the readings catch up. */
+  private readonly reservedQuota = new Map<string, { runId: string; est: Record<string, number>; spent: Record<string, number>; at: number; endedAt: number | null }>();
   /** The quota points each running or just ended agent attempt has been measured to use so far, folded into `costs` when it ends. */
   private readonly attemptUse = new Map<string, { playbookId: string; provider: string; points: Record<string, number> }>();
   private readonly warnedUnreported = new Set<string>();
@@ -708,6 +713,7 @@ export class Runtime {
     for (const timer of this.subagentArchiveTimers.values()) clearTimeout(timer);
     this.subagentArchiveTimers.clear();
     for (const id of [...this.scripts.keys()]) this.stopScript(id);
+    if (this.limitKick) clearTimeout(this.limitKick);
     return Promise.all([this.store.close(), this.bus.close(), this.sessions.flush(), this.usageLedger.flush()]).then(() => undefined);
   }
 
@@ -1089,6 +1095,7 @@ export class Runtime {
         if (!managers.has(id)) managers.set(id, this.wardenManagerState(id));
         return managers.get(id)!;
       },
+      managerQuota: async (run) => (run.managerAgentId ? this.wardenManagerQuota(run.managerAgentId) : false),
     };
     let slowIndex: SlowIndex | null = null;
     const notices = new Map<string, Array<{ runId: string; playbook: string; runName: string | null; findings: WardenFinding[] }>>();
@@ -1104,12 +1111,20 @@ export class Runtime {
             console.error(`[playbooks] warden check ${name} failed on ${listed.id}:`, errorText(error));
           }
         };
-        const { staleDefinition, managerBlocked, loops, slow, gateOpen } = config.checks;
+        const { staleDefinition, managerBlocked, loops, slow, gateOpen, stalled } = config.checks;
         if (staleDefinition.action !== "none") await guarded("stale_definition", async () => staleDefinitionCandidate(listed, await io.originSha(listed), staleDefinition.afterMs, now, staleDefinition.action as Act));
         if (managerBlocked.action !== "none") await guarded("manager_blocked", async () => managerBlockedCandidates(listed, await io.manager(listed), managerBlocked.action as Act));
         if (loops.action !== "none") await guarded("loops", () => loopCandidates(listed, loops.above, loops.action as Act));
         if (slow.action !== "none") await guarded("slow", () => slowCandidates(listed, (slowIndex ??= new SlowIndex(this.store.list())).of(listed, now), slow.action as Act));
         if (gateOpen.action !== "none") await guarded("gate_open", () => gateOpenCandidates(listed, gateOpen.afterMs, now, gateOpen.action as Act));
+        if (stalled.action !== "none") {
+          await guarded("stalled", async () => {
+            const info = stalledInfo(listed);
+            if (!info || now - info.idleSince < stalled.afterMs) return [];
+            const manager = await io.manager(listed);
+            return stalledCandidates(listed, info, stalled.afterMs, now, manager, manager === null || manager === "running" ? false : await io.managerQuota(listed), stalled.action as Act);
+          });
+        }
         // The state is written before any effect: a crash or a failed effect never repeats a report.
         const reported = await this.store.mutate(listed.id, (run) => {
           const { next, report } = diffFindings(run.warden.findings, found, iso, config.cooldownMs);
@@ -1234,6 +1249,14 @@ export class Runtime {
     const agent = (await this.api().agents.ref(id).refresh().catch(() => null))?.agent;
     if (!agent || agent.archivedAt || agent.status === "closed" || agent.status === "error") return "gone";
     return agent.status === "running" || agent.status === "initializing" || agent.activeTurn || this.busyManagers.has(id) ? "running" : "idle";
+  }
+
+  /** Whether the manager's last turn ended on its provider's out-of-tokens notice (it is stopped until the quota returns). */
+  private async wardenManagerQuota(id: string): Promise<boolean> {
+    const page = await this.api().agents.ref(id).timeline.refetch({ direction: "tail", limit: 30 }).catch(() => null);
+    if (!page) return false;
+    const entries = page.entries as never;
+    return isQuotaError(failureText(entries)) || isQuotaMessage(lastAssistantText(entries));
   }
 
   /** One summary to the project's Sidekick, when there is one: sent now when it is idle, else held until its turn ends. */
@@ -2197,6 +2220,18 @@ export class Runtime {
     }
   }
 
+  private limitKick: ReturnType<typeof setTimeout> | null = null;
+
+  /** Re-checks held runs soon (a burst of events makes one tick); the 15 s timer stays as the fallback. */
+  private kickLimits(): void {
+    if (this.limitKick) return;
+    this.limitKick = setTimeout(() => {
+      this.limitKick = null;
+      if (this.store.list().some((run) => run.rateHold)) void this.tick().catch((error) => console.error("[playbooks] tick for held runs failed:", errorText(error)));
+    }, this.options.limitKickMs ?? 250);
+    (this.limitKick as unknown as { unref?: () => void }).unref?.();
+  }
+
   /** Starts ready script and hand-off steps, ends the jobs of ended singleton runs, and starts boarding runs. */
   private async tick(): Promise<void> {
     if (this.ticking) {
@@ -2209,6 +2244,7 @@ export class Runtime {
         this.tickAgain = false;
         await this.tickPhase("releaseDelayed", () => this.releaseDelayed());
         await this.tickPhase("releaseHolds", () => this.releaseHolds());
+        await this.tickPhase("retryBlockedManagers", () => this.retryBlockedManagers());
         await this.tickPhase("driveManagerless", () => this.driveManagerless());
         await this.tickPhase("settleGateChats", () => this.settleGateChats());
         await this.tickPhase("askGatesInChat", () => this.askGatesInChat());
@@ -2227,6 +2263,8 @@ export class Runtime {
         await this.tickPhase("archiveEndedWorkspaces", () => this.archiveEndedWorkspaces());
         await this.tickPhase("archiveAgedWorkspaces", () => this.archiveAgedWorkspaces());
         await this.tickPhase("autoArchiveRuns", () => this.autoArchiveRuns());
+        await this.tickPhase("autoArchiveFailedWorkspaces", () => this.autoArchiveFailedWorkspaces());
+        await this.tickPhase("retryAutoArchivedWorkspaces", () => this.retryAutoArchivedWorkspaces());
       } while (this.tickAgain);
     } finally {
       this.ticking = false;
@@ -2259,11 +2297,11 @@ export class Runtime {
    * or null, which also lifts a hold the run had. Only agent and script steps count and are held; a gate, a hand-off or a
    * fan-out is never held (a fan-out's own step would deadlock the runs it started). `starting` reserves the quota of work that passes.
    */
-  private async rateCheck(run: Run, exceptKey = "", quota = true, stepId?: string): Promise<HoldVerdict | null> {
+  private async rateCheck(run: Run, exceptKey = "", quota = true): Promise<HoldVerdict | null> {
     const config = await this.rateLimits();
     let verdict: HoldVerdict | null = null;
     if (config.steps !== null || config.playbooks !== null) verdict = limitVerdict(run, this.store.list(), config, this.reservedStarts(exceptKey));
-    if (!verdict && quota && config.quota.pacing) verdict = this.paceVerdict(this.store.get(run.id) ?? run, config, stepId, exceptKey !== "");
+    if (!verdict && quota && config.quota.pacing) verdict = this.paceVerdict(this.store.get(run.id) ?? run, config, exceptKey !== "");
     await this.noteUnreported(run.id, config);
     await this.applyHold(run.id, verdict);
     return verdict;
@@ -2274,12 +2312,7 @@ export class Runtime {
       now: Date.now(),
       config,
       probe: (provider) => this.pacer.probe(provider, config.quota),
-      stepCost: (run, provider, windowId) => {
-        const manual = run.playbook.rateLimit.estimate;
-        if (manual !== null) return { cost: manual, source: "override" as const };
-        const known = this.costs.stepCost(run.playbook.id, provider, windowId);
-        return known === null ? null : { cost: known, source: "history" as const };
-      },
+      stepCost: (run, provider, windowId) => this.costs.stepCost(run.playbook.id, provider, windowId),
       reserved: (provider, windowId) => {
         const key = windowKey(provider, windowId);
         let total = 0;
@@ -2295,36 +2328,32 @@ export class Runtime {
     return step.kind === "agent" ? step.agent.provider ?? DEFAULT_PROVIDER : DEFAULT_PROVIDER;
   }
 
-  /** Playbook mode: a run is admitted once an agent step of it has started, or its quota is reserved. */
+  /** A run is admitted once an agent step of it has started, or its quota is reserved. */
   private rateAdmitted(run: Run): boolean {
     return this.reservedQuota.has(`run:${run.id}`) || run.playbook.steps.some((step) => step.kind === "agent" && (run.steps[step.id]?.attempts.length ?? 0) > 0);
   }
 
-  /** What the run wants to start: providers → steps. Playbook mode: all its remaining agent steps; step mode: the one step (the given one, else the first ready). */
-  private rateDemand(run: Run, mode: RateLimitsConfig["mode"], stepId?: string): Map<string, number> {
+  /** What the run wants to start: providers → steps (all its remaining agent steps: a run is admitted whole). */
+  private rateDemand(run: Run): Map<string, number> {
     const demand = new Map<string, number>();
-    const add = (id: string) => demand.set(this.stepProvider(run, id), (demand.get(this.stepProvider(run, id)) ?? 0) + 1);
-    if (mode === "step") {
-      const next = stepId ?? engine.readySteps(run).find((id) => engine.stepDef(run, id).kind === "agent");
-      if (next) add(next);
-      return demand;
-    }
     for (const step of run.playbook.steps) {
       const status = run.steps[step.id]?.status;
-      if (step.kind === "agent" && status !== "completed" && status !== "skipped") add(step.id);
+      if (step.kind !== "agent" || status === "completed" || status === "skipped") continue;
+      const provider = this.stepProvider(run, step.id);
+      demand.set(provider, (demand.get(provider) ?? 0) + 1);
     }
     return demand;
   }
 
   /** Runs that wait for headroom, in queue order (the asking run always included). */
-  private rateCandidates(config: RateLimitsConfig, asking: Run, stepId: string | undefined): RateCandidate[] {
+  private rateCandidates(asking: Run): RateCandidate[] {
     const runs = this.store.list();
     const out: RateCandidate[] = [];
     for (const run of runs) {
       const isAsking = run.id === asking.id;
       if (!isAsking && (run.archivedAt || isPipeline(run) || !isActive(run) || isPaused(run))) continue;
-      if (!isAsking && config.mode === "playbook" && this.rateAdmitted(run)) continue;
-      const demand = this.rateDemand(isAsking ? asking : run, config.mode, isAsking ? stepId : undefined);
+      if (!isAsking && this.rateAdmitted(run)) continue;
+      const demand = this.rateDemand(isAsking ? asking : run);
       if (demand.size === 0 && !isAsking) continue;
       out.push({ run: isAsking ? asking : run, priority: runPriority(run, runs), demand });
     }
@@ -2332,20 +2361,46 @@ export class Runtime {
   }
 
   /** The quota hold for work wanting to start, or null; with `reserve`, work that passes has its estimated cost reserved. */
-  private paceVerdict(run: Run, config: RateLimitsConfig, stepId: string | undefined, reserve: boolean): HoldVerdict | null {
+  private paceVerdict(run: Run, config: RateLimitsConfig, reserve: boolean): HoldVerdict | null {
     const providers = runProviders(run, DEFAULT_PROVIDER);
     if (providers.length === 0) return null;
     const ctx = this.planContext(config);
-    if (config.mode === "playbook" && this.rateAdmitted(run)) return exhaustionVerdict(providers, ctx).verdict;
+    if (this.rateAdmitted(run)) return exhaustionVerdict(providers, ctx).verdict ?? this.paceFit(run, ctx);
     this.pruneQuotaReservations();
-    const plan = planHeadroom(this.rateCandidates(config, run, stepId), ctx);
+    const plan = planHeadroom(this.rateCandidates(run), ctx);
     const hold = plan.holds.get(run.id) ?? null;
     const est = plan.admitted.get(run.id);
     if (!hold && reserve && est && Object.keys(est).length > 0) {
-      const id = config.mode === "step" ? `step:${run.id}/${stepId ?? ""}` : `run:${run.id}`;
-      this.reservedQuota.set(id, { runId: run.id, stepKey: config.mode === "step" ? `${run.id}/${stepId ?? ""}` : null, est, spent: {}, at: Date.now(), endedAt: null });
+      this.reservedQuota.set(`run:${run.id}`, { runId: run.id, est, spent: {}, at: Date.now(), endedAt: null });
     }
     return hold;
+  }
+
+  /**
+   * An admitted run between steps (no step running): paused when the capacity the pace allows no longer holds it
+   * (ADR 2026-11-21-pause-admitted-runs-to-fit-pace). All admitted runs compete by priority then oldest; the remaining cost of each
+   * (its reservation's remainder) is taken from the headroom, and the ones that do not fit are paused; they come back one by one in
+   * the same order as the pace relaxes or a run ends. A running step is never interrupted: such a run is only left as it is.
+   */
+  private paceFit(run: Run, ctx: PlanContext): HoldVerdict | null {
+    if (Object.values(run.steps).some((state) => state.status === "running")) return null;
+    const runs = this.store.list();
+    const admitted: AdmittedRun[] = [];
+    for (const other of runs) {
+      if (other.archivedAt || other.parent || isPipeline(other) || !isActive(other) || !this.rateAdmitted(other)) continue;
+      const reserved = this.reservedQuota.get(`run:${other.id}`);
+      const need: Record<string, number> = {};
+      for (const [key, est] of Object.entries(reserved?.est ?? {})) need[key] = Math.max(0, est - (reserved?.spent[key] ?? 0));
+      admitted.push({ run: other, priority: runPriority(other, runs), providers: runProviders(other, DEFAULT_PROVIDER), need });
+    }
+    const counted = new Set(admitted.map((entry) => `run:${entry.run.id}`));
+    const others = (provider: string, windowId: string) => {
+      const key = windowKey(provider, windowId);
+      let total = 0;
+      for (const [id, entry] of this.reservedQuota) if (!counted.has(id) && entry.endedAt === null) total += Math.max(0, (entry.est[key] ?? 0) - (entry.spent[key] ?? 0));
+      return total;
+    };
+    return planPace(admitted, ctx, others).get(run.id) ?? null;
   }
 
   /** A reservation whose work ended stays until the next successful usage read (the readings then include its use); an old one is dropped. */
@@ -2353,13 +2408,8 @@ export class Runtime {
     const now = Date.now();
     for (const [id, entry] of this.reservedQuota) {
       if (entry.endedAt === null) {
-        if (entry.stepKey) {
-          const [runId, stepId] = entry.stepKey.split("/");
-          if (!this.startingSteps.has(entry.stepKey) && this.store.get(runId!)?.steps[stepId!]?.status !== "running") entry.endedAt = now;
-        } else {
-          const run = this.store.get(entry.runId);
-          if (!run || !isActive(run)) entry.endedAt = now;
-        }
+        const run = this.store.get(entry.runId);
+        if (!run || !isActive(run)) entry.endedAt = now;
       }
       if (now - entry.at > 6 * 3_600_000) this.reservedQuota.delete(id);
     }
@@ -2420,10 +2470,8 @@ export class Runtime {
           const share = (delta * item.weight) / total;
           entry.points[window.id] = (entry.points[window.id] ?? 0) + share;
           this.attemptUse.set(key, entry);
-          for (const id of [`step:${item.runId}/${item.stepId}`, `run:${item.runId}`]) {
-            const reserved = this.reservedQuota.get(id);
-            if (reserved) reserved.spent[windowKey(provider, window.id)] = (reserved.spent[windowKey(provider, window.id)] ?? 0) + share;
-          }
+          const reserved = this.reservedQuota.get(`run:${item.runId}`);
+          if (reserved) reserved.spent[windowKey(provider, window.id)] = (reserved.spent[windowKey(provider, window.id)] ?? 0) + share;
         }
       }
     }
@@ -2458,6 +2506,37 @@ export class Runtime {
       await this.enqueue(runId, [`Rate limit lifted: the run continues.${ready.length > 0 ? ` Ready for you: ${ready.join(", ")}.` : " The plugin starts the ready steps by itself."}`]);
       await this.deliver(runId);
     }
+  }
+
+  /** Per run: when a quota-blocked manager's recovery is tried again, and how many tries have not recovered it (the interval doubles, 30 s to 10 min). */
+  private readonly managerRetry = new Map<string, { next: number; failures: number }>();
+
+  /**
+   * A manager blocked by its provider's quota with work pending (a queued wake-up, a recovery prompt, a ready step) is
+   * recovered by itself (`manager_recovery.retry`, default on): recoverManager runs as if called by hand, but only
+   * succeeds once a target of the chain (or `manager_recovery.fallback`) has headroom in the provider's usage reading.
+   * Runs from the 15 s limit timer, with a per-run backoff, and reads usage through the shared cache: it never hammers the endpoint.
+   */
+  private async retryBlockedManagers(): Promise<void> {
+    const blocked = new Set<string>();
+    for (const listed of this.store.list()) {
+      const managerId = listed.managerAgentId;
+      if (!managerId || listed.managerQuotaBlockedId !== managerId || !isActive(listed) || listed.archivedAt || isPaused(listed) || isManagerless(listed) || isPipeline(listed)) continue;
+      blocked.add(listed.id);
+      if (listed.inbox.length === 0 && !listed.managerRecoveryPrompt && engine.readyForManager(listed).length === 0) continue;
+      const state = this.managerRetry.get(listed.id) ?? { next: 0, failures: 0 };
+      if (Date.now() < state.next || this.recoveringManagers.has(managerId)) continue;
+      if (!(await this.managerRecovery(listed.playbook)).retry) continue;
+      state.failures += 1;
+      state.next = Date.now() + Math.min(30_000 * 2 ** (state.failures - 1), 600_000);
+      this.managerRetry.set(listed.id, state);
+      const result = await this.recoverManager(listed.id, managerId, "provider quota (automatic retry)", undefined, undefined, true).catch((error: unknown) => {
+        console.error(`[playbooks] automatic manager recovery of ${listed.id}:`, errorText(error));
+        return null;
+      });
+      if (result?.changed) this.managerRetry.delete(listed.id);
+    }
+    for (const id of [...this.managerRetry.keys()]) if (!blocked.has(id)) this.managerRetry.delete(id);
   }
 
   /** Lifts, by itself, every hold that no longer applies (capacity or quota returned, the run ended); runs again from the timer while any run is held. */
@@ -3675,6 +3754,13 @@ export class Runtime {
       const refreshed = run.scripts ? path.join(run.scripts.dir, step.script!) : null;
       const inWorktree = run.worktree ? path.join(run.worktree.path, step.script!) : null;
       const scriptFile = refreshed && existsSync(refreshed) ? refreshed : inWorktree && existsSync(inWorktree) ? inWorktree : path.join(run.workspaceDir, step.script!);
+      if (!existsSync(scriptFile)) {
+        // Fail fast with where it looked, instead of a bare ENOENT: a checkout behind origin is the usual cause.
+        const dir = engine.workDir(run);
+        void gitOutput(dir, ["rev-parse", "HEAD"]).then((sha) => sha.trim(), () => "unknown").then((sha) =>
+          done({ code: null, signal: null }, `script file not found: ${scriptFile} (workspace ${dir}, head ${sha}); the workspace checkout may be behind origin or the path is wrong`));
+        return;
+      }
       const child = spawn(scriptFile, [], {
         cwd: engine.workDir(run),
         env: scriptEnv(run, stepId, attempt, this.scriptFeedback.get(attemptId) ?? null),
@@ -4123,7 +4209,7 @@ export class Runtime {
     if (this.startingSteps.has(startKey)) throw new UserError(`step "${stepId}" is being started right now (the plugin starts ready agent steps by itself)`);
     this.startingSteps.add(startKey);
     try {
-      const held = await this.rateCheck(run, startKey, true, stepId);
+      const held = await this.rateCheck(run, startKey, true);
       if (held) throw new RateHeldError(held);
       return await this.startStepNow(managerId, run, step, brief, model);
     } finally {
@@ -4388,7 +4474,7 @@ export class Runtime {
   }
 
   /** archiveRun, with what happened to the workspace (`workspaceArchived: null` when the run was already archived: nothing was tried). */
-  async archiveRunAndWorkspace(runId: string): Promise<{ archivedAt: string; workspaceArchived: { archived: boolean; reason: string } | null }> {
+  async archiveRunAndWorkspace(runId: string, keepWorkspace: string | null = null, auto = false): Promise<{ archivedAt: string; workspaceArchived: { archived: boolean; reason: string; retry?: boolean } | null }> {
     const first = await this.store.mutate(runId, (run) => {
       if (!isTerminal(run.status)) throw new UserError(`run ${runId} is ${run.status}: cancel it before archiving`);
       if (isActive(run)) throw new UserError(`run ${runId} is wrapping up (after-tasks running): wait or cancel them before archiving`);
@@ -4399,14 +4485,22 @@ export class Runtime {
     if (!first.fresh) return { archivedAt: first.archivedAt, workspaceArchived: null };
     const run = this.store.get(runId)!;
     if (!run.playbook.workspace.archiveWithRun) return { archivedAt: first.archivedAt, workspaceArchived: { archived: false, reason: "workspace.archive_with_run is off" } };
-    const outcome = await this.archiveWorkspaceWithRun(run).catch((error: unknown) => ({ archived: false, reason: `could not check: ${errorText(error)}` }));
+    if (keepWorkspace !== null) {
+      // auto_archive.keep_failed_workspace: a restartable failed run keeps its workspace until autoArchiveFailedWorkspaces archives it.
+      await this.store.mutate(runId, (current) => void engine.noteEvent(current, "workspace_kept", null, `workspace ${current.workspaceId} kept until ${keepWorkspace}: the run failed and can be restarted (auto_archive.keep_failed_workspace)`, nowIso())).catch(() => undefined);
+      return { archivedAt: first.archivedAt, workspaceArchived: { archived: false, reason: `kept until ${keepWorkspace}: the run failed and can be restarted` } };
+    }
+    const outcome: { archived: boolean; reason: string; retry?: boolean } = await this.archiveWorkspaceWithRun(run).catch((error: unknown) => ({ archived: false, reason: `could not check: ${errorText(error)}`, retry: true }));
     await this.store
       .mutate(runId, (current) => {
         if (outcome.archived) {
           current.workspaceArchive = "done";
           engine.noteEvent(current, "workspace_archived", null, `workspace ${current.workspaceId} archived with the run (workspace.archive_with_run)`, nowIso());
+        } else {
+          engine.noteEvent(current, "workspace_kept", null, `workspace ${current.workspaceId} not archived with the run: ${outcome.reason}`, nowIso());
+          // auto_archive: a refusal that cannot clear is final; one that can (a busy agent) is asked again by retryAutoArchivedWorkspaces.
+          if (auto && outcome.retry === false) current.workspaceArchive = "skipped";
         }
-        else engine.noteEvent(current, "workspace_kept", null, `workspace ${current.workspaceId} not archived with the run: ${outcome.reason}`, nowIso());
       })
       .catch((error) => console.error(`[playbooks] could not record the workspace archive of ${runId}:`, errorText(error)));
     if (!outcome.archived) console.error(`[playbooks] workspace ${run.workspaceId} kept when archiving ${runId}: ${outcome.reason}`);
@@ -4421,18 +4515,32 @@ export class Runtime {
    * human's own agent is never archived. The run's worktree is a separate directory with its own
    * cleanup (cleanupEndedWorktrees): archiving the workspace touches neither it nor its state.
    */
-  private async archiveWorkspaceWithRun(run: Run, siblings: "unarchived" | "active" = "unarchived"): Promise<{ archived: boolean; reason: string }> {
-    const skip = (reason: string) => ({ archived: false, reason });
+  private async archiveWorkspaceWithRun(run: Run, siblings: "unarchived" | "active" = "unarchived"): Promise<{ archived: boolean; reason: string; retry?: boolean }> {
+    /** `retry`: the refusal can clear by itself (a busy agent, another run still in it): the auto-archive sweeps ask again. Unsaved work, an agent that is not the run's and a vanished workspace stay refused. */
+    const skip = (reason: string, retry = false) => ({ archived: false, reason, retry });
     if (!run.workspaceCreated) return skip("the run did not create its workspace (the project checkout or a workspace someone made is never archived)");
     const others = this.store.list().filter((other) => other.id !== run.id && other.workspaceId === run.workspaceId && (siblings === "active" ? isActive(other) : !other.archivedAt));
-    if (others.length > 0) return skip(`run ${others[0]!.id} still uses it${siblings === "active" ? " and is active" : " and is not archived"}`);
+    if (others.length > 0) return skip(`run ${others[0]!.id} still uses it${siblings === "active" ? " and is active" : " and is not archived"}`, true);
     const workspace = await this.workspaceOf(run.workspaceId);
     if (!workspace) return skip("the workspace no longer exists or is already archived");
     const listed = await this.api().agents.list({ filter: { projectKeys: [run.projectId] } });
     const agents = listed.entries.map((entry) => entry.agent).filter((agent) => agent.workspaceId === run.workspaceId && !agent.archivedAt && !agent.internal);
     const busy = agents.find((agent) => agent.status === "running" || agent.status === "initializing" || (agent.pendingPermissions?.length ?? 0) > 0);
-    if (busy) return skip(`agent ${busy.id} is running or waiting on a permission`);
-    const own = (agent: (typeof agents)[number]) => agent.labels?.[MANAGER_LABEL] !== undefined || agent.labels?.[RUN_LABEL] !== undefined || agent.labels?.[STEP_LABEL] !== undefined || agent.labels?.[GATE_LABEL] !== undefined;
+    if (busy) return skip(`agent ${busy.id} is running or waiting on a permission`, true);
+    // The run's own agents: a manager, step or gate agent (plugin labels), an agent a run recorded, and every agent a step created itself
+    // (a subagent, however deep: its parent chain ends at one of those). Nothing else is the run's.
+    const recorded = new Set(this.store.list().filter((other) => other.workspaceId === run.workspaceId).flatMap((other) => [other.managerAgentId, ...Object.values(other.steps).flatMap((step) => step.attempts.map((attempt) => attempt.agentId))]).filter(Boolean));
+    const labelled = (agent: (typeof agents)[number]) => agent.labels?.[MANAGER_LABEL] !== undefined || agent.labels?.[RUN_LABEL] !== undefined || agent.labels?.[STEP_LABEL] !== undefined || agent.labels?.[GATE_LABEL] !== undefined || recorded.has(agent.id);
+    const byId = new Map(agents.map((agent) => [agent.id, agent]));
+    const parentOf = (agent: (typeof agents)[number]) => (agent as { parentAgentId?: string | null }).parentAgentId ?? agent.labels?.["paseo.parent"] ?? null;
+    const own = (agent: (typeof agents)[number]): boolean => {
+      const seen = new Set<string>();
+      for (let current: (typeof agents)[number] | undefined = agent; current && !seen.has(current.id); current = byId.get(parentOf(current) ?? "")) {
+        if (labelled(current)) return true;
+        seen.add(current.id);
+      }
+      return false;
+    };
     const foreign = agents.filter((agent) => !own(agent));
     if (foreign.length > 0) return skip(`it holds agents that are not part of a run: ${foreign.map((agent) => agent.id).join(", ")}`);
     const dir = workspace.workspaceDirectory;
@@ -4440,7 +4548,16 @@ export class Runtime {
       const unsaved = await unsavedWork(dir).catch((error: unknown) => `could not check its git state: ${errorText(error)}`);
       if (unsaved) return skip(unsaved);
     }
-    await this.archiveWorkspace(run.workspaceId);
+    // Leftover agents of the run (idle or finished: none is busy, checked above) are archived first, so they are not left listed
+    // however the workspace archive treats them. A failure here is not fatal: the workspace archive is still tried.
+    for (const agent of agents.filter((candidate) => candidate.labels?.[MANAGER_LABEL] === undefined)) {
+      await this.api().agents.ref(agent.id).archive().catch((error: unknown) => console.error(`[playbooks] could not archive leftover agent ${agent.id} of ${run.id}:`, errorText(error)));
+    }
+    try {
+      await this.archiveWorkspace(run.workspaceId);
+    } catch (error) {
+      return skip(`archive_workspace failed: ${errorText(error)}`, true);
+    }
     return { archived: true, reason: "archived" };
   }
 
@@ -4500,12 +4617,82 @@ export class Runtime {
     }
   }
 
+  /**
+   * `auto_archive.keep_failed_workspace` (ADR 2026-11-23-auto-archive-failed-run-workspaces): the workspace of a failed run that can
+   * be restarted was kept when the run was archived; this archives it once the keep period has passed since the failure, with the
+   * checks of `workspace.archive_with_run` (unsaved or unpushed work, a running agent, a human's agent, another active run in it keep
+   * it). A restarted run is not failed, so nothing is archived. A refusal that can clear (a busy agent, another active run) is asked again
+   * every AUTO_ARCHIVE_RETRY_MS for keep_failed_workspace more; one that cannot (unsaved work, a human's agent) is final and written once
+   * (ADR 2026-11-23-auto-archive-leftover-agents).
+   */
+  private async autoArchiveFailedWorkspaces(): Promise<void> {
+    const now = Date.now();
+    let looked = 0;
+    for (const candidate of this.store.list()) {
+      if (looked >= AUTO_ARCHIVE_PER_TICK) break;
+      const until = workspaceKeptUntil(candidate);
+      if (until === null || candidate.batch || isPipeline(candidate) || now < Date.parse(until)) continue;
+      if (now - (this.workspaceRetryTried.get(candidate.id) ?? 0) < AUTO_ARCHIVE_RETRY_MS) continue;
+      looked += 1;
+      this.workspaceRetryTried.set(candidate.id, now);
+      const outcome = await this.archiveWorkspaceWithRun(candidate, "active").catch((error: unknown) => ({ archived: false, reason: `could not check: ${errorText(error)}`, retry: true }));
+      await this.settleAutoWorkspace(candidate.id, outcome, until, "after the keep period", (run) => `archived ${Math.round(run.playbook.autoArchive.keepFailedWorkspaceMs / 60_000)} min after the run failed (auto_archive.keep_failed_workspace)`, (run) => run.status === "failed");
+    }
+  }
+
+  /** When `autoArchiveFailedWorkspaces` / `retryAutoArchivedWorkspaces` last asked about a run's workspace: not asked again for AUTO_ARCHIVE_RETRY_MS. */
+  private readonly workspaceRetryTried = new Map<string, number>();
+
+  /**
+   * Records the outcome of an auto_archive workspace attempt. A refusal that can clear by itself (`retry`: a busy agent, another run
+   * in it, the daemon failing) is asked again on a later sweep until `since` + keep_failed_workspace has passed (then it is final);
+   * one that cannot (unsaved work, an agent that is not the run's) is final at once. A refusal is written once per distinct reason.
+   */
+  private async settleAutoWorkspace(runId: string, outcome: { archived: boolean; reason: string; retry?: boolean }, since: string, when: string, archivedNote: (run: Run) => string, applies: (run: Run) => boolean): Promise<void> {
+    await this.store
+      .mutate(runId, (run) => {
+        if (!applies(run) || run.workspaceArchive !== null) return;
+        if (outcome.archived) {
+          run.workspaceArchive = "done";
+          engine.noteEvent(run, "workspace_archived", null, `workspace ${run.workspaceId} ${archivedNote(run)}`, nowIso());
+          return;
+        }
+        const giveUp = outcome.retry !== true || Date.now() >= Date.parse(since) + run.playbook.autoArchive.keepFailedWorkspaceMs;
+        if (giveUp) run.workspaceArchive = "skipped";
+        const text = `workspace ${run.workspaceId} not archived ${when}: ${outcome.reason}${giveUp ? "" : " (asked again on a later sweep)"}`;
+        if (run.history.findLast((event) => event.type === "workspace_kept")?.detail !== text) engine.noteEvent(run, "workspace_kept", null, text, nowIso());
+      })
+      .catch((error: unknown) => console.error(`[playbooks] could not record the workspace archive of ${runId}:`, errorText(error)));
+    if (!outcome.archived) console.error(`[playbooks] workspace of ${runId} kept: ${outcome.reason}`);
+  }
+
+  /**
+   * An auto-archived run whose workspace archive was refused for a reason that can clear (an agent still running or waiting on a
+   * permission, another run in it) is asked again every AUTO_ARCHIVE_RETRY_MS, for keep_failed_workspace after the run was archived;
+   * then the refusal is final. A failed run held by keep_failed_workspace is handled by `autoArchiveFailedWorkspaces`.
+   */
+  private async retryAutoArchivedWorkspaces(): Promise<void> {
+    const now = Date.now();
+    let looked = 0;
+    for (const candidate of this.store.list()) {
+      if (looked >= AUTO_ARCHIVE_PER_TICK) break;
+      if (!candidate.playbook.autoArchive.enabled || !candidate.playbook.workspace.archiveWithRun || !candidate.archivedAt || !candidate.workspaceCreated || candidate.workspaceArchive !== null) continue;
+      if (!isTerminal(candidate.status) || isActive(candidate) || candidate.batch || isPipeline(candidate) || workspaceKeptUntil(candidate) !== null) continue;
+      if (!candidate.history.some((event) => event.type === "run_auto_archived") || !candidate.history.some((event) => event.type === "workspace_kept" && event.at >= candidate.archivedAt!)) continue;
+      if (now - (this.workspaceRetryTried.get(candidate.id) ?? 0) < AUTO_ARCHIVE_RETRY_MS) continue;
+      looked += 1;
+      this.workspaceRetryTried.set(candidate.id, now);
+      const outcome = await this.archiveWorkspaceWithRun(candidate, "active").catch((error: unknown) => ({ archived: false, reason: `could not check: ${errorText(error)}`, retry: true }));
+      await this.settleAutoWorkspace(candidate.id, outcome, candidate.archivedAt, "after the run was archived", () => "archived on a later sweep (auto_archive)", () => true);
+    }
+  }
+
   private async autoArchiveRun(candidate: Run): Promise<void> {
     const managerId = isManagerless(candidate) ? null : candidate.managerAgentId || null;
     if (managerId && this.busyManagers.has(managerId)) return;
     const manager = managerId ? (await this.api().agents.ref(managerId).refresh().catch(() => null))?.agent ?? null : null;
     if (manager && !manager.archivedAt && (manager.status === "running" || manager.status === "initializing" || manager.activeTurn || (manager.pendingPermissions?.length ?? 0) > 0)) return;
-    const { workspaceArchived } = await this.archiveRunAndWorkspace(candidate.id);
+    const { workspaceArchived } = await this.archiveRunAndWorkspace(candidate.id, workspaceKeptUntil(candidate), true);
     // The manager goes only when the plugin made it (a restart_run takeOver may have made a human's agent the manager) and no other run uses it.
     const shared = this.store.list().some((other) => other.id !== candidate.id && !other.archivedAt && other.managerAgentId === managerId);
     let managerArchived = false;
@@ -4894,11 +5081,13 @@ export class Runtime {
   }
 
   /** A manager-only CAS handoff. Creation is unprompted until the binding is durable. */
-  async recoverManager(runId: string, expectedManagerId: string, reason: string, target?: string, outcome?: string) {
+  async recoverManager(runId: string, expectedManagerId: string, reason: string, target?: string, outcome?: string, auto = false) {
     return this.managerOperation(runId, async () => {
       this.recoveringManagers.add(expectedManagerId);
       let result;
+      let retargeted = false;
       try {
+        const settings = await this.managerRecovery(await this.store.get(runId)?.playbook);
         result = await this.store.mutate(runId, async (run) => {
           if (run.managerAgentId !== expectedManagerId) {
             const prior = run.managerRecoveries.find((entry) => entry.from === expectedManagerId && entry.to === run.managerAgentId);
@@ -4914,15 +5103,19 @@ export class Runtime {
           if (!proof) throw new UserError("manager has no confirmed provider quota exit; recovery refused");
           if (!proof.agent.provider || !proof.agent.model) throw new UserError("manager provider/model is unknown; recovery refused");
           if (this.runsOfManager(expectedManagerId).filter(isActive).length !== 1) throw new UserError("manager owns multiple active runs; recovery refused");
-          if (target && !this.managerTargets(run.playbook).some((candidate) => `${candidate.provider}/${candidate.model}` === target)) {
+          const chain = this.managerTargets(run.playbook, settings.fallback);
+          if (target && !chain.some((candidate) => `${candidate.provider}/${candidate.model}` === target)) {
             throw new UserError("model is not in the run's configured manager fallback chain; recovery refused");
           }
           const exhausted = `${proof.agent.provider}/${proof.agent.model}`;
-          engine.markTarget(run, exhausted, nowIso());
+          if (!auto) engine.markTarget(run, exhausted, nowIso());
+          else if (await this.usageShowsHeadroom(run.playbook, proof.agent.provider, proof.agent.model)) run.exhausted = run.exhausted.filter((entry) => entry.target !== exhausted);
+          else if (!run.exhausted.some((entry) => entry.target === exhausted)) engine.markTarget(run, exhausted, nowIso());
           run.managerQuotaBlockedId = expectedManagerId;
-          const skips = await this.managerSkips(run.playbook, engine.activeExhausted(run));
-          const candidates = this.managerTargets(run.playbook).filter((candidate) => candidate.model && !skips.includes(`${candidate.provider}/${candidate.model}`));
+          const skips = await this.managerSkips(run.playbook, engine.activeExhausted(run), settings.fallback);
+          const candidates = chain.filter((candidate) => candidate.model && !skips.includes(`${candidate.provider}/${candidate.model}`));
           const chosen = target ? candidates.find((candidate) => `${candidate.provider}/${candidate.model}` === target) : candidates[0];
+          retargeted = chosen !== undefined && settings.fallback !== null && chosen.provider === settings.fallback.provider && chosen.model === settings.fallback.model && !this.managerTargets(run.playbook).some((candidate) => candidate.provider === chosen.provider && candidate.model === chosen.model);
           // Commit the quota block even if there is no available fallback: no futile wake-up loop.
           if (!chosen) return { changed: false, blocked: true as const, from: expectedManagerId, to: expectedManagerId, target: exhausted, thinking: null, reason: "no configured fallback is available", at: nowIso() };
           const config: AgentConfig = { provider: `${chosen.provider}/${chosen.model}` };
@@ -4943,10 +5136,15 @@ export class Runtime {
           run.managerRecoveries.push(record);
           run.managerQuotaBlockedId = null;
           run.managerRecoveryPrompt = `${managerTakeover(run, [], "after its previous manager hit provider quota")}\nRead get_run with view full before acting. Preserve all existing attempts, reports, outputs, local commits, jobs and gates. Do not restart steps or decide a human/role gate. Respect blockers in reports/lastMessage: a blocked or unimplemented report is not success just to fit an outcome schema. Do not retry blocked work until its documented prerequisites and required checks pass.\nRecovery reason: ${record.reason}\nCurrent state: ${JSON.stringify({ status: run.status, steps: Object.fromEntries(Object.entries(run.steps).map(([id, state]) => [id, state.status])), gates: run.gates, queue: run.inbox })}`;
+          if (auto) engine.noteEvent(run, "manager_recovered", null, `the manager was blocked by its provider's quota; the plugin replaced it by itself with ${record.target}${retargeted ? " (manager_recovery.fallback)" : ""}`, record.at);
           return { changed: true, ...record };
         });
       } finally {
         this.recoveringManagers.delete(expectedManagerId);
+      }
+      if (auto && result.changed) {
+        const fresh = this.store.get(runId);
+        if (fresh) await this.bus.emit("run.manager_recovered", { ...runFieldsOf(fresh), fromManagerId: expectedManagerId, managerId: result.to, target: result.target, retargeted }, { runId, source: "runs" }).catch((error: unknown) => console.error("[playbooks] could not emit run.manager_recovered:", errorText(error)));
       }
       if (!("blocked" in result)) await this.bus.rebindOwner(expectedManagerId, result.to);
       if (result.changed) {
@@ -5758,7 +5956,7 @@ export class Runtime {
 
   /** Agent config of a new Playbook Manager for this playbook. */
   /** The manager's targets (its tier, primary first) with their resolved provider and model. */
-  private managerTargets(playbook: Playbook) {
+  private managerTargets(playbook: Playbook, recoveryFallback: ManagerRecoveryConfig["fallback"] = null) {
     const targets: AgentSettings[] = [playbook.manager, ...(playbook.manager.fallback ?? [])];
     const own = targets.map((target) => {
       const provider = target.provider ?? DEFAULT_PROVIDER;
@@ -5769,12 +5967,34 @@ export class Runtime {
       const [provider, model] = splitTarget(entry);
       return { target: inheritTarget({ ...own[0]!.target, provider: own[0]!.provider }, provider, model), provider, model };
     });
-    return [...own, ...extra];
+    const all = [...own, ...extra];
+    // `manager_recovery.fallback` (opt-in): the last resort of a recovery, after the manager's own chain.
+    if (recoveryFallback && !all.some((candidate) => candidate.provider === recoveryFallback.provider && candidate.model === recoveryFallback.model)) {
+      all.push({ target: inheritTarget({ ...own[0]!.target, provider: own[0]!.provider }, recoveryFallback.provider, recoveryFallback.model), provider: recoveryFallback.provider, model: recoveryFallback.model });
+    }
+    return all;
+  }
+
+  /** `manager_recovery` in effect for a playbook: its own fields, then the user config, then the defaults (retry on, no fallback). */
+  private async managerRecovery(playbook: Playbook | undefined): Promise<ManagerRecoveryConfig> {
+    const user = await readManagerRecoveryConfig().catch(() => ({}) as Partial<ManagerRecoveryConfig>);
+    return {
+      retry: playbook?.managerRecovery?.retry ?? user.retry ?? DEFAULT_MANAGER_RECOVERY.retry,
+      fallback: playbook?.managerRecovery?.fallback ?? user.fallback ?? DEFAULT_MANAGER_RECOVERY.fallback,
+    };
+  }
+
+  /** Whether the provider's usage reading is available and shows no window of `provider`/`model` at the playbook's threshold. */
+  private async usageShowsHeadroom(playbook: Playbook, provider: string, model: string | undefined): Promise<boolean> {
+    if (!playbook.usageCheck) return false;
+    const snapshot = await this.usage.read().catch(() => null);
+    if (!snapshot || !snapshot.providers.some((entry) => entry.providerId === provider && (entry.status === undefined || entry.status === "available"))) return false;
+    return usageBlock(snapshot, provider, model, playbook.usageThreshold) === null;
   }
 
   /** `exhausted` plus the manager targets whose provider's usage is at the threshold: what a new manager skips. */
-  private async managerSkips(playbook: Playbook, exhausted: string[] = []): Promise<string[]> {
-    const blocks = await this.usageBlocks(playbook, this.managerTargets(playbook));
+  private async managerSkips(playbook: Playbook, exhausted: string[] = [], recoveryFallback: ManagerRecoveryConfig["fallback"] = null): Promise<string[]> {
+    const blocks = await this.usageBlocks(playbook, this.managerTargets(playbook, recoveryFallback));
     return [...exhausted, ...blocks.keys()];
   }
 
@@ -6504,16 +6724,35 @@ export class Runtime {
   }
 
   /** A new workspace branched off this one's current ref, with a new Playbook Manager that starts the run there. */
+  /**
+   * A new workspace branches off the root checkout's local branch, which may be behind origin (a script the playbook
+   * references is then missing). Right after creation it is fast-forwarded to `origin/<branch>`. Best effort: when that is
+   * impossible (offline, diverged) the run starts as it is and a note is logged.
+   */
+  private async freshenNewWorkspace(workspaceId: string, rootDir: string, branch: string | null | undefined): Promise<void> {
+    if (!branch) return;
+    try {
+      const dir = (await this.lookupWorkspace(workspaceId))?.workspaceDirectory;
+      if (!dir || dir === rootDir) return;
+      const result = await freshenCheckout(dir, branch);
+      if (result.note) console.warn(`[playbooks] new workspace ${workspaceId} stays on the root checkout's ${branch}: ${result.note}`);
+      else if (result.updated) console.log(`[playbooks] new workspace ${workspaceId} fast-forwarded to origin/${branch}`);
+    } catch (error) {
+      console.warn(`[playbooks] could not bring new workspace ${workspaceId} up to date:`, errorText(error));
+    }
+  }
+
   private async startInNewWorkspace(workspaceDir: string, playbook: Playbook, inputs: Record<string, VarValue>, workspaceName?: string, child?: { runId: string; parent: NonNullable<Run["parent"]> }, priority?: number) {
     const runId = child?.runId ?? `run_${shortId()}`;
     const id = runId.replace(/^run_/, "");
     const branch = worktreeBranch(playbook.id, id);
     const base = (await currentRef(workspaceDir)) ?? undefined;
     const created = await this.createWorkspace({
-      title: workspaceTitle(playbook.title, inputs, workspaceName),
+      title: workspaceTitle(playbook.title, inputs, workspaceName, playbook.workspace.title),
       source: { kind: "worktree", cwd: workspaceDir, action: "branch-off", branchName: branch, ...(base ? { refName: base } : {}) },
     });
     this.addReservation(created.id, { runId, branch, playbook, inputs, created: true, ...(child ? { parent: child.parent } : {}), ...(priority !== undefined ? { priority } : {}) });
+    await this.freshenNewWorkspace(created.id, workspaceDir, base ?? (await defaultBranch(workspaceDir)));
     if (playbook.managerMode === "none") {
       // No manager agent: the plugin creates the run itself, from the reservation, and drives it.
       try {

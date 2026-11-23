@@ -167,6 +167,27 @@ export async function fastForward(cwd: string, branch: string): Promise<void> {
 }
 
 /**
+ * Brings the checkout at `cwd` (a new workspace's worktree, branched off a possibly stale local `branch`) up to date with
+ * `origin/<branch>`: fetch, then `merge --ff-only`. Never throws: `note` says why it stayed where it was (offline, no origin,
+ * the checkout has diverged), null when it is current.
+ */
+export async function freshenCheckout(cwd: string, branch: string): Promise<{ updated: boolean; note: string | null }> {
+  const first = (error: unknown) => (error instanceof Error ? error.message : String(error)).split("\n").find((line) => line.trim() && !line.startsWith("Command failed"))?.trim() ?? "git failed";
+  try {
+    await git(cwd, ["fetch", "--quiet", "origin", branch]);
+  } catch (error) {
+    return { updated: false, note: `could not fetch origin/${branch}: ${first(error)}` };
+  }
+  try {
+    const before = (await git(cwd, ["rev-parse", "HEAD"])).trim();
+    await git(cwd, ["merge", "--ff-only", "--quiet", `origin/${branch}`]);
+    return { updated: (await git(cwd, ["rev-parse", "HEAD"])).trim() !== before, note: null };
+  } catch (error) {
+    return { updated: false, note: `could not fast-forward to origin/${branch}: ${first(error)}` };
+  }
+}
+
+/**
  * Work in `cwd` that archiving its workspace could hide: uncommitted changes (untracked files included) or commits on a local
  * branch that no remote has. Null when there is none, or when `cwd` is not a git checkout.
  */

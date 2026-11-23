@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { DEFAULT_RATE_LIMITS } from "./config";
 import { newRun } from "./engine";
 import { loadPlaybooks } from "./loader";
-import { CostHistory, exhaustionVerdict, orderCandidates, planHeadroom, windowKey, type Candidate, type PlanContext } from "./rate-budget";
+import { CostHistory, exhaustionVerdict, orderCandidates, planHeadroom, planPace, windowKey, type Candidate, type PlanContext } from "./rate-budget";
 import { admittedRunIds, windowRooms, type Probe } from "./rate-limit";
 import type { Run } from "../shared/types";
 
@@ -32,7 +32,7 @@ async function mk(count: number, header = ""): Promise<Run[]> {
 /** 50 of 168 hours gone, 97 usable: the pace ceiling is 28.9 points; usage `used` leaves 28.9 - used of headroom. */
 function ctxOf(used: number | null, extra: Partial<PlanContext> = {}, reserved: Record<string, number> = {}): PlanContext {
   const probe = (): Probe => (used === null ? { state: "unreported" } : { state: "ok", rooms: windowRooms({ providerId: "claude", windows: [usage(used)] }, 97, NOW) });
-  return { now: NOW, config: DEFAULT_RATE_LIMITS, probe, stepCost: () => ({ cost: 2, source: "override" }), reserved: (provider, id) => reserved[windowKey(provider, id)] ?? 0, ...extra };
+  return { now: NOW, config: DEFAULT_RATE_LIMITS, probe, stepCost: () => 2, reserved: (provider, id) => reserved[windowKey(provider, id)] ?? 0, ...extra };
 }
 const want = (run: Run, steps = 1, priority = 0): Candidate => ({ run, priority, demand: new Map([["claude", steps]]) });
 
@@ -73,7 +73,7 @@ describe("headroom plan", () => {
     history.add("work", "claude", { weekly: 2 });
     expect(history.stepCost("work", "claude", "weekly")).toBe(1.5);
     expect(history.stepCost("other", "claude", "weekly")).toBeNull();
-    const ctx = ctxOf(25, { stepCost: (run, provider, id) => (history.stepCost(run.playbook.id, provider, id) === null ? null : { cost: history.stepCost(run.playbook.id, provider, id)!, source: "history" as const }) });
+    const ctx = ctxOf(25, { stepCost: (run, provider, id) => history.stepCost(run.playbook.id, provider, id) });
     // 3.9 free: two 1.5-point steps fit, a third (4.5) does not.
     const plan = planHeadroom([want(runs[0]!, 2), want(runs[1]!, 1)], ctx);
     expect(plan.holds.get("r1")!.reason).toContain("from history");
@@ -101,7 +101,7 @@ describe("headroom plan", () => {
     expect(planHeadroom([want(runs[0]!)], none).holds.get("r0")!.reason).toContain("unavailable");
   });
 
-  it("does not pace by cost a playbook with no estimate and no history yet: it reserves nothing, but the hard cap still holds", async () => {
+  it("does not pace by cost a playbook with no history yet: it reserves nothing, but the hard cap still holds", async () => {
     const runs = await mk(2);
     const none = (used: number) => ctxOf(used, { stepCost: () => null });
     // Usage far ahead of the pace (40 of a 28.9 ceiling): still starts, and takes nothing from the headroom.
@@ -127,7 +127,7 @@ describe("headroom plan", () => {
 
   it("caps an estimate at what the window can ever hold, so a big run is still admitted at some point", async () => {
     const runs = await mk(1);
-    const plan = planHeadroom([want(runs[0]!, 100)], ctxOf(0, { stepCost: () => ({ cost: 5, source: "history" }) }));
+    const plan = planHeadroom([want(runs[0]!, 100)], ctxOf(0, { stepCost: () => 5 }));
     expect(plan.holds.get("r0")!.estimatedCost).toBe(97);
   });
 });
@@ -142,11 +142,6 @@ describe("priority", () => {
     expect(runPriority(runs[1]!, runs)).toBe(-3);
   });
 
-  it("reads rate_limit.estimate (points per step) next to priority", async () => {
-    const runs = await mk(1, "rate_limit: { priority: 1, estimate: 3 }\n");
-    expect(runs[0]!.playbook.rateLimit).toEqual({ priority: 1, estimate: 3 });
-  });
-
   it("orders the optional playbook cap, and never takes a place from a run that already started", async () => {
     const runs = await mk(3);
     runs[2]!.priority = 9;
@@ -154,5 +149,47 @@ describe("priority", () => {
     // r0 has started: the higher-priority newcomer does not evict it.
     runs[0]!.steps.a!.attempts.push({ n: 1, agentId: "x", startedAt: new Date(NOW).toISOString(), endedAt: null } as never);
     expect([...admittedRunIds(runs, 1)!]).toEqual(["r0"]);
+  });
+});
+
+describe("pace fit of admitted runs", () => {
+  const key = windowKey("claude", "weekly");
+  const entry = (run: Run, need: number, priority = 0) => ({ run, priority, providers: ["claude"], need: need > 0 ? { [key]: need } : {} });
+  const none = () => 0;
+
+  it("keeps what the headroom covers by priority then oldest, and pauses the rest in queue order", async () => {
+    const runs = await mk(5);
+    // Headroom 28.87 - 20 = 8.87 points: room for 4 runs of 2.
+    expect([...planPace(runs.map((run) => entry(run, 2)), ctxOf(20), none).keys()]).toEqual(["r4"]);
+    const tight = planPace(runs.map((run) => entry(run, 2)), ctxOf(23), none);
+    expect([...tight.keys()].sort()).toEqual(["r2", "r3", "r4"]);
+    expect(tight.get("r2")).toMatchObject({ kind: "pace", position: 1, provider: "claude", window: "weekly" });
+    expect(tight.get("r4")!.position).toBe(3);
+  });
+
+  it("a higher priority keeps running and the newest low priority is paused", async () => {
+    const runs = await mk(3);
+    const paused = planPace([entry(runs[0]!, 2, 0), entry(runs[1]!, 2, 0), entry(runs[2]!, 2, 5)], ctxOf(23), none);
+    expect([...paused.keys()]).toEqual(["r1"]);
+  });
+
+  it("resumes as the headroom grows or a run ends, never beyond the capacity", async () => {
+    const runs = await mk(3);
+    expect([...planPace(runs.map((run) => entry(run, 2)), ctxOf(24), none).keys()]).toEqual(["r2"]);
+    // One run ends: the two left fit.
+    expect(planPace(runs.slice(0, 2).map((run) => entry(run, 2)), ctxOf(24), none).size).toBe(0);
+    // The pace relaxes: all three fit.
+    expect(planPace(runs.map((run) => entry(run, 2)), ctxOf(20), none).size).toBe(0);
+  });
+
+  it("never pauses a run without a cost, and a large run blocks smaller later ones on its provider", async () => {
+    const runs = await mk(3);
+    const paused = planPace([entry(runs[0]!, 0), entry(runs[1]!, 50), entry(runs[2]!, 1)], ctxOf(20), none);
+    expect([...paused.keys()]).toEqual(["r1", "r2"]);
+  });
+
+  it("counts other reservations against the headroom", async () => {
+    const runs = await mk(2);
+    expect(planPace(runs.map((run) => entry(run, 2)), ctxOf(20), () => 6).size).toBe(1);
   });
 });

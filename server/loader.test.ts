@@ -67,6 +67,20 @@ describe("loadPlaybooks", () => {
     expect(entries.find((entry) => entry.id === "pr")).toMatchObject({ hidden: false, errors: [] });
   });
 
+  it("reads workspace.title, the playbook's over the default, and refuses an undeclared input", async () => {
+    const step = "steps:\n  - id: a\n    role: { name: investigator, prompt: go }\n";
+    const dir = await workspace({
+      "defaults/main.yaml": "workspace: { title: \"Run {ticket}\" }\n",
+      "own.yaml": `workspace: { title: "Ship {ticket}" }\ninputs: { ticket: { type: string, required: true } }\n${step}`,
+      "plain.yaml": `inputs: { ticket: { type: string } }\n${step}`,
+      "bad.yaml": `workspace: { title: "Ship {tickt}" }\ninputs: { ticket: { type: string } }\n${step}`,
+    });
+    const { entries } = await loadPlaybooks(dir);
+    expect(entries.find((entry) => entry.id === "own")?.playbook?.workspace.title).toBe("Ship {ticket}");
+    expect(entries.find((entry) => entry.id === "plain")?.playbook?.workspace.title).toBe("Run {ticket}");
+    expect(entries.find((entry) => entry.id === "bad")?.errors.join("\n")).toMatch(/workspace\.title uses "\{tickt\}" but the playbook declares no such input/);
+  });
+
   it("reports when no folder exists", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "playbooks-"));
     temps.push(dir);
@@ -307,18 +321,39 @@ steps:
     expect((await loadPlaybooks(none)).entries[0]!.playbook!.slowWarning).toEqual({ runs: 10, factor: 2 });
   });
 
+  it("reads manager_recovery in a playbook and in defaults, field by field (unset = null); refuses a flat or unknown key", async () => {
+    const steps = "steps:\n  - id: a\n    role: { name: investigator, prompt: go }\n";
+    const dir = await workspace({ "defaults/main.yaml": "manager_recovery: { retry: false, fallback: { provider: codex, model: gpt-5-mini } }\n", "pr.yaml": `manager_recovery: { retry: true }\n${steps}`, "plain.yaml": steps });
+    const entries = (await loadPlaybooks(dir)).entries;
+    expect(entries.find((entry) => entry.id === "pr")!.playbook!.managerRecovery).toEqual({ retry: true, fallback: { provider: "codex", model: "gpt-5-mini" } });
+    expect(entries.find((entry) => entry.id === "plain")!.playbook!.managerRecovery).toEqual({ retry: false, fallback: { provider: "codex", model: "gpt-5-mini" } });
+    const none = await workspace({ "plain.yaml": steps });
+    expect((await loadPlaybooks(none)).entries[0]!.playbook!.managerRecovery).toEqual({ retry: null, fallback: null });
+    const bad = await workspace({ "pr.yaml": `manager_recovery: { retry: true, fallback: { provider: codex } }\n${steps}`, "other.yaml": `manager_recovery: { fallback: codex/gpt-5-mini }\n${steps}` });
+    expect((await loadPlaybooks(bad)).entries.every((entry) => entry.errors.length > 0)).toBe(true);
+  });
+
   it("reads rate_limit.priority in a playbook and in defaults (default 0); refuses a bad or unknown rate_limit", async () => {
     const steps = "steps:\n  - id: a\n    role: { name: investigator, prompt: go }\n";
     const dir = await workspace({ "defaults/main.yaml": "rate_limit: { priority: 2 }\n", "urgent.yaml": `rate_limit: { priority: 9 }\n${steps}`, "plain.yaml": steps });
     const entries = (await loadPlaybooks(dir)).entries;
-    expect(entries.find((entry) => entry.id === "urgent")!.playbook!.rateLimit).toEqual({ priority: 9, estimate: null });
-    expect(entries.find((entry) => entry.id === "plain")!.playbook!.rateLimit).toEqual({ priority: 2, estimate: null });
+    expect(entries.find((entry) => entry.id === "urgent")!.playbook!.rateLimit).toEqual({ priority: 9 });
+    expect(entries.find((entry) => entry.id === "plain")!.playbook!.rateLimit).toEqual({ priority: 2 });
     const none = await workspace({ "plain.yaml": steps });
-    expect((await loadPlaybooks(none)).entries[0]!.playbook!.rateLimit).toEqual({ priority: 0, estimate: null });
-    for (const block of ["{ priority: high }", "{ priority: 1.5 }", "{ estimate: 0 }", "{ estimate: x }", "{ weight: 3 }", "3"]) {
+    expect((await loadPlaybooks(none)).entries[0]!.playbook!.rateLimit).toEqual({ priority: 0 });
+    for (const block of ["{ priority: high }", "{ priority: 1.5 }", "{ weight: 3 }", "3"]) {
       const bad = await workspace({ "pr.yaml": `rate_limit: ${block}\n${steps}` });
       expect((await loadPlaybooks(bad)).entries[0]!.errors.length, block).toBeGreaterThan(0);
     }
+  });
+
+  it("refuses the removed rate_limit.estimate with a message saying so, in a playbook and in defaults", async () => {
+    const steps = "steps:\n  - id: a\n    role: { name: investigator, prompt: go }\n";
+    const inPlaybook = await workspace({ "pr.yaml": `rate_limit: { priority: 1, estimate: 3 }\n${steps}` });
+    expect((await loadPlaybooks(inPlaybook)).entries[0]!.errors.join("\n")).toMatch(/rate_limit\.estimate.*was removed/);
+    const inDefaults = await workspace({ "defaults/main.yaml": "rate_limit: { estimate: 3 }\n", "pr.yaml": steps });
+    const loaded = await loadPlaybooks(inDefaults);
+    expect(JSON.stringify(loaded)).toMatch(/rate_limit\.estimate.*was removed/);
   });
 
   it("reads agent_rules: defaults first, then the playbook's, each once; absent means none", async () => {

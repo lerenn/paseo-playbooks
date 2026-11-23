@@ -116,6 +116,7 @@ providers:             # provider failover
   fallback: [codex/gpt-5.5, claude/claude-opus-5-5]  # provider/model targets every step falls back to, after its own tier (default none)
   usage: { check: true, threshold: 100 }  # skip a target whose provider's reported usage window is at/over threshold % (defaults shown; check: false disables)
 timeout: 1h            # default step timeout (optional)
+manager_recovery: { retry: true }  # a quota-blocked manager is recovered by itself once its provider has headroom (default retry: true); opt-in fallback: { provider: codex, model: gpt-5-mini } re-assigns it (also allowed in a playbook, and in config.yaml)
 slow_warning: { runs: 10, factor: 2 }  # warn when a step takes more than factor x the mean of its last `runs` completed runs (defaults shown; also allowed in a playbook)
 agent_rules: ["Prefer simple, separate shell commands."]  # house rules added to the prompt of every agent of the folder (a playbook can add its own `agent_rules:`; at most 20 rules of 500 characters; see "Agent rules")
 gates: { on_behalf: allow }  # allow (default) | deny: whether an agent outside the runs may answer a human gate with resume_gate, with the human's own answer
@@ -127,10 +128,12 @@ workspace:             # what happens to the workspace a run created with newWor
   archive: on_end      # never (default) | on_end: archive it when the run completes or is canceled
   keep_failed: true    # keep it when the run failed or lost its manager (default true)
   archive_with_run: true   # archiving a run also archives the workspace it created, when safe: no uncommitted/unpushed work (default true)
+  title: "Ship {ticket}"   # title of that workspace, {input} filled from the run's inputs (default "<playbook title>: <first input>"; an unfilled placeholder keeps the default)
   archive_after: 6h        # archive the workspace of a completed/canceled run this long after it ended; never = off (default 6h)
 auto_archive:          # archive a finished run and its manager, restartable with restart_run (off by default)
   enabled: true        # default false
   after: 30m           # grace period after the run ended (default 30m); an open gate, an open hand-off job or a busy manager keeps it
+  keep_failed_workspace: 24h  # a failed run that can be restarted keeps its workspace this long after the failure (default 24h); its agents still go after `after`
 reload_stale_sessions: true  # after a plugin update, reload idle agents still holding the old plugin's tools (default true; false disables)
 isolation: none        # none (default) | worktree | { mode: worktree, submodules: none | all | [paths], base: <branch> }: see "Isolated runs"
 ```
@@ -193,8 +196,14 @@ that chain; there is no thinking override or tier upgrade. The result reports `t
 `thinking` (null means provider default, not a known effort level). API prices do not predict
 subscription quota consumption. Configure a lower-cost target in the existing tier if wanted;
 recovery does not rewrite profile mappings. With no target available the manager stays durably
-blocked, preserving its inbox, without a background retry loop; retry `recover_manager` when
-a configured target is available. The takeover brief and pending inbox are durable until sent,
+blocked, preserving its inbox. While it has pending work (inbox, recovery prompt or a ready step) the plugin
+retries by itself (`manager_recovery.retry`, default true; every 15 s timer tick, per-run backoff 30 s doubling
+to 10 min, shared usage cache): a retry succeeds only once a target has headroom in the provider's usage
+reading (or its `providers.exhausted_for` ended), then writes a `manager_recovered` history entry and emits
+`run.manager_recovered` (`retargeted: true` when it used `manager_recovery.fallback`). The opt-in
+`manager_recovery: { fallback: { provider, model } }` (defaults, playbook or config.yaml) adds that provider/model after
+the manager's own chain, also for a manual `recover_manager { model }`. Nothing to do by hand in the common case; you
+may still call `recover_manager` yourself. The takeover brief and pending inbox are durable until sent,
 and event subscriptions and their queued notices transfer to the replacement. Startup repairs
 only committed handoffs; already-stuck managers need an explicit recovery after inspection.
 
@@ -421,7 +430,10 @@ The script contract:
 
 - **The file:** a plain name in `scripts/` (no path), executable (`chmod +x`). Its
   shebang picks the language: `#!/usr/bin/env bash`, `#!/usr/bin/env python3`… It runs in the
-  run's worktree, with the daemon's environment.
+  run's worktree, with the daemon's environment. If the file is not in the workspace when the step starts (a checkout
+  behind origin), the step fails at once with `script file not found: <path> (workspace <dir>, head <sha>)`, not a
+  bare ENOENT. A run started with `newWorkspace` begins in a workspace fast-forwarded to `origin/<branch>`, so
+  files that exist on origin are there.
 - **Inputs** come as environment variables, never in a command line:
   `PLAYBOOK_INPUT_<NAME>` (upper case; `services` → `PLAYBOOK_INPUT_SERVICES`), plus
   `PLAYBOOK_RUN_ID`, `PLAYBOOK_STEP_ID`, `PLAYBOOK_ATTEMPT`, `PLAYBOOK_CHECK` (1, 2, … within
@@ -1332,13 +1344,13 @@ that agent is still alive (`role: { archive_agents: false }`, idle): the plugin 
 
 ## Rate limits
 
-Off by default; set in the user config (`rate_limits: { mode: step | playbook, steps, playbooks, quota: { pacing, usable_percent, refresh_interval, max_age } }`).
+Off by default; set in the user config (`rate_limits: { steps, playbooks, quota: { pacing, usable_percent, refresh_interval, max_age } }`).
 With `quota.pacing` the quota left decides how much runs: work starts while a provider's headroom (pace ceiling minus usage minus what started work
-still uses) covers its estimated cost (the playbook's manual `rate_limit.estimate` per step, else the measured history of its steps; with neither it is not paced by cost until its first measure); `steps` and `playbooks` are only optional hard caps.
-`mode: playbook` admits a whole run at once and never evicts it; `mode: step` holds runs between steps. A playbook may set
-`rate_limit: { priority: 0, estimate: 3 }` (priority: a whole number, higher first, ties oldest first; also in `defaults/main.yaml`), and `start_playbook` takes `priority` to override it per run.
+still uses) covers its estimated cost (the measured history of its steps; with none it is not paced by cost until its first measure; the old manual `rate_limit.estimate` was removed and is refused at load); `steps` and `playbooks` are only optional hard caps.
+A run is admitted whole when the headroom covers its estimated cost; the pace may later pause admitted runs between steps (kind `pace`). A playbook may set
+`rate_limit: { priority: 0 }` (priority: a whole number, higher first, ties oldest first; also in `defaults/main.yaml`), and `start_playbook` takes `priority` to override it per run.
 The plugin may hold a run's new steps (not enough headroom, a provider at its usable share, a cap). `get_run` shows `rateHold`
-(kind headroom | quota | steps | playbooks, reason, provider, window, retryAt, estimatedCost, headroom, position, priority) and `rateNote` (a used provider reports no usage, so it is not paced); `run.held` / `run.released` are events. A held run needs nothing from an agent: running steps finish, the
+(kind headroom | pace | quota | steps | playbooks, reason, provider, window, retryAt, estimatedCost, headroom, position, priority) and `rateNote` (a used provider reports no usage, so it is not paced); `run.held` / `run.released` are events. A held run needs nothing from an agent: running steps finish, the
 plugin starts the ready steps itself when capacity or quota returns. Never start, retry, restart or cancel because of a hold.
 
 ## Slow steps

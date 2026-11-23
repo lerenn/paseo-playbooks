@@ -1,6 +1,8 @@
 title: Release to dev
 description: Deploy a change to the development environment and check it there.
 
+workspace: { title: "Release {pr_url}" }   # title of the workspace a run creates, filled from its inputs
+
 inputs:
   pr_url:
     type: string

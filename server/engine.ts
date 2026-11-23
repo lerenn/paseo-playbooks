@@ -1718,6 +1718,7 @@ export function restartRun(run: Run, stepId: string, input: { comment: string | 
   run.outputs = null;
   run.pausedAt = null;
   run.archivedAt = null;
+  run.workspaceArchive = null;
   run.seenAt = null;
   log(run, now, "run_restarted", stepId, `was ${previous}${input.by ? `, by ${input.by}` : ""}${input.comment?.trim() ? `: ${input.comment.trim()}` : ""}`);
   const { ready, queued } = refreshReady(run, now, fx);

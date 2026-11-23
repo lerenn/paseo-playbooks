@@ -32,6 +32,7 @@ import { OVERSIGHT_TYPES } from "./oversight-events";
 import { readProjectDefault, readProjectProfiles } from "./config";
 import { bareId, DEFAULT_REPO, qualified } from "../shared/repos";
 import { MAX_SUBAGENT_ARCHIVE_AFTER_MS } from "./sidekick-archive";
+import { workspaceTitleRefs } from "../shared/workspace-name";
 import { coerceValue, parseDuration, replaceRefs, singleRef, templateRefs, typeCompatible } from "../shared/vars";
 
 /** Folders searched for playbooks, relative to the workspace. Each folder is self-contained. */
@@ -450,6 +451,8 @@ const RawWorkspaceSchema = z
     /** Archive the run's own Paseo workspace (with its agents) when the run is archived, if nothing is lost. Default true. */
     archive_with_run: z.boolean().optional(),
     /** Archive the workspace of a run that completed or was canceled this long after it ended (a duration such as 6h), or `never`. Default 6h. */
+    /** Title of the workspace a run creates for itself: text with `{input}` placeholders filled from the run's inputs, e.g. `Ship {ticket}`. Without it: `<playbook title>: <first input>`. */
+    title: z.string().min(1).optional(),
     archive_after: z.string().refine((value) => value === "never" || parseDuration(value) !== null, { message: "archive_after must be a duration such as 6h or 30m, or never" }).optional(),
   })
   .strict();
@@ -461,10 +464,13 @@ const RawAutoArchiveSchema = z
     enabled: z.boolean().optional(),
     /** Grace period after the run ended (a duration such as 30m or 2h). Default 30m. */
     after: z.string().refine((value) => parseDuration(value) !== null, { message: "auto_archive.after must be a duration such as 30m or 2h" }).optional(),
+    /** How long the workspace of a failed run that can be restarted is kept (a duration such as 24h), counted from the failure; its agents are archived after `after` as usual. Default 24h. */
+    keep_failed_workspace: z.string().refine((value) => parseDuration(value) !== null, { message: "auto_archive.keep_failed_workspace must be a duration such as 24h or 2d" }).optional(),
   })
   .strict();
 
 export const DEFAULT_AUTO_ARCHIVE_AFTER_MS = 30 * 60_000;
+export const DEFAULT_KEEP_FAILED_WORKSPACE_MS = 24 * 3_600_000;
 
 export const DEFAULT_WORKSPACE_ARCHIVE_AFTER_MS = 6 * 3_600_000;
 
@@ -515,6 +521,16 @@ function resolveIsolation(own: RawIsolation | undefined, fallback: RawIsolation 
   return { mode: merged.mode ?? "none", submodules: merged.submodules ?? "none", base: merged.base ?? null, allowGitlinkRemoval: merged.allow_gitlink_removal ?? false };
 }
 
+/** `manager_recovery`: what the plugin does by itself when a run's manager is blocked by its provider's quota (ADR 2026-11-23-manager-auto-recovery-and-fresh-workspaces). */
+const RawManagerRecoverySchema = z
+  .object({
+    /** Retry recovery by itself, on a timer, once the provider's quota reading shows headroom again. Default true. */
+    retry: z.boolean().optional(),
+    /** Opt-in: when retrying, re-assign the manager to this provider/model (it need not be in the manager's tier). Default none. */
+    fallback: z.object({ provider: z.string().min(1), model: z.string().min(1) }).strict().optional(),
+  })
+  .strict();
+
 const RawSlowWarningSchema = z
   .object({
     /** How many of the latest completed runs of a step make its baseline (at least 3). Default 10. */
@@ -556,8 +572,8 @@ const RawRateLimitSchema = z
   .object({
     /** Which held run goes first when headroom returns: higher first, ties oldest first. A whole number, default 0; `start_playbook` may override it per run. */
     priority: z.number().int().min(-1000).max(1000).optional(),
-    /** Quota points (percent of a usage window) one agent step of this playbook uses, instead of its measured history. Unset: the history; with neither, the playbook is not paced by cost. */
-    estimate: z.number().positive().max(100).optional(),
+    /** Removed (ADR 2026-11-21-remove-rate-limit-estimate): costs come only from measured history. Kept in the schema only to refuse it with a clear message. */
+    estimate: z.unknown().refine((value) => value === undefined, "`rate_limit.estimate` was removed: the cost of a playbook comes only from its measured history (a playbook with no history is not paced until its first measure); delete the field").optional(),
   })
   .strict();
 
@@ -582,6 +598,8 @@ const RawWardenSchema = z
         slow: z.object({ action: z.enum(WARDEN_ACTIONS).optional() }).strict().optional(),
         /** A gate open longer than `after` (default 30m): `report` | `none`. */
         gate_open: z.object({ after: z.string().optional(), action: z.enum(WARDEN_ACTIONS).optional() }).strict().optional(),
+        /** An active run with no running, ready or queued step and no open gate for longer than `after` (default 30m): `report` | `none`. */
+        stalled: z.object({ after: z.string().optional(), action: z.enum(WARDEN_ACTIONS).optional() }).strict().optional(),
       })
       .strict()
       .optional(),
@@ -722,6 +740,8 @@ function resolveWarden(raw: RawWarden | undefined, base: WardenConfig, where: st
   if (checks.slow?.action) out.checks.slow.action = checks.slow.action;
   if (checks.gate_open?.action) out.checks.gateOpen.action = checks.gate_open.action;
   out.checks.gateOpen.afterMs = duration(checks.gate_open?.after, "checks.gate_open.after") ?? out.checks.gateOpen.afterMs;
+  if (checks.stalled?.action) out.checks.stalled.action = checks.stalled.action;
+  out.checks.stalled.afterMs = duration(checks.stalled?.after, "checks.stalled.after") ?? out.checks.stalled.afterMs;
   return out;
 }
 
@@ -771,6 +791,8 @@ const RawPlaybookSchema = z.object({
     /** How the playbook can end, for a parent that uses it as a sub-playbook. The first is a normal finish. */
     /** Slow-step warning: a step slower than `factor` times the mean of its last `runs` completed runs gets a warning. Defaults 10 and 2. */
     slow_warning: RawSlowWarningSchema.optional(),
+    /** What the plugin does by itself when the manager is blocked by its provider's quota; see RawManagerRecoverySchema. */
+    manager_recovery: RawManagerRecoverySchema.optional(),
     /** The warden's periodic checks; see RawWardenSchema. Off unless `enabled: true`. */
     warden: RawWardenSchema.optional(),
     /** Queue priority of the playbook's runs when rate limiting holds work; see RawRateLimitSchema. */
@@ -837,6 +859,8 @@ const RawDefaultsSchema = z.object({
     reload_stale_sessions: z.boolean().optional(),
     /** Slow-step warning: a step slower than `factor` times the mean of its last `runs` completed runs gets a warning. Defaults 10 and 2. */
     slow_warning: RawSlowWarningSchema.optional(),
+    /** What the plugin does by itself when the manager is blocked by its provider's quota; see RawManagerRecoverySchema. */
+    manager_recovery: RawManagerRecoverySchema.optional(),
     /** The warden's periodic checks (repo-wide default; a playbook may override field by field). Off unless `enabled: true`. */
     warden: RawWardenSchema.optional(),
     /** Queue priority of every playbook's runs when rate limiting holds work (a playbook may override it). */
@@ -2475,6 +2499,10 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     if (resolveIsolation(pb.isolation, undefined).mode === "worktree") err("`isolation: worktree` does not apply to a singleton: its batches share one pipeline workspace");
     isolation = { ...isolation, mode: "none" };
   }
+  // A template of its own may name only declared inputs (a repository default is checked when a run starts: an unknown name keeps the default title).
+  for (const name of workspaceTitleRefs(pb.workspace?.title ?? "")) {
+    if (!(name in inputs)) err(`workspace.title uses "{${name}}" but the playbook declares no such input (declared: ${Object.keys(inputs).join(", ") || "none"})`);
+  }
   if (errors.length > 0) return fail(errors);
   const nudgeOwn = resolveManagerNudge(pb.manager?.nudge, "manager.nudge", err);
   const managerNudge: ManagerNudge = { ...DEFAULT_MANAGER_NUDGE, ...defaults.managerNudge, ...nudgeOwn };
@@ -2511,7 +2539,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     managerCompact: pb.manager?.compact ?? defaults.managerCompact ?? DEFAULT_MANAGER_COMPACT,
     managerNudge,
     warden,
-    rateLimit: { priority: pb.rate_limit?.priority ?? defaults.rate_limit?.priority ?? 0, estimate: pb.rate_limit?.estimate ?? defaults.rate_limit?.estimate ?? null },
+    rateLimit: { priority: pb.rate_limit?.priority ?? defaults.rate_limit?.priority ?? 0 },
     managerMode,
     exhaustedForMs: (defaults.providers?.exhausted_for ? parseDuration(defaults.providers.exhausted_for) : null) ?? DEFAULT_EXHAUSTED_FOR_MS,
     onExhausted: defaults.providers?.on_exhausted ?? "fail",
@@ -2519,16 +2547,21 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     fallback: defaults.providers?.fallback ?? [],
     usageCheck: defaults.providers?.usage?.check ?? true,
     usageThreshold: defaults.providers?.usage?.threshold ?? 100,
+    managerRecovery: {
+      retry: pb.manager_recovery?.retry ?? defaults.manager_recovery?.retry ?? null,
+      fallback: pb.manager_recovery?.fallback ?? defaults.manager_recovery?.fallback ?? null,
+    },
     slowWarning: { runs: pb.slow_warning?.runs ?? defaults.slow_warning?.runs ?? DEFAULT_SLOW_WARNING.runs, factor: pb.slow_warning?.factor ?? defaults.slow_warning?.factor ?? DEFAULT_SLOW_WARNING.factor },
     agentRules: mergeAgentRules(defaults.agentRules ?? [], ownRules.rules, [...blocks.values()]),
     managerInstructions: managerInstructions(folder.managerText, qid, pb.manager?.prompt, [...blocks.values()]),
     outcomes: playbookOutcomes,
-    autoArchive: { enabled: pb.auto_archive?.enabled ?? defaults.auto_archive?.enabled ?? false, afterMs: parseDuration(pb.auto_archive?.after ?? defaults.auto_archive?.after ?? "") ?? DEFAULT_AUTO_ARCHIVE_AFTER_MS },
+    autoArchive: { enabled: pb.auto_archive?.enabled ?? defaults.auto_archive?.enabled ?? false, afterMs: parseDuration(pb.auto_archive?.after ?? defaults.auto_archive?.after ?? "") ?? DEFAULT_AUTO_ARCHIVE_AFTER_MS, keepFailedWorkspaceMs: parseDuration(pb.auto_archive?.keep_failed_workspace ?? defaults.auto_archive?.keep_failed_workspace ?? "") ?? DEFAULT_KEEP_FAILED_WORKSPACE_MS },
     workspace: {
       archive: pb.workspace?.archive ?? defaults.workspace?.archive ?? "never",
       keepFailed: pb.workspace?.keep_failed ?? defaults.workspace?.keep_failed ?? true,
       archiveWithRun: pb.workspace?.archive_with_run ?? defaults.workspace?.archive_with_run ?? true,
       archiveAfterMs: archiveAfterMs(pb.workspace?.archive_after ?? defaults.workspace?.archive_after),
+      title: pb.workspace?.title ?? defaults.workspace?.title ?? null,
     },
     isolation,
     permissions: { onRequest: pb.permissions?.on_request ?? defaults.permissions?.on_request ?? DEFAULT_PERMISSION_POLICY },

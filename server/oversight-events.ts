@@ -113,7 +113,7 @@ export const OVERSIGHT_TYPES: EventTypeDef[] = [
   {
     type: "run.held",
     description: "Rate limiting holds a run's new steps (not enough quota headroom for its estimated cost, a provider at its usable share, or a step or playbook cap): kind, reason, provider, window, estimated cost, headroom, queue position, priority and when it is looked at again. Running steps finish; the plugin resumes the run by itself.",
-    payload: z.object({ ...runFields, kind: z.enum(["steps", "playbooks", "quota", "headroom"]), reason: z.string(), provider: z.string().nullable(), window: z.string().nullable(), retryAt: z.string().nullable(), estimatedCost: z.number().nullable().default(null), headroom: z.number().nullable().default(null), position: z.number().nullable().default(null), priority: z.number().nullable().default(null) }),
+    payload: z.object({ ...runFields, kind: z.enum(["steps", "playbooks", "quota", "headroom", "pace"]), reason: z.string(), provider: z.string().nullable(), window: z.string().nullable(), retryAt: z.string().nullable(), estimatedCost: z.number().nullable().default(null), headroom: z.number().nullable().default(null), position: z.number().nullable().default(null), priority: z.number().nullable().default(null) }),
     line: (event) => `- run.held: ${runName(event.payload)} is on hold (${event.payload.kind}): ${event.payload.reason}.${event.payload.retryAt ? ` Looked at again at ${event.payload.retryAt}.` : ""} The plugin resumes it by itself: nothing to do. Tools: get_run { runId: "${event.runId}" }.`,
   },
   {
@@ -163,7 +163,7 @@ export const OVERSIGHT_TYPES: EventTypeDef[] = [
   },
   {
     type: "warden.finding",
-    description: "The warden (warden.enabled) found something that may need action, once per finding (until it clears or changes; again after warden.cooldown): check (stale_definition, manager_blocked or loops; slow and gate_open findings reuse step.slow and gate.stale), subject (the gate or edge; null for the run), detail, since.",
+    description: "The warden (warden.enabled) found something that may need action, once per finding (until it clears or changes; again after warden.cooldown, and only when its count doubled or the run's state changed): check (stale_definition, manager_blocked, loops or stalled; slow and gate_open findings reuse step.slow and gate.stale), subject (the gate or edge; null for the run), detail, since.",
     payload: z.object({ ...runFields, check: z.enum(WARDEN_RUN_CHECKS), subject: z.string().nullable(), detail: z.string(), since: z.string() }),
     line: (event) => `- warden.finding: ${runName(event.payload)} in ${String(event.payload.workspaceDir)}, ${String(event.payload.check)}: ${String(event.payload.detail)}. Tools: get_run { runId: "${event.runId}" }.`,
   },
@@ -184,6 +184,12 @@ export const OVERSIGHT_TYPES: EventTypeDef[] = [
     description: "The plugin archived a finished run (auto_archive.enabled) after the grace period: the run and its idle manager agent; workspaceArchived says whether the workspace went too (workspaceReason when not). restart_run still reopens it.",
     payload: z.object({ ...runFields, managerArchived: z.boolean(), workspaceArchived: z.boolean(), workspaceReason: z.string().nullable() }),
     line: (event) => `- run.auto_archived: ${runName(event.payload)} in ${String(event.payload.workspaceDir)} was archived after it ended${event.payload.managerArchived ? ", with its manager" : ""}${event.payload.workspaceReason ? `; workspace kept: ${String(event.payload.workspaceReason)}` : ""}. Tools: restart_run, list_runs { archived: true }.`,
+  },
+  {
+    type: "run.manager_recovered",
+    description: "The plugin recovered a run's quota-blocked manager by itself (manager_recovery.retry): a new manager took the run over. retargeted is true when it runs on the configured manager_recovery.fallback provider/model instead of the manager's own chain; target is the provider/model.",
+    payload: z.object({ ...runFields, fromManagerId: z.string(), managerId: z.string(), target: z.string(), retargeted: z.boolean() }),
+    line: (event) => `- run.manager_recovered: the manager of ${runName(event.payload)} was blocked by its provider's quota; the plugin replaced it by itself with ${String(event.payload.target)}${event.payload.retargeted ? " (manager_recovery.fallback)" : ""}. Tools: get_run { runId: "${event.runId}" }.`,
   },
   {
     type: "run.canceled",

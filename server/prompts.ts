@@ -113,7 +113,7 @@ How to run a playbook:
    nudge_step are refused and you are not woken; running steps finish their turn. End your
    turn. On resume you are woken with the ready steps and the reports that came in meanwhile.
    Rate limits: the plugin may hold the run's new steps (not enough quota headroom for its
-   estimated cost, a provider at its usable share, or an optional cap on running steps or
+   estimated cost, an admitted run paused to fit the pace, a provider at its usable share, or an optional cap on running steps or
    admitted runs). You are told when it starts and when it ends, and
    get_run shows it as rateHold (kind, reason, provider, window, retryAt, estimatedCost,
    headroom, position in the queue, priority). While it lasts
