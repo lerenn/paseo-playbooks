@@ -19,7 +19,7 @@ import { StartForm, type StartTarget } from "./start-form";
 import { dotGroups, isRead, runTone, splitTabs, type DotGroup, type RunTone } from "./run-tabs";
 import { openJobsLabel, Stages, batchName } from "./stages";
 import { splitError } from "../shared/errors";
-import { runStatusColor, runStatusLabel, runStatusTone, withAlpha, type Theme } from "./theme";
+import { runStatusLabel, withAlpha, type Theme } from "./theme";
 import { semanticColor, semanticOn } from "./semantic-colors";
 
 interface Card {
@@ -541,14 +541,15 @@ function RunChip(props: { theme: Theme; run: Run; label?: string | undefined; se
   const toast = useToast();
   const [menu, setMenu] = useState<"closed" | "open" | "confirm">("closed");
   const paused = isPaused(run);
-  // Blue running, yellow waiting for a decision, green done, grey done and opened, red failed.
-  const color = run.status === "completed" && props.read ? theme.colors.foregroundMuted : runStatusColor(theme, run.status);
+  // Blue running, orange waiting for a decision, violet paused or on hold, green done, grey done and opened, red failed.
+  const tone = runTone(run, props.read);
+  const color = toneColor(theme, tone);
   const active = isActive(run);
   /** The run has ended and after-tasks are running. */
   const wrapping = active && isTerminal(run.status);
   // Selected: filled with the colour. Not selected: outlined in it.
   const border = color;
-  const text = selected ? (color === theme.colors.foregroundMuted ? theme.colors.surface1 : semanticOn(theme, runStatusTone(run.status))) : color;
+  const text = selected ? (color === theme.colors.foregroundMuted ? theme.colors.surface1 : semanticOn(theme, tone === "seen" ? "done" : tone)) : color;
   return (
     <View style={{ zIndex: menu === "closed" ? 0 : 30 }}>
       <View style={{ flexDirection: "row", borderRadius: 10, borderWidth: 1, borderColor: border, backgroundColor: selected ? color : "transparent", overflow: "hidden" }}>
@@ -615,7 +616,7 @@ function RunChip(props: { theme: Theme; run: Run; label?: string | undefined; se
               ))}
               {run.rateHold ? (
                 <View style={{ gap: 4 }}>
-                  <Text selectable style={{ color: theme.colors.foreground, fontSize: 12 }}>
+                  <Text selectable style={{ color: semanticColor(theme, "paused"), fontSize: 12 }}>
                     {`On hold (${run.rateHold.kind === "quota" ? "provider quota" : run.rateHold.kind === "headroom" ? "quota headroom" : run.rateHold.kind === "pace" ? "paused to fit the pace" : run.rateHold.kind === "steps" ? "step cap" : "playbook cap"}): ${run.rateHold.reason}`}
                     {run.rateHold.retryAt ? `. The plugin looks again at ${new Date(run.rateHold.retryAt).toLocaleTimeString()}` : ". It resumes by itself when a run ends or the cap rises"}
                   </Text>
@@ -818,6 +819,8 @@ function toneColor(theme: Theme, tone: RunTone): string {
       return semanticColor(theme, "waiting");
     case "running":
       return semanticColor(theme, "running");
+    case "paused":
+      return semanticColor(theme, "paused");
     case "failed":
       return semanticColor(theme, "failed");
     case "done":
@@ -830,6 +833,7 @@ function toneColor(theme: Theme, tone: RunTone): string {
 const TONE_LABELS: Record<RunTone, string> = {
   waiting: "waiting for a decision",
   running: "running",
+  paused: "paused or on hold",
   failed: "failed or canceled",
   done: "done, not opened yet",
   seen: "done and opened",

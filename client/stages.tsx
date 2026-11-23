@@ -7,10 +7,11 @@ import { isTerminal, type RunSummary, type Stage } from "../shared/types";
 import { ADMISSION_POLL_MS, admissionLine, failureHeading, heldView } from "./admission";
 import { lastLines } from "./script-output";
 import type { Theme } from "./theme";
+import { runTone } from "./run-tabs";
 import { semanticColor } from "./semantic-colors";
 
 /** What the stages need of a run: a summary or a whole run. */
-export type StageRun = Pick<RunSummary, "id" | "createdAt" | "status" | "batch" | "jobs" | "playbook" | "gates">;
+export type StageRun = Pick<RunSummary, "id" | "createdAt" | "status" | "batch" | "jobs" | "playbook" | "gates" | "after" | "pausedAt" | "rateHold">;
 
 /** The batches of a pipeline, newest first. */
 export function batchesOf(pipeline: StageRun, runs: readonly StageRun[]): StageRun[] {
@@ -89,7 +90,7 @@ function WaitingJob(props: { theme: Theme; job: StageRun["jobs"][number]; stage:
         {job.reopens.length > 0 ? (
           <Text style={{ color: theme.colors.foregroundMuted, fontSize: 10, fontWeight: "600", borderRadius: 4, borderWidth: 1, borderColor: theme.colors.foregroundMuted, paddingHorizontal: 4 }}>{job.reopens.length > 1 ? `Requeued by hand ×${job.reopens.length}` : "Requeued by hand"}</Text>
         ) : null}
-        {props.asked ? <Text style={{ color: theme.colors.accent, fontSize: 10, fontWeight: "600" }}>Needs you</Text> : null}
+        {props.asked ? <Text style={{ color: semanticColor(theme, "waiting"), fontSize: 10, fontWeight: "600" }}>Needs you</Text> : null}
       </View>
       {job.requeued && job.requeued.stage === props.stage ? (
         <Text numberOfLines={2} style={{ color: theme.colors.foreground, fontSize: 11 }}>
@@ -137,6 +138,8 @@ export function Stages(props: { theme: Theme; pipeline: StageRun; runs: readonly
         const last = batches.find((candidate) => candidate.batch!.stage === stage.id && isTerminal(candidate.status));
         // Detached jobs this stage's last batch settled with an outcome (ejected...) that nobody started a follow-up for.
         const handOff = last && pipeline.playbook.outcomes.length > 0 ? pipeline.jobs.filter((job) => job.detached && job.status === "settled" && job.outcome !== null && job.outcome !== pipeline.playbook.outcomes[0] && job.followUps.length === 0 && last.jobs.some((copy) => copy.id === job.id)) : [];
+        // A paused or on-hold batch is violet, a running one blue.
+        const batchTone = batch && runTone(batch, false) === "paused" ? "paused" : "running";
         const inBatch = batch ? batch.jobs.filter((job) => job.status === "open").length : 0;
         return (
           <Fragment key={stage.id}>
@@ -146,8 +149,8 @@ export function Stages(props: { theme: Theme; pipeline: StageRun; runs: readonly
               </Text>
             ) : null}
             <View
-              accessibilityLabel={`Stage ${stage.title}: ${jobsLabel(waiting.length)} waiting, ${batch ? `batch ${batch.id} running with ${jobsLabel(inBatch)}` : "no batch running"}`}
-              style={{ flexGrow: 1, flexBasis: 0, minWidth: 200, alignSelf: "stretch", borderRadius: 10, borderWidth: 1, borderColor: batch ? semanticColor(theme, "running") : theme.colors.border, backgroundColor: theme.colors.surface1, padding: 10, gap: 6 }}
+              accessibilityLabel={`Stage ${stage.title}: ${jobsLabel(waiting.length)} waiting, ${batch ? `batch ${batch.id} ${batchTone === "paused" ? (batch.rateHold && batch.pausedAt === null ? "on hold" : "paused") : "running"} with ${jobsLabel(inBatch)}` : "no batch running"}`}
+              style={{ flexGrow: 1, flexBasis: 0, minWidth: 200, alignSelf: "stretch", borderRadius: 10, borderWidth: 1, borderColor: batch ? semanticColor(theme, batchTone) : theme.colors.border, backgroundColor: theme.colors.surface1, padding: 10, gap: 6 }}
             >
               <Text style={{ color: theme.colors.foreground, fontSize: 13, fontWeight: "600" }}>
                 {stage.title}
@@ -166,8 +169,8 @@ export function Stages(props: { theme: Theme; pipeline: StageRun; runs: readonly
                 <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>Batch</Text>
                 {batch ? (
                   <Pressable accessibilityRole="button" accessibilityLabel={`Open batch ${batch.id}`} disabled={!props.onOpenBatch} onPress={() => props.onOpenBatch?.(batch)}>
-                    <Text numberOfLines={2} style={{ color: semanticColor(theme, "running"), fontSize: 12 }}>
-                      {batch.id.replace(/^run_/, "")} · {jobsLabel(inBatch)} · {batch.status === "waiting_gate" ? "waiting for a human" : "running"}
+                    <Text numberOfLines={2} style={{ color: semanticColor(theme, batchTone), fontSize: 12 }}>
+                      {batch.id.replace(/^run_/, "")} · {jobsLabel(inBatch)} · {batch.status === "waiting_gate" ? "waiting for a human" : batchTone === "paused" ? (batch.rateHold && batch.pausedAt === null ? "on hold" : "paused") : "running"}
                     </Text>
                   </Pressable>
                 ) : (

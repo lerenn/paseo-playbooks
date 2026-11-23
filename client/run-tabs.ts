@@ -1,9 +1,9 @@
 import { isActive, isPaused, isTerminal, type Run } from "../shared/types";
 
 /** How a run reads at a glance, most urgent first: its dot group and its tab order. */
-export type RunTone = "waiting" | "running" | "failed" | "done" | "seen";
+export type RunTone = "waiting" | "running" | "paused" | "failed" | "done" | "seen";
 
-export const RUN_TONES: readonly RunTone[] = ["waiting", "running", "failed", "done", "seen"];
+export const RUN_TONES: readonly RunTone[] = ["waiting", "running", "paused", "failed", "done", "seen"];
 
 /** Finished runs not opened yet go to History on their own this long after they ended. */
 export const SHELVE_AFTER_MS = 24 * 60 * 60 * 1000;
@@ -16,11 +16,15 @@ export function isRead(run: Run, readRuns: readonly string[]): boolean {
   return run.seenAt !== null || readRuns.includes(run.id);
 }
 
-export function runTone(run: Run, read: boolean): RunTone {
+export function runTone(run: Pick<Run, "status" | "pausedAt" | "rateHold"> & { after: Record<string, { status: string }> }, read: boolean): RunTone {
+  if (isTerminal(run.status)) {
+    if (run.status !== "completed") return "failed";
+    return read ? "seen" : "done";
+  }
+  // Paused by hand, or held by rate limiting ("on hold"): the fixed paused violet, never the running blue.
+  if (isPaused(run)) return "paused";
   if (run.status === "waiting_gate" || run.status === "boarding") return "waiting";
-  if (!isTerminal(run.status)) return "running";
-  if (run.status !== "completed") return "failed";
-  return read ? "seen" : "done";
+  return run.rateHold ? "paused" : "running";
 }
 
 /** A finished run with nothing left to do here: opened already, or ended over a day ago. */
@@ -62,6 +66,6 @@ export function dotGroups(runs: readonly Run[], readRuns: readonly string[]): Do
   const sorted = [...runs].sort(byUrgency(readRuns));
   return RUN_TONES.map((tone) => {
     const members = sorted.filter((run) => runTone(run, isRead(run, readRuns)) === tone);
-    return { tone, runs: members, pulsing: members.some((run) => isActive(run) && !isPaused(run)) };
+    return { tone, runs: members, pulsing: tone !== "paused" && members.some((run) => isActive(run) && !isPaused(run)) };
   }).filter((group) => group.runs.length > 0);
 }

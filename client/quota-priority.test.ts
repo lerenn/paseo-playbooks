@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { hasPriority, inheritRequest, parsePriority, resetRequest, setRequest, stepped } from "./quota-priority";
+import type { Theme } from "./theme";
+import { priorityLineColors, hasPriority, inheritRequest, parsePriority, resetRequest, setRequest, stepped } from "./quota-priority";
 
 const run = { runId: "r", title: "Work", priority: 2, defaultPriority: 2, override: null as number | null, hasChildren: false, inheritChildren: false };
 
@@ -35,5 +36,17 @@ describe("quota priority control", () => {
   it("hides the control for a server that does not send the priority", () => {
     expect(hasPriority({ runId: "r", title: "Work" })).toBe(false);
     expect(hasPriority(run)).toBe(true);
+  });
+});
+
+describe("priority line colours", () => {
+  const theme = { colors: { surface1: "#18181b", accent: "#00ff00", foregroundMuted: "#999999" } } as unknown as Theme;
+  it("draws the held and paused tag in the paused violet", () => {
+    expect(priorityLineColors(theme, false).tag).toBe("#a78bfa");
+    expect(priorityLineColors(theme, true).tag).toBe("#a78bfa");
+  });
+  it("marks a manual priority with the accent, neither orange nor violet, and a default one muted", () => {
+    expect(priorityLineColors(theme, true).priority).toBe("#00ff00");
+    expect(priorityLineColors(theme, false).priority).toBe("#999999");
   });
 });

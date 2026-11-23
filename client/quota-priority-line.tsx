@@ -5,7 +5,7 @@ import { Pressable, Text, View } from "react-native";
 import { setRunPriorityRpc } from "../shared/contracts";
 import type { QuotaRunRef } from "../shared/quota-limitation";
 import { messages } from "./i18n";
-import { hasPriority, inheritRequest, parsePriority, resetRequest, setRequest, stepped, type PriorityRequest } from "./quota-priority";
+import { hasPriority, inheritRequest, parsePriority, priorityLineColors, resetRequest, setRequest, stepped, type PriorityRequest } from "./quota-priority";
 import { semanticColor } from "./semantic-colors";
 import type { Theme } from "./theme";
 
@@ -13,7 +13,7 @@ type RunRef = QuotaRunRef;
 
 /**
  * A run of a project that paces, as a line: its title and detail, then its quota priority with a stepper, a field, "Reset" to the
- * playbook's priority and, for a run with children, "Apply to children". A manual override is marked and shown in the waiting colour.
+ * playbook's priority and, for a run with children, "Apply to children". A manual override is marked and shown in the theme accent.
  * The server is asked at once and the tab reads the figures again (`onChanged`); the pace plan reacts to it there.
  */
 export function PriorityRunLine(props: { theme: Theme; run: RunRef; detail: string; tag?: string | null; canEdit: boolean; onChanged: () => void }) {
@@ -42,13 +42,14 @@ export function PriorityRunLine(props: { theme: Theme; run: RunRef; detail: stri
   };
   const current = parsePriority(draft) ?? run.priority ?? 0;
   const button = { minWidth: 32, minHeight: 32, alignItems: "center", justifyContent: "center", borderRadius: 6, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface2, opacity: busy ? 0.5 : 1 } as const;
-  const priorityColor = manual ? semanticColor(theme, "waiting") : muted;
+  const colors = priorityLineColors(theme, manual);
+  const priorityColor = colors.priority;
 
   return (
     <View style={{ gap: 3 }}>
       <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
         <Text style={{ color: theme.colors.foreground, fontSize: 12 }}>{detail}</Text>
-        {tag ? <Text style={{ color: semanticColor(theme, "waiting"), fontSize: 10, fontWeight: "600", borderRadius: 4, borderWidth: 1, borderColor: semanticColor(theme, "waiting"), paddingHorizontal: 4 }}>{tag}</Text> : null}
+        {tag ? <Text style={{ color: colors.tag, fontSize: 10, fontWeight: "600", borderRadius: 4, borderWidth: 1, borderColor: colors.tag, paddingHorizontal: 4 }}>{tag}</Text> : null}
       </View>
       {hasPriority(run) ? (
         <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
