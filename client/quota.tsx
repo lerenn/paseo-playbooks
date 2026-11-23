@@ -204,7 +204,38 @@ function ProviderView(props: { theme: Theme; provider: ProviderRow; folds: Reado
   );
 }
 
-/** The throttle line (violet, as on hold), its counts and a one-line caption (the formula). Shown when the provider has a window with an allowed-so-far figure or something held or paused. */
+/** The (i) button next to the throttle line: the formula shows as a tooltip on hover or keyboard focus, and a tap toggles it (same pattern as the pre-release notice). */
+function ThrottleInfo(props: { theme: Theme }) {
+  const { theme } = props;
+  const { t } = useTranslation(messages);
+  const [hover, setHover] = useState(false);
+  const [focus, setFocus] = useState(false);
+  const [pressed, setPressed] = useState(false);
+  const shown = hover || focus || pressed;
+  return (
+    <View style={{ position: "relative", zIndex: 50 }}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={t("quota.throttleInfoLabel")}
+        hitSlop={8}
+        onHoverIn={() => setHover(true)}
+        onHoverOut={() => setHover(false)}
+        onFocus={() => setFocus(true)}
+        onBlur={() => setFocus(false)}
+        onPress={() => setPressed(!pressed)}
+      >
+        <Icon name="Info" size={13} color={shown ? theme.colors.accent : theme.colors.foregroundMuted} />
+      </Pressable>
+      {shown ? (
+        <View style={{ position: "absolute", top: 20, left: 0, width: 260, padding: 10, borderRadius: 8, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface2 }}>
+          <Text style={{ color: theme.colors.foreground, fontSize: 11 }}>{t("quota.throttleCaption")}</Text>
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+/** The throttle line (violet, as on hold), its counts and an (i) button that shows the formula. Shown when the provider has a window with an allowed-so-far figure or something held or paused. */
 function ThrottleView(props: { theme: Theme; provider: ProviderRow }) {
   const { theme, provider } = props;
   const { t, locale } = useTranslation(messages);
@@ -223,11 +254,13 @@ function ThrottleView(props: { theme: Theme; provider: ProviderRow }) {
     <View style={{ gap: 3, paddingTop: 4 }}>
       {paced ? (
         <>
-          <Text style={{ color: theme.colors.foreground, fontSize: 12 }}>{throttle.percent === null ? t("quota.throttleNone") : t("quota.throttle", { value: throttle.percent })}</Text>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+            <Text style={{ color: theme.colors.foreground, fontSize: 12 }}>{throttle.percent === null ? t("quota.throttleNone") : t("quota.throttle", { value: throttle.percent })}</Text>
+            <ThrottleInfo theme={theme} />
+          </View>
           <View style={{ height: 6, borderRadius: 3, backgroundColor: theme.colors.surface2, overflow: "hidden" }}>
             {throttle.percent ? <View style={{ position: "absolute", left: 0, width: `${throttle.percent}%`, height: 6, backgroundColor: violet }} /> : null}
           </View>
-          <Text style={{ color: muted, fontSize: 11 }}>{t("quota.throttleCaption")}</Text>
         </>
       ) : null}
       <Text style={{ color: throttle.held + throttle.paused > 0 ? violet : muted, fontSize: 12 }}>{counts.join(" · ")}</Text>
