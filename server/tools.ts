@@ -218,6 +218,7 @@ export function runCompact(run: Run, only?: string[], slow: Record<string, SlowI
     ...rateHoldView(run),
     /** true: not subject to quota limiting (start_playbook `quota: { exempt: true }`, or inherited from the parent run). */
     quotaExempt: run.quotaExempt,
+    inheritChildExempt: run.inheritChildExempt,
     ...wardenView(run),
     steps: Object.fromEntries(
       viewSteps(run, only).map((id) => {
@@ -271,6 +272,7 @@ export function runFull(run: Run, only?: string[], slow: Record<string, SlowInfo
     ...rateHoldView(run),
     /** true: not subject to quota limiting (start_playbook `quota: { exempt: true }`, or inherited from the parent run). */
     quotaExempt: run.quotaExempt,
+    inheritChildExempt: run.inheritChildExempt,
     ...wardenView(run),
     steps: Object.fromEntries(
       viewSteps(run, only).map((id) => {
@@ -1142,6 +1144,24 @@ export function runTools(runtime: Runtime): AgentToolDefinition[] {
             ? `Run ${runId}: quota priority override ${result.from ?? "none"} → ${priority ?? "none (the playbook's)"}${result.cascaded > 0 ? `, copied onto ${result.cascaded} child run${result.cascaded === 1 ? "" : "s"}` : ""}. The pace plan was looked at again.`
             : `Run ${runId}: nothing changed (the override is already ${priority ?? "none"}).`;
           return ok(text, { runId, from: result.from, to: priority, changed: result.changed, cascaded: result.cascaded, inheritChildPriority: result.run.inheritChildPriority });
+        }),
+    }),
+    defineAgentTool({
+      name: "set_run_quota_exempt",
+      description:
+        "Exempt a run that is running, queued or held from quota limiting (exempt: true), or put it back under the limits (exempt: false). For work that really must run despite the limits. Exempt: any quota, headroom, pace or cap hold of the run is lifted at once and its ready steps start without waiting for the next check; it is never held or paused again, gets no hold notice, ignores the Max usable quota and the steps/playbooks caps, but still RESERVES its estimated cost, so other runs wait for the headroom it leaves. Not exempt: the limits apply again from its next step (running steps are never interrupted). applyToChildren is STICKY like set_run_priority's: true copies the state onto every active child run now (and their children) and makes later changes follow; false stops following without resetting children; omitted keeps the flag. Idempotent. Refused on a finished or archived run. Records a quota_exempt_changed history entry and emits run.quota_exempt_changed (who changed it is in both): exempting your own run is allowed but visible. A run started with start_playbook's `quota: { exempt: true }` is the same state. get_run shows `quotaExempt` and `inheritChildExempt`.",
+      input: z.object({
+        runId: IdArg,
+        exempt: z.boolean().describe("true: not subject to quota limiting; false: under the limits again from its next step"),
+        applyToChildren: z.boolean().optional().describe("Sticky: true passes the state to every active child run now and later changes, false stops, omitted keeps it"),
+      }),
+      execute: ({ runId, exempt, applyToChildren }, { agent }) =>
+        guard(async () => {
+          const result = await runtime.setRunQuotaExempt(runId, exempt, applyToChildren, `agent ${agent.id}`);
+          const text = result.changed
+            ? `Run ${runId}: ${result.from ? "exempt" : "limited"} → ${exempt ? "exempt from quota limiting (any hold is lifted, its ready steps start now)" : "under the quota limits again from its next step"}${result.cascaded > 0 ? `, copied onto ${result.cascaded} child run${result.cascaded === 1 ? "" : "s"}` : ""}.`
+            : `Run ${runId}: nothing changed (it is already ${exempt ? "exempt" : "under the limits"}).`;
+          return ok(text, { runId, from: result.from, to: exempt, changed: result.changed, cascaded: result.cascaded, inheritChildExempt: result.run.inheritChildExempt });
         }),
     }),
   ];

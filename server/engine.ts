@@ -88,6 +88,7 @@ export interface NewRunInput {
   inheritChildPriority?: boolean;
   /** Not subject to quota limiting (`start_playbook` `quota.exempt`, or inherited from the parent run). */
   quotaExempt?: boolean;
+  inheritChildExempt?: boolean;
   inputs: Record<string, unknown>;
   now: string;
 }
@@ -231,6 +232,7 @@ function createRun(input: NewRunInput, inputs: Record<string, VarValue>, kind: "
     priorityOverride: input.priorityOverride ?? null,
     inheritChildPriority: input.inheritChildPriority ?? false,
     quotaExempt: input.quotaExempt ?? false,
+    inheritChildExempt: input.inheritChildExempt ?? false,
     managerWatch: { steps: {}, question: null },
     warden: { findings: {} },
     steps: Object.fromEntries(
@@ -1796,6 +1798,22 @@ export function setRunPriority(run: Run, priority: number | null, inherit: boole
   const moved = from !== priority;
   const flagMoved = inherit !== undefined && inherit !== flagBefore;
   if (moved || flagMoved) log(run, now, "priority_changed", null, `${moved ? `quota priority override ${from === null ? "none" : from} → ${priority === null ? "none (the playbook's)" : priority}` : "children inherit the priority"}${flagMoved ? (inherit ? "; new children inherit it" : "; children no longer inherit it") : ""}${note ? ` (${note})` : ""}`);
+  return { from, changed: moved || flagMoved };
+}
+
+/**
+ * Sets or clears the run's exemption from quota limiting (and the sticky `inheritChildExempt` flag when `inherit` is given). Throws on a
+ * finished run. The history records a change of the exemption or of the flag; setting what is already set changes nothing.
+ */
+export function setRunExempt(run: Run, exempt: boolean, inherit: boolean | undefined, now: string, note: string): { from: boolean; changed: boolean } {
+  if (!isActive(run)) throw new EngineError(`run ${run.id} is finished: its quota exemption cannot change`);
+  const from = run.quotaExempt ?? false;
+  const flagBefore = run.inheritChildExempt ?? false;
+  run.quotaExempt = exempt;
+  if (inherit !== undefined) run.inheritChildExempt = inherit;
+  const moved = from !== exempt;
+  const flagMoved = inherit !== undefined && inherit !== flagBefore;
+  if (moved || flagMoved) log(run, now, "quota_exempt_changed", null, `${moved ? `quota: ${from ? "exempt" : "limited"} → ${exempt ? "exempt (not subject to quota limiting)" : "limited (back under the quota limits from its next step)"}` : "children follow the exemption"}${flagMoved ? (inherit ? "; new children follow it" : "; children no longer follow it") : ""}${note ? ` (${note})` : ""}`);
   return { from, changed: moved || flagMoved };
 }
 

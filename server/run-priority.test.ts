@@ -166,8 +166,8 @@ describe("run quota priority override", () => {
     for (const id of ["p", "c2"]) await store.mutate(id, (run) => void (run.playbook.quotaLimits = { quota: { pacing: true } }));
     const views = await runtime.priorityViews(store.list());
     expect([...views.keys()].sort()).toEqual(["c2", "p"]);
-    expect(views.get("p")).toEqual({ priority: 8, defaultPriority: 2, override: 8, hasChildren: true, inheritChildren: true });
-    expect(views.get("c2")).toEqual({ priority: 8, defaultPriority: 2, override: 8, hasChildren: false, inheritChildren: true });
+    expect(views.get("p")).toEqual({ priority: 8, defaultPriority: 2, override: 8, hasChildren: true, inheritChildren: true, exempt: false, inheritChildExempt: false });
+    expect(views.get("c2")).toEqual({ priority: 8, defaultPriority: 2, override: 8, hasChildren: false, inheritChildren: true, exempt: false, inheritChildExempt: false });
   });
 
   it("has no view for a finished run", async () => {
@@ -181,7 +181,7 @@ describe("run quota priority override", () => {
 });
 
 describe("quotaExempt on a stored run", () => {
-  it("is false on a run saved before the field existed, is kept when set, shows in the summary and the history, and hides the priority control", async () => {
+  it("is false on a run saved before the field existed, is kept when set, shows in the summary and the history, and keeps its view, flagged exempt", async () => {
     const { store, runtime } = await setup();
     const saved = JSON.parse(JSON.stringify(store.get("p"))) as Record<string, unknown>;
     delete saved.quotaExempt;
@@ -192,6 +192,6 @@ describe("quotaExempt on a stored run", () => {
     expect(summarizeRun(run).quotaExempt).toBe(false);
     await store.mutate("c1", (current) => void (current.quotaExempt = true));
     const views = await runtime.priorityViews(store.list());
-    expect(views.has("c1")).toBe(false);
+    expect(views.get("c1")).toMatchObject({ exempt: true });
   });
 });

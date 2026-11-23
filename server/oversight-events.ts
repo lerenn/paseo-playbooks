@@ -210,6 +210,12 @@ export const OVERSIGHT_TYPES: EventTypeDef[] = [
     line: (event) => `- run.priority_changed: the quota priority override of ${runName(event.payload)} went from ${String(event.payload.from ?? "none")} to ${String(event.payload.to ?? "none")}${Number(event.payload.cascaded) > 0 ? `, copied onto ${String(event.payload.cascaded)} child run(s)` : ""}. Tools: get_run { runId: "${event.runId}" }.`,
   },
   {
+    type: "run.quota_exempt_changed",
+    description: "A run was exempted from quota limiting, or put back under the limits (set_run_quota_exempt, or the Runs view's priority menu): from and to are the exemption before and after, inheritChildren whether the run passes a change to its children, cascaded how many descendant runs it was copied onto, by who. An exempt run is never held and still reserves its cost. Worth watching: any agent can exempt its own run.",
+    payload: z.object({ ...runFields, from: z.boolean(), to: z.boolean(), inheritChildren: z.boolean(), cascaded: z.number().int(), by: z.string() }),
+    line: (event) => `- run.quota_exempt_changed: ${runName(event.payload)} is now ${event.payload.to ? "exempt from" : "back under"} the quota limits (by ${String(event.payload.by)})${Number(event.payload.cascaded) > 0 ? `, copied onto ${String(event.payload.cascaded)} child run(s)` : ""}. Tools: get_run { runId: "${event.runId}" }.`,
+  },
+  {
     type: "run.canceled",
     description: 'A run was canceled (status "canceled"): the reason, when given.',
     payload: z.object({ ...runFields, reason: z.string().nullable() }),

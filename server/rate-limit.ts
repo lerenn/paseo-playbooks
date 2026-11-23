@@ -324,6 +324,8 @@ export function priorityViewOf(run: Run, runs: Run[], parents: Set<string>): Run
     override: run.priorityOverride ?? null,
     hasChildren: parents.has(run.id),
     inheritChildren: run.inheritChildPriority ?? false,
+    exempt: run.quotaExempt ?? false,
+    inheritChildExempt: run.inheritChildExempt ?? false,
   };
 }
 

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { RunPriorityView } from "../shared/types";
-import { applyDraft, applyRequest, commitDraft, draftFor, inheritRequest, isManual, parsePriority, resetRequest, stepDraft, stepped, typeDraft } from "./run-priority";
+import { childrenChecked, exemptRequest, pressExempt, applyDraft, applyRequest, commitDraft, draftFor, inheritRequest, isManual, parsePriority, resetRequest, stepDraft, stepped, typeDraft } from "./run-priority";
 
-const view: RunPriorityView = { priority: 2, defaultPriority: 2, override: null, hasChildren: false, inheritChildren: false };
+const view: RunPriorityView = { priority: 2, defaultPriority: 2, override: null, hasChildren: false, inheritChildren: false, exempt: false, inheritChildExempt: false };
 
 describe("run priority control", () => {
   it("parses only whole numbers in the playbook's range", () => {
@@ -46,7 +46,7 @@ describe("run priority control", () => {
 });
 
 describe("run priority draft", () => {
-  const v: RunPriorityView = { priority: 0, defaultPriority: 0, override: null, hasChildren: false, inheritChildren: false };
+  const v: RunPriorityView = { priority: 0, defaultPriority: 0, override: null, hasChildren: false, inheritChildren: false, exempt: false, inheritChildExempt: false };
   it("starts from the effective priority", () => {
     expect(draftFor({ ...v, priority: 3 })).toEqual({ value: 3, text: "3" });
   });
@@ -76,5 +76,28 @@ describe("run priority draft", () => {
     expect(applyDraft("r", v, draftFor(v))).toBeNull();
     expect(applyDraft("r", v, typeDraft(draftFor(v), "x"))).toBeNull();
     expect(applyDraft("r", v, stepDraft(draftFor(v), 1))).toEqual({ runId: "r", priority: 1 });
+  });
+});
+
+describe("emergency exempt button", () => {
+  const exempt: RunPriorityView = { ...view, exempt: true };
+  it("needs a second tap to exempt, none to go back", () => {
+    expect(pressExempt(view, "idle")).toEqual({ stage: "confirm", send: false });
+    expect(pressExempt(view, "confirm")).toEqual({ stage: "idle", send: true });
+    expect(pressExempt(exempt, "idle")).toEqual({ stage: "idle", send: true });
+  });
+  it("sends the opposite state, with the children box only when it was touched on a run with children", () => {
+    expect(exemptRequest("r", view, undefined)).toEqual({ runId: "r", exempt: true });
+    expect(exemptRequest("r", exempt, undefined)).toEqual({ runId: "r", exempt: false });
+    const parent = { ...view, hasChildren: true };
+    expect(exemptRequest("r", parent, undefined)).toEqual({ runId: "r", exempt: true });
+    expect(exemptRequest("r", parent, true)).toEqual({ runId: "r", exempt: true, applyToChildren: true });
+    expect(exemptRequest("r", parent, false)).toEqual({ runId: "r", exempt: true, applyToChildren: false });
+    expect(exemptRequest("r", view, true)).toEqual({ runId: "r", exempt: true });
+  });
+  it("shows the flag of the action the menu is for until the user touches the box", () => {
+    expect(childrenChecked({ ...view, inheritChildren: true }, undefined)).toBe(true);
+    expect(childrenChecked({ ...exempt, inheritChildren: true, inheritChildExempt: false }, undefined)).toBe(false);
+    expect(childrenChecked(exempt, true)).toBe(true);
   });
 });

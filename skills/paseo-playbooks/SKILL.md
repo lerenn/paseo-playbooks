@@ -559,6 +559,7 @@ workspace** with its own Playbook Manager, keeps at most `max_active` going, and
   isolation always in a new one (`newWorkspace: false` is refused for it). `newWorkspace: true` forces a new workspace.
   A Sidekick always gets a new workspace unless it passes `workspaceId` of an existing one.
 - `start_playbook` takes `priority` (quota queue order) and a `quota` block: `quota: { exempt: true }` starts a run that is not subject
+- `set_run_quota_exempt { runId, exempt, applyToChildren? }` exempts an already started run (running, queued or held) from quota limiting, or puts it back under the limits (from its next step). Use it only for work that really must run despite the limits; the change is recorded (`quota_exempt_changed`, event `run.quota_exempt_changed`) with who made it, including when you exempt your own run. `applyToChildren` is sticky like `set_run_priority`'s: true passes the state to the active child runs now and on later changes, false stops, omitted keeps it.
   to quota limiting (never held or paused for quota, no caps; it still reserves its cost). For work that must not wait, such as a
   request from a human; its child runs inherit it, and it cannot be changed after the start.
 - Per-item templates may use `{{ item }}`, `{{ item.<field> }}`, `{{ index }}` and `{{ inputs.<name> }}`. A reference that

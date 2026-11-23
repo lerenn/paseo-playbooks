@@ -107,6 +107,7 @@ export const MANAGER_TOOL_NAMES = [
   "refresh_scripts",
   "restart_run",
   "set_run_priority",
+  "set_run_quota_exempt",
   "archive_run",
   "requeue_job",
   "validate_playbooks",
@@ -1778,6 +1779,7 @@ export class Runtime {
         ...(reservation?.parent ? { parent: reservation.parent } : {}),
         ...((options.priority ?? reservation?.priority) !== undefined ? { priority: (options.priority ?? reservation?.priority)! } : {}),
         ...this.inheritedPriority(reservation?.parent),
+        ...this.inheritedExemptFlag(reservation?.parent),
         // Exempt when asked (start_playbook, or the reservation the caller made), or when the parent run is (children inherit).
         ...((options.quotaExempt ?? reservation?.quotaExempt) || this.parentExempt(reservation?.parent) ? { quotaExempt: true } : {}),
         inputs,
@@ -2703,7 +2705,7 @@ export class Runtime {
   async priorityViews(runs: Run[]): Promise<Map<string, RunPriorityView>> {
     await this.userQuotaLayer();
     const parents = parentIds(runs);
-    return new Map(runs.filter((run) => !run.archivedAt && !run.quotaExempt && isActive(run) && this.limitsOf(run).quota.pacing).map((run) => [run.id, priorityViewOf(run, runs, parents)]));
+    return new Map(runs.filter((run) => !run.archivedAt && isActive(run) && (run.quotaExempt || this.limitsOf(run).quota.pacing)).map((run) => [run.id, priorityViewOf(run, runs, parents)]));
   }
 
   /** The global limits and pacing for the panel: the settings, running steps, the overrides and every held run. */
@@ -3369,6 +3371,7 @@ export class Runtime {
       await this.store.mutate(created.id, (current) => {
         current.parent = link;
         if (inherited.priorityOverride !== undefined && current.priorityOverride === null) Object.assign(current, inherited);
+        if (this.inheritedExemptFlag(link).inheritChildExempt) current.inheritChildExempt = true;
         if (this.parentExempt(link) && !current.quotaExempt) {
           current.quotaExempt = true;
           engine.noteEvent(current, "quota_exempt", null, `quota: exempt (inherited from parent run ${link.runId})`, nowIso());
@@ -4981,6 +4984,11 @@ export class Runtime {
     return parent ? this.store.get(parent.runId)?.quotaExempt === true : false;
   }
 
+  /** The sticky "children follow my exemption" flag a child of `parent` carries on, so a later change reaches its own children too. */
+  private inheritedExemptFlag(parent: Run["parent"] | undefined): { inheritChildExempt?: boolean } {
+    return parent && this.store.get(parent.runId)?.inheritChildExempt ? { inheritChildExempt: true } : {};
+  }
+
   /** What a child of `parent` starts with when the parent applies its manual priority to children (empty otherwise). */
   private inheritedPriority(parent: Run["parent"] | undefined): { priorityOverride?: number; inheritChildPriority?: boolean } {
     const owner = parent ? this.store.get(parent.runId) : undefined;
@@ -5041,6 +5049,44 @@ export class Runtime {
       this.kickLimits();
     }
     return { run, from: result.from, to: priority, changed: result.changed || cascaded > 0, cascaded };
+  }
+
+  /**
+   * Exempts a run from quota limiting, or puts it back under the limits (ADR 2026-11-23-run-quota-exempt-toggle). Exempt: any quota,
+   * headroom, pace or cap hold is lifted at once and the ready steps start without waiting for the 15 s tick; the run keeps reserving its
+   * cost. Not exempt: the limits apply again from its next step (a running step is never interrupted). `applyToChildren` sets the sticky
+   * `inheritChildExempt` flag like the priority's: true copies the state onto every active descendant now, false stops following,
+   * undefined keeps the flag (while on, every change is passed down again). Throws on an unknown, archived or finished run.
+   */
+  async setRunQuotaExempt(runId: string, exempt: boolean, applyToChildren: boolean | undefined, by: string): Promise<{ run: Run; from: boolean; to: boolean; changed: boolean; cascaded: number }> {
+    const existing = this.store.get(runId);
+    if (!existing) throw new UserError(`unknown run "${runId}"`);
+    if (existing.archivedAt) throw new UserError(`run ${runId} is archived`);
+    if (!isActive(existing)) throw new UserError(`run ${runId} is finished: its quota exemption cannot change`);
+    const note = `by ${by}`;
+    const result = await this.store.mutate(runId, (current) => engine.setRunExempt(current, exempt, applyToChildren, nowIso(), note));
+    let run = this.store.get(runId)!;
+    const touched = [runId];
+    let cascaded = 0;
+    if (run.inheritChildExempt) {
+      for (const child of this.descendantsOf(run)) {
+        if (!isActive(child) || child.archivedAt) continue;
+        const done = await this.store.mutate(child.id, (current) => engine.setRunExempt(current, exempt, true, nowIso(), `from parent ${runId}`).changed);
+        if (done) {
+          cascaded += 1;
+          touched.push(child.id);
+        }
+      }
+    }
+    run = this.store.get(runId)!;
+    if (result.changed || cascaded > 0) {
+      await this.bus.emit("run.quota_exempt_changed", { ...runFieldsOf(run), from: result.from, to: exempt, inheritChildren: run.inheritChildExempt, cascaded, by }, { runId, source: "runs" }).catch((error: unknown) => console.error("[playbooks] could not emit run.quota_exempt_changed:", errorText(error)));
+      // Released at once: the exempt runs' holds are lifted (the same path as a step start) and the ready steps start now. The others' pace plan is read again.
+      if (exempt) for (const id of touched) await this.rateCheck(this.store.get(id)!).catch((error: unknown) => console.error(`[playbooks] could not release the hold of exempt run ${id}:`, errorText(error)));
+      void this.tick().catch((error) => console.error("[playbooks] tick after a quota exemption failed:", errorText(error)));
+      this.kickLimits();
+    }
+    return { run, from: result.from, to: exempt, changed: result.changed || cascaded > 0, cascaded };
   }
 
   /**

@@ -39,6 +39,7 @@ import {
   saveSidekickAttachmentRpc,
   restartRunRpc,
   setRunPriorityRpc,
+  setRunQuotaExemptRpc,
   recoverManagerRpc,
   retryStepRpc,
   startAfterTaskRpc,
@@ -251,6 +252,10 @@ export default function contribute(server: PluginServerContext) {
   handle(setRunPriorityRpc, async ({ runId, priority, applyToChildren }) => {
     const result = await runtime.setRunPriority(runId, priority, applyToChildren, "the Quota limitation tab");
     return { priorityOverride: result.run.priorityOverride, inheritChildPriority: result.run.inheritChildPriority, from: result.from, changed: result.changed, cascaded: result.cascaded };
+  });
+  handle(setRunQuotaExemptRpc, async ({ runId, exempt, applyToChildren }) => {
+    const result = await runtime.setRunQuotaExempt(runId, exempt, applyToChildren, "the Runs view");
+    return { quotaExempt: result.run.quotaExempt, inheritChildExempt: result.run.inheritChildExempt, from: result.from, changed: result.changed, cascaded: result.cascaded };
   });
   handle(retryStepRpc, async ({ runId, stepId }) => {
     await runtime.askManagerToRetry(runId, stepId);

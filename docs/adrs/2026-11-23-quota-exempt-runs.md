@@ -1,6 +1,6 @@
 # A run can be started exempt from quota limiting
 
-Status: Accepted. Builds on `2026-11-23-run-quota-priority-override.md` (priority, `start_playbook`'s flat `priority` stays), `2026-11-21-pause-admitted-runs-to-fit-pace.md` (the pace plan) and `2026-11-23-zero-cost-runs-not-paced.md`.
+Status: Accepted (the "set only at start; not changeable afterwards" rule is superseded by `2026-11-23-run-quota-exempt-toggle.md`; the rest stands). Builds on `2026-11-23-run-quota-priority-override.md` (priority, `start_playbook`'s flat `priority` stays), `2026-11-21-pause-admitted-runs-to-fit-pace.md` (the pace plan) and `2026-11-23-zero-cost-runs-not-paced.md`.
 
 ## Context
 

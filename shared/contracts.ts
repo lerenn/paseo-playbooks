@@ -242,6 +242,13 @@ export const setRunPriorityRpc = defineRpc({
   output: z.object({ priorityOverride: z.number().nullable(), inheritChildPriority: z.boolean(), from: z.number().nullable(), changed: z.boolean(), cascaded: z.number().int() }),
 });
 
+/** Exempts a run from quota limiting, or puts it back under the limits, from the Runs view (also the set_run_quota_exempt agent tool). */
+export const setRunQuotaExemptRpc = defineRpc({
+  name: "runs.set_exempt",
+  input: z.object({ runId: z.string(), exempt: z.boolean(), applyToChildren: z.boolean().optional() }),
+  output: z.object({ quotaExempt: z.boolean(), inheritChildExempt: z.boolean(), from: z.boolean(), changed: z.boolean(), cascaded: z.number().int() }),
+});
+
 /** Manager-only quota recovery, also available as the recover_manager agent tool. */
 export const recoverManagerRpc = defineRpc({
   name: "runs.recover_manager",

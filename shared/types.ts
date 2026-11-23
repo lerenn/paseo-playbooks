@@ -1233,6 +1233,8 @@ export const RunSchema = z.object({
   inheritChildPriority: z.boolean().default(false),
   /** Set at start (`start_playbook` `quota: { exempt: true }`, inherited by child runs): the run is not subject to quota limiting (ADR 2026-11-23-quota-exempt-runs). */
   quotaExempt: z.boolean().default(false),
+  /** Set (sticky) by `set_run_quota_exempt` with applyToChildren: later changes of `quotaExempt` and the children this run starts later follow it (ADR 2026-11-23-run-quota-exempt-toggle). */
+  inheritChildExempt: z.boolean().default(false),
   /** The manager watchdog's memory (nudges sent per reported step, the manager's open question). */
   managerWatch: ManagerWatchSchema.default({ steps: {}, question: null }),
   /** The warden's findings for this run (empty unless `warden.enabled`). */
@@ -1319,6 +1321,10 @@ export const RunPriorityViewSchema = z.object({
   hasChildren: z.boolean(),
   /** The run passes its priority to the children it starts (`inheritChildPriority`). */
   inheritChildren: z.boolean(),
+  /** The run is exempt from quota limiting (`quotaExempt`): the menu shows that state, with the way back. */
+  exempt: z.boolean().default(false),
+  /** The run passes a change of its exemption to its children (`inheritChildExempt`). */
+  inheritChildExempt: z.boolean().default(false),
 });
 export type RunPriorityView = z.infer<typeof RunPriorityViewSchema>;
 

@@ -79,3 +79,30 @@ export function commitDraft(draft: PriorityDraft): PriorityDraft {
 export function applyDraft(runId: string, view: RunPriorityView, draft: PriorityDraft): PriorityRequest | null {
   return applyRequest(runId, view, draft.text);
 }
+
+/** What the "Run now, ignore quota limits" control sends (the runs.set_exempt RPC). */
+export interface ExemptRequest {
+  runId: string;
+  exempt: boolean;
+  applyToChildren?: boolean;
+}
+
+/** The two taps of the emergency button: the first asks to confirm, the second sends. Going back under the limits needs no confirmation. */
+export type ExemptStage = "idle" | "confirm";
+
+/** One press of the exempt button: what to show next and whether to send now. */
+export function pressExempt(view: RunPriorityView, stage: ExemptStage): { stage: ExemptStage; send: boolean } {
+  if (view.exempt) return { stage: "idle", send: true };
+  return stage === "confirm" ? { stage: "idle", send: true } : { stage: "confirm", send: false };
+}
+
+/**
+ * The request of the exempt button: the opposite of the run's state. `children` is the "Apply to children" checkbox as the user set it
+ * in this menu (undefined = never touched: the sticky flag is left as it is), and only a run with children carries it.
+ */
+export function exemptRequest(runId: string, view: RunPriorityView, children: boolean | undefined): ExemptRequest {
+  return { runId, exempt: !view.exempt, ...(view.hasChildren && children !== undefined ? { applyToChildren: children } : {}) };
+}
+
+/** Whether the "Apply to children" box shows as checked: the user's choice in this menu, else the flag the run has (the priority's, or the exemption's for an exempt run). */
+export const childrenChecked = (view: RunPriorityView, choice: boolean | undefined): boolean => choice ?? (view.exempt ? view.inheritChildExempt : view.inheritChildren);
