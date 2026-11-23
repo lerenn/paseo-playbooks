@@ -15,9 +15,9 @@ export function compactNumber(value: number, locale?: string): string {
   return String(Math.round(value));
 }
 
-/** Categorical slots 1-5 (blue, orange, aqua, yellow, magenta), validated for the light and the dark surface. */
-export const SERIES_LIGHT = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4"] as const;
-export const SERIES_DARK = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181"] as const;
+/** Five shades of one blue hue, told apart by lightness (darkest to lightest on light surfaces, lightest to darkest on dark ones, so the first series always stands out most). "Other" stays neutral grey; no series is red, amber or violet, which belong to run states. */
+export const SERIES_LIGHT = ["#0a3a82", "#1565c0", "#2f87e0", "#5aa3ea", "#8bbcf0"] as const;
+export const SERIES_DARK = ["#d3e6fc", "#9fc7f7", "#6aa6ef", "#3d82dd", "#2160c0"] as const;
 
 export function seriesColor(index: number, dark: boolean): string {
   const palette = dark ? SERIES_DARK : SERIES_LIGHT;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { axisTicks, compactNumber, isDarkColor, labelIndexes, niceAxis, seriesColor, shortDate } from "./analytics-chart";
+import { SERIES_DARK, SERIES_LIGHT, axisTicks, compactNumber, isDarkColor, labelIndexes, niceAxis, seriesColor, shortDate } from "./analytics-chart";
 
 describe("analytics chart helpers", () => {
   it("abbreviates numbers", () => {
@@ -29,6 +29,16 @@ describe("analytics chart helpers", () => {
   it("assigns colours by slot, per mode", () => {
     expect(seriesColor(0, false)).not.toBe(seriesColor(0, true));
     expect(seriesColor(5, false)).toBe(seriesColor(0, false));
+  });
+  it("keeps every series a distinct shade of blue", () => {
+    for (const palette of [SERIES_LIGHT, SERIES_DARK]) {
+      expect(new Set(palette).size).toBe(palette.length);
+      for (const hex of palette) {
+        const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+        expect(b!).toBeGreaterThan(g!);
+        expect(g!).toBeGreaterThan(r!);
+      }
+    }
   });
   it("tells dark from light", () => {
     expect(isDarkColor("#1a1a19")).toBe(true);
