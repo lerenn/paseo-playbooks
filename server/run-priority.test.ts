@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { setRunPriorityRpc } from "../shared/contracts";
-import { RunSchema, type Run } from "../shared/types";
+import { RunSchema, summarizeRun, type Run } from "../shared/types";
 import { newRun } from "./engine";
 import { loadPlaybooks } from "./loader";
 import { runPriority } from "./rate-limit";
@@ -177,5 +177,21 @@ describe("run quota priority override", () => {
       run.status = "completed";
     });
     expect((await runtime.priorityViews(store.list())).has("p")).toBe(false);
+  });
+});
+
+describe("quotaExempt on a stored run", () => {
+  it("is false on a run saved before the field existed, is kept when set, shows in the summary and the history, and hides the priority control", async () => {
+    const { store, runtime } = await setup();
+    const saved = JSON.parse(JSON.stringify(store.get("p"))) as Record<string, unknown>;
+    delete saved.quotaExempt;
+    expect(RunSchema.parse(saved).quotaExempt).toBe(false);
+    expect(RunSchema.parse({ ...saved, quotaExempt: true }).quotaExempt).toBe(true);
+    const run = store.get("p")!;
+    expect(summarizeRun({ ...run, quotaExempt: true }).quotaExempt).toBe(true);
+    expect(summarizeRun(run).quotaExempt).toBe(false);
+    await store.mutate("c1", (current) => void (current.quotaExempt = true));
+    const views = await runtime.priorityViews(store.list());
+    expect(views.has("c1")).toBe(false);
   });
 });

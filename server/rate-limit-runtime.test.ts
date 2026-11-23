@@ -444,3 +444,82 @@ describe("quota limits from the playbook defaults, per run", () => {
     expect(store.get("r1")!.rateHold!.kind).toBe("playbooks");
   });
 });
+
+describe("runs exempt from quota limiting (ADR 2026-11-23-quota-exempt-runs)", () => {
+  const pacing = (extra = "") => `rate_limits: { ${extra} quota: { pacing: true, refresh_interval: 1h, max_age: 2h } }`;
+  const claude = (used: number) => ({ providers: [{ providerId: "claude", status: "available", windows: [weekly(used)] }] });
+  const exempt = (store: RunStore, id: string) => store.mutate(id, (run) => void (run.quotaExempt = true));
+
+  it("starts with no free headroom, with the window exhausted, and with the usage unavailable, and is never held", async () => {
+    // 40 used is above the 28.87 ceiling: a normal run is held for quota.
+    const { runtime, store, usage, read } = await setup(pacing(), { current: claude(40) });
+    await read();
+    await expect(runtime.startStep("m", "r0", "a", "go")).rejects.toBeInstanceOf(RateHeldError);
+    await exempt(store, "r1");
+    await runtime.startStep("m", "r1", "a", "go");
+    expect(store.get("r1")!.steps.a!.status).toBe("running");
+    expect(store.get("r1")!.rateHold).toBeNull();
+    // The usage cannot be read at all.
+    usage.current = { providers: [{ providerId: "claude", status: "unavailable", windows: [] }] };
+    await read();
+    await store.mutate("r1", (run) => void ((run.steps.a!.status = "completed"), (run.steps.b!.status = "ready")));
+    await runtime.startStep("m", "r1", "b", "go");
+    expect(store.get("r1")!.rateHold).toBeNull();
+    expect(store.get("r1")!.inbox.join("\n")).not.toContain("Rate limit hold");
+  });
+
+  it("ignores the step and playbook caps", async () => {
+    const { runtime, store } = await setup("rate_limits: { steps: 1, playbooks: 1 }");
+    await runtime.startStep("m", "r0", "a", "go");
+    await exempt(store, "r1");
+    await runtime.startStep("m", "r1", "a", "go");
+    expect(store.get("r1")!.rateHold).toBeNull();
+    expect(store.get("r1")!.steps.a!.status).toBe("running");
+  });
+
+  it("is never paused between steps when the pace no longer fits it", async () => {
+    const { runtime, store, internals, usage, read } = await setup(pacing(), { current: claude(10) });
+    await exempt(store, "r0");
+    await read();
+    await runtime.startStep("m", "r0", "a", "go");
+    usage.current = claude(25);
+    await read();
+    await store.mutate("r0", (run) => void ((run.steps.a!.status = "completed"), (run.steps.b!.status = "ready")));
+    expect(await internals.rateCheck(store.get("r0")!, "r0/b", true)).toBeNull();
+    expect(store.get("r0")!.rateHold).toBeNull();
+  });
+
+  it("reserves its estimated cost, so a run that is not exempt sees less headroom and is held where it would have fit", async () => {
+    // Ceiling 28.87, used 10: 18.87 free. The exempt run reserves 10 (2 steps x 5): 8.87 is left, and a normal run needs 10.
+    const { runtime, store, read } = await setup(pacing(), { current: claude(10) });
+    await exempt(store, "r1");
+    await read();
+    await runtime.startStep("m", "r1", "a", "go");
+    const reserved = (runtime as unknown as { reservedQuota: Map<string, { est: Record<string, number> }> }).reservedQuota.get("run:r1")!;
+    expect(Object.values(reserved.est)).toEqual([10]);
+    await expect(runtime.startStep("m", "r0", "a", "go")).rejects.toBeInstanceOf(RateHeldError);
+    expect(store.get("r0")!.rateHold).toMatchObject({ kind: "headroom", estimatedCost: 10, position: 1 });
+    expect(store.get("r0")!.rateHold!.headroom).toBeCloseTo(8.87, 1);
+  });
+
+  it("is no candidate of the queue, so it blocks no lower-priority waiter, and is no competitor of the pace plan", async () => {
+    const { runtime, store, read } = await setup(pacing(), { current: claude(10) });
+    await exempt(store, "r0");
+    // r0 has the higher priority and has not started: were it in the queue, r1 would wait behind it.
+    await store.mutate("r0", (run) => void (run.priority = 9));
+    await read();
+    const inner = runtime as unknown as { rateCandidates(run: unknown): Array<{ run: { id: string } }> };
+    expect(inner.rateCandidates(store.get("r1")!).map((candidate) => candidate.run.id)).toEqual(["r1"]);
+    await runtime.startStep("m", "r1", "a", "go");
+    expect(store.get("r1")!.rateHold).toBeNull();
+  });
+
+  it("starts exempt, with nothing but the flag, and a child starts exempt when its parent is", async () => {
+    const { runtime, store } = await setup("");
+    await exempt(store, "r0");
+    const inner = runtime as unknown as { parentExempt(parent: { runId: string; stepId: string; key: string } | undefined): boolean };
+    expect(inner.parentExempt({ runId: "r0", stepId: "a", key: "k" })).toBe(true);
+    expect(inner.parentExempt({ runId: "r1", stepId: "a", key: "k" })).toBe(false);
+    expect(inner.parentExempt(undefined)).toBe(false);
+  });
+});

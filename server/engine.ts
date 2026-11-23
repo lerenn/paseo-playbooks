@@ -86,6 +86,8 @@ export interface NewRunInput {
   /** A parent's manual priority a new child inherits. */
   priorityOverride?: number | null;
   inheritChildPriority?: boolean;
+  /** Not subject to quota limiting (`start_playbook` `quota.exempt`, or inherited from the parent run). */
+  quotaExempt?: boolean;
   inputs: Record<string, unknown>;
   now: string;
 }
@@ -228,6 +230,7 @@ function createRun(input: NewRunInput, inputs: Record<string, VarValue>, kind: "
     priority: input.priority ?? null,
     priorityOverride: input.priorityOverride ?? null,
     inheritChildPriority: input.inheritChildPriority ?? false,
+    quotaExempt: input.quotaExempt ?? false,
     managerWatch: { steps: {}, question: null },
     warden: { findings: {} },
     steps: Object.fromEntries(
@@ -264,7 +267,7 @@ function createRun(input: NewRunInput, inputs: Record<string, VarValue>, kind: "
     const resolved = resolveTimeout(step, stepInputs(run, step));
     if (!resolved.ok) throw new EngineError(resolved.error);
   }
-  log(run, input.now, "run_started", null, `playbook ${input.playbook.id}`);
+  log(run, input.now, "run_started", null, `playbook ${input.playbook.id}${run.quotaExempt ? "; quota: exempt (not subject to quota limiting)" : ""}`);
   refreshReady(run, input.now);
   return run;
 }

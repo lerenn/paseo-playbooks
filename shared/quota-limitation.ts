@@ -49,7 +49,8 @@ export const QuotaProviderSchema = z.object({
   overrideUntil: z.string().nullable(),
   windows: z.array(QuotaWindowSchema),
   /** Runs whose estimated cost is reserved on this provider (admitted or queued), with what they still have to use per window id. */
-  reservations: z.array(QuotaRunRefSchema.extend({ remaining: z.record(z.string(), z.number()) })),
+  /** `exempt`: the run is not subject to quota limiting (`quotaExempt`): it reserves quota but is never held. */
+  reservations: z.array(QuotaRunRefSchema.extend({ remaining: z.record(z.string(), z.number()), exempt: z.boolean().optional() })),
   /** Runs held or paused by this provider's quota (`quota`, `headroom` and `pace` holds). */
   held: z.array(QuotaRunRefSchema.extend({ kind: z.string(), reason: z.string(), window: z.string().nullable(), retryAt: z.string().nullable(), /** When the hold began, and (headroom holds) the estimated cost of what waits: both read from the run's `rateHold`, nothing new is stored. Absent from an older server. */ since: z.string().optional(), estimatedCost: z.number().nullable().optional() })),
   /** `provider/model` targets marked out of tokens by runs, until when. */

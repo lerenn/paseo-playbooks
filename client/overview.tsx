@@ -15,7 +15,7 @@ import { laneTone } from "./lane-tone";
 import { TONE_RANK } from "./tone-color";
 import { AnalyticsView } from "./analytics";
 import { QuotaView } from "./quota";
-import { RunPriorityMenu } from "./run-priority-menu";
+import { RunExemptTag, RunPriorityMenu } from "./run-priority-menu";
 import { useReduceMotion } from "./graph";
 import { LABEL_WIDTH, labelLayout, ROW_HEIGHT } from "./layout";
 import { needsYouRowKey } from "./overview-row-key";
@@ -1369,7 +1369,7 @@ function Lane(props: { theme: Theme; child: FanoutChildInfo; compact: boolean; r
   const [history, setHistory] = useState(false);
   const refresh = useStoreRefresh();
   const restarts = child.previous.length;
-  const priority = run?.quotaPriority && isActive(run) ? <RunPriorityMenu theme={theme} runId={run.id} view={run.quotaPriority} onChanged={refresh} /> : null;
+  const priority = run?.quotaPriority && isActive(run) ? <RunPriorityMenu theme={theme} runId={run.id} view={run.quotaPriority} onChanged={refresh} /> : run?.quotaExempt && isActive(run) ? <RunExemptTag theme={theme} /> : null;
   return (
     <View style={{ gap: 2 }}>
     <Pressable
@@ -1431,7 +1431,7 @@ function RunActions(props: {
   const archivable = isTerminal(run.status) && !isActive(run);
   return (
     <View style={{ width: props.compact ? undefined : ACTIONS_WIDTH, flexDirection: "row", justifyContent: "flex-end", alignItems: "center", gap: 10 }}>
-      {run.quotaPriority && isActive(run) ? <RunPriorityMenu theme={theme} runId={run.id} view={run.quotaPriority} onChanged={refresh} /> : null}
+      {run.quotaPriority && isActive(run) ? <RunPriorityMenu theme={theme} runId={run.id} view={run.quotaPriority} onChanged={refresh} /> : run.quotaExempt && isActive(run) ? <RunExemptTag theme={theme} /> : null}
       {props.onOpenAgent && run.managerAgentId ? (
         <IconButton theme={theme} icon="Bot" label={t("cards.actions.openManager", { id: shortId(run) })} onPress={() => props.onOpenAgent!(run.managerAgentId)} />
       ) : null}

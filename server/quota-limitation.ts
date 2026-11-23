@@ -87,7 +87,7 @@ export function buildQuotaLimitation(input: { projects: ProjectLimitsInput[]; no
           const value = remaining(reservation, key);
           if (provider === view.provider && windowId && value > 0) left[windowId] = round(value);
         }
-        return [{ runId: run.id, projectId: run.projectId, title: titleOf(run), remaining: left }];
+        return [{ runId: run.id, projectId: run.projectId, title: titleOf(run), remaining: left, ...(run.quotaExempt ? { exempt: true } : {}) }];
       }),
       held: live.flatMap((run) => (run.rateHold && run.rateHold.provider === view.provider ? [{ runId: run.id, projectId: run.projectId, title: titleOf(run), kind: run.rateHold.kind, reason: run.rateHold.reason, window: run.rateHold.window, retryAt: run.rateHold.retryAt, since: run.rateHold.since, estimatedCost: run.rateHold.estimatedCost }] : [])),
       exhausted: live.flatMap((run) =>

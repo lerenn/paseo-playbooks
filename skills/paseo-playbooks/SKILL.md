@@ -558,6 +558,9 @@ workspace** with its own Playbook Manager, keeps at most `max_active` going, and
   no `newWorkspace` (or `false`): an isolated run starts in the caller's workspace (or `workspaceId`), a playbook without
   isolation always in a new one (`newWorkspace: false` is refused for it). `newWorkspace: true` forces a new workspace.
   A Sidekick always gets a new workspace unless it passes `workspaceId` of an existing one.
+- `start_playbook` takes `priority` (quota queue order) and a `quota` block: `quota: { exempt: true }` starts a run that is not subject
+  to quota limiting (never held or paused for quota, no caps; it still reserves its cost). For work that must not wait, such as a
+  request from a human; its child runs inherit it, and it cannot be changed after the start.
 - Per-item templates may use `{{ item }}`, `{{ item.<field> }}`, `{{ index }}` and `{{ inputs.<name> }}`. A reference that
   is not set makes that item `not_started` with the reason (never "(none)"). Keys must be unique (else the step fails).
 - A child run is never started twice for one key: the plugin records each child (key, run id) in the step before creating

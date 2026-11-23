@@ -216,6 +216,8 @@ export function runCompact(run: Run, only?: string[], slow: Record<string, SlowI
     running: runningSteps(run),
     slowSteps: Object.keys(slow),
     ...rateHoldView(run),
+    /** true: not subject to quota limiting (start_playbook `quota: { exempt: true }`, or inherited from the parent run). */
+    quotaExempt: run.quotaExempt,
     ...wardenView(run),
     steps: Object.fromEntries(
       viewSteps(run, only).map((id) => {
@@ -267,6 +269,8 @@ export function runFull(run: Run, only?: string[], slow: Record<string, SlowInfo
     queued: engine.queuedSteps(run),
     slowSteps: Object.keys(slow),
     ...rateHoldView(run),
+    /** true: not subject to quota limiting (start_playbook `quota: { exempt: true }`, or inherited from the parent run). */
+    quotaExempt: run.quotaExempt,
     ...wardenView(run),
     steps: Object.fromEntries(
       viewSteps(run, only).map((id) => {
@@ -490,13 +494,23 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
           .max(1000)
           .optional()
           .describe("Rate limiting: this run's priority in the queue for provider quota, overriding the playbook's `quota_limit.priority` (default 0). Higher goes first; ties go to the oldest run. Only matters while rate limiting holds work (`quota_limits` in defaults/main.yaml or the user config)"),
+        quota: z
+          .object({
+            exempt: z
+              .boolean()
+              .optional()
+              .describe("true: the run is NOT subject to quota limiting: never held for quota headroom, an exhausted or unavailable usage window, or the step and playbook caps, and never paused to fit the pace. It still reserves its estimated cost, so other runs' headroom shrinks by it, and its measured cost is recorded as usual. Child runs (fan-out, pool, replace_child) inherit it; restart_run keeps it. Fixed at start (not changeable later). Recorded in the run's history. Meant for work that must not wait (e.g. a request from a human in a chat); do not use it to skip the queue for routine work"),
+          })
+          .optional()
+          .describe("Quota limiting options of this run (see `exempt`). Omitted: the run is limited like any other"),
         autoStart: z
           .boolean()
           .default(true)
           .describe("Start the run's ready agent steps right away, as start_step would with no brief (default true). false: leave them ready; with workspaceId or a Sidekick, the new manager then waits to be told to start them"),
       }),
-      execute: ({ playbook, inputs, name, newWorkspace: requested, workspaceId, autoStart, workspaceName, forJob, replaces, replaceReason, priority }, { agent }) =>
+      execute: ({ playbook, inputs, name, newWorkspace: requested, workspaceId, autoStart, workspaceName, forJob, replaces, replaceReason, priority, quota }, { agent }) =>
         guard(async () => {
+          const quotaExempt = quota?.exempt === true;
           const sidekick = await runtime.isSidekick(agent.id);
           // New workspace by default. Exceptions: a Playbook Manager the plugin created for a reserved workspace creates its run there;
           // an isolated playbook (isolation.mode: worktree) starts in the caller's workspace (workspaceId), unless newWorkspace: true.
@@ -523,7 +537,7 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
           };
           if (workspaceName?.trim() && !newWorkspace) throw new UserError("workspaceName names a new workspace: it does not apply to a run that starts in an existing one (your reserved workspace, or an isolated run in yours)");
           if (inPlace) {
-            const started = await runtime.startPlaybookInWorkspace(agent, { playbook, inputs, workspaceId: target!, newWorkspace: false, autoStart, priority });
+            const started = await runtime.startPlaybookInWorkspace(agent, { playbook, inputs, workspaceId: target!, newWorkspace: false, autoStart, priority, quotaExempt });
             await afterStart(started);
             return ok(
               `Run ${started.runId} of "${playbook}" is starting in workspace ${started.workspaceId}, in its own private worktree (isolation: worktree), with ${started.managerAgentId ? `its own Playbook Manager (${started.managerAgentId})` : "no Playbook Manager (manager.mode: none): the plugin drives it"}. It shows in that workspace's Playbook panel next to its other runs. You do not manage it: the plugin tells you how it goes through your event subscription (list_runs shows it).`,
@@ -531,7 +545,7 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
             );
           }
           if (workspaceId || sidekick) {
-            const started = await runtime.startPlaybookInWorkspace(agent, { playbook, inputs, workspaceId, newWorkspace: true, autoStart, workspaceName, priority });
+            const started = await runtime.startPlaybookInWorkspace(agent, { playbook, inputs, workspaceId, newWorkspace: true, autoStart, workspaceName, priority, quotaExempt });
             await afterStart(started);
             return ok(
               `Run ${started.runId} of "${playbook}" is starting in a new workspace ${started.workspaceId} with ${started.managerAgentId ? `its own Playbook Manager (${started.managerAgentId})` : "no Playbook Manager (manager.mode: none): the plugin drives it"}. You do not manage it: the plugin tells you how it goes through your event subscription (list_runs shows it).`,
@@ -539,14 +553,14 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
             );
           }
           if (newWorkspace) {
-            const started = await runtime.startPlaybookElsewhere(agent, playbook, inputs, workspaceName, priority);
+            const started = await runtime.startPlaybookElsewhere(agent, playbook, inputs, workspaceName, priority, quotaExempt);
             await afterStart(started);
             return ok(
               `Run ${started.runId} of "${playbook}" is starting in a new workspace (${started.workspaceId}) with ${started.managerAgentId ? `its own Playbook Manager (${started.managerAgentId})` : "no Playbook Manager (manager.mode: none): the plugin drives it"}. You do not manage it: carry on with your own run.`,
               started,
             );
           }
-          const run = await runtime.startPlaybook(agent, playbook, inputs, { name, hold: !autoStart, ...(priority !== undefined ? { priority } : {}) });
+          const run = await runtime.startPlaybook(agent, playbook, inputs, { name, hold: !autoStart, ...(priority !== undefined ? { priority } : {}), ...(quotaExempt ? { quotaExempt: true } : {}) });
           if (run.playbook.singleton) {
             return ok(
               `"${playbook}" is a singleton: its pipeline is run ${run.id}, in its own workspace. Hand-off steps give it jobs; each stage's batches get their own Playbook Manager there. You do not manage it.`,
@@ -736,6 +750,8 @@ export function runListing(run: Run, slow: Record<string, SlowInfo> = {}) {
     failure: run.failure,
     active: isActive(run),
     paused: isPaused(run),
+    /** true: not subject to quota limiting (never held or paused for quota). */
+    quotaExempt: run.quotaExempt,
     workspaceId: run.workspaceId,
     workspaceDir: run.workspaceDir,
     branch: run.branch,

@@ -1224,6 +1224,8 @@ export const RunSchema = z.object({
   priorityOverride: z.number().nullable().default(null),
   /** Set (sticky) by `set_run_priority` with applyToChildren: the children this run starts later start with its `priorityOverride`. */
   inheritChildPriority: z.boolean().default(false),
+  /** Set at start (`start_playbook` `quota: { exempt: true }`, inherited by child runs): the run is not subject to quota limiting (ADR 2026-11-23-quota-exempt-runs). */
+  quotaExempt: z.boolean().default(false),
   /** The manager watchdog's memory (nudges sent per reported step, the manager's open question). */
   managerWatch: ManagerWatchSchema.default({ steps: {}, question: null }),
   /** The warden's findings for this run (empty unless `warden.enabled`). */
@@ -1351,6 +1353,8 @@ export const RunSummarySchema = z.object({
   fanouts: z.record(z.string(), z.object({ loop: z.number().int(), children: z.array(FanoutChildSummarySchema), pool: PoolSummarySchema.nullable().default(null), past: z.array(FanoutPassSummarySchema) })).default({}),
   /** The quota priority, only for an active run of a project that paces; null = no priority control (finished, pacing off, or an older server). */
   quotaPriority: RunPriorityViewSchema.nullable().default(null),
+  /** The run is not subject to quota limiting (`quotaExempt`): the Runs view shows an "exempt" tag instead of the priority control. */
+  quotaExempt: z.boolean().default(false),
 });
 export type RunSummary = z.infer<typeof RunSummarySchema>;
 
@@ -1403,6 +1407,7 @@ export function summarizeRun(run: Run, quotaPriority: RunPriorityView | null = n
     batch: run.batch,
     parent: run.parent,
     quotaPriority,
+    quotaExempt: run.quotaExempt,
     fanouts: Object.fromEntries(
       Object.entries(run.steps).flatMap(([stepId, step]) =>
         step.fanout && step.status !== "pending" && step.status !== "ready"

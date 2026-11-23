@@ -75,7 +75,7 @@ import { holdsBlock, planAdmissions, slotHolders } from "../shared/slots";
 import { DEFAULT_MANAGER_RECOVERY, DEFAULT_RATE_LIMITS, readManagerRecoveryConfig, readQuotaLimitsLayer, resolveQuotaLimits, type ManagerRecoveryConfig, type QuotaLimitsLayer, type RateLimitsConfig } from "./config";
 import { buildQuotaLimitation } from "./quota-limitation";
 import type { QuotaLimitation } from "../shared/quota-limitation";
-import { CostHistory, exhaustionVerdict, planPace, type Admitted as AdmittedRun, orderCandidates, planHeadroom, windowKey, type Candidate as RateCandidate, type PlanContext } from "./rate-budget";
+import { candidateCost, CostHistory, exhaustionVerdict, planPace, type Admitted as AdmittedRun, orderCandidates, planHeadroom, windowKey, ZERO_COST_POINTS, type Candidate as RateCandidate, type PlanContext } from "./rate-budget";
 import { limitVerdict, parentIds, priorityViewOf, QuotaPacer, runPriority, runProviders, usedPct, type HoldVerdict, type ReadChange } from "./rate-limit";
 import { pluginDataDir } from "./data-dir";
 
@@ -231,6 +231,8 @@ interface Reservation {
   parent?: Run["parent"];
   /** `start_playbook`'s priority for the run (rate limiting). */
   priority?: number;
+  /** `start_playbook`'s `quota.exempt` for the run. */
+  quotaExempt?: boolean;
 }
 
 /** Kept of a script's output: the end of stdout and stderr, shown in the panel and to the manager. */
@@ -1726,7 +1728,7 @@ export class Runtime {
     manager: { id: string; workspaceId: string | null; cwd: string },
     playbookId: string,
     inputs: Record<string, unknown>,
-    options: { playbook?: Playbook; name?: string; hold?: boolean; priority?: number } = {},
+    options: { playbook?: Playbook; name?: string; hold?: boolean; priority?: number; quotaExempt?: boolean } = {},
   ): Promise<Run> {
     if (!manager.workspaceId) throw new UserError("this agent has no workspace");
     const workspace = await this.lookupWorkspace(manager.workspaceId);
@@ -1770,6 +1772,8 @@ export class Runtime {
         ...(reservation?.parent ? { parent: reservation.parent } : {}),
         ...((options.priority ?? reservation?.priority) !== undefined ? { priority: (options.priority ?? reservation?.priority)! } : {}),
         ...this.inheritedPriority(reservation?.parent),
+        // Exempt when asked (start_playbook, or the reservation the caller made), or when the parent run is (children inherit).
+        ...((options.quotaExempt ?? reservation?.quotaExempt) || this.parentExempt(reservation?.parent) ? { quotaExempt: true } : {}),
         inputs,
         now: nowIso(),
       });
@@ -2320,6 +2324,13 @@ export class Runtime {
   private async rateCheck(run: Run, exceptKey = "", quota = true): Promise<HoldVerdict | null> {
     await this.userQuotaLayer();
     const config = this.limitsOf(run);
+    // A run exempt from quota limiting (ADR 2026-11-23-quota-exempt-runs) is never held: no cap, no exhausted or unavailable window, no
+    // headroom queue, no pace pause, and so no hold notice. It still reserves its estimated cost, which the others' headroom loses.
+    if (run.quotaExempt) {
+      this.reserveExempt(run, config);
+      await this.applyHold(run.id, null);
+      return null;
+    }
     let verdict: HoldVerdict | null = null;
     if (config.steps !== null || config.playbooks !== null) verdict = limitVerdict(run, this.store.list(), config, this.reservedStarts(exceptKey));
     if (!verdict && quota && config.quota.pacing) verdict = this.paceVerdict(this.store.get(run.id) ?? run, config, exceptKey !== "");
@@ -2328,6 +2339,28 @@ export class Runtime {
     if (!verdict && !quota && this.store.get(run.id)?.rateHold && ["quota", "headroom", "pace"].includes(this.store.get(run.id)!.rateHold!.kind)) return null;
     await this.applyHold(run.id, verdict);
     return verdict;
+  }
+
+  /**
+   * The reservation of a run exempt from quota limiting, taken once when its first step starts: its estimated cost per window
+   * (steps still to run × the playbook's measured cost), so the headroom the other runs see shrinks by it. Nothing here can hold the
+   * run: it is not a candidate of the queue, nor part of the pace plan; later `refreshAdmittedNeeds` keeps the figure current.
+   */
+  private reserveExempt(run: Run, config: RateLimitsConfig): void {
+    if (!config.quota.pacing || this.reservedQuota.has(`run:${run.id}`)) return;
+    this.pruneQuotaReservations();
+    const ctx = this.planContext(config);
+    const est: Record<string, number> = {};
+    const demand = this.rateDemand(run);
+    for (const [provider, count] of demand) {
+      const probe = ctx.probe(provider, run);
+      if (probe.state !== "ok") continue;
+      for (const room of probe.rooms) {
+        const { cost, estimated } = candidateCost({ run, priority: 0, demand }, room, ctx, count);
+        if (estimated && cost > ZERO_COST_POINTS) est[windowKey(provider, room.id)] = cost;
+      }
+    }
+    this.reservedQuota.set(`run:${run.id}`, { runId: run.id, est, spent: {}, at: Date.now(), endedAt: null });
   }
 
   private planContext(config: RateLimitsConfig): PlanContext {
@@ -2374,7 +2407,8 @@ export class Runtime {
     const out: RateCandidate[] = [];
     for (const run of runs) {
       const isAsking = run.id === asking.id;
-      if (!isAsking && (run.archivedAt || isPipeline(run) || !isActive(run) || isPaused(run))) continue;
+      // An exempt run is never in the queue: it blocks nobody (its reservation already took its cost from the headroom).
+      if (!isAsking && (run.archivedAt || run.quotaExempt || isPipeline(run) || !isActive(run) || isPaused(run))) continue;
       if (!isAsking && this.rateAdmitted(run)) continue;
       const demand = this.rateDemand(isAsking ? asking : run);
       if (demand.size === 0 && !isAsking) continue;
@@ -2411,7 +2445,8 @@ export class Runtime {
     const runs = this.store.list();
     const admitted: AdmittedRun[] = [];
     for (const other of runs) {
-      if (other.archivedAt || other.parent || isPipeline(other) || !isActive(other) || !this.rateAdmitted(other)) continue;
+      // An exempt run does not compete: it is not paused, and its reservation counts in `others` (taken from the headroom first).
+      if (other.archivedAt || other.parent || other.quotaExempt || isPipeline(other) || !isActive(other) || !this.rateAdmitted(other)) continue;
       const reserved = this.reservedQuota.get(`run:${other.id}`);
       const need: Record<string, number> = {};
       for (const [key, est] of Object.entries(reserved?.est ?? {})) need[key] = Math.max(0, est - (reserved?.spent[key] ?? 0));
@@ -2635,7 +2670,7 @@ export class Runtime {
   async priorityViews(runs: Run[]): Promise<Map<string, RunPriorityView>> {
     await this.userQuotaLayer();
     const parents = parentIds(runs);
-    return new Map(runs.filter((run) => !run.archivedAt && isActive(run) && this.limitsOf(run).quota.pacing).map((run) => [run.id, priorityViewOf(run, runs, parents)]));
+    return new Map(runs.filter((run) => !run.archivedAt && !run.quotaExempt && isActive(run) && this.limitsOf(run).quota.pacing).map((run) => [run.id, priorityViewOf(run, runs, parents)]));
   }
 
   /** The global limits and pacing for the panel: the settings, running steps, the overrides and every held run. */
@@ -3301,6 +3336,10 @@ export class Runtime {
       await this.store.mutate(created.id, (current) => {
         current.parent = link;
         if (inherited.priorityOverride !== undefined && current.priorityOverride === null) Object.assign(current, inherited);
+        if (this.parentExempt(link) && !current.quotaExempt) {
+          current.quotaExempt = true;
+          engine.noteEvent(current, "quota_exempt", null, `quota: exempt (inherited from parent run ${link.runId})`, nowIso());
+        }
       });
     }
     else if (reservation) reservation.parent = link;
@@ -4904,6 +4943,11 @@ export class Runtime {
     return this.store.get(runId)!;
   }
 
+  /** Whether the parent run of a child is exempt from quota limiting: the child is too. */
+  private parentExempt(parent: Run["parent"] | undefined): boolean {
+    return parent ? this.store.get(parent.runId)?.quotaExempt === true : false;
+  }
+
   /** What a child of `parent` starts with when the parent applies its manual priority to children (empty otherwise). */
   private inheritedPriority(parent: Run["parent"] | undefined): { priorityOverride?: number; inheritChildPriority?: boolean } {
     const owner = parent ? this.store.get(parent.runId) : undefined;
@@ -6229,7 +6273,7 @@ export class Runtime {
     return (await this.sidekickRegistry.findByAgent(agentId)) !== null;
   }
 
-  async startPlaybookInWorkspace(caller: { id: string; workspaceId: string | null }, input: { playbook: string; inputs: Record<string, VarValue>; workspaceId: string | undefined; newWorkspace: boolean; autoStart?: boolean; workspaceName?: string | undefined; priority?: number | undefined }) {
+  async startPlaybookInWorkspace(caller: { id: string; workspaceId: string | null }, input: { playbook: string; inputs: Record<string, VarValue>; workspaceId: string | undefined; newWorkspace: boolean; autoStart?: boolean; workspaceName?: string | undefined; priority?: number | undefined; quotaExempt?: boolean | undefined }) {
     const isSidekick = await this.isSidekick(caller.id);
     if (input.workspaceName && !input.newWorkspace) throw new UserError("workspaceName names the new workspace: pass it with newWorkspace");
     // Without workspaceId a Sidekick branches the new workspace off its own (hidden) one, which is the project's root checkout.
@@ -6244,7 +6288,7 @@ export class Runtime {
     const callerProject = (await this.lookupWorkspace(caller.workspaceId))?.projectId;
     if (!callerProject) throw new UserError("cannot check that workspace against the caller's project: the caller's own workspace is not listed (list_workspaces)");
     if (workspace.projectId !== callerProject) throw new UserError("that workspace belongs to another project");
-    const started = await this.startFromPanel({ workspaceId: workspace.id, playbook: input.playbook, inputs: input.inputs, force: false, sameWorkspace: !input.newWorkspace, autoStart: input.autoStart !== false, workspaceName: input.workspaceName, priority: input.priority });
+    const started = await this.startFromPanel({ workspaceId: workspace.id, playbook: input.playbook, inputs: input.inputs, force: false, sameWorkspace: !input.newWorkspace, autoStart: input.autoStart !== false, workspaceName: input.workspaceName, priority: input.priority, quotaExempt: input.quotaExempt });
     if (started.status === "duplicate") throw new UserError(`${started.message} Not started again.`);
     return started;
   }
@@ -6262,6 +6306,8 @@ export class Runtime {
     workspaceName?: string | undefined;
     /** Rate-limit priority of the run (overrides the playbook's); unset: the playbook's. */
     priority?: number | undefined;
+    /** Not subject to quota limiting (`start_playbook` `quota.exempt`). */
+    quotaExempt?: boolean | undefined;
     /** A fan-out step starting a child run: its id (reserved before the workspace exists) and its parent link. */
     child?: { runId: string; parent: NonNullable<Run["parent"]> } | undefined;
   }) {
@@ -6297,7 +6343,7 @@ export class Runtime {
     if (input.sameWorkspace && playbook.managerMode === "none") {
       const busy = this.workspaceConflict(workspace.id, playbook.isolation.mode === "worktree");
       if (busy) throw new UserError(`this workspace already has an active run (${busy.id}); use "Start in a new workspace"${playbook.isolation.mode === "worktree" ? "" : ", or give the playbook `isolation: worktree` so runs can share a workspace"}`);
-      const run = await this.startPlaybook({ id: "", workspaceId: workspace.id, cwd: workspaceDir }, playbook.id, resolved.inputs, { playbook, ...(input.priority !== undefined ? { priority: input.priority } : {}) });
+      const run = await this.startPlaybook({ id: "", workspaceId: workspace.id, cwd: workspaceDir }, playbook.id, resolved.inputs, { playbook, ...(input.priority !== undefined ? { priority: input.priority } : {}), ...(input.quotaExempt ? { quotaExempt: true } : {}) });
       return { status: "started" as const, workspaceId: workspace.id, managerAgentId: "", runId: run.id, queued: false };
     }
     if (input.sameWorkspace) {
@@ -6305,7 +6351,7 @@ export class Runtime {
       if (busy) throw new UserError(`this workspace already has an active run (${busy.id}); use "Start in a new workspace"${playbook.isolation.mode === "worktree" ? "" : ", or give the playbook `isolation: worktree` so runs can share a workspace"}`);
       // The new agent creates the run itself with start_playbook, which takes this reserved id.
       const runId = `run_${shortId()}`;
-      this.addReservation(workspace.id, { runId, branch: null, playbook, inputs: resolved.inputs, ...(input.priority !== undefined ? { priority: input.priority } : {}) });
+      this.addReservation(workspace.id, { runId, branch: null, playbook, inputs: resolved.inputs, ...(input.priority !== undefined ? { priority: input.priority } : {}), ...(input.quotaExempt ? { quotaExempt: true } : {}) });
       const manager = await this.api().workspaces.ref(workspace.id).agents.create({
         config: this.managerConfig(playbook, await this.managerSkips(playbook)),
         title: `Playbook Manager · ${playbook.title}`,
@@ -6314,7 +6360,7 @@ export class Runtime {
       });
       return { status: "started" as const, workspaceId: workspace.id, managerAgentId: manager.id, runId, queued: false };
     }
-    return this.startInNewWorkspace(workspaceDir, playbook, resolved.inputs, input.workspaceName, input.child, input.priority);
+    return this.startInNewWorkspace(workspaceDir, playbook, resolved.inputs, input.workspaceName, input.child, input.priority, input.quotaExempt);
   }
 
 
@@ -6952,7 +6998,7 @@ export class Runtime {
     }
   }
 
-  private async startInNewWorkspace(workspaceDir: string, playbook: Playbook, inputs: Record<string, VarValue>, workspaceName?: string, child?: { runId: string; parent: NonNullable<Run["parent"]> }, priority?: number) {
+  private async startInNewWorkspace(workspaceDir: string, playbook: Playbook, inputs: Record<string, VarValue>, workspaceName?: string, child?: { runId: string; parent: NonNullable<Run["parent"]> }, priority?: number, quotaExempt?: boolean) {
     const runId = child?.runId ?? `run_${shortId()}`;
     const id = runId.replace(/^run_/, "");
     const branch = worktreeBranch(playbook.id, id);
@@ -6961,12 +7007,12 @@ export class Runtime {
       title: workspaceTitle(playbook.title, inputs, workspaceName, playbook.workspace.title),
       source: { kind: "worktree", cwd: workspaceDir, action: "branch-off", branchName: branch, ...(base ? { refName: base } : {}) },
     });
-    this.addReservation(created.id, { runId, branch, playbook, inputs, created: true, ...(child ? { parent: child.parent } : {}), ...(priority !== undefined ? { priority } : {}) });
+    this.addReservation(created.id, { runId, branch, playbook, inputs, created: true, ...(child ? { parent: child.parent } : {}), ...(priority !== undefined ? { priority } : {}), ...(quotaExempt ? { quotaExempt: true } : {}) });
     await this.freshenNewWorkspace(created.id, workspaceDir, base ?? (await defaultBranch(workspaceDir)));
     if (playbook.managerMode === "none") {
       // No manager agent: the plugin creates the run itself, from the reservation, and drives it.
       try {
-        const run = await this.startPlaybook({ id: "", workspaceId: created.id, cwd: workspaceDir }, playbook.id, inputs, { playbook, ...(priority !== undefined ? { priority } : {}) });
+        const run = await this.startPlaybook({ id: "", workspaceId: created.id, cwd: workspaceDir }, playbook.id, inputs, { playbook, ...(priority !== undefined ? { priority } : {}), ...(quotaExempt ? { quotaExempt: true } : {}) });
         return { status: "started" as const, workspaceId: created.id, managerAgentId: "", runId: run.id };
       } catch (error) {
         this.reservations.delete(created.id);
@@ -6986,7 +7032,7 @@ export class Runtime {
    * start_playbook with `newWorkspace`: the run gets its own workspace and its own Playbook
    * Manager, so any manager can start one, a batch's included (rework for an ejected job).
    */
-  async startPlaybookElsewhere(manager: { cwd: string; workspaceId: string | null }, playbookId: string, inputs: Record<string, unknown>, workspaceName?: string, priority?: number) {
+  async startPlaybookElsewhere(manager: { cwd: string; workspaceId: string | null }, playbookId: string, inputs: Record<string, unknown>, workspaceName?: string, priority?: number, quotaExempt?: boolean) {
     let workspaceDir = manager.cwd;
     let projectId: string | null = null;
     if (manager.workspaceId) {
@@ -7007,7 +7053,7 @@ export class Runtime {
     const resolved = engine.resolveRunInputs(playbook, inputs);
     if (!resolved.ok) throw new UserError(resolved.errors.join("; "));
     if (projectId) this.checkConcurrency(playbook, projectId);
-    return this.startInNewWorkspace(workspaceDir, playbook, resolved.inputs, workspaceName, undefined, priority);
+    return this.startInNewWorkspace(workspaceDir, playbook, resolved.inputs, workspaceName, undefined, priority, quotaExempt);
   }
 
   /** Whether the playbook, as the workspace has it, declares `isolation: { mode: worktree }` (false when the workspace or playbook is missing or invalid). */

@@ -9,6 +9,17 @@ import { applyRequest, inheritRequest, isManual, parsePriority, resetRequest, st
 import type { Theme } from "./theme";
 import { semanticColor } from "./semantic-colors";
 
+/** The small tag a run exempt from quota limiting wears in a Runs view row, where its priority control would be (ADR 2026-11-23-quota-exempt-runs). */
+export function RunExemptTag(props: { theme: Theme }) {
+  const { theme } = props;
+  const { t } = useTranslation(messages);
+  return (
+    <Text accessibilityHint={t("runs.exemptHint")} style={{ color: theme.colors.accent, fontSize: 10, fontWeight: "600", borderRadius: 4, borderWidth: 1, borderColor: theme.colors.accent, paddingHorizontal: 4 }}>
+      {t("runs.exempt")}
+    </Text>
+  );
+}
+
 /**
  * The priority of an active run in a Runs view row: an icon and the number (in the theme accent while it is a manual one), and
  * a menu below it with a stepper and field, "Apply", "Reset", the source of the number and, for a run with children, "Apply to children".

@@ -74,6 +74,8 @@ export interface ProviderRow {
 /** A run under "Reservations": what it still has to use (empty for a held run that reserves nothing yet) and a short tag when rate limiting holds it. */
 export interface ReservationRow extends QuotaRunRef {
   remaining: Record<string, number>;
+  /** Not subject to quota limiting: reserves quota, never held or paused. */
+  exempt?: boolean;
   hold: "held" | "paused" | null;
 }
 
@@ -116,7 +118,8 @@ export function throttleOf(input: { slots: SlotRow[]; reservations: ReservationR
   let percent: number | null = null;
   let source: Throttle["source"] = null;
   for (const slot of slots.filter((candidate) => candidate.paced)) {
-    const own = reservations.map((run) => run.remaining[slot.id] ?? 0);
+    // An exempt run reserves quota but is no waiting work: it does not set the typical need the throttle is measured against.
+    const own = reservations.filter((run) => !run.exempt).map((run) => run.remaining[slot.id] ?? 0);
     // A held run with no reservation yet counts with the cost the hold estimated.
     for (const run of held) if (run.window === slot.id && run.estimatedCost && !reservations.some((reserved) => reserved.runId === run.runId && (reserved.remaining[slot.id] ?? 0) > 0)) own.push(run.estimatedCost);
     const needs = own.filter((value) => value > ZERO_NEED);
@@ -199,7 +202,7 @@ function providerRow(provider: QuotaProvider, set: QuotaProjectLimits, project: 
     ...reserving.map((run) => ({ ...run, hold: tag(run.runId) })),
     ...mine(provider.held)
       .filter((run) => !reserving.some((reserved) => reserved.runId === run.runId))
-      .map(({ kind: _kind, reason: _reason, window: _window, retryAt: _retryAt, ...run }) => ({ ...run, remaining: {}, hold: tag(run.runId) })),
+      .map(({ kind: _kind, reason: _reason, window: _window, retryAt: _retryAt, ...run }) => ({ ...run, remaining: {}, exempt: false, hold: tag(run.runId) })),
   ];
   const throttle = throttleOf({ slots, reservations, held: mine(provider.held), unitCost: project.unitCost?.[provider.provider], nowMs });
   return { provider: provider.provider, status, state: provider.state, readAt: provider.readAt, overrideUntil: provider.overrideUntil, slots, free, reservations, exhausted: mine(provider.exhausted), throttle: set.pacing ? throttle : { ...throttle, percent: null, source: null } };

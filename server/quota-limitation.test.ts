@@ -34,6 +34,14 @@ async function oneRun(): Promise<Run> {
 }
 
 describe("quota limitation view", () => {
+  it("tags an exempt run among the reservations and never lists it as held", async () => {
+    const run = { ...(await oneRun()), quotaExempt: true };
+    const out = buildQuotaLimitation({ projects: projectsOn, nowMs: NOW, views: [view()], runs: [run], reservations: [{ runId: "r1", est: { [windowKey("claude", "weekly")]: 5 }, spent: {}, endedAt: null }] });
+    expect(out.providers[0]!.reservations).toEqual([{ runId: "r1", projectId: "p", title: "Work", remaining: { weekly: 5 }, exempt: true }]);
+    expect(out.providers[0]!.held).toEqual([]);
+    expect(out.runsActive).toBe(1);
+  });
+
   it("shows usage, allowed so far, reservations and headroom per window", async () => {
     const run = await oneRun();
     const out = buildQuotaLimitation({

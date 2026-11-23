@@ -63,6 +63,15 @@ describe("quota throttle", () => {
   const held = (runId: string, over = {}) => ({ runId, title: runId, projectId: "p", kind: "headroom", reason: "r", window: "weekly", retryAt: null, since: "2026-11-22T22:00:00Z", estimatedCost: null, ...over });
   const throttle = (providers: QuotaLimitation["providers"], projects?: Parameters<typeof data>[1]) => projectRows(data(providers, projects))[0]!.sets[0]!.providers[0]!.throttle;
 
+  it("does not count an exempt run in the typical need, or as held or paused", () => {
+    const exempt = { ...reserving("e", 90), exempt: true };
+    const out = throttle([provider([slot()], { reservations: [reserving("a", 20), reserving("b", 48), exempt] })]);
+    // As without the exempt run: free 17, median need 34.
+    expect(out).toMatchObject({ percent: 50, held: 0, paused: 0 });
+    const [row] = projectRows(data([provider([slot()], { reservations: [exempt] })]));
+    expect(row!.sets[0]!.providers[0]!.reservations).toMatchObject([{ runId: "e", exempt: true, hold: null }]);
+  });
+
   it("is 0% when the free headroom covers the median need, and falls with it", () => {
     expect(throttle([provider([slot()], { reservations: [reserving("a", 5), reserving("b", 10), reserving("c", 40)] })]).percent).toBe(0);
     // free 17, median need 34 (of 20 and 48): 1 - 17/34 = 50%

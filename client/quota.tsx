@@ -150,6 +150,7 @@ function ProviderView(props: { theme: Theme; provider: ProviderRow }) {
           {provider.reservations.map((run) => (
             <View key={run.runId} style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
               <Text style={{ color: theme.colors.foreground, fontSize: 12 }}>{`${run.title}${Object.keys(run.remaining).length > 0 ? ` · ${Object.entries(run.remaining).map(([name, value]) => t("quota.remaining", { window: name, value })).join(", ")}` : ""}`}</Text>
+              {run.exempt ? <Text style={{ color: theme.colors.accent, fontSize: 10, fontWeight: "600", borderRadius: 4, borderWidth: 1, borderColor: theme.colors.accent, paddingHorizontal: 4 }}>{t("quota.tagExempt")}</Text> : null}
               {run.hold === null ? null : <Text style={{ color: semanticColor(theme, "paused"), fontSize: 10, fontWeight: "600", borderRadius: 4, borderWidth: 1, borderColor: semanticColor(theme, "paused"), paddingHorizontal: 4 }}>{t(run.hold === "paused" ? "quota.tagPaused" : "quota.tagHeld")}</Text>}
             </View>
           ))}
