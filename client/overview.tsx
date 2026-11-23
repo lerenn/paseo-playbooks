@@ -14,6 +14,7 @@ import { useSlowSteps } from "./slow";
 import { laneTone } from "./lane-tone";
 import { TONE_RANK } from "./tone-color";
 import { AnalyticsView } from "./analytics";
+import { OffHoursView } from "./off-hours";
 import { QuotaView } from "./quota";
 import { RunExemptTag, RunPriorityMenu } from "./run-priority-menu";
 import { useReduceMotion } from "./graph";
@@ -356,7 +357,7 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
   const settings = useSettings(overviewSettings);
   const [picked, setPicked] = useState<PlaybookSort | null>(null);
   const playbookSort: PlaybookSort = picked ?? (settings.status === "ready" ? settings.values.sort : DEFAULT_PLAYBOOK_SORT);
-  const [tab, setTab] = useState<"runs" | "analytics" | "quota" | "profiles">("runs");
+  const [tab, setTab] = useState<"runs" | "analytics" | "quota" | "offHours" | "profiles">("runs");
   // The sidebar badge and this screen share one store: one agent subscription, one request per change.
   const overview = useOverview(store);
   const toast = useToast();
@@ -493,6 +494,7 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
           <Tab theme={theme} label={t("cards.tabs.runs")} selected={tab === "runs"} onPress={() => setTab("runs")} />
           <Tab theme={theme} label={t("cards.tabs.analytics")} selected={tab === "analytics"} onPress={() => setTab("analytics")} />
           <Tab theme={theme} label={t("quota.tab")} selected={tab === "quota"} onPress={() => setTab("quota")} />
+          <Tab theme={theme} label={t("offHours.tab")} selected={tab === "offHours"} onPress={() => setTab("offHours")} />
           <Tab theme={theme} label={t("cards.tabs.profiles")} selected={tab === "profiles"} onPress={() => setTab("profiles")} />
         </View>
 
@@ -500,6 +502,8 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
           <AnalyticsView theme={theme} />
         ) : tab === "quota" ? (
           <QuotaView theme={theme} workspaces={quotaWorkspaces} refreshSignal={refreshTick} />
+        ) : tab === "offHours" ? (
+          <OffHoursView theme={theme} workspaces={quotaWorkspaces} refreshSignal={refreshTick} />
         ) : tab === "profiles" ? (
           <ProfilesView theme={theme} workspaces={workspaces} />
         ) : (

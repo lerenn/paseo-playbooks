@@ -154,3 +154,21 @@ export function openAge(closed: ClosedHours | null | undefined, from: number, no
   if (!(now > from)) return 0;
   return closed && closed.slots.length > 0 ? openMs(closed, from, now) : now - from;
 }
+
+/** How far ahead the next change is looked for: a weekly schedule changes within a week, unless it is closed (or open) throughout. */
+const STATE_HORIZON_MS = 8 * 86_400_000;
+
+/**
+ * Whether a slot is closed at `nowMs`, and when that next changes (ms): the end of the closed stretch (adjacent and overlapping
+ * slots merged) when closed, the start of the next one when open. `changeAt` is null when nothing changes within a week: closed
+ * round the clock (the window is fully closed), or no slot at all.
+ */
+export function closedState(closed: ClosedHours | null | undefined, nowMs: number): { closed: boolean; changeAt: number | null } {
+  if (!closed || closed.slots.length === 0) return { closed: false, changeAt: null };
+  const end = nowMs + STATE_HORIZON_MS;
+  const intervals = closedIntervals(closed, nowMs, end);
+  const first = intervals[0];
+  if (!first) return { closed: false, changeAt: null };
+  if (first[0] <= nowMs) return { closed: true, changeAt: first[1] >= end ? null : first[1] };
+  return { closed: false, changeAt: first[0] };
+}

@@ -78,6 +78,8 @@ export const QuotaProjectLimitsSchema = z.object({
   usablePercent: z.number(),
   /** Closed hours (ADR 2026-11-23-quota-closed-hours): slots not counted towards what is allowed so far; null for none. Absent from an older server. */
   closedHours: z.object({ timezone: z.string(), slots: z.array(z.custom<ClosedSlotView>()) }).nullable().optional(),
+  /** Whether a closed slot is running now and when that next changes (ADR 2026-11-23-off-hours-tab); only with `closedHours`. `changeAt` is null when nothing changes within a week. Absent from an older server. */
+  closedNow: z.object({ closed: z.boolean(), changeAt: z.string().nullable() }).optional(),
   /** Matches `paces[].closedKey`. */
   closedKey: z.string().nullable().optional(),
   stepsLimit: z.number().nullable(),
