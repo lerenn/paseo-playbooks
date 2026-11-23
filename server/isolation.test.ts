@@ -90,6 +90,19 @@ describe("isolation: loading", () => {
     expect(off.playbook!.isolation.mode).toBe("none");
   });
 
+  it("refuses an isolation.base that is not a branch name, or that git would read as an option", async () => {
+    for (const base of ["--upload-pack=/tmp/x", "-x", "a..b", "a b", "a/", "x.lock"]) {
+      const entry = await load(`title: P\nisolation: { mode: worktree, base: "${base}" }\n${STEP}`);
+      expect(entry.playbook, base).toBeNull();
+      expect(entry.errors.join("\n"), base).toMatch(/isolation[\s\S]*not a valid branch name/);
+    }
+    const viaDefault = await load(`title: P\nisolation: worktree\n${STEP}`, 'isolation: { base: "--upload-pack=x" }\n');
+    expect(viaDefault.errors.join("\n")).toMatch(/not a valid branch name/);
+    const singleton = await load(`title: P\nsingleton: { branch: "-x" }\n${STEP}`);
+    expect(singleton.errors.join("\n")).toMatch(/not a valid branch name/);
+    expect((await load(`title: P\nisolation: { mode: worktree, base: release/1.2-x }\n${STEP}`)).errors).toEqual([]);
+  });
+
   it("reads isolation.allow_gitlink_removal (default false)", async () => {
     const on = await load(`title: P\nisolation: { mode: worktree, allow_gitlink_removal: true }\n${STEP}`);
     expect(on.errors).toEqual([]);

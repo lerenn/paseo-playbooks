@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { Playbook, PlaybookEntry, RunDefinition } from "../shared/types";
-import { defaultBranch, exportPaths, freshRefInfo } from "./git";
+import { defaultBranch, exportPaths, freshRefInfo, resolveCommit } from "./git";
 import { loadPlaybooks, PLAYBOOKS_DIRS, type LoadOptions, type LoadResult } from "./loader";
 
 const exec = promisify(execFile);
@@ -83,7 +83,7 @@ export async function readAtRef(dir: string, ref: string, options: LoadOptions):
   const tmp = await mkdtemp(path.join(tmpdir(), "playbooks-fresh-"));
   try {
     await exportPaths(dir, ref, PLAYBOOKS_DIRS, tmp);
-    const sha = (await exec("git", ["-C", dir, "rev-parse", ref])).stdout.trim();
+    const sha = await resolveCommit(dir, ref);
     return { sha, loaded: await loadPlaybooks(tmp, options) };
   } catch (error) {
     return { error: `could not read the playbooks of ${ref} (${error instanceof Error ? error.message : String(error)})` };

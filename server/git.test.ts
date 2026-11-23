@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
-import { checkoutSnapshot, checkoutViolationSince, freshenCheckout, freshRef } from "./git";
+import { assertBranchName, assertNotOption, branchNameProblem } from "./branch-name";
+import { checkoutSnapshot, checkoutViolationSince, exportPaths, fetchBranch, freshenCheckout, freshRef, resolveCommit } from "./git";
 
 const run = promisify(execFile);
 const temps: string[] = [];
@@ -108,5 +109,44 @@ describe("checkoutViolationSince", () => {
     await git(dir, "reset", "-q", "--hard", "HEAD@{1}");
     await writeFile(path.join(dir, "c"), "3");
     expect(await checkoutViolationSince(dir, baseline)).toMatch(/changed files: c/);
+  });
+});
+
+describe("branch names", () => {
+  it("agree with git check-ref-format --branch", async () => {
+    const names = ["main", "release/1.2", "feat/x-y_z", "-x", "--upload-pack=x", "a..b", "a b", "a/", "/a", "a//b", "a.", ".a", "a/.b", "x.lock", "a/x.lock", "a@{b", "a~b", "a^b", "a:b", "a?b", "a*b", "a[b", "a\\b", "a\tb", "é"];
+    for (const name of names) {
+      const ok = await run("git", ["check-ref-format", "--branch", name]).then(() => true, () => false);
+      // `git check-ref-format --branch -x` fails by itself (an option); the rule is ours there.
+      expect(branchNameProblem(name) === null, name).toBe(name.startsWith("-") ? false : ok);
+    }
+    expect(() => assertBranchName("-x", "base")).toThrow(/base "-x" starts with `-`/);
+    expect(() => assertNotOption("--x")).toThrow(/option/);
+    expect(() => assertNotOption("origin/main")).not.toThrow();
+  });
+});
+
+describe("fetchBranch and resolveCommit", () => {
+  it("fetch a branch, and refuse one git would read as an option, without running anything", async () => {
+    const origin = await repo();
+    const clone = await mkdtemp(path.join(tmpdir(), "git-"));
+    temps.push(clone);
+    await git(clone, "clone", "-q", origin, ".");
+    await fetchBranch(clone, "main");
+    expect(await resolveCommit(clone, "origin/main")).toBe(await git(origin, "rev-parse", "main"));
+    const bin = await mkdtemp(path.join(tmpdir(), "git-"));
+    temps.push(bin);
+    const uploadPack = path.join(bin, "upload-pack");
+    await writeFile(uploadPack, `#!/bin/sh\ntouch ${path.join(bin, "ran")}\n`);
+    await chmod(uploadPack, 0o755);
+    await expect(fetchBranch(clone, `--upload-pack=${uploadPack}`)).rejects.toThrow(/starts with `-`/);
+    await expect(resolveCommit(clone, "--output=x")).rejects.toThrow(/starts with `-`/);
+    await expect(exportPaths(clone, "--output=x", ["a"], bin)).rejects.toThrow(/starts with `-`/);
+    await expect(stat(path.join(bin, "ran"))).rejects.toThrow(/ENOENT/);
+  });
+
+  it("freshenCheckout reports a bad branch instead of passing it to git", async () => {
+    const dir = await repo();
+    expect(await freshenCheckout(dir, "--upload-pack=x")).toMatchObject({ updated: false, note: expect.stringMatching(/could not fetch/) });
   });
 });

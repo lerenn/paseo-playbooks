@@ -32,6 +32,7 @@ import { OVERSIGHT_TYPES } from "./oversight-events";
 import { readProjectDefault, readProjectProfiles } from "./config";
 import { bareId, DEFAULT_REPO, qualified } from "../shared/repos";
 import { MAX_SUBAGENT_ARCHIVE_AFTER_MS } from "./sidekick-archive";
+import { branchNameProblem } from "./branch-name";
 import { workspaceTitleRefs } from "../shared/workspace-name";
 import { coerceValue, parseDuration, replaceRefs, singleRef, templateRefs, typeCompatible } from "../shared/vars";
 
@@ -489,6 +490,12 @@ const RawPermissionsSchema = z
   })
   .strict();
 
+/** A git branch name (`isolation.base`, `singleton.branch`): valid per `git check-ref-format --branch`, never starting with `-` (git would read it as an option). */
+const RawBranchNameSchema = z.string().min(1).superRefine((value, ctx) => {
+  const problem = branchNameProblem(value);
+  if (problem) ctx.addIssue({ code: "custom", message: `"${value}" is not a valid branch name: it ${problem}` });
+});
+
 /** Where a run's agents work: `worktree` (or `{ mode: worktree }`) gives the run a private git worktree. */
 const RawIsolationSchema = z.union([
   z.enum(["none", "worktree"]),
@@ -499,7 +506,7 @@ const RawIsolationSchema = z.union([
       /** Submodules linked into the worktree: `none` (default; agents init what they need), `all`, or a list of paths. */
       submodules: z.union([z.enum(["none", "all"]), z.array(z.string().min(1))]).optional(),
       /** Branch the worktree starts from (its fresh origin copy). Default: the project's default branch. */
-      base: z.string().min(1).optional(),
+      base: RawBranchNameSchema.optional(),
       /** `false` (default): a step whose branch deletes a submodule entry (gitlink) fails; `true` turns that guard off. */
       allow_gitlink_removal: z.boolean().optional(),
     })
@@ -781,7 +788,7 @@ const RawPlaybookSchema = z.object({
         z
           .object({
             /** Branch its workspace branches off; default: the project's default branch. */
-            branch: z.string().min(1).optional(),
+            branch: RawBranchNameSchema.optional(),
             /** Removed in favour of stages; read only to refuse it. */
             concurrency: z.unknown().optional(),
           })

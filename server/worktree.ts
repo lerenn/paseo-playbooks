@@ -3,7 +3,8 @@ import { lstat, mkdir, readdir, readFile, realpath, rm, statfs } from "node:fs/p
 import path from "node:path";
 import { promisify } from "node:util";
 import type { Isolation } from "../shared/types";
-import { checkoutSnapshot, defaultBranch, freshRef, freshRefInfo } from "./git";
+import { assertBranchName, assertNotOption } from "./branch-name";
+import { checkoutSnapshot, defaultBranch, fetchBranch, freshRef, freshRefInfo } from "./git";
 
 const exec = promisify(execFile);
 
@@ -61,14 +62,16 @@ export async function createWorktree(input: { workspaceDir: string; worktreesDir
   const workspaceSnapshot = await checkoutSnapshot(input.workspaceDir);
   const base = input.isolation.base ?? (await defaultBranch(input.workspaceDir));
   if (!base) throw new Error(`cannot create a worktree: no base branch in ${input.workspaceDir}`);
+  assertBranchName(base, "isolation.base");
   const { ref, fetchError } = await freshRefInfo(input.workspaceDir, base);
+  assertNotOption(ref);
   await mkdir(input.worktreesDir, { recursive: true });
   const linked: string[] = [];
   try {
     const existing = input.reuseBranch ? await existingBranch(input.workspaceDir, input.branch) : null;
-    if (existing === "local") await git(input.workspaceDir, ["worktree", "add", "--quiet", dir, input.branch]);
-    else if (existing === "origin") await git(input.workspaceDir, ["worktree", "add", "--quiet", "-b", input.branch, dir, `origin/${input.branch}`]);
-    else await git(input.workspaceDir, ["worktree", "add", "--quiet", "-b", input.branch, dir, ref]);
+    if (existing === "local") await git(input.workspaceDir, ["worktree", "add", "--quiet", "--", dir, input.branch]);
+    else if (existing === "origin") await git(input.workspaceDir, ["worktree", "add", "--quiet", "-b", input.branch, "--", dir, `origin/${input.branch}`]);
+    else await git(input.workspaceDir, ["worktree", "add", "--quiet", "-b", input.branch, "--", dir, ref]);
     const baseSha = (await git(dir, ["rev-parse", "HEAD"])).trim();
     const declared = await submodulePaths(dir);
     const wanted = input.isolation.submodules === "none" ? [] : input.isolation.submodules === "all" ? declared : input.isolation.submodules;
@@ -80,7 +83,7 @@ export async function createWorktree(input: { workspaceDir: string; worktreesDir
         // Pinned commit of the worktree's gitlink, else the sub-repo's own fresh default branch.
         const pinned = (await git(dir, ["rev-parse", `HEAD:${sub}`])).trim();
         const target = (await hasCommit(source, pinned)) ? pinned : await subRef(source);
-        await git(source, ["worktree", "add", "--quiet", "--detach", path.join(dir, sub), target]);
+        await git(source, ["worktree", "add", "--quiet", "--detach", "--", path.join(dir, sub), target]);
       } else {
         await git(dir, ["submodule", "update", "--init", "--", sub]);
       }
@@ -97,7 +100,7 @@ export async function createWorktree(input: { workspaceDir: string; worktreesDir
 async function existingBranch(repo: string, branch: string): Promise<"local" | "origin" | null> {
   const has = (ref: string) => git(repo, ["rev-parse", "--verify", "--quiet", ref]).then(() => true, () => false);
   if (await has(`refs/heads/${branch}`)) return "local";
-  await git(repo, ["fetch", "--quiet", "origin", "--", branch]).catch(() => undefined);
+  await fetchBranch(repo, branch).catch(() => undefined);
   return (await has(`refs/remotes/origin/${branch}`)) ? "origin" : null;
 }
 

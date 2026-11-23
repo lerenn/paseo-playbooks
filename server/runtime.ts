@@ -37,7 +37,8 @@ import { isQuotaError, isQuotaMessage } from "./quota";
 import { UsageCache, usageBlock, type UsageBlock, type UsageSnapshot } from "./usage";
 import * as engine from "./engine";
 import { ADMISSION_TIMEOUT_MS, admissionInput, readAdmission } from "./admission";
-import { checkoutSnapshot, currentRef, defaultBranch, exportPaths, fastForward, freshenCheckout, freshRef, freshRefInfo, git as gitOutput, removedGitlinks, snapshotDiff, checkoutViolationSince, unsavedWork } from "./git";
+import { assertBranchName } from "./branch-name";
+import { checkoutSnapshot, currentRef, defaultBranch, exportPaths, fastForward, freshenCheckout, freshRef, freshRefInfo, git as gitOutput, resolveCommit, removedGitlinks, snapshotDiff, checkoutViolationSince, unsavedWork } from "./git";
 import { workspaceTitle } from "../shared/workspace-name";
 import { createWorktree, diskUsedFraction, dirtyPaths, purgeScratch, linkedSubmodules, listWorktreeDirs, pruneWorktrees, unpushedCommits, removeWorktree, repoOfWorktree, worktreeBranch, worktreePath } from "./worktree";
 import { chooseDefinition, definitionMismatch, isAdoptable, readAtRef, shortReason, workspaceWarning } from "./fresh";
@@ -1241,7 +1242,7 @@ export class Runtime {
     const repo = await this.repoOf(run, wt);
     const fresh = await freshRefInfo(repo, wt.base.slice("origin/".length));
     if (fresh.fetchError || fresh.ref !== wt.base) return null;
-    return (await gitOutput(repo, ["rev-parse", fresh.ref])).trim();
+    return await resolveCommit(repo, fresh.ref);
   }
 
   private async wardenManagerState(id: string): Promise<"running" | "idle" | "gone"> {
@@ -2035,7 +2036,7 @@ export class Runtime {
     const fresh = await freshRefInfo(repo, branch);
     if (fresh.fetchError) throw new UserError(`could not fetch origin/${branch}: ${fresh.fetchError}`);
     if (fresh.ref !== wt.base) throw new UserError(`no ref ${wt.base} after the fetch (got ${fresh.ref})`);
-    const originSha = (await gitOutput(repo, ["rev-parse", fresh.ref])).trim();
+    const originSha = await resolveCommit(repo, fresh.ref);
 
     // An ended run re-reads its definition from origin, else (origin's playbook unusable) from the workspace checkout.
     let source: "origin" | "workspace" = "origin";
@@ -3277,6 +3278,7 @@ export class Runtime {
   /** Creates the singleton's shared workspace from its branch, and its pipeline run there. */
   private async createPipeline(playbook: Playbook, projectId: string, sourceDir: string): Promise<Run> {
     const base = playbook.singleton?.branch ?? (await defaultBranch(sourceDir)) ?? undefined;
+    if (base) assertBranchName(base, "singleton.branch");
     // Branch off origin's copy: the source checkout's local branch may be far behind.
     const ref = base ? await freshRef(sourceDir, base) : undefined;
     const id = shortId();

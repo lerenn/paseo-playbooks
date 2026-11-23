@@ -1,11 +1,27 @@
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
+import { assertBranchName, assertNotOption } from "./branch-name";
 
 const run = promisify(execFile);
 
 export async function git(cwd: string, args: string[]): Promise<string> {
   const { stdout } = await run("git", ["-C", cwd, ...args], { maxBuffer: 16 * 1024 * 1024 });
   return stdout;
+}
+
+/**
+ * Fetches `branch` from origin. The one place that does it: the name must be a valid branch name (so it cannot start
+ * with `-`) and `--` ends the options, so a value from a playbook or a tool argument is never read as a git option.
+ */
+export async function fetchBranch(cwd: string, branch: string): Promise<void> {
+  assertBranchName(branch);
+  await git(cwd, ["fetch", "--quiet", "origin", "--", branch]);
+}
+
+/** The commit `ref` (a branch, `origin/<branch>`, a sha) resolves to in `cwd`; throws when it does not, or starts with `-`. */
+export async function resolveCommit(cwd: string, ref: string): Promise<string> {
+  assertNotOption(ref);
+  return (await git(cwd, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`])).trim();
 }
 
 /**
@@ -120,7 +136,7 @@ export async function freshRef(cwd: string, branch: string): Promise<string> {
 export async function freshRefInfo(cwd: string, branch: string): Promise<{ ref: string; fetchError: string | null }> {
   let fetchError: string | null = null;
   try {
-    await git(cwd, ["fetch", "--quiet", "origin", "--", branch]);
+    await fetchBranch(cwd, branch);
   } catch (error) {
     // Offline or no origin: whatever the remote-tracking ref already holds, if any.
     fetchError = (error instanceof Error ? error.message : String(error)).split("\n").find((line) => line.trim() && !line.startsWith("Command failed"))?.trim() ?? "git fetch failed";
@@ -138,6 +154,7 @@ export async function freshRefInfo(cwd: string, branch: string): Promise<{ ref: 
  * Paths the ref does not have are skipped.
  */
 export async function exportPaths(cwd: string, ref: string, paths: readonly string[], dest: string): Promise<void> {
+  assertNotOption(ref);
   const present: string[] = [];
   for (const rel of paths) {
     if ((await git(cwd, ["ls-tree", "--name-only", ref, "--", rel]).catch(() => "")).trim()) present.push(rel);
@@ -159,7 +176,7 @@ export async function exportPaths(cwd: string, ref: string, paths: readonly stri
 /** Best effort: fetches `branch` from origin and fast-forwards the checkout to it. Never fails. */
 export async function fastForward(cwd: string, branch: string): Promise<void> {
   try {
-    await git(cwd, ["fetch", "--quiet", "origin", "--", branch]);
+    await fetchBranch(cwd, branch);
     await git(cwd, ["merge", "--ff-only", "--quiet", `origin/${branch}`]);
   } catch {
     // Offline, no origin, or not a fast-forward: keep the checkout as it is.
@@ -174,7 +191,7 @@ export async function fastForward(cwd: string, branch: string): Promise<void> {
 export async function freshenCheckout(cwd: string, branch: string): Promise<{ updated: boolean; note: string | null }> {
   const first = (error: unknown) => (error instanceof Error ? error.message : String(error)).split("\n").find((line) => line.trim() && !line.startsWith("Command failed"))?.trim() ?? "git failed";
   try {
-    await git(cwd, ["fetch", "--quiet", "origin", branch]);
+    await fetchBranch(cwd, branch);
   } catch (error) {
     return { updated: false, note: `could not fetch origin/${branch}: ${first(error)}` };
   }
