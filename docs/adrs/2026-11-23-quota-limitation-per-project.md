@@ -1,6 +1,6 @@
 # The Quota limitation tab shows the limits resolved per project
 
-Status: Accepted. Refines `2026-11-23-quota-limitation-tab.md` (its "the figures use the user-level limits" rule and the `quota.limitation` input).
+Status: Accepted. Refines `2026-11-23-quota-limitation-tab.md` (its "the figures use the user-level limits" rule and the `quota.limitation` input). Its layout is refined by `2026-11-23-quota-limitation-project-rows.md`.
 
 ## Context
 

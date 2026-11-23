@@ -1,11 +1,13 @@
 import { useRpc, useTranslation } from "@getpaseo/plugin/client";
+import { Icon } from "@getpaseo/plugin/client/ui";
 import { useCallback, useEffect, useState } from "react";
-import { Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 import { quotaLimitationRpc } from "../shared/contracts";
-import type { QuotaLimitation, QuotaProject, QuotaProvider, QuotaWindow } from "../shared/quota-limitation";
+import type { QuotaLimitation } from "../shared/quota-limitation";
 import { messages } from "./i18n";
-import type { Theme } from "./theme";
+import { projectRows, type ProjectRow, type ProviderRow, type SlotRow, type Tone } from "./quota-rows";
 import { semanticColor } from "./semantic-colors";
+import type { Theme } from "./theme";
 
 /** How often the open tab reads the figures again (the server's own readings are younger than this or refreshed meanwhile). */
 const POLL_MS = 30_000;
@@ -62,79 +64,84 @@ function Body(props: { theme: Theme; data: QuotaLimitation }) {
   const { theme, data } = props;
   const { t } = useTranslation(messages);
   const muted = theme.colors.foregroundMuted;
+  const rows = projectRows(data);
   return (
-    <View style={{ gap: 14 }}>
-      <View style={{ gap: 8 }}>
-        <Heading theme={theme} title={t("quota.projects")} />
+    <View style={{ gap: 10 }}>
+      <Text style={{ color: muted, fontSize: 12 }}>{t("quota.counts", { steps: data.stepsRunning, runs: data.runsActive })}</Text>
+      {data.limitHeld.length > 0 ? (
         <Card theme={theme}>
-          {data.projects.length === 0 ? <Text style={{ color: muted, fontSize: 12 }}>{t("quota.noProjects")}</Text> : null}
-          {data.projects.map((project, index) => (
-            <ProjectLimits key={project.projectId} theme={theme} project={project} first={index === 0} />
-          ))}
-          <Text style={{ color: muted, fontSize: 12 }}>{t("quota.counts", { steps: data.stepsRunning, runs: data.runsActive })}</Text>
-          {data.limitHeld.length > 0 ? (
-            <Section theme={theme} title={t("quota.limitHeld")}>
-              {data.limitHeld.map((run) => (
-                <Text key={run.runId} style={{ color: theme.colors.foreground, fontSize: 12 }}>{`${run.title} · ${kindLabel(t, run.kind)}: ${run.reason}`}</Text>
-              ))}
-            </Section>
-          ) : null}
+          <Section theme={theme} title={t("quota.limitHeld")} first>
+            {data.limitHeld.map((run) => (
+              <Text key={run.runId} style={{ color: theme.colors.foreground, fontSize: 12 }}>{`${run.title} · ${kindLabel(t, run.kind)}: ${run.reason}`}</Text>
+            ))}
+          </Section>
         </Card>
-      </View>
-      <View style={{ gap: 8 }}>
-        <Heading theme={theme} title={t("quota.providersTitle")} />
-        <Card theme={theme}>
-          {data.providers.length === 0 ? <Text style={{ color: muted, fontSize: 12 }}>{t("quota.noProviders")}</Text> : null}
-          {data.providers.map((provider, index) => (
-            <Provider key={provider.provider} theme={theme} provider={provider} first={index === 0} />
-          ))}
-        </Card>
-      </View>
+      ) : null}
+      {rows.length === 0 ? <Text style={{ color: muted, fontSize: 12 }}>{t("quota.noProjects")}</Text> : null}
+      <Card theme={theme}>
+        {rows.map((row, index) => (
+          <ProjectRowView key={row.projectId} theme={theme} row={row} first={index === 0} />
+        ))}
+      </Card>
     </View>
   );
 }
 
-function Heading(props: { theme: Theme; title: string }) {
-  return <Text style={{ color: props.theme.colors.foreground, fontSize: 15, fontWeight: "700" }}>{props.title}</Text>;
-}
+/** Green, red and grey are fixed hues (`semantic-colors`), the same in every theme; the text beside a bar carries the numbers too. */
+const toneColor = (theme: Theme, tone: Tone) => (tone === "over" ? semanticColor(theme, "failed") : tone === "warn" ? semanticColor(theme, "waiting") : tone === "ok" ? semanticColor(theme, "done") : theme.colors.foregroundMuted);
 
-function ProjectLimits(props: { theme: Theme; project: QuotaProject; first: boolean }) {
-  const { theme, project, first } = props;
+function ProjectRowView(props: { theme: Theme; row: ProjectRow; first: boolean }) {
+  const { theme, row, first } = props;
   const { t } = useTranslation(messages);
+  const [open, setOpen] = useState(false);
   const muted = theme.colors.foregroundMuted;
+  const caps = row.stepsLimit === null && row.runsLimit === null ? t("quota.noCaps") : [row.stepsLimit === null ? null : t("quota.stepsCap", { limit: row.stepsLimit }), row.runsLimit === null ? null : t("quota.runsCap", { limit: row.runsLimit })].filter(Boolean).join(" · ");
+  const line = [
+    row.pacing ? t("quota.pacingShort", { percent: row.percents.join("/") }) : t("quota.pacingOffShort"),
+    ...row.summary.map((item) => (item.status === "over" ? t("quota.sum.over", { provider: item.provider }) : item.status === "unavailable" ? t("quota.sum.unavailable", { provider: item.provider }) : item.status === "unreported" ? t("quota.sum.unreported", { provider: item.provider }) : item.free === null ? item.provider : t("quota.sum.free", { provider: item.provider, value: Math.round(item.free) }))),
+  ].join(" · ");
   return (
-    <View style={{ gap: 3, ...(first ? {} : { borderTopWidth: 1, borderTopColor: theme.colors.border, paddingTop: 8 }) }}>
-      <Text style={{ color: theme.colors.foreground, fontSize: 13, fontWeight: "600" }}>{project.label}</Text>
-      {project.limits.map((limits) => (
-        <View key={limits.repos.join(",")} style={{ gap: 2 }}>
-          {project.limits.length > 1 ? <Text style={{ color: muted, fontSize: 11 }}>{t("quota.repos", { repos: limits.repos.join(", ") })}</Text> : null}
-          <Text style={{ color: limits.pacing ? theme.colors.foreground : muted, fontSize: 12 }}>{limits.pacing ? t("quota.pacingOnAt", { percent: limits.usablePercent }) : t("quota.pacingOff")}</Text>
-          <Text style={{ color: muted, fontSize: 12 }}>
-            {[limits.stepsLimit === null ? t("quota.stepsNoCap") : t("quota.stepsCap", { limit: limits.stepsLimit }), limits.runsLimit === null ? t("quota.runsNoCap") : t("quota.runsCap", { limit: limits.runsLimit })].join(" · ")}
-          </Text>
+    <View style={{ ...(first ? {} : { borderTopWidth: 1, borderTopColor: theme.colors.border, paddingTop: 8 }) }}>
+      <Pressable accessibilityRole="button" accessibilityState={{ expanded: open }} onPress={() => setOpen(!open)} style={{ gap: 3 }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: toneColor(theme, row.tone) }} />
+          <Text style={{ flex: 1, minWidth: 0, color: theme.colors.foreground, fontSize: 13, fontWeight: "600" }}>{row.label}</Text>
+          <Icon name={open ? "ChevronDown" : "ChevronRight"} size={14} color={muted} />
         </View>
-      ))}
+        <Text style={{ color: row.pacing ? theme.colors.foreground : muted, fontSize: 12 }}>{line}</Text>
+        <Text style={{ color: muted, fontSize: 11 }}>{caps}</Text>
+      </Pressable>
+      {open ? (
+        <View style={{ gap: 8, paddingTop: 8 }}>
+          {row.sets.map((set) => (
+            <View key={set.limits.repos.join(",")} style={{ gap: 8 }}>
+              {row.sets.length > 1 ? <Text style={{ color: muted, fontSize: 11 }}>{`${t("quota.repos", { repos: set.limits.repos.join(", ") })} · ${set.limits.pacing ? t("quota.pacingOnAt", { percent: set.limits.usablePercent }) : t("quota.pacingOff")}`}</Text> : null}
+              {set.providers.length === 0 ? <Text style={{ color: muted, fontSize: 12 }}>{t("quota.noProviders")}</Text> : null}
+              {set.providers.map((provider) => (
+                <ProviderView key={provider.provider} theme={theme} provider={provider} />
+              ))}
+            </View>
+          ))}
+        </View>
+      ) : null}
     </View>
   );
 }
 
-/** A provider's row, laid out like a project's: bold name, then plain lines. */
-function Provider(props: { theme: Theme; provider: QuotaProvider; first: boolean }) {
-  const { theme, provider, first } = props;
+function ProviderView(props: { theme: Theme; provider: ProviderRow }) {
+  const { theme, provider } = props;
   const { t } = useTranslation(messages);
   const muted = theme.colors.foregroundMuted;
-  // Nothing is paced when no project has pacing on, whatever the reading says.
-  const paced = provider.pacedBy.length > 0;
-  const tone = !paced ? muted : provider.state === "ok" ? theme.colors.foreground : provider.state === "unavailable" ? semanticColor(theme, "failed") : muted;
+  const flag = provider.status === "unavailable" ? t("quota.state.unavailable") : provider.status === "unreported" ? t("quota.state.unreported") : provider.state === "override" ? t("quota.state.override") : null;
   return (
-    <View style={{ gap: 3, ...(first ? {} : { borderTopWidth: 1, borderTopColor: theme.colors.border, paddingTop: 8 }) }}>
-      <Text style={{ color: theme.colors.foreground, fontSize: 13, fontWeight: "600" }}>{provider.provider}</Text>
-      <Text style={{ color: tone, fontSize: 12 }}>{paced ? `${t(`quota.state.${provider.state}`)} · ${t("quota.pacedBy", { projects: provider.pacedBy.join(", ") })}` : t("quota.noPacing")}</Text>
+    <View style={{ gap: 3, borderLeftWidth: 2, borderLeftColor: theme.colors.border, paddingLeft: 8 }}>
+      <Text style={{ color: theme.colors.foreground, fontSize: 12, fontWeight: "600" }}>{provider.provider}</Text>
+      {flag ? <Text style={{ color: provider.status === "unavailable" ? semanticColor(theme, "failed") : muted, fontSize: 12 }}>{flag}</Text> : null}
       {provider.readAt ? <Text style={{ color: muted, fontSize: 11 }}>{t("quota.readAt", { when: when(provider.readAt) })}</Text> : null}
       {provider.overrideUntil ? <Text style={{ color: muted, fontSize: 11 }}>{t("quota.overrideUntil", { when: when(provider.overrideUntil) })}</Text> : null}
-      {provider.windows.length === 0 ? <Text style={{ color: muted, fontSize: 12 }}>{t("quota.noReading")}</Text> : null}
-      {provider.windows.map((slot) => (
-        <Slot key={slot.id} theme={theme} slot={slot} />
+      {provider.slots.length === 0 ? <Text style={{ color: muted, fontSize: 12 }}>{t("quota.noReading")}</Text> : null}
+      {provider.slots.map((slot) => (
+        <SlotView key={slot.id} theme={theme} slot={slot} />
       ))}
       {provider.reservations.length > 0 ? (
         <Lines theme={theme} title={t("quota.reservations")}>
@@ -165,40 +172,39 @@ function Provider(props: { theme: Theme; provider: QuotaProvider; first: boolean
   );
 }
 
-function Slot(props: { theme: Theme; slot: QuotaWindow }) {
+/** A usage window: name, a bar and the numbers. Paced: grey usage up to the pace ceiling, red above it, green for what is still free, a tick at the ceiling. Not paced: usage only. */
+function SlotView(props: { theme: Theme; slot: SlotRow }) {
   const { theme, slot } = props;
   const { t } = useTranslation(messages);
   const muted = theme.colors.foregroundMuted;
-  const full = Math.max(100, slot.used ?? 0);
-  const bar = (value: number) => `${Math.min(100, Math.max(0, (value / full) * 100))}%` as const;
-  const over = slot.paces.some((pace) => pace.headroom < 0);
-  const facts = [slot.used === null ? null : t("quota.used", { value: slot.used }), slot.reserved > 0 ? t("quota.reserved", { value: slot.reserved }) : null, slot.paces.length === 0 ? t("quota.notPaced") : null].filter((fact): fact is string => fact !== null);
+  const { bar } = slot;
+  const facts = [
+    slot.used === null ? null : t("quota.used", { value: slot.used }),
+    slot.reserved > 0 ? t("quota.reserved", { value: slot.reserved }) : null,
+    slot.paced ? (slot.over > 0 ? t("quota.overBy", { value: slot.over }) : t("quota.free", { value: slot.free ?? 0 })) : t("quota.notPaced"),
+    slot.paced && slot.ceiling !== null ? t("quota.ceiling", { value: slot.ceiling }) : null,
+  ].filter((fact): fact is string => fact !== null);
+  const pct = (value: number) => `${value}%` as const;
   return (
     <View style={{ gap: 3, paddingTop: 4 }}>
       <Text style={{ color: theme.colors.foreground, fontSize: 12 }}>
         {slot.name}
         {slot.modelScoped ? ` · ${t("quota.modelWindow")}` : ""}
       </Text>
-      {/* Usage bar: the fill is the usage, the tick the pace ceiling, the shade past `usable` the reserve. */}
       <View style={{ height: 8, borderRadius: 4, backgroundColor: theme.colors.surface2, overflow: "hidden" }}>
-        {slot.used !== null ? <View style={{ width: bar(slot.used), height: 8, backgroundColor: over ? semanticColor(theme, "failed") : theme.colors.foregroundMuted }} /> : null}
-        {slot.paces.map((pace) => (
-          <View key={pace.usable} style={{ position: "absolute", left: bar(pace.ceiling), width: 2, height: 8, backgroundColor: theme.colors.foreground }} />
-        ))}
+        <View style={{ position: "absolute", left: 0, width: pct(bar.grey), height: 8, backgroundColor: theme.colors.foregroundMuted }} />
+        {bar.green > 0 ? <View style={{ position: "absolute", left: pct(bar.greenFrom), width: pct(bar.green), height: 8, backgroundColor: semanticColor(theme, "done") }} /> : null}
+        {bar.red > 0 ? <View style={{ position: "absolute", left: pct(bar.redFrom), width: pct(bar.red), height: 8, backgroundColor: semanticColor(theme, "failed") }} /> : null}
+        {bar.tick !== null ? <View style={{ position: "absolute", left: pct(Math.min(bar.tick, 99)), width: 2, height: 8, backgroundColor: theme.colors.foreground }} /> : null}
       </View>
-      <Text style={{ color: muted, fontSize: 12 }}>{facts.join(" · ")}</Text>
-      {slot.paces.map((pace) => (
-        <Text key={pace.usable} style={{ color: muted, fontSize: 12 }}>
-          {`${t("quota.paceAt", { percent: pace.usable, projects: pace.projects.join(", ") })}: ${t("quota.ceiling", { value: pace.ceiling })} · ${t("quota.headroom", { value: pace.headroom })} · ${t("quota.free", { value: pace.free })}`}
-        </Text>
-      ))}
+      <Text style={{ color: slot.over > 0 ? semanticColor(theme, "failed") : muted, fontSize: 12 }}>{facts.join(" · ")}</Text>
       {slot.resetsAt ? <Text style={{ color: muted, fontSize: 11 }}>{t("quota.resets", { when: when(slot.resetsAt) })}</Text> : null}
       {slot.stale ? <Text style={{ color: muted, fontSize: 11 }}>{t("quota.stale")}</Text> : null}
     </View>
   );
 }
 
-/** A titled group of plain lines inside a row (no divider: the row's own divider separates rows). */
+/** A titled group of plain lines inside a provider. */
 function Lines(props: { theme: Theme; title: string; children: React.ReactNode }) {
   return (
     <View style={{ gap: 2, paddingTop: 4 }}>
@@ -213,10 +219,10 @@ function Card(props: { theme: Theme; children: React.ReactNode }) {
   return <View style={{ gap: 6, borderRadius: 10, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface1, padding: 12 }}>{props.children}</View>;
 }
 
-function Section(props: { theme: Theme; title: string; children: React.ReactNode }) {
+function Section(props: { theme: Theme; title: string; first?: boolean; children: React.ReactNode }) {
   const { theme } = props;
   return (
-    <View style={{ gap: 3, borderTopWidth: 1, borderTopColor: theme.colors.border, paddingTop: 8 }}>
+    <View style={{ gap: 3, ...(props.first ? {} : { borderTopWidth: 1, borderTopColor: theme.colors.border, paddingTop: 8 }) }}>
       <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12, fontWeight: "600" }}>{props.title}</Text>
       {props.children}
     </View>

@@ -48,7 +48,7 @@ describe("quota limitation view", () => {
     // Half the window is gone: the ceiling is 45 (90 * 84 / 168); usage 60 is ahead of it.
     expect(window).toMatchObject({ id: "weekly", used: 60, reserved: 4, stale: false, paces: [{ usable: 90, ceiling: 45, headroom: -15, free: -19, projects: ["App"] }] });
     expect(provider!.pacedBy).toEqual(["App"]);
-    expect(provider!.reservations).toEqual([{ runId: "r1", title: "Work", remaining: { weekly: 4 } }]);
+    expect(provider!.reservations).toEqual([{ runId: "r1", projectId: "p", title: "Work", remaining: { weekly: 4 } }]);
     expect(out.projects).toEqual([{ projectId: "p", label: "App", limits: [{ repos: ["default"], pacing: true, usablePercent: 90, stepsLimit: null, runsLimit: null }] }]);
     expect(out.stepsRunning).toBe(0);
   });

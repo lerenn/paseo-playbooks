@@ -86,14 +86,14 @@ export function buildQuotaLimitation(input: { projects: ProjectLimitsInput[]; no
           const value = remaining(reservation, key);
           if (provider === view.provider && windowId && value > 0) left[windowId] = round(value);
         }
-        return [{ runId: run.id, title: titleOf(run), remaining: left }];
+        return [{ runId: run.id, projectId: run.projectId, title: titleOf(run), remaining: left }];
       }),
-      held: live.flatMap((run) => (run.rateHold && run.rateHold.provider === view.provider ? [{ runId: run.id, title: titleOf(run), kind: run.rateHold.kind, reason: run.rateHold.reason, window: run.rateHold.window, retryAt: run.rateHold.retryAt }] : [])),
+      held: live.flatMap((run) => (run.rateHold && run.rateHold.provider === view.provider ? [{ runId: run.id, projectId: run.projectId, title: titleOf(run), kind: run.rateHold.kind, reason: run.rateHold.reason, window: run.rateHold.window, retryAt: run.rateHold.retryAt }] : [])),
       exhausted: live.flatMap((run) =>
         run.exhausted
           .filter((entry) => entry.target === view.provider || entry.target.startsWith(`${view.provider}/`))
           .filter((entry) => activeExhausted({ exhausted: [entry], playbook: run.playbook }, nowMs).length > 0)
-          .map((entry) => ({ runId: run.id, title: titleOf(run), target: entry.target, until: new Date(Date.parse(entry.at) + run.playbook.exhaustedForMs).toISOString() })),
+          .map((entry) => ({ runId: run.id, projectId: run.projectId, title: titleOf(run), target: entry.target, until: new Date(Date.parse(entry.at) + run.playbook.exhaustedForMs).toISOString() })),
       ),
     };
   });
@@ -109,6 +109,6 @@ export function buildQuotaLimitation(input: { projects: ProjectLimitsInput[]; no
     stepsRunning: runningStepCount(runs),
     runsActive: admittedRunIds(runs, Number.MAX_SAFE_INTEGER)?.size ?? 0,
     providers,
-    limitHeld: live.flatMap((run) => (run.rateHold && !run.rateHold.provider ? [{ runId: run.id, title: titleOf(run), kind: run.rateHold.kind, reason: run.rateHold.reason }] : [])),
+    limitHeld: live.flatMap((run) => (run.rateHold && !run.rateHold.provider ? [{ runId: run.id, projectId: run.projectId, title: titleOf(run), kind: run.rateHold.kind, reason: run.rateHold.reason }] : [])),
   };
 }

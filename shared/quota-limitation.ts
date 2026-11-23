@@ -31,7 +31,8 @@ export const QuotaWindowSchema = z.object({
 });
 export type QuotaWindow = z.infer<typeof QuotaWindowSchema>;
 
-export const QuotaRunRefSchema = z.object({ runId: z.string(), title: z.string() });
+/** A run, with its project so the tab can list it under that project (absent from an older server: shown under every project). */
+export const QuotaRunRefSchema = z.object({ runId: z.string(), title: z.string(), projectId: z.string().optional() });
 
 export const QuotaProviderSchema = z.object({
   provider: z.string(),
