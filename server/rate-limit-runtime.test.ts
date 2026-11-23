@@ -209,7 +209,7 @@ describe("dynamic capacity from quota headroom", () => {
   describe("admitted before any cost history existed", () => {
     type Inner = { reservedQuota: Map<string, { est: Record<string, number>; spent: Record<string, number> }>; attemptUse: Map<string, unknown>; costs: { add(p: string, provider: string, points: Record<string, number>): void }; refreshAdmittedNeeds(): void };
     const key = "claude\u0000weekly";
-    const done = (store: { mutate: (id: string, fn: (run: never) => void) => Promise<unknown> }, id: string) => store.mutate(id, (run: any) => void ((run.steps.a.status = "completed"), (run.steps.b.status = "ready")));
+    const done = (store: RunStore, id: string) => store.mutate(id, (run) => void ((run.steps.a!.status = "completed"), (run.steps.b!.status = "ready")));
 
     it("stays unpaced while the playbook still has no history", async () => {
       const { runtime, store, internals, read } = await setup(pacing(), { current: claude(40) }, { history: false });
