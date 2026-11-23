@@ -702,7 +702,7 @@ function tabLabel(t: (key: "cards.tabs.runs" | "cards.tabs.analytics" | "quota.t
   }
 }
 
-/** Runs, the tabs added with "+", and the "+" menu of the others (hidden once all are open). A tab's x shows on the selected or hovered tab, always on a compact layout. */
+/** Runs, the tabs added with "+", and the "+" menu of the others (hidden once all are open). A tab's x shows only while the tab is hovered or focused, always on a compact layout. */
 function TabBar(props: { theme: Theme; compact: boolean; open: PanelTab[]; selected: PanelTab; onSelect(tab: PanelTab): void; onClose(tab: PanelTab): void }) {
   const { theme, compact, selected } = props;
   const { t } = useTranslation(messages);
@@ -754,19 +754,19 @@ function Tab(props: { theme: Theme; label: string; selected: boolean; alwaysClos
   const { theme, selected } = props;
   const [hover, setHover] = useState(false);
   const [focus, setFocus] = useState(false);
-  const showClose = props.onClose && (selected || hover || focus || props.alwaysCloseable);
+  const showClose = props.onClose && (hover || focus || props.alwaysCloseable);
   return (
     <View
-      // Pointer events: fired by a mouse only, hence alwaysCloseable on compact layouts.
+      // Pointer events: fired by a mouse only, hence alwaysCloseable on compact layouts. At rest the x is collapsed to zero width (still focusable: focusing it expands it).
       onPointerEnter={() => setHover(true)}
       onPointerLeave={() => setHover(false)}
-      style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: -1, borderBottomWidth: 2, borderBottomColor: selected ? theme.colors.foreground : "transparent" }}
+      style={{ flexDirection: "row", alignItems: "center", marginBottom: -1, borderBottomWidth: 2, borderBottomColor: selected ? theme.colors.foreground : "transparent" }}
     >
       <Pressable accessibilityRole="tab" accessibilityState={{ selected }} onPress={props.onPress} onFocus={() => setFocus(true)} onBlur={() => setFocus(false)} style={{ paddingVertical: 8 }}>
         <Text style={{ color: selected ? theme.colors.foreground : theme.colors.foregroundMuted, fontSize: 13, fontWeight: selected ? "700" : "500" }}>{props.label}</Text>
       </Pressable>
       {props.onClose ? (
-        <Pressable accessibilityRole="button" accessibilityLabel={props.closeLabel} hitSlop={8} onPress={props.onClose} onFocus={() => setFocus(true)} onBlur={() => setFocus(false)} style={{ opacity: showClose ? 1 : 0, padding: 2 }}>
+        <Pressable accessibilityRole="button" accessibilityLabel={props.closeLabel} hitSlop={8} onPress={props.onClose} onFocus={() => setFocus(true)} onBlur={() => setFocus(false)} style={showClose ? { marginLeft: 6, padding: 2 } : { width: 0, padding: 0, overflow: "hidden", opacity: 0 }}>
           <Icon name="X" size={13} color={theme.colors.foregroundMuted} />
         </Pressable>
       ) : null}

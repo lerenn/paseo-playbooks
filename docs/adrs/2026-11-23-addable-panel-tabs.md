@@ -14,7 +14,7 @@ others (analytics, quota, off hours, profiles) overwhelmed new users.
 - **Runs** is the default tab, always shown, and cannot be closed. It is the only fixed tab.
 - Every other tab is addable. A **+** button at the end of the bar opens a small menu of the tabs that
   are not open; picking one opens and selects it. The button is hidden when all tabs are open.
-- An added tab has an **x**, shown on the selected or hovered (or focused) tab, and always on compact
+- An added tab has an **x**, shown only while the tab is hovered or keyboard-focused (it takes no width at rest), and always on compact
   (mobile) layouts where there is no hover. Closing the selected tab selects Runs.
 - Added tabs are kept in the host settings the panel already uses for its sort
   (`overviewSettings`, scope `host`): a new `openTabs` list, default empty. They survive reloads and

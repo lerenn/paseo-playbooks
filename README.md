@@ -330,7 +330,7 @@ once, but if that agent is busy, its kickoff waits until its current turn ends).
 next to Start offers "Start on a new agent", which creates a new manager agent in the same
 workspace, and "Start in a new workspace", which creates a new worktree and manager.
 
-The panel's tab bar shows **Runs** only at first (it cannot be closed). The **+** button at the end of the bar lists the other tabs (Analytics, Quota limitation, Off hours, Profiles); picking one opens and selects it, its **x** (on the selected or hovered tab, always on mobile) closes it, and closing the selected tab returns to Runs. The added tabs are remembered across reloads (ADR `docs/adrs/2026-11-23-addable-panel-tabs.md`); everyone starts with Runs only after the update.
+The panel's tab bar shows **Runs** only at first (it cannot be closed). The **+** button at the end of the bar lists the other tabs (Analytics, Quota limitation, Off hours, Profiles); picking one opens and selects it, its **x** (shown on hover or keyboard focus, always on mobile) closes it, and closing the selected tab returns to Runs. The added tabs are remembered across reloads (ADR `docs/adrs/2026-11-23-addable-panel-tabs.md`); everyone starts with Runs only after the update.
 
 The overview screen lists one section per playbook (its runs inside). The **sort** button in the Runs tab (top right of the filter row, not in the other tabs),
 orders those sections: **Name (A-Z)** (the default, so the order never jumps), **Last activity** (the playbook with the most
