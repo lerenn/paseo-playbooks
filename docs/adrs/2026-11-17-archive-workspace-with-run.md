@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted. Extends `2026-11-10-archive-run.md` (archive_run only hid the run) and the `workspace`
+Superseded by `2026-11-23-archive-with-run-default-true.md` (decision 2, the default; the rest stands). Extends `2026-11-10-archive-run.md` (archive_run only hid the run) and the `workspace`
 block of `2026-11-09-isolation-worktree.md`; relates to `2026-11-17-worktree-auto-cleanup.md`.
 
 ## Context

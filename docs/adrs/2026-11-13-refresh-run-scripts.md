@@ -20,14 +20,14 @@ write outputs, that the step definition pinned in the run does not declare (the 
 - A new agent tool `refresh_scripts({ runId?, reason })`, defined with the common run tools (managers
   and the Sidekick get it, like `cancel_run`; not a manager-only tool). `runId` defaults like
   `cancel_run`.
-- It fetches `origin/<branch>` and copies the run's `<relDir>/scripts/` tree (only that tree) from
+- It fetches `origin/<base>` (the run's base branch) and copies the run's `<relDir>/scripts/` tree (only that tree) from
   it into `<data>/run-scripts/<runId>`, written aside and renamed into place. Script steps run
   that copy first, then the worktree's, then the workspace's. The step definitions (inputs,
   declared outputs, timeouts, poll) and the rest of the pinned playbook are untouched.
 - The copy is recorded on the run (`run.scripts`: sha, dir, refreshedAt; optional, so stored runs
   load unchanged) and in the history (`scripts_refreshed`: sha before and after, reason).
 - Refused for a run that ended, has no worktree, whose worktree was not created from
-  `origin/<branch>` (no fresh ref), or when the fetch fails. Refreshing twice to the same commit
+  `origin/<base>` (no fresh ref), or when the fetch fails. Refreshing twice to the same commit
   reports `changed: false`.
 - The copy is removed with the worktree (cleanup, orphan sweep) and with the run (workspace archived).
 
