@@ -9,6 +9,7 @@ import { messages } from "./i18n";
 import { dayKind, HOUR_TICKS, openSegments, offHoursRows, rowState, whenLabel, type OffHoursRow, type OffHoursSchedule } from "./off-hours-rows";
 import { SERIES_DARK, SERIES_LIGHT } from "./analytics-chart";
 import { isDarkTheme, semanticColor } from "./semantic-colors";
+import { DETAIL_MAX_WIDTH, SPACE, TEXT } from "./spacing";
 import type { Theme } from "./theme";
 
 /** How often the open tab reads the state again. */
@@ -46,7 +47,7 @@ export function OffHoursView(props: { theme: Theme; workspaces: ReadonlyArray<{ 
       {!data && !error ? <Text style={{ color: muted }}>{t("offHours.loading")}</Text> : null}
       {data && rows.length === 0 ? <Text style={{ color: muted, fontSize: 12 }}>{t("offHours.noProjects")}</Text> : null}
       {data && rows.length > 0 ? (
-        <View style={{ gap: 6, borderRadius: 10, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface1, padding: 12 }}>
+        <View style={{ gap: SPACE.block, borderRadius: 10, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface1, padding: 16 }}>
           {rows.map((row, index) => (
             <ProjectRowView key={row.projectId} theme={theme} row={row} nowIso={data.now} first={index === 0} />
           ))}
@@ -72,32 +73,32 @@ function ProjectRowView(props: { theme: Theme; row: OffHoursRow; nowIso: string;
   if (row.schedules.length > 1) summary = `${summary} · ${t("offHours.sum.more", { count: row.schedules.length - 1 })}`;
   const dot = closed ? semanticColor(theme, "paused") : muted;
   return (
-    <View style={{ ...(first ? {} : { borderTopWidth: 1, borderTopColor: theme.colors.border, paddingTop: 8 }) }}>
-      <Pressable accessibilityRole="button" accessibilityState={{ expanded: open }} onPress={() => setOpen(!open)} style={{ gap: 3 }}>
+    <View style={{ ...(first ? {} : { borderTopWidth: 1, borderTopColor: theme.colors.border, paddingTop: SPACE.block + 2, marginTop: 2 }) }}>
+      <Pressable accessibilityRole="button" accessibilityState={{ expanded: open }} onPress={() => setOpen(!open)} style={{ gap: 4 }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
           <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: dot }} />
           <Text style={{ flex: 1, minWidth: 0, color: theme.colors.foreground, fontSize: 13, fontWeight: "600" }}>{row.label}</Text>
           <Icon name={open ? "ChevronDown" : "ChevronRight"} size={14} color={muted} />
         </View>
-        <Text style={{ color: closed ? semanticColor(theme, "paused") : state ? theme.colors.foreground : muted, fontSize: 12 }}>{summary}</Text>
+        <Text style={{ color: closed ? semanticColor(theme, "paused") : state ? theme.colors.foreground : muted, ...TEXT.body }}>{summary}</Text>
       </Pressable>
       {open ? (
-        <View style={{ gap: 12, paddingTop: 8 }}>
+        <View style={{ gap: SPACE.provider, paddingTop: SPACE.provider, marginTop: SPACE.block, borderTopWidth: 1, borderTopColor: theme.colors.border }}>
           {row.schedules.length === 0 ? (
-            <View style={{ gap: 4 }}>
+            <View style={{ gap: 4, maxWidth: DETAIL_MAX_WIDTH }}>
               <Text style={{ color: theme.colors.foreground, fontSize: 13 }}>{t("offHours.empty")}</Text>
-              <Text style={{ color: muted, fontSize: 12 }}>{t("offHours.emptyHint")}</Text>
+              <Text style={{ color: muted, ...TEXT.body }}>{t("offHours.emptyHint")}</Text>
             </View>
           ) : null}
           {row.schedules.map((schedule) => (
             <ScheduleView key={schedule.key} theme={theme} schedule={schedule} nowIso={nowIso} showRepos={row.schedules.length > 1} />
           ))}
           {row.schedules.length > 0 ? (
-            <View style={{ gap: 3 }}>
-              <Text style={{ color: theme.colors.foreground, fontSize: 12, fontWeight: "600" }}>{t("offHours.effectsTitle")}</Text>
-              <Text style={{ color: muted, fontSize: 12 }}>{t("offHours.effectQuota")}</Text>
-              <Text style={{ color: muted, fontSize: 12 }}>{t("offHours.effectWarden")}</Text>
-              <Text style={{ color: muted, fontSize: 12 }}>{t("offHours.effectOutside")}</Text>
+            <View style={{ gap: SPACE.tight, maxWidth: DETAIL_MAX_WIDTH }}>
+              <Text style={{ color: theme.colors.foreground, ...TEXT.body, fontWeight: "600" }}>{t("offHours.effectsTitle")}</Text>
+              <Text style={{ color: muted, ...TEXT.body }}>{t("offHours.effectQuota")}</Text>
+              <Text style={{ color: muted, ...TEXT.body }}>{t("offHours.effectWarden")}</Text>
+              <Text style={{ color: muted, ...TEXT.body }}>{t("offHours.effectOutside")}</Text>
             </View>
           ) : null}
         </View>
@@ -114,20 +115,20 @@ function ScheduleView(props: { theme: Theme; schedule: OffHoursSchedule; nowIso:
   const state = schedule.now;
   const at = state?.changeAt ? whenLabel(state.changeAt, nowIso, schedule.timezone, locale) : null;
   return (
-    <View style={{ gap: 8 }}>
+    <View style={{ gap: SPACE.window, maxWidth: DETAIL_MAX_WIDTH }}>
       {showRepos ? <Text style={{ color: muted, fontSize: 11 }}>{t("offHours.repos", { repos: schedule.repos.join(", ") })}</Text> : null}
       {state ? (
-        <View style={{ gap: 2 }}>
+        <View style={{ gap: 4 }}>
           <Text style={{ color: state.closed ? semanticColor(theme, "paused") : theme.colors.foreground, fontSize: 15, fontWeight: "700" }}>{state.closed ? t("offHours.closedNow") : t("offHours.openNow")}</Text>
-          <Text style={{ color: muted, fontSize: 12 }}>
+          <Text style={{ color: muted, ...TEXT.body }}>
             {at ? (state.closed ? t("offHours.opensAt", { when: at, timezone: schedule.timezone }) : t("offHours.closesAt", { when: at, timezone: schedule.timezone })) : state.closed ? t("offHours.alwaysClosed") : t("offHours.noChange")}
           </Text>
         </View>
       ) : null}
-      <View style={{ gap: 3 }}>
-        <Text style={{ color: theme.colors.foreground, fontSize: 12, fontWeight: "600" }}>{t("offHours.schedule", { timezone: schedule.timezone })}</Text>
+      <View style={{ gap: SPACE.tight }}>
+        <Text style={{ color: theme.colors.foreground, ...TEXT.body, fontWeight: "600" }}>{t("offHours.schedule", { timezone: schedule.timezone })}</Text>
         {weeklyClosedRows(schedule.slots).map((row) => (
-          <Text key={`${row.days.join(",")}|${describeRanges(row.ranges)}`} style={{ color: muted, fontSize: 12 }}>
+          <Text key={`${row.days.join(",")}|${describeRanges(row.ranges)}`} style={{ color: muted, ...TEXT.body }}>
             {`${describeDays(row.days, dayLabel)}: ${row.allDay ? t("offHours.allDay") : describeRanges(row.ranges)}`}
           </Text>
         ))}
@@ -161,8 +162,8 @@ function Planner(props: { theme: Theme; week: NonNullable<OffHoursSchedule["week
   const dayName = (day: number, style: "short" | "long") => new Date(Date.UTC(2024, 0, 7 + day)).toLocaleDateString(locale, { weekday: style, timeZone: "UTC" });
   const labelWidth = 34;
   return (
-    <View accessibilityLabel={t("offHours.plannerLabel", { timezone })} style={{ gap: 4 }}>
-      <Text style={{ color: theme.colors.foreground, fontSize: 12, fontWeight: "600" }}>{t("offHours.planner", { timezone })}</Text>
+    <View accessibilityLabel={t("offHours.plannerLabel", { timezone })} style={{ gap: SPACE.tight, maxWidth: DETAIL_MAX_WIDTH }}>
+      <Text style={{ color: theme.colors.foreground, ...TEXT.body, fontWeight: "600" }}>{t("offHours.planner", { timezone })}</Text>
       <View style={{ flexDirection: "row", gap: 6 }}>
         <View style={{ width: labelWidth }} />
         <View style={{ flex: 1, height: 12 }}>

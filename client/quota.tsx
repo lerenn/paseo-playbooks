@@ -8,6 +8,7 @@ import type { QuotaLimitation } from "../shared/quota-limitation";
 import { messages } from "./i18n";
 import { formatWait, projectRows, unavailableProviders, type ProjectRow, type ProviderRow, type SlotRow, type Tone } from "./quota-rows";
 import { overAllowanceColor, semanticColor } from "./semantic-colors";
+import { DETAIL_MAX_WIDTH, SPACE, TEXT } from "./spacing";
 import type { Theme } from "./theme";
 
 /** How often the open tab reads the figures again (the server's own readings are younger than this or refreshed meanwhile). */
@@ -117,25 +118,25 @@ function ProjectRowView(props: { theme: Theme; row: ProjectRow; first: boolean }
   const [folds, setFolds] = useState<ReadonlySet<string>>(new Set());
   const toggleFold = (key: string) => setFolds((before) => { const next = new Set(before); if (!next.delete(key)) next.add(key); return next; });
   return (
-    <View style={{ ...(first ? {} : { borderTopWidth: 1, borderTopColor: theme.colors.border, paddingTop: 8 }) }}>
-      <Pressable accessibilityRole="button" accessibilityState={{ expanded: open }} onPress={() => setOpen(!open)} style={{ gap: 3 }}>
+    <View style={{ ...(first ? {} : { borderTopWidth: 1, borderTopColor: theme.colors.border, paddingTop: SPACE.block + 2, marginTop: 2 }) }}>
+      <Pressable accessibilityRole="button" accessibilityState={{ expanded: open }} onPress={() => setOpen(!open)} style={{ gap: 4 }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
           <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: toneColor(theme, row.tone) }} />
           <Text style={{ flex: 1, minWidth: 0, color: theme.colors.foreground, fontSize: 13, fontWeight: "600" }}>{row.label}</Text>
           <Icon name={open ? "ChevronDown" : "ChevronRight"} size={14} color={muted} />
         </View>
-        <Text style={{ color: row.pacing ? theme.colors.foreground : muted, fontSize: 12 }}>
+        <Text style={{ color: row.pacing ? theme.colors.foreground : muted, ...TEXT.body }}>
           {parts.map((part, index) => (
             <Text key={index} style={part.over ? { color: semanticColor(theme, "paused") } : undefined}>{`${index > 0 ? " · " : ""}${part.text}`}</Text>
           ))}
         </Text>
-        <Text style={{ color: muted, fontSize: 11 }}>{caps}</Text>
+        <Text style={{ color: muted, ...TEXT.small }}>{caps}</Text>
       </Pressable>
       {open ? (
-        <View style={{ gap: 8, paddingTop: 8 }}>
+        <View style={{ gap: SPACE.provider, paddingTop: SPACE.provider, marginTop: SPACE.block, borderTopWidth: 1, borderTopColor: theme.colors.border }}>
           {row.sets.map((set) => (
-            <View key={set.limits.repos.join(",")} style={{ gap: 8 }}>
-              {row.sets.length > 1 ? <Text style={{ color: muted, fontSize: 11 }}>{`${t("quota.repos", { repos: set.limits.repos.join(", ") })} · ${set.limits.pacing ? t("quota.pacingOnAt", { percent: set.limits.usablePercent }) : t("quota.pacingOff")}`}</Text> : null}
+            <View key={set.limits.repos.join(",")} style={{ gap: SPACE.provider }}>
+              {row.sets.length > 1 ? <Text style={{ color: muted, ...TEXT.small }}>{`${t("quota.repos", { repos: set.limits.repos.join(", ") })} · ${set.limits.pacing ? t("quota.pacingOnAt", { percent: set.limits.usablePercent }) : t("quota.pacingOff")}`}</Text> : null}
               <ClosedHoursView theme={theme} set={set} />
               {set.providers.length === 0 ? <Text style={{ color: muted, fontSize: 12 }}>{t("quota.noProviders")}</Text> : null}
               {set.providers.map((provider) => (
@@ -158,10 +159,10 @@ function ClosedHoursView(props: { theme: Theme; set: ProjectRow["sets"][number] 
   const slots = set.providers.flatMap((provider) => provider.slots);
   const dayLabel = (day: number) => new Date(Date.UTC(2024, 0, 7 + day)).toLocaleDateString(locale, { weekday: "short", timeZone: "UTC" });
   return (
-    <View style={{ gap: 2 }}>
-      <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>{t("quota.closedHours", { slots: describeClosedSlots(closed.slots, dayLabel), timezone: closed.timezone })}</Text>
-      {slots.some((slot) => slot.frozen) ? <Text style={{ color: semanticColor(theme, "paused"), fontSize: 11 }}>{t("quota.closedFrozen")}</Text> : null}
-      {slots.some((slot) => slot.closedIgnored) ? <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>{t("quota.closedIgnored")}</Text> : null}
+    <View style={{ gap: 4, maxWidth: DETAIL_MAX_WIDTH }}>
+      <Text style={{ color: theme.colors.foregroundMuted, ...TEXT.small }}>{t("quota.closedHours", { slots: describeClosedSlots(closed.slots, dayLabel), timezone: closed.timezone })}</Text>
+      {slots.some((slot) => slot.frozen) ? <Text style={{ color: semanticColor(theme, "paused"), ...TEXT.small }}>{t("quota.closedFrozen")}</Text> : null}
+      {slots.some((slot) => slot.closedIgnored) ? <Text style={{ color: theme.colors.foregroundMuted, ...TEXT.small }}>{t("quota.closedIgnored")}</Text> : null}
     </View>
   );
 }
@@ -172,21 +173,27 @@ function ProviderView(props: { theme: Theme; provider: ProviderRow; folds: Reado
   const muted = theme.colors.foregroundMuted;
   const flag = provider.status === "unavailable" ? t("quota.state.unavailable") : provider.status === "unreported" ? t("quota.state.unreported") : provider.state === "override" ? t("quota.state.override") : null;
   return (
-    <View style={{ gap: 3, borderLeftWidth: 2, borderLeftColor: theme.colors.border, paddingLeft: 8 }}>
-      <Text style={{ color: theme.colors.foreground, fontSize: 12, fontWeight: "600" }}>{provider.provider}</Text>
-      {flag ? <Text style={{ color: provider.status === "unavailable" ? semanticColor(theme, "paused") : muted, fontSize: 12 }}>{flag}</Text> : null}
-      {provider.readAt ? <Text style={{ color: muted, fontSize: 11 }}>{t("quota.readAt", { when: whenAt(provider.readAt, locale) })}</Text> : null}
-      {provider.overrideUntil ? <Text style={{ color: muted, fontSize: 11 }}>{t("quota.overrideUntil", { when: whenAt(provider.overrideUntil, locale) })}</Text> : null}
-      {provider.slots.length === 0 ? <Text style={{ color: muted, fontSize: 12 }}>{t("quota.noReading")}</Text> : null}
-      {provider.slots.map((slot) => (
-        <SlotView key={slot.id} theme={theme} slot={slot} unavailable={provider.unavailable} />
-      ))}
-      {provider.unavailable && provider.slots.some((slot) => slot.paced) ? <Text style={{ color: semanticColor(theme, "paused"), fontSize: 12 }}>{t("quota.throttleUnknown")}</Text> : <ThrottleView theme={theme} provider={provider} />}
+    <View style={{ gap: SPACE.window, borderLeftWidth: 2, borderLeftColor: theme.colors.border, paddingLeft: SPACE.block + 2, maxWidth: DETAIL_MAX_WIDTH + 14 }}>
+      <View style={{ gap: 4 }}>
+        <Text style={{ color: theme.colors.foreground, fontSize: 14, lineHeight: 20, fontWeight: "600" }}>{provider.provider}</Text>
+        {flag ? <Text style={{ color: provider.status === "unavailable" ? semanticColor(theme, "paused") : muted, ...TEXT.body }}>{flag}</Text> : null}
+        {provider.readAt ? <Text style={{ color: muted, ...TEXT.small }}>{t("quota.readAt", { when: whenAt(provider.readAt, locale) })}</Text> : null}
+        {provider.overrideUntil ? <Text style={{ color: muted, ...TEXT.small }}>{t("quota.overrideUntil", { when: whenAt(provider.overrideUntil, locale) })}</Text> : null}
+      </View>
+      {provider.slots.length === 0 ? <Text style={{ color: muted, ...TEXT.body }}>{t("quota.noReading")}</Text> : null}
+      {provider.slots.length > 0 ? (
+        <View style={{ gap: SPACE.window }}>
+          {provider.slots.map((slot) => (
+            <SlotView key={slot.id} theme={theme} slot={slot} unavailable={provider.unavailable} />
+          ))}
+        </View>
+      ) : null}
+      {provider.unavailable && provider.slots.some((slot) => slot.paced) ? <Text style={{ color: semanticColor(theme, "paused"), ...TEXT.body }}>{t("quota.throttleUnknown")}</Text> : <ThrottleView theme={theme} provider={provider} />}
       {provider.reservations.length > 0 ? (
         <Lines theme={theme} title={t("quota.reservations", { count: provider.reservations.length })} open={folds.has(`${foldKey}/${provider.provider}/reservations`)} onToggle={() => toggleFold(`${foldKey}/${provider.provider}/reservations`)}>
           {provider.reservations.map((run) => (
             <View key={run.runId} style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
-              <Text style={{ color: theme.colors.foreground, fontSize: 12 }}>{`${run.title}${Object.keys(run.remaining).length > 0 ? ` · ${Object.entries(run.remaining).map(([name, value]) => t("quota.remaining", { window: name, value })).join(", ")}` : ""}`}</Text>
+              <Text style={{ color: theme.colors.foreground, ...TEXT.body }}>{`${run.title}${Object.keys(run.remaining).length > 0 ? ` · ${Object.entries(run.remaining).map(([name, value]) => t("quota.remaining", { window: name, value })).join(", ")}` : ""}`}</Text>
               {run.exempt ? <Text style={{ color: theme.colors.accent, fontSize: 10, fontWeight: "600", borderRadius: 4, borderWidth: 1, borderColor: theme.colors.accent, paddingHorizontal: 4 }}>{t("quota.tagExempt")}</Text> : null}
               {run.hold === null ? null : <Text style={{ color: semanticColor(theme, "paused"), fontSize: 10, fontWeight: "600", borderRadius: 4, borderWidth: 1, borderColor: semanticColor(theme, "paused"), paddingHorizontal: 4 }}>{t(run.hold === "paused" ? "quota.tagPaused" : "quota.tagHeld")}</Text>}
             </View>
@@ -196,7 +203,7 @@ function ProviderView(props: { theme: Theme; provider: ProviderRow; folds: Reado
       {provider.exhausted.length > 0 ? (
         <Lines theme={theme} title={t("quota.exhausted", { count: provider.exhausted.length })} open={folds.has(`${foldKey}/${provider.provider}/exhausted`)} onToggle={() => toggleFold(`${foldKey}/${provider.provider}/exhausted`)}>
           {provider.exhausted.map((mark) => (
-            <Text key={`${mark.runId}/${mark.target}`} style={{ color: theme.colors.foreground, fontSize: 12 }}>{`${mark.target} · ${mark.title} · ${t("quota.until", { when: whenAt(mark.until, locale) })}`}</Text>
+            <Text key={`${mark.runId}/${mark.target}`} style={{ color: theme.colors.foreground, ...TEXT.body }}>{`${mark.target} · ${mark.title} · ${t("quota.until", { when: whenAt(mark.until, locale) })}`}</Text>
           ))}
         </Lines>
       ) : null}
@@ -251,11 +258,11 @@ function ThrottleView(props: { theme: Theme; provider: ProviderRow }) {
     throttle.nextRetryAt === null ? null : t("quota.nextRetry", { when: new Date(throttle.nextRetryAt).toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" }) }),
   ].filter((part): part is string => part !== null);
   return (
-    <View style={{ gap: 3, paddingTop: 4 }}>
+    <View style={{ gap: SPACE.tight }}>
       {paced ? (
         <>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-            <Text style={{ color: theme.colors.foreground, fontSize: 12 }}>{throttle.percent === null ? t("quota.throttleNone") : t("quota.throttle", { value: throttle.percent })}</Text>
+            <Text style={{ color: theme.colors.foreground, ...TEXT.body }}>{throttle.percent === null ? t("quota.throttleNone") : t("quota.throttle", { value: throttle.percent })}</Text>
             <ThrottleInfo theme={theme} />
           </View>
           <View style={{ height: 6, borderRadius: 3, backgroundColor: theme.colors.surface2, overflow: "hidden" }}>
@@ -263,7 +270,7 @@ function ThrottleView(props: { theme: Theme; provider: ProviderRow }) {
           </View>
         </>
       ) : null}
-      <Text style={{ color: throttle.held + throttle.paused > 0 ? violet : muted, fontSize: 12 }}>{counts.join(" · ")}</Text>
+      <Text style={{ color: throttle.held + throttle.paused > 0 ? violet : muted, ...TEXT.small }}>{counts.join(" · ")}</Text>
     </View>
   );
 }
@@ -284,8 +291,8 @@ function SlotView(props: { theme: Theme; slot: SlotRow; unavailable: boolean }) 
   ].filter((fact): fact is string => fact !== null);
   const pct = (value: number) => `${value}%` as const;
   return (
-    <View style={{ gap: 3, paddingTop: 4, ...(unavailable ? { opacity: 0.6 } : {}) }}>
-      <Text style={{ color: theme.colors.foreground, fontSize: 12 }}>
+    <View style={{ gap: SPACE.tight, ...(unavailable ? { opacity: 0.6 } : {}) }}>
+      <Text style={{ color: theme.colors.foreground, ...TEXT.body, fontWeight: "600" }}>
         {slot.name}
         {slot.modelScoped ? ` · ${t("quota.modelWindow")}` : ""}
       </Text>
@@ -295,9 +302,11 @@ function SlotView(props: { theme: Theme; slot: SlotRow; unavailable: boolean }) 
         {!unavailable && bar.red > 0 ? <View style={{ position: "absolute", left: pct(bar.redFrom), width: pct(bar.red), height: 8, backgroundColor: overAllowanceColor(theme) }} /> : null}
         {!unavailable && bar.tick !== null ? <View style={{ position: "absolute", left: pct(Math.min(bar.tick, 99)), width: 2, height: 8, backgroundColor: theme.colors.foreground }} /> : null}
       </View>
-      <Text style={{ color: slot.over > 0 && !unavailable ? semanticColor(theme, "paused") : muted, fontSize: 12 }}>{facts.join(" · ")}</Text>
-      {slot.resetsAt ? <Text style={{ color: muted, fontSize: 11 }}>{t("quota.resets", { when: whenAt(slot.resetsAt, locale) })}</Text> : null}
-      {slot.stale ? <Text style={{ color: muted, fontSize: 11 }}>{t("quota.stale")}</Text> : null}
+      <View style={{ gap: 2 }}>
+        <Text style={{ color: slot.over > 0 && !unavailable ? semanticColor(theme, "paused") : muted, ...TEXT.body }}>{facts.join(" · ")}</Text>
+        {slot.resetsAt ? <Text style={{ color: muted, ...TEXT.small }}>{t("quota.resets", { when: whenAt(slot.resetsAt, locale) })}</Text> : null}
+        {slot.stale ? <Text style={{ color: muted, ...TEXT.small }}>{t("quota.stale")}</Text> : null}
+      </View>
     </View>
   );
 }
@@ -306,10 +315,10 @@ function SlotView(props: { theme: Theme; slot: SlotRow; unavailable: boolean }) 
 function Lines(props: { theme: Theme; title: string; open: boolean; onToggle: () => void; children: React.ReactNode }) {
   const muted = props.theme.colors.foregroundMuted;
   return (
-    <View style={{ gap: 2, paddingTop: 4 }}>
+    <View style={{ gap: SPACE.tight }}>
       <Pressable accessibilityRole="button" accessibilityState={{ expanded: props.open }} onPress={props.onToggle} style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
         <Icon name={props.open ? "ChevronDown" : "ChevronRight"} size={14} color={muted} />
-        <Text style={{ flex: 1, minWidth: 0, color: muted, fontSize: 12 }}>{props.title}</Text>
+        <Text style={{ flex: 1, minWidth: 0, color: muted, ...TEXT.body }}>{props.title}</Text>
       </Pressable>
       {props.open ? props.children : null}
     </View>
@@ -318,7 +327,7 @@ function Lines(props: { theme: Theme; title: string; open: boolean; onToggle: ()
 
 function Card(props: { theme: Theme; children: React.ReactNode }) {
   const { theme } = props;
-  return <View style={{ gap: 6, borderRadius: 10, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface1, padding: 12 }}>{props.children}</View>;
+  return <View style={{ gap: SPACE.block, borderRadius: 10, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface1, padding: 16 }}>{props.children}</View>;
 }
 
 function Section(props: { theme: Theme; title: string; first?: boolean; children: React.ReactNode }) {
