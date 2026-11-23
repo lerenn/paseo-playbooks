@@ -2,6 +2,7 @@ import { useRpc, useTranslation } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/ui";
 import { useCallback, useEffect, useState } from "react";
 import { Pressable, Text, View } from "react-native";
+import { describeClosedSlots } from "../shared/closed-hours";
 import { quotaLimitationRpc } from "../shared/contracts";
 import type { QuotaLimitation } from "../shared/quota-limitation";
 import { messages } from "./i18n";
@@ -135,6 +136,7 @@ function ProjectRowView(props: { theme: Theme; row: ProjectRow; first: boolean }
           {row.sets.map((set) => (
             <View key={set.limits.repos.join(",")} style={{ gap: 8 }}>
               {row.sets.length > 1 ? <Text style={{ color: muted, fontSize: 11 }}>{`${t("quota.repos", { repos: set.limits.repos.join(", ") })} · ${set.limits.pacing ? t("quota.pacingOnAt", { percent: set.limits.usablePercent }) : t("quota.pacingOff")}`}</Text> : null}
+              <ClosedHoursView theme={theme} set={set} />
               {set.providers.length === 0 ? <Text style={{ color: muted, fontSize: 12 }}>{t("quota.noProviders")}</Text> : null}
               {set.providers.map((provider) => (
                 <ProviderView key={provider.provider} theme={theme} provider={provider} folds={folds} toggleFold={toggleFold} foldKey={set.limits.repos.join(",")} />
@@ -143,6 +145,23 @@ function ProjectRowView(props: { theme: Theme; row: ProjectRow; first: boolean }
           ))}
         </View>
       ) : null}
+    </View>
+  );
+}
+
+/** The closed hours of a set of limits (ADR 2026-11-23-quota-closed-hours), and whether what is allowed so far is frozen now. */
+function ClosedHoursView(props: { theme: Theme; set: ProjectRow["sets"][number] }) {
+  const { theme, set } = props;
+  const { t, locale } = useTranslation(messages);
+  const closed = set.limits.pacing ? set.limits.closedHours : null;
+  if (!closed) return null;
+  const slots = set.providers.flatMap((provider) => provider.slots);
+  const dayLabel = (day: number) => new Date(Date.UTC(2024, 0, 7 + day)).toLocaleDateString(locale, { weekday: "short", timeZone: "UTC" });
+  return (
+    <View style={{ gap: 2 }}>
+      <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>{t("quota.closedHours", { slots: describeClosedSlots(closed.slots, dayLabel), timezone: closed.timezone })}</Text>
+      {slots.some((slot) => slot.frozen) ? <Text style={{ color: semanticColor(theme, "paused"), fontSize: 11 }}>{t("quota.closedFrozen")}</Text> : null}
+      {slots.some((slot) => slot.closedIgnored) ? <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>{t("quota.closedIgnored")}</Text> : null}
     </View>
   );
 }

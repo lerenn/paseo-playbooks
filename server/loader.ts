@@ -30,6 +30,7 @@ import { BusError, checkTypes, FilterValueSchema } from "./bus";
 import { JOB_TYPES } from "./job-events";
 import { OVERSIGHT_TYPES } from "./oversight-events";
 import { noteDeprecatedKey, quotaLimitsLayerOf, readProjectDefault, readProjectProfiles, type QuotaLimitsLayer } from "./config";
+import { dayNumbers, parseClock, validTimezone } from "./closed-hours";
 import { bareId, DEFAULT_REPO, qualified } from "../shared/repos";
 import { MAX_SUBAGENT_ARCHIVE_AFTER_MS } from "./sidekick-archive";
 import { branchNameProblem } from "./branch-name";
@@ -584,6 +585,39 @@ const RawRateLimitSchema = z
   })
   .strict();
 
+/** `quota_limits.quota.closed_hours` (ADR 2026-11-23-quota-closed-hours). */
+const RawClosedHoursSchema = z
+  .object({
+    /** An IANA timezone (`Europe/Paris`); default the plugin host's timezone. */
+    timezone: z.string().refine(validTimezone, { message: "quota_limits.quota.closed_hours.timezone must be an IANA timezone such as Europe/Paris" }).optional(),
+    /** The closed slots: each a set of days and a `from`-`to` time of the day. Overlaps are merged; a slot does not wrap past midnight (write two). */
+    slots: z
+      .array(
+        z
+          .object({
+            /** A day name (`monday`, `mon`), a list of them, or `weekdays` / `weekend` / `everyday`. */
+            days: z.union([z.string(), z.array(z.string()).min(1)]),
+            /** `HH:MM`, 24-hour clock. */
+            from: z.string(),
+            /** `HH:MM`, after `from`; `24:00` is the end of the day. */
+            to: z.string(),
+          })
+          .strict()
+          .superRefine((slot, ctx) => {
+            for (const name of typeof slot.days === "string" ? [slot.days] : slot.days) {
+              if (dayNumbers(name) === null) ctx.addIssue({ code: "custom", path: ["days"], message: `unknown day "${name}": use monday..sunday (or mon..sun), weekdays, weekend or everyday` });
+            }
+            const from = parseClock(slot.from);
+            const to = parseClock(slot.to);
+            if (from === null) ctx.addIssue({ code: "custom", path: ["from"], message: `"${slot.from}" is not a time: write HH:MM (24-hour clock)` });
+            if (to === null) ctx.addIssue({ code: "custom", path: ["to"], message: `"${slot.to}" is not a time: write HH:MM (24-hour clock, 24:00 for the end of the day)` });
+            if (from !== null && to !== null && from >= to) ctx.addIssue({ code: "custom", path: ["to"], message: `\`to\` (${slot.to}) must be after \`from\` (${slot.from}); a slot does not wrap past midnight: write two slots` });
+          }),
+      )
+      .min(1),
+  })
+  .strict();
+
 /** `quota_limits` (was `rate_limits`, still accepted): the quota pacing and the hard caps (ADR 2026-11-23-quota-limits-in-defaults). Repository defaults only. */
 const RawQuotaLimitsSchema = z
   .object({
@@ -597,6 +631,8 @@ const RawQuotaLimitsSchema = z
         pacing: z.boolean().optional(),
         /** Percentage of a usage window the playbooks may use (above 0, at most 100). Default 97. */
         usable_percent: z.number().gt(0).max(100).optional(),
+        /** Weekly slots that do not count towards what is allowed so far (ADR 2026-11-23-quota-closed-hours): the allowance stays flat while one is closed. */
+        closed_hours: RawClosedHoursSchema.optional(),
         /** A usage reading younger than this is used as is (`5m`). */
         refresh_interval: z.string().refine((value) => parseDuration(value) !== null, { message: "quota_limits.quota.refresh_interval must be a duration such as 5m" }).optional(),
         /** A reading older than this is unusable (`30m`). */

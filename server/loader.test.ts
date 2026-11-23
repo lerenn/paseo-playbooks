@@ -390,6 +390,29 @@ steps:
     }
   });
 
+  it("reads quota.closed_hours and refuses a bad day, time, slot or timezone with a clear message", async () => {
+    const steps = "steps:\n  - id: a\n    role: { name: investigator, prompt: go }\n";
+    const good = await workspace({ "defaults/main.yaml": "quota_limits:\n  quota:\n    usable_percent: 90\n    closed_hours:\n      timezone: Europe/Paris\n      slots:\n        - { days: [saturday, sunday], from: \"00:00\", to: \"24:00\" }\n        - { days: monday, from: \"00:00\", to: \"08:00\" }\n", "pr.yaml": steps });
+    const loaded = await loadPlaybooks(good);
+    expect(JSON.stringify(loaded.entries[0]!.errors)).toBe("[]");
+    const cases: Array<[string, string]> = [
+      ["{ days: funday, from: \"00:00\", to: \"08:00\" }", "unknown day"],
+      ["{ days: monday, from: \"8am\", to: \"09:00\" }", "not a time"],
+      ["{ days: monday, from: \"25:00\", to: \"26:00\" }", "not a time"],
+      ["{ days: monday, from: \"08:00\", to: \"08:00\" }", "must be after"],
+      ["{ days: monday, from: \"22:00\", to: \"06:00\" }", "does not wrap"],
+      ["{ days: monday, from: \"00:00\" }", "to"],
+    ];
+    for (const [slot, message] of cases) {
+      const bad = await workspace({ "defaults/main.yaml": `quota_limits: { quota: { closed_hours: { timezone: UTC, slots: [${slot}] } } }\n`, "pr.yaml": steps });
+      expect(JSON.stringify(await loadPlaybooks(bad)), slot).toContain(message);
+    }
+    const tz = await workspace({ "defaults/main.yaml": "quota_limits: { quota: { closed_hours: { timezone: Mars/Olympus, slots: [{ days: monday, from: \"00:00\", to: \"08:00\" }] } } }\n", "pr.yaml": steps });
+    expect(JSON.stringify(await loadPlaybooks(tz))).toContain("IANA timezone");
+    const empty = await workspace({ "defaults/main.yaml": "quota_limits: { quota: { closed_hours: { slots: [] } } }\n", "pr.yaml": steps });
+    expect((await loadPlaybooks(empty)).entries[0]!.errors.length).toBeGreaterThan(0);
+  });
+
   it("refuses a bad quota_limits in defaults (and in the old rate_limits), and a playbook's own quota_limits", async () => {
     const steps = "steps:\n  - id: a\n    role: { name: investigator, prompt: go }\n";
     for (const block of ["{ steps: 0 }", "{ playbooks: 1.5 }", "{ quota: { usable_percent: 400 } }", "{ quota: { usable_percent: 0 } }", "{ quota: { pacing: yes please } }", "{ quota: { max_age: soon } }", "{ quota: { refresh_interval: 0 } }", "{ speed: 3 }", "{ quota: { window: weekly } }", "5"]) {

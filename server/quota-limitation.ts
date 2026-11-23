@@ -5,6 +5,9 @@ import type { RateLimitsConfig } from "./config";
 import { windowKey } from "./rate-budget";
 import { admittedRunIds, runningStepCount, usedPct, windowRooms, type PacerView } from "./rate-limit";
 import { windowModel } from "./usage";
+import { closedKey, hostTimezone, type ClosedHours } from "./closed-hours";
+
+const closedView = (closed: ClosedHours | null | undefined) => (closed && closed.slots.length > 0 ? { timezone: closed.timezone ?? hostTimezone(), slots: closed.slots } : null);
 
 /** A reservation as the runtime keeps it: points still to use per `windowKey`. */
 export interface ReservationView {
@@ -34,21 +37,25 @@ const iso = (ms: number | null) => (ms === null ? null : new Date(ms).toISOStrin
  */
 export function buildQuotaLimitation(input: { projects: ProjectLimitsInput[]; nowMs: number; views: PacerView[]; runs: Run[]; reservations: ReservationView[] }): QuotaLimitation {
   const { projects, nowMs, views, runs, reservations } = input;
-  /** The distinct usable percents of the projects that pace, with their labels. */
-  const pacing = new Map<number, string[]>();
+  /** The distinct (usable percent, closed hours) pairs of the projects that pace, with their labels. */
+  const pacing = new Map<string, { percent: number; closed: ClosedHours | null | undefined; labels: string[] }>();
   for (const project of projects) {
-    for (const percent of new Set(project.sets.filter((set) => set.config.quota.pacing).map((set) => set.config.quota.usablePercent))) {
-      pacing.set(percent, [...(pacing.get(percent) ?? []), project.label]);
+    for (const set of project.sets.filter((candidate) => candidate.config.quota.pacing)) {
+      const { usablePercent: percent, closedHours } = set.config.quota;
+      const key = `${percent}|${closedKey(closedHours) ?? ""}`;
+      const entry = pacing.get(key) ?? { percent, closed: closedHours, labels: [] };
+      if (!entry.labels.includes(project.label)) entry.labels.push(project.label);
+      pacing.set(key, entry);
     }
   }
-  const pacedBy = [...new Set([...pacing.values()].flat())];
+  const pacedBy = [...new Set([...pacing.values()].flatMap((entry) => entry.labels))];
   const live = runs.filter((run) => !run.archivedAt && isActive(run));
   const titleOf = (run: Run) => run.playbook.title;
   const remaining = (reservation: ReservationView, key: string) => Math.max(0, (reservation.est[key] ?? 0) - (reservation.spent[key] ?? 0));
   const open = reservations.filter((reservation) => reservation.endedAt === null);
 
   const providers: QuotaProvider[] = views.map((view) => {
-    const rooms = view.entry ? [...pacing].map(([percent, labels]) => ({ percent, labels, rooms: windowRooms(view.entry!, percent, nowMs) })) : [];
+    const rooms = view.entry ? [...pacing.values()].map(({ percent, closed, labels }) => ({ percent, closed, labels, rooms: windowRooms(view.entry!, percent, nowMs, closed) })) : [];
     const windows: QuotaWindow[] = (view.entry?.windows ?? []).map((window) => {
       const key = windowKey(view.provider, window.id);
       const reserved = round(open.reduce((total, reservation) => total + remaining(reservation, key), 0));
@@ -60,11 +67,11 @@ export function buildQuotaLimitation(input: { projects: ProjectLimitsInput[]; no
         modelScoped: windowModel(window.id) !== null,
         used: used === null ? null : round(used),
         reserved,
-        paces: rooms.flatMap(({ percent, labels, rooms: list }) => {
+        paces: rooms.flatMap(({ percent, closed, labels, rooms: list }) => {
           const room = list.find((candidate) => candidate.id === window.id);
           if (!room) return [];
           const headroom = round(room.ceiling - room.used);
-          return [{ usable: percent, ceiling: round(room.ceiling), headroom, free: round(headroom - reserved), projects: labels }];
+          return [{ usable: percent, ...(closedKey(closed) ? { closedKey: closedKey(closed) } : {}), ...(room.frozen ? { frozen: true } : {}), ...(room.closedIgnored ? { closedIgnored: true } : {}), ceiling: round(room.ceiling), headroom, free: round(headroom - reserved), projects: labels }];
         }),
         resetsAt: Number.isFinite(resets) ? new Date(resets).toISOString() : null,
         stale: Number.isFinite(resets) && resets <= nowMs,
@@ -104,7 +111,7 @@ export function buildQuotaLimitation(input: { projects: ProjectLimitsInput[]; no
     projectId,
     label,
     ...(unitCost ? { unitCost } : {}),
-    limits: sets.map(({ repos, config }) => ({ repos, pacing: config.quota.pacing, usablePercent: config.quota.usablePercent, stepsLimit: config.steps, runsLimit: config.playbooks })),
+    limits: sets.map(({ repos, config }) => ({ repos, pacing: config.quota.pacing, usablePercent: config.quota.usablePercent, ...(closedView(config.quota.closedHours) ? { closedHours: closedView(config.quota.closedHours), closedKey: closedKey(config.quota.closedHours) } : {}), stepsLimit: config.steps, runsLimit: config.playbooks })),
   }));
   return {
     now: new Date(nowMs).toISOString(),

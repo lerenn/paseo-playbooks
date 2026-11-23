@@ -1,6 +1,7 @@
 import type { RateHold, Run, RunPriorityView } from "../shared/types";
 import { isActive, isPaused, isPipeline } from "../shared/types";
 import type { RateLimitsConfig } from "./config";
+import { instantOfOpenMs, isClosedAt, openMs, type ClosedHours } from "./closed-hours";
 import { windowModel, type ProviderUsage, type UsageSnapshot, type UsageWindow } from "./usage";
 
 /**
@@ -33,15 +34,22 @@ export function windowLengthMs(window: Pick<UsageWindow, "id" | "label"> & { win
 
 /**
  * The cumulative ceiling (percent) of a window at `now`: `usable * elapsed / length`, so a 100-hour window with 97 usable
- * allows 0.97 points an hour. Null when the window's length or reset time is unknown.
+ * allows 0.97 points an hour. With closed hours (ADR 2026-11-23-quota-closed-hours) the closed time is left out of both the
+ * elapsed time and the length: `usable * open elapsed / open length`, flat while a slot is closed. A window with no open hour
+ * falls back to the plain rule (`closedIgnored`). Null when the window's length or reset time is unknown.
  */
-export function paceCeiling(window: UsageWindow & { windowMinutes?: number | null }, usable: number, nowMs: number): { ceiling: number; startMs: number; lengthMs: number } | null {
+export function paceCeiling(window: UsageWindow & { windowMinutes?: number | null }, usable: number, nowMs: number, closed?: ClosedHours | null): { ceiling: number; startMs: number; lengthMs: number; closed?: ClosedHours; frozen?: boolean; closedIgnored?: boolean } | null {
   const length = windowLengthMs(window);
   const resets = window.resetsAt ? Date.parse(window.resetsAt) : NaN;
   if (!length || !Number.isFinite(resets)) return null;
   const startMs = resets - length;
   const elapsed = Math.min(length, Math.max(0, nowMs - startMs));
-  return { ceiling: (usable * elapsed) / length, startMs, lengthMs: length };
+  const plain = { ceiling: (usable * elapsed) / length, startMs, lengthMs: length };
+  if (!closed || closed.slots.length === 0) return plain;
+  const total = openMs(closed, startMs, resets);
+  if (total <= 0) return { ...plain, closedIgnored: true };
+  const open = openMs(closed, startMs, startMs + elapsed);
+  return { ceiling: (usable * open) / total, startMs, lengthMs: length, closed, frozen: nowMs >= startMs && nowMs < resets && isClosedAt(closed, nowMs) };
 }
 
 export function usedPct(window: UsageWindow): number | null {
@@ -63,6 +71,12 @@ export interface WindowRoom {
   startMs: number | null;
   lengthMs: number | null;
   resetsAt: number | null;
+  /** Closed hours in effect for this window (it has open hours): what is allowed so far counts only open time. */
+  closed?: ClosedHours;
+  /** Now falls in a closed slot: what is allowed so far is flat. */
+  frozen?: boolean;
+  /** Closed hours are set but the window has no open hour: the plain linear rule applies. */
+  closedIgnored?: boolean;
 }
 
 /** The room left in a window before reservations: what is allowed so far minus usage (negative when usage is ahead of the pace). */
@@ -72,7 +86,7 @@ export const roomHeadroom = (room: WindowRoom): number => room.ceiling - room.us
  * The provider-wide windows of a usage entry that can be paced on: those that report usage and have not already reset (a
  * reading whose window reset is stale; the next refresh settles it). A window whose length is unknown only has the hard cap.
  */
-export function windowRooms(entry: ProviderUsage, usable: number, nowMs: number): WindowRoom[] {
+export function windowRooms(entry: ProviderUsage, usable: number, nowMs: number, closed?: ClosedHours | null): WindowRoom[] {
   const rooms: WindowRoom[] = [];
   for (const window of entry.windows ?? []) {
     if (windowModel(window.id)) continue;
@@ -80,8 +94,8 @@ export function windowRooms(entry: ProviderUsage, usable: number, nowMs: number)
     if (used === null) continue;
     const resets = window.resetsAt ? Date.parse(window.resetsAt) : NaN;
     if (Number.isFinite(resets) && resets <= nowMs) continue;
-    const pace = paceCeiling(window, usable, nowMs);
-    rooms.push({ provider: entry.providerId, id: window.id, name: window.label ?? window.id, used, ceiling: pace ? Math.min(pace.ceiling, usable) : usable, usable, startMs: pace?.startMs ?? null, lengthMs: pace?.lengthMs ?? null, resetsAt: Number.isFinite(resets) ? resets : null });
+    const pace = paceCeiling(window, usable, nowMs, closed);
+    rooms.push({ provider: entry.providerId, id: window.id, name: window.label ?? window.id, used, ceiling: pace ? Math.min(pace.ceiling, usable) : usable, usable, startMs: pace?.startMs ?? null, lengthMs: pace?.lengthMs ?? null, resetsAt: Number.isFinite(resets) ? resets : null, ...(pace?.closed ? { closed: pace.closed } : {}), ...(pace?.frozen ? { frozen: true } : {}), ...(pace?.closedIgnored ? { closedIgnored: true } : {}) });
   }
   return rooms;
 }
@@ -90,6 +104,7 @@ export function windowRooms(entry: ProviderUsage, usable: number, nowMs: number)
 export function roomFreeAt(room: WindowRoom, needed: number): number | null {
   if (needed >= room.usable) return room.resetsAt;
   if (room.startMs === null || room.lengthMs === null) return null;
+  if (room.closed && room.resetsAt !== null) return instantOfOpenMs(room.closed, room.startMs, room.resetsAt, (needed / room.usable) * openMs(room.closed, room.startMs, room.resetsAt));
   return room.startMs + (needed / room.usable) * room.lengthMs;
 }
 
@@ -199,7 +214,7 @@ export class QuotaPacer {
     }
     const entry = reading.entry;
     if (!entry || (entry.status !== undefined && entry.status !== "available")) return { state: "unreported" };
-    const rooms = windowRooms(entry, config.usablePercent, now);
+    const rooms = windowRooms(entry, config.usablePercent, now, config.closedHours);
     return rooms.length === 0 ? { state: "unreported" } : { state: "ok", rooms };
   }
 
@@ -276,7 +291,7 @@ export class QuotaPacer {
       let state: PacerView["state"];
       if (until !== undefined && until > now) state = "override";
       else if (!reading || age > config.maxAgeMs) state = "unavailable";
-      else if (!entry || (entry.status !== undefined && entry.status !== "available") || windowRooms(entry, config.usablePercent, now).length === 0) state = "unreported";
+      else if (!entry || (entry.status !== undefined && entry.status !== "available") || windowRooms(entry, config.usablePercent, now, config.closedHours).length === 0) state = "unreported";
       else state = "ok";
       return { provider, state, readAt: reading ? reading.at : null, overrideUntil: until !== undefined && until > now ? until : null, entry, usage: this.usageState(provider, config) };
     });

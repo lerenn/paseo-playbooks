@@ -243,9 +243,16 @@ quota_limits:
     usable_percent: 97     # a 100 h window then allows 0.97 points an hour (what is allowed so far); 97 is also the hard cap
     refresh_interval: 5m   # a reading younger than this is used as is
     max_age: 30m           # an older reading holds new work ("waiting for quota data") until a refresh succeeds
+    closed_hours:          # optional: slots that do not count towards what is allowed so far (see below)
+      timezone: Europe/Paris   # IANA zone; default: the host's timezone
+      slots:
+        - { days: [saturday, sunday], from: "00:00", to: "24:00" }   # days: a name, a list, or weekdays / weekend / everyday
+        - { days: monday, from: "00:00", to: "08:00" }               # HH:MM, to after from; 24:00 = end of the day; no wrapping past midnight
   steps: 4                 # optional hard cap: agent and script steps running at once, across all projects
   playbooks: 2             # optional hard cap: runs admitted at once
 ```
+
+**Closed hours** (`quota.closed_hours`, ADR `docs/adrs/2026-11-23-quota-closed-hours.md`): a provider's weekly window may reset on a weekday afternoon, so nights and weekends inside it would accrue allowance nobody can use. Declared slots are left out of both the time elapsed and the length of the window: allowed so far = Max usable quota × (open hours elapsed ÷ open hours in the window), never above Max usable quota, flat while a slot is closed. Slots are wall-clock times of the zone (a daylight-saving day is 23 or 25 hours); a window with no open hour falls back to the plain rule and the Quota limitation tab says so. Nothing else changes: runs are not paused or held because a slot is closed, exempt runs and holds behave as before, and the exhausted-window rule is unchanged. The tab shows `Closed hours: Sat-Sun, Mon 00:00-08:00 (Europe/Paris)` under the project and a line while the allowance is frozen. `validate_playbooks` refuses an unknown day, a bad time, `from` not before `to` and an unknown timezone.
 
 **Headroom** of a provider window = what is allowed so far (`usable_percent` × elapsed / window length, the tightest window winning)
 minus current usage minus what work already started still has to use. Work starts while the headroom covers its **estimated cost**: the

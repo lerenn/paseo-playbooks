@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { ClosedSlotView } from "./closed-hours";
 
 /** One usage window of a provider, with the pacing's numbers. Percent points of the window throughout. */
 export const QuotaWindowSchema = z.object({
@@ -15,6 +16,12 @@ export const QuotaWindowSchema = z.object({
     z.object({
       /** The share of the window those projects may use (`usable_percent`). */
       usable: z.number(),
+      /** The closed hours these projects have (a stable text of them; null for none): with `usable`, which pace a project reads. Absent from an older server. */
+      closedKey: z.string().nullable().optional(),
+      /** Now falls in a closed slot: what is allowed so far is flat. Absent from an older server. */
+      frozen: z.boolean().optional(),
+      /** Closed hours are set but the window has no open hour: the plain linear rule is used. Absent from an older server. */
+      closedIgnored: z.boolean().optional(),
       /** What is allowed so far now (never above `usable`). */
       ceiling: z.number(),
       /** Ceiling minus usage (negative when usage is ahead of the pace). */
@@ -69,6 +76,10 @@ export const QuotaProjectLimitsSchema = z.object({
   repos: z.array(z.string()),
   pacing: z.boolean(),
   usablePercent: z.number(),
+  /** Closed hours (ADR 2026-11-23-quota-closed-hours): slots not counted towards what is allowed so far; null for none. Absent from an older server. */
+  closedHours: z.object({ timezone: z.string(), slots: z.array(z.custom<ClosedSlotView>()) }).nullable().optional(),
+  /** Matches `paces[].closedKey`. */
+  closedKey: z.string().nullable().optional(),
   stepsLimit: z.number().nullable(),
   runsLimit: z.number().nullable(),
 });

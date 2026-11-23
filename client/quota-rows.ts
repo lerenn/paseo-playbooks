@@ -31,6 +31,10 @@ export interface SlotRow {
   over: number;
   resetsAt: string | null;
   stale: boolean;
+  /** Paced with closed hours and now in a closed slot: what is allowed so far is flat. */
+  frozen: boolean;
+  /** Closed hours are set but the window has no open hour: the plain linear rule applies. */
+  closedIgnored: boolean;
   bar: Bar;
 }
 
@@ -164,7 +168,7 @@ export function barOf(used: number | null, ceiling: number | null, free: number 
 }
 
 function slotRow(slot: QuotaWindow, set: QuotaProjectLimits, label: string): SlotRow {
-  const pace = set.pacing && !slot.modelScoped ? slot.paces.find((candidate) => candidate.usable === set.usablePercent && candidate.projects.includes(label)) : undefined;
+  const pace = set.pacing && !slot.modelScoped ? slot.paces.find((candidate) => candidate.usable === set.usablePercent && (candidate.closedKey ?? null) === (set.closedKey ?? null) && candidate.projects.includes(label)) : undefined;
   const ceiling = pace?.ceiling ?? null;
   const free = pace?.free ?? null;
   return {
@@ -179,6 +183,8 @@ function slotRow(slot: QuotaWindow, set: QuotaProjectLimits, label: string): Slo
     over: pace && slot.used !== null ? Math.max(0, round(slot.used - pace.ceiling)) : 0,
     resetsAt: slot.resetsAt,
     stale: slot.stale,
+    frozen: pace?.frozen === true,
+    closedIgnored: pace?.closedIgnored === true,
     bar: barOf(slot.used, ceiling, free, slot.reserved),
   };
 }

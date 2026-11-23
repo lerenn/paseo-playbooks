@@ -4,6 +4,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { pluginDataDir } from "./data-dir";
 import { DEFAULT_REPO } from "../shared/repos";
 import { parseDuration } from "../shared/vars";
+import { dayNumbers, parseClock, validTimezone, type ClosedHours } from "./closed-hours";
 
 /** `<plugin data dir>/config.yaml` (data-dir.ts): the user's settings (profile activation is per project). */
 export function userConfigFile(): string {
@@ -107,6 +108,8 @@ export interface RateLimitsConfig {
     pacing: boolean;
     /** Percentage of a window the playbooks may use (the rest is a reserve): the hard cap, and the slope of what is allowed so far. */
     usablePercent: number;
+    /** Slots of the week that do not count towards what is allowed so far (ADR 2026-11-23-quota-closed-hours); null = every hour counts. */
+    closedHours?: ClosedHours | null;
     /** A reading younger than this is used as is; an older one is refreshed in the background (ms). */
     refreshMs: number;
     /** A reading older than this is unusable: new steps are held as "waiting for quota data" (ms). */
@@ -147,6 +150,26 @@ export function noteDeprecatedKey(oldKey: string, newKey: string): void {
 
 let modeNoted = false;
 
+/** `closed_hours: { timezone?, slots: [{ days, from, to }] }` as the pacing uses it; undefined when absent or malformed (the loader refuses it strictly). */
+export function parseClosedHours(value: unknown): ClosedHours | null | undefined {
+  if (value === undefined || value === null) return undefined;
+  const block = asRecord(value);
+  const timezone = typeof block.timezone === "string" && validTimezone(block.timezone) ? block.timezone : null;
+  if (typeof block.timezone === "string" && timezone === null) return undefined;
+  const slots: ClosedHours["slots"] = [];
+  for (const entry of Array.isArray(block.slots) ? block.slots : []) {
+    const slot = asRecord(entry);
+    const names = typeof slot.days === "string" ? [slot.days] : Array.isArray(slot.days) ? slot.days : [];
+    const days = new Set<number>();
+    for (const name of names) for (const day of (typeof name === "string" ? dayNumbers(name) : null) ?? []) days.add(day);
+    const fromMin = typeof slot.from === "string" ? parseClock(slot.from) : null;
+    const toMin = typeof slot.to === "string" ? parseClock(slot.to) : null;
+    if (days.size === 0 || fromMin === null || toMin === null || fromMin >= toMin) return undefined;
+    slots.push({ days: [...days].sort((a, b) => a - b), fromMin, toMin });
+  }
+  return { timezone, slots };
+}
+
 /**
  * One layer of quota limits from a parsed `quota_limits` block (or the legacy `rate_limits` one: `legacy`). Anything missing or malformed
  * is left out (a bad value never blocks loading; the loader validates a defaults file strictly before it gets here).
@@ -169,6 +192,8 @@ export function parseQuotaLimits(value: unknown, legacy = false): QuotaLimitsLay
   const quota: NonNullable<QuotaLimitsLayer["quota"]> = {};
   const usable = typeof raw.usable_percent === "number" && raw.usable_percent > 0 && raw.usable_percent <= 100 ? raw.usable_percent : undefined;
   if (usable !== undefined) quota.usablePercent = usable;
+  const closed = parseClosedHours(raw.closed_hours);
+  if (closed !== undefined) quota.closedHours = closed;
   if (typeof raw.pacing === "boolean") quota.pacing = raw.pacing;
   else if (!legacy && usable !== undefined) quota.pacing = true;
   const refresh = durationMs(raw.refresh_interval);
