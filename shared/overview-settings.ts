@@ -6,5 +6,9 @@ export const overviewSettings = defineSettings({
   id: "overview",
   scope: "host",
   version: 1,
-  schema: z.object({ sort: z.enum(["name", "activity", "status", "started"]).default("name") }),
+  schema: z.object({
+    sort: z.enum(["name", "activity", "status", "started"]).default("name"),
+    /** The tabs added with "+" next to Runs (ADR 2026-11-23-addable-panel-tabs). Read through normalizeOpenTabs, so a stale name is ignored. Empty by default: nobody starts with more than Runs. */
+    openTabs: z.array(z.string()).default([]),
+  }),
 });

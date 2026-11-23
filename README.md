@@ -330,7 +330,9 @@ once, but if that agent is busy, its kickoff waits until its current turn ends).
 next to Start offers "Start on a new agent", which creates a new manager agent in the same
 workspace, and "Start in a new workspace", which creates a new worktree and manager.
 
-The overview screen lists one section per playbook (its runs inside). The **sort** button in the Runs tab (top right of the filter row, not in the Analytics, Quota limitation or Profiles tabs),
+The panel's tab bar shows **Runs** only at first (it cannot be closed). The **+** button at the end of the bar lists the other tabs (Analytics, Quota limitation, Off hours, Profiles); picking one opens and selects it, its **x** (on the selected or hovered tab, always on mobile) closes it, and closing the selected tab returns to Runs. The added tabs are remembered across reloads (ADR `docs/adrs/2026-11-23-addable-panel-tabs.md`); everyone starts with Runs only after the update.
+
+The overview screen lists one section per playbook (its runs inside). The **sort** button in the Runs tab (top right of the filter row, not in the other tabs),
 orders those sections: **Name (A-Z)** (the default, so the order never jumps), **Last activity** (the playbook with the most
 recently updated run first), **Status** (the playbook with a run waiting for you first, then working, paused, failed, done,
 seen) or **Start time** (the playbook with the newest run first). The choice is kept by the host, so it survives reloads;
@@ -348,7 +350,7 @@ plainly cannot be decided yet (recorded as its own, never as yours, and it tells
 auth, data loss, billing and production gates stay with you), under the same scope as `resume_gate`; `list_gates` keeps listing deferred gates (`needsReview: false`, `deferral`). Tracking
 reads run state only, never chat; there is no push or Slack notification. See `docs/adrs/2026-11-20-deferred-gates.md`.
 
-The **Run Playbook** button in the header of the overview screen (the one with the Runs, Analytics, Quota limitation and Profiles tabs,
+The **Run Playbook** button in the header of the overview screen (the one with the tab bar,
 next to Sidekick) opens a form to start any valid playbook of a project in a new workspace: a project dropdown
 (preselected to the project chip selected on the screen; with "All projects" you choose one), a workspace name (optional; empty keeps the default title, the playbook title and the
 request), a playbook dropdown, then that playbook's inputs. **Start**, at the bottom, creates the workspace and the run;

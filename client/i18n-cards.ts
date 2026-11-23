@@ -13,7 +13,7 @@ export const cardsEn = {
     open: "Open the Sidekick: a coordinator agent per project that watches the runs and improves the playbooks",
     close: "Close the Sidekick: a coordinator agent per project that watches the runs and improves the playbooks",
   },
-  tabs: { runs: "Runs", analytics: "Analytics", profiles: "Profiles" },
+  tabs: { runs: "Runs", analytics: "Analytics", profiles: "Profiles", add: "Add a tab", close: "Close the {{tab}} tab" },
   chip: {
     allProjects: "All projects",
     allWorkspaces: "All workspaces",
@@ -173,7 +173,7 @@ export const cardsFr = {
     open: "Ouvrir le Sidekick : un agent coordinateur par projet qui surveille les exécutions et améliore les playbooks",
     close: "Fermer le Sidekick : un agent coordinateur par projet qui surveille les exécutions et améliore les playbooks",
   },
-  tabs: { runs: "Exécutions", analytics: "Analyses", profiles: "Profils" },
+  tabs: { runs: "Exécutions", analytics: "Analyses", profiles: "Profils", add: "Ajouter un onglet", close: "Fermer l'onglet {{tab}}" },
   chip: {
     allProjects: "Tous les projets",
     allWorkspaces: "Tous les espaces de travail",
@@ -332,7 +332,7 @@ export const cardsZh = {
     open: "打开 Sidekick：每个项目一个协调智能体，负责监视运行并改进 playbook",
     close: "关闭 Sidekick：每个项目一个协调智能体，负责监视运行并改进 playbook",
   },
-  tabs: { runs: "运行", analytics: "分析", profiles: "配置文件" },
+  tabs: { runs: "运行", analytics: "分析", profiles: "配置文件", add: "添加标签页", close: "关闭“{{tab}}”标签页" },
   chip: {
     allProjects: "所有项目",
     allWorkspaces: "所有工作区",

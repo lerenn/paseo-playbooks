@@ -7,6 +7,7 @@ import { archiveRunRpc, listPlaybooks, markRunSeenRpc } from "../shared/contract
 import { gateText, isWaiting, needsReview, waitsForHuman } from "../shared/gates";
 import { BringBack, DeferForm, WaitingInfo } from "./defer";
 import { overviewSettings } from "../shared/overview-settings";
+import { closedTabs, closeTab, effectiveTab, normalizeOpenTabs, openTab, visibleTabs, type PanelTab } from "../shared/panel-tabs";
 import { DEFAULT_PLAYBOOK_SORT, PLAYBOOK_SORTS, sortPlaybooks, type PlaybookSort } from "../shared/sort";
 import { isActive, isPaused, isPipeline, isTerminal, type Gate, type RunSummary, type StepSummary } from "../shared/types";
 import { slowDetail, slowView } from "../shared/slow";
@@ -357,7 +358,19 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
   const settings = useSettings(overviewSettings);
   const [picked, setPicked] = useState<PlaybookSort | null>(null);
   const playbookSort: PlaybookSort = picked ?? (settings.status === "ready" ? settings.values.sort : DEFAULT_PLAYBOOK_SORT);
-  const [tab, setTab] = useState<"runs" | "analytics" | "quota" | "offHours" | "profiles">("runs");
+  // The tabs added next to Runs: kept by the host with the sort (empty by default); a change shows at once, before the save lands.
+  const [selectedTab, setSelectedTab] = useState<PanelTab>("runs");
+  const [pickedTabs, setPickedTabs] = useState<PanelTab[] | null>(null);
+  const openTabs = pickedTabs ?? (settings.status === "ready" ? normalizeOpenTabs(settings.values.openTabs) : []);
+  const tab = effectiveTab({ open: openTabs, selected: selectedTab });
+  const applyTabs = (next: { open: PanelTab[]; selected: PanelTab }) => {
+    setSelectedTab(next.selected);
+    setPickedTabs(next.open);
+    if (settings.status === "ready") void settings.save({ ...settings.values, openTabs: next.open }, settings.revision);
+  };
+  // Every way of selecting a tab goes through here, so a link to a tab that is not open opens it instead of showing nothing.
+  const selectTab = (target: PanelTab) => applyTabs(openTab({ open: openTabs, selected: tab }, target));
+  const dismissTab = (target: PanelTab) => applyTabs(closeTab({ open: openTabs, selected: tab }, target));
   // The sidebar badge and this screen share one store: one agent subscription, one request per change.
   const overview = useOverview(store);
   const toast = useToast();
@@ -490,13 +503,7 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
           </Pressable>
         </View>
 
-        <View accessibilityRole="tablist" style={{ flexDirection: "row", gap: 16, borderBottomWidth: 1, borderBottomColor: theme.colors.border }}>
-          <Tab theme={theme} label={t("cards.tabs.runs")} selected={tab === "runs"} onPress={() => setTab("runs")} />
-          <Tab theme={theme} label={t("cards.tabs.analytics")} selected={tab === "analytics"} onPress={() => setTab("analytics")} />
-          <Tab theme={theme} label={t("quota.tab")} selected={tab === "quota"} onPress={() => setTab("quota")} />
-          <Tab theme={theme} label={t("offHours.tab")} selected={tab === "offHours"} onPress={() => setTab("offHours")} />
-          <Tab theme={theme} label={t("cards.tabs.profiles")} selected={tab === "profiles"} onPress={() => setTab("profiles")} />
-        </View>
+        <TabBar theme={theme} compact={layout.compact} open={openTabs} selected={tab} onSelect={selectTab} onClose={dismissTab} />
 
         {tab === "analytics" ? (
           <AnalyticsView theme={theme} />
@@ -685,17 +692,85 @@ function chipsOf(runs: RunSummary[], key: (run: RunSummary) => string, label: (r
   return [...chips.values()].sort((a, b) => a.label.localeCompare(b.label));
 }
 
-function Tab(props: { theme: Theme; label: string; selected: boolean; onPress(): void }) {
-  const { theme, selected } = props;
+function tabLabel(t: (key: "cards.tabs.runs" | "cards.tabs.analytics" | "quota.tab" | "offHours.tab" | "cards.tabs.profiles") => string, tab: PanelTab): string {
+  switch (tab) {
+    case "runs": return t("cards.tabs.runs");
+    case "analytics": return t("cards.tabs.analytics");
+    case "quota": return t("quota.tab");
+    case "offHours": return t("offHours.tab");
+    default: return t("cards.tabs.profiles");
+  }
+}
+
+/** Runs, the tabs added with "+", and the "+" menu of the others (hidden once all are open). A tab's x shows on the selected or hovered tab, always on a compact layout. */
+function TabBar(props: { theme: Theme; compact: boolean; open: PanelTab[]; selected: PanelTab; onSelect(tab: PanelTab): void; onClose(tab: PanelTab): void }) {
+  const { theme, compact, selected } = props;
+  const { t } = useTranslation(messages);
+  const [menu, setMenu] = useState(false);
+  const closed = closedTabs(props.open);
   return (
-    <Pressable
-      accessibilityRole="tab"
-      accessibilityState={{ selected }}
-      onPress={props.onPress}
-      style={{ paddingVertical: 8, marginBottom: -1, borderBottomWidth: 2, borderBottomColor: selected ? theme.colors.foreground : "transparent" }}
+    <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", columnGap: compact ? 12 : 16, borderBottomWidth: 1, borderBottomColor: theme.colors.border, zIndex: 40 }}>
+      <View accessibilityRole="tablist" style={{ flexDirection: "row", flexWrap: "wrap", columnGap: compact ? 12 : 16 }}>
+        {visibleTabs(props.open).map((id) => (
+          <Tab key={id} theme={theme} label={tabLabel(t, id)} selected={selected === id} alwaysCloseable={compact} onPress={() => props.onSelect(id)} onClose={id === "runs" ? undefined : () => props.onClose(id)} closeLabel={t("cards.tabs.close", { tab: tabLabel(t, id) })} />
+        ))}
+      </View>
+      {closed.length > 0 ? (
+        <View style={{ position: "relative", marginBottom: -1 }}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={t("cards.tabs.add")}
+            accessibilityState={{ expanded: menu }}
+            hitSlop={8}
+            onPress={() => setMenu(!menu)}
+            style={{ paddingVertical: 6, paddingHorizontal: 4 }}
+          >
+            <Icon name="Plus" size={16} color={theme.colors.foregroundMuted} />
+          </Pressable>
+          {menu ? (
+            <View accessibilityRole="menu" style={{ position: "absolute", top: 32, left: 0, zIndex: 100, minWidth: 180, padding: 4, borderRadius: 10, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface2, elevation: 6 }}>
+              {closed.map((id) => (
+                <Pressable
+                  key={id}
+                  accessibilityRole="menuitem"
+                  onPress={() => {
+                    setMenu(false);
+                    props.onSelect(id);
+                  }}
+                  style={{ paddingHorizontal: 10, paddingVertical: 8, borderRadius: 6 }}
+                >
+                  <Text style={{ color: theme.colors.foreground, fontSize: 13 }}>{tabLabel(t, id)}</Text>
+                </Pressable>
+              ))}
+            </View>
+          ) : null}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+function Tab(props: { theme: Theme; label: string; selected: boolean; alwaysCloseable: boolean; onPress(): void; onClose?(): void; closeLabel: string }) {
+  const { theme, selected } = props;
+  const [hover, setHover] = useState(false);
+  const [focus, setFocus] = useState(false);
+  const showClose = props.onClose && (selected || hover || focus || props.alwaysCloseable);
+  return (
+    <View
+      // Pointer events: fired by a mouse only, hence alwaysCloseable on compact layouts.
+      onPointerEnter={() => setHover(true)}
+      onPointerLeave={() => setHover(false)}
+      style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: -1, borderBottomWidth: 2, borderBottomColor: selected ? theme.colors.foreground : "transparent" }}
     >
-      <Text style={{ color: selected ? theme.colors.foreground : theme.colors.foregroundMuted, fontSize: 13, fontWeight: selected ? "700" : "500" }}>{props.label}</Text>
-    </Pressable>
+      <Pressable accessibilityRole="tab" accessibilityState={{ selected }} onPress={props.onPress} onFocus={() => setFocus(true)} onBlur={() => setFocus(false)} style={{ paddingVertical: 8 }}>
+        <Text style={{ color: selected ? theme.colors.foreground : theme.colors.foregroundMuted, fontSize: 13, fontWeight: selected ? "700" : "500" }}>{props.label}</Text>
+      </Pressable>
+      {props.onClose ? (
+        <Pressable accessibilityRole="button" accessibilityLabel={props.closeLabel} hitSlop={8} onPress={props.onClose} onFocus={() => setFocus(true)} onBlur={() => setFocus(false)} style={{ opacity: showClose ? 1 : 0, padding: 2 }}>
+          <Icon name="X" size={13} color={theme.colors.foregroundMuted} />
+        </Pressable>
+      ) : null}
+    </View>
   );
 }
 
