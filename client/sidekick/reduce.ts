@@ -23,7 +23,7 @@ export type Item =
   | { kind: "assistant"; key: string; text: string; streaming: boolean }
   | { kind: "reasoning"; key: string; text: string; streaming: boolean }
   | { kind: "tool"; key: string; callId: string; name: string; status: "running" | "completed" | "failed" | "canceled"; detail: Record<string, unknown> | null; error: string | null }
-  | { kind: "notice"; key: string; level: "info" | "warning" | "error"; text: string };
+  | { kind: "notice"; key: string; level: "info" | "warning" | "error"; text: string; /** Set when the text is the reducer's own fallback, so the view shows it translated. */ code?: "error" | "turnFailed" | "stopped" };
 
 /** Where the span stands: what is above the oldest entry read, and the page being read. */
 export interface OlderState {
@@ -106,7 +106,7 @@ export function toItem(raw: RawItem, key: string, streaming: boolean): Item | nu
     case "tool_call":
       return { kind: "tool", key, callId: raw.callId ?? key, name: raw.name ?? "tool", status: raw.status ?? "running", detail: raw.detail ?? null, error: errorText(raw.error) };
     case "error":
-      return { kind: "notice", key, level: "error", text: raw.message ?? "Error" };
+      return { kind: "notice", key, level: "error", text: raw.message ?? "Error", ...(raw.message ? {} : { code: "error" as const }) };
     case "notification":
       return { kind: "notice", key, level: raw.level ?? "info", text: raw.message ?? "" };
     default:
@@ -269,11 +269,11 @@ export function reduce(state: ChatState, action: ChatAction): ChatState {
         case "turn_completed":
           return { ...state, running: false, items: close(state.items) };
         case "turn_failed":
-          return { ...state, running: false, items: [...close(state.items), { kind: "notice", key: `live:${state.nextSeq}`, level: "error", text: event.error ?? "The turn failed" }], nextSeq: state.nextSeq + 1 };
+          return { ...state, running: false, items: [...close(state.items), { kind: "notice", key: `live:${state.nextSeq}`, level: "error", text: event.error ?? "The turn failed", ...(event.error ? {} : { code: "turnFailed" as const }) }], nextSeq: state.nextSeq + 1 };
         case "turn_canceled":
           // A steer cancels the turn it joins and starts the next one: that is not a stop.
           if (state.steering) return { ...state, running: false, steering: false, items: close(state.items) };
-          return { ...state, running: false, items: [...close(state.items), { kind: "notice", key: `live:${state.nextSeq}`, level: "info", text: "Stopped" }], nextSeq: state.nextSeq + 1 };
+          return { ...state, running: false, items: [...close(state.items), { kind: "notice", key: `live:${state.nextSeq}`, level: "info", text: "Stopped", code: "stopped" }], nextSeq: state.nextSeq + 1 };
         case "timeline":
           return event.item ? applyItem(state, event.item) : state;
         case "permission_requested":

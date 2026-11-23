@@ -22,8 +22,8 @@ export function shouldQueue(requested: boolean, chat: { running: boolean; compac
 }
 
 /** The line under the chat while the agent works. */
-export function workLabel(chat: { running: boolean; compacting: boolean }): string | null {
-  return chat.compacting ? "Compacting the conversation… your messages wait and are sent after; the history stays." : chat.running ? "Working…" : null;
+export function workLabel(t: (key: "sidekick.chat.compacting" | "sidekick.chat.working") => string, chat: { running: boolean; compacting: boolean }): string | null {
+  return chat.compacting ? t("sidekick.chat.compacting") : chat.running ? t("sidekick.chat.working") : null;
 }
 
 /** A queued message goes out once the chat is live and no turn runs. */

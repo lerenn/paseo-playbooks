@@ -11,7 +11,7 @@ export function visibleTabs(projects: SidekickProject[], added: string[]): Sidek
 }
 
 /** The one-line status under the tabs: "2 need you · 1 working", or null when there is nothing to say. */
-export function statusLine(project: Pick<SidekickProject, "activeRuns" | "needYou">): string | null {
-  const parts = [project.needYou > 0 ? `${project.needYou} need you` : null, project.activeRuns > 0 ? `${project.activeRuns} working` : null].filter(Boolean);
+export function statusLine(t: (key: "sidekick.needYou" | "sidekick.working", params: { count: number }) => string, project: Pick<SidekickProject, "activeRuns" | "needYou">): string | null {
+  const parts = [project.needYou > 0 ? t("sidekick.needYou", { count: project.needYou }) : null, project.activeRuns > 0 ? t("sidekick.working", { count: project.activeRuns }) : null].filter(Boolean);
   return parts.length > 0 ? parts.join(" · ") : null;
 }

@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { SidekickProject } from "../../shared/contracts";
-import { statusLine, visibleTabs } from "./tabs";
+import { PluginTranslationRuntime } from "@getpaseo/plugin/client/host";
+import { messages } from "../i18n";
+import { statusLine as statusWith, visibleTabs } from "./tabs";
+
+const runtime = new PluginTranslationRuntime({ getLocale: () => "en", subscribe: () => () => {} });
+const statusLine = (project: Parameters<typeof statusWith>[1]) => statusWith((key, params) => runtime.t(messages, key as never, params as never) as string, project);
 
 const project = (projectId: string, over: Partial<SidekickProject> = {}): SidekickProject => ({ projectId, workspaceId: `ws-${projectId}`, label: projectId, configured: false, errors: [], agentId: null, activeRuns: 0, needYou: 0, compacting: false, ...over });
 

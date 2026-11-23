@@ -1,4 +1,4 @@
-import { useRpc } from "@getpaseo/plugin/client";
+import { useRpc, useTranslation } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/ui";
 import { useEffect, useState } from "react";
 import { Pressable, Text, View } from "react-native";
@@ -6,15 +6,16 @@ import { rowId, sortRows, tokensOf, type AgentRow, type Analytics, type DailySer
 import { analyticsStateRpc } from "../shared/contracts";
 import type { Usage } from "../shared/types";
 import { axisTicks, compactNumber, isDarkColor, labelIndexes, niceAxis, seriesColor, shortDate } from "./analytics-chart";
+import { messages } from "./i18n";
 import type { Theme } from "./theme";
 import { semanticColor } from "./semantic-colors";
 
-const RANGES: Array<{ label: string; days: number | undefined }> = [
-  { label: "Last day", days: 1 },
-  { label: "7 days", days: 7 },
-  { label: "30 days", days: 30 },
-  { label: "All time", days: undefined },
-];
+const RANGES = [
+  { key: "range.day", days: 1 },
+  { key: "range.days7", days: 7 },
+  { key: "range.days30", days: 30 },
+  { key: "range.all", days: undefined },
+] as const;
 
 export { compactNumber };
 
@@ -31,9 +32,10 @@ const AXIS_WIDTH = 34;
 
 /** A muted gear before the name of the plugin's own manager rows; none for a role or step an author named alike. */
 function ManagerMark(props: { theme: Theme; row: { manager?: boolean }; size?: number }) {
+  const { t } = useTranslation(messages);
   if (!props.row.manager) return null;
   return (
-    <View accessible accessibilityLabel="Run manager agent, added by the plugin">
+    <View accessible accessibilityLabel={t("analytics.managerMark")}>
       <Icon name="Settings" size={props.size ?? 12} color={props.theme.colors.foregroundMuted} />
     </View>
   );
@@ -50,6 +52,7 @@ function colorsOf(theme: Theme, chart: DailySeries | undefined): Map<string, str
 /** Tokens per day of one breakdown: stacked bars, one colour per group (the biggest ones; the rest are "Other"). Tap a day for exact values, a legend entry to isolate a group. */
 function DailyChart(props: { theme: Theme; chart: DailySeries; colors: Map<string, string> }) {
   const { theme, chart, colors } = props;
+  const { t, locale } = useTranslation(messages);
   const [picked, setPicked] = useState<number | null>(null);
   const [isolated, setIsolated] = useState<string | null>(null);
   const muted = theme.colors.foregroundMuted;
@@ -59,7 +62,7 @@ function DailyChart(props: { theme: Theme; chart: DailySeries; colors: Map<strin
   const peak = Math.max(...totals, 0);
   if (chart.series.length === 0) return null;
   if (peak === 0 && isolated === null) {
-    return <Text style={{ color: muted, fontSize: 12, padding: 12 }}>No usage per day to chart in this range.</Text>;
+    return <Text style={{ color: muted, fontSize: 12, padding: 12 }}>{t("analytics.chart.empty")}</Text>;
   }
   const top = niceAxis(peak).top;
   const ticks = axisTicks(peak);
@@ -73,7 +76,7 @@ function DailyChart(props: { theme: Theme; chart: DailySeries; colors: Map<strin
         <View style={{ width: AXIS_WIDTH }}>
           {ticks.map((tick) => (
             <Text key={tick} style={{ position: "absolute", right: 6, bottom: (tick / top) * (PLOT_HEIGHT - 8) - 6, color: muted, fontSize: 10 }}>
-              {compactNumber(tick)}
+              {compactNumber(tick, locale)}
             </Text>
           ))}
         </View>
@@ -92,7 +95,7 @@ function DailyChart(props: { theme: Theme; chart: DailySeries; colors: Map<strin
                 <Pressable
                   key={day}
                   accessibilityRole="button"
-                  accessibilityLabel={`${day}: ${totals[i]!.toLocaleString()} tokens`}
+                  accessibilityLabel={t("analytics.chart.dayTokens", { day, tokens: totals[i]!.toLocaleString(locale) })}
                   onPress={() => setPicked(pick === i ? null : i)}
                   style={{ flex: 1, height: PLOT_HEIGHT, justifyContent: "flex-end", alignItems: "center", paddingHorizontal: many ? 0.5 : 2 }}
                 >
@@ -141,7 +144,7 @@ function DailyChart(props: { theme: Theme; chart: DailySeries; colors: Map<strin
               }}
             >
               <Text style={{ color: theme.colors.foreground, fontSize: 11, fontWeight: "600" }}>
-                {shortDate(chart.days[pick]!)} · {totals[pick]!.toLocaleString()} tokens
+                {t("analytics.chart.tipTitle", { day: shortDate(chart.days[pick]!, locale), tokens: totals[pick]!.toLocaleString(locale) })}
               </Text>
               {visible
                 .filter((row) => row.tokens[pick]! > 0)
@@ -150,11 +153,11 @@ function DailyChart(props: { theme: Theme; chart: DailySeries; colors: Map<strin
                     <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: colors.get(rowId(row)) }} />
                     <ManagerMark theme={theme} row={row} size={10} />
                     <Text numberOfLines={1} style={{ flexShrink: 1, color: theme.colors.foreground, fontSize: 10 }}>
-                      {row.key}: {row.tokens[pick]!.toLocaleString()}
+                      {`${row.key}: ${row.tokens[pick]!.toLocaleString(locale)}`}
                     </Text>
                   </View>
                 ))}
-              {totals[pick] === 0 ? <Text style={{ color: muted, fontSize: 10 }}>No usage that day.</Text> : null}
+              {totals[pick] === 0 ? <Text style={{ color: muted, fontSize: 10 }}>{t("analytics.chart.noUsageThatDay")}</Text> : null}
             </View>
           ) : null}
         </View>
@@ -162,7 +165,7 @@ function DailyChart(props: { theme: Theme; chart: DailySeries; colors: Map<strin
       <View style={{ flexDirection: "row", justifyContent: "space-between", marginLeft: AXIS_WIDTH }}>
         {labelIndexes(count).map((i) => (
           <Text key={i} style={{ color: muted, fontSize: 10 }}>
-            {shortDate(chart.days[i]!)}
+            {shortDate(chart.days[i]!, locale)}
           </Text>
         ))}
       </View>
@@ -174,7 +177,7 @@ function DailyChart(props: { theme: Theme; chart: DailySeries; colors: Map<strin
               key={rowId(row)}
               accessibilityRole="button"
               accessibilityState={{ selected: isolated === rowId(row) }}
-              accessibilityLabel={`${isolated === rowId(row) ? "Show all" : "Only"} ${row.key}`}
+              accessibilityLabel={isolated === rowId(row) ? t("analytics.chart.showAll", { name: row.key }) : t("analytics.chart.only", { name: row.key })}
               onPress={() => setIsolated(isolated === rowId(row) ? null : rowId(row))}
               style={{ flexDirection: "row", alignItems: "center", gap: 5, maxWidth: "100%", borderRadius: 10, paddingHorizontal: 6, paddingVertical: 2, opacity: on ? 1 : 0.45, backgroundColor: isolated === rowId(row) ? theme.colors.surface2 : "transparent" }}
             >
@@ -183,7 +186,7 @@ function DailyChart(props: { theme: Theme; chart: DailySeries; colors: Map<strin
               <Text numberOfLines={1} style={{ flexShrink: 1, color: theme.colors.foreground, fontSize: 11 }}>
                 {row.key}
               </Text>
-              <Text style={{ color: muted, fontSize: 11 }}>{compactNumber(row.total)}</Text>
+              <Text style={{ color: muted, fontSize: 11 }}>{compactNumber(row.total, locale)}</Text>
             </Pressable>
           );
         })}
@@ -195,6 +198,7 @@ function DailyChart(props: { theme: Theme; chart: DailySeries; colors: Map<strin
 /** The Analytics tab of the Playbooks screen: where the tokens went, by playbook, step, role and model. */
 export function AnalyticsView(props: { theme: Theme }) {
   const { theme } = props;
+  const { t } = useTranslation(messages);
   const fetchAnalytics = useRpc(analyticsStateRpc);
   const [days, setDays] = useState<number | undefined>(30);
   const [sort, setSort] = useState<SortBy>("tokens");
@@ -218,26 +222,26 @@ export function AnalyticsView(props: { theme: Theme }) {
     <View style={{ gap: 18 }}>
       <View style={{ flexDirection: "row", gap: 8, flexWrap: "wrap" }}>
         {RANGES.map((range) => (
-          <Pill key={range.label} theme={theme} label={range.label} selected={days === range.days} onPress={() => setDays(range.days)} />
+          <Pill key={range.key} theme={theme} label={t(`analytics.${range.key}`)} selected={days === range.days} onPress={() => setDays(range.days)} />
         ))}
         <View style={{ width: 8 }} />
-        <Pill theme={theme} label="Sort: tokens" selected={sort === "tokens"} onPress={() => setSort("tokens")} />
-        <Pill theme={theme} label="Sort: lost share" selected={sort === "lost"} onPress={() => setSort("lost")} />
+        <Pill theme={theme} label={t("analytics.sort.tokens")} selected={sort === "tokens"} onPress={() => setSort("tokens")} />
+        <Pill theme={theme} label={t("analytics.sort.lost")} selected={sort === "lost"} onPress={() => setSort("lost")} />
       </View>
       {error ? <Text style={{ color: semanticColor(theme, "failed") }}>{error}</Text> : null}
-      {!data && !error ? <Text style={{ color: muted }}>Loading…</Text> : null}
+      {!data && !error ? <Text style={{ color: muted }}>{t("analytics.loading")}</Text> : null}
       {data ? (
         <>
           <Summary theme={theme} data={data} />
           {data.total.turns === 0 ? (
             <Text style={{ color: muted, fontSize: 13 }}>
-              No usage recorded in this range yet. It is recorded as agents finish turns, so runs from before this feature show nothing.
+              {t("analytics.empty")}
             </Text>
           ) : null}
-          <Breakdown theme={theme} title="By playbook" rows={data.byPlaybook} chart={data.daily?.byPlaybook} sort={sort} />
-          <Breakdown theme={theme} title="By step" rows={data.byStep} chart={data.daily?.byStep} showWaste sort={sort} />
-          <Breakdown theme={theme} title="By role" rows={data.byRole} chart={data.daily?.byRole} showWaste sort={sort} />
-          <Breakdown theme={theme} title="By model" rows={data.byModel} chart={data.daily?.byModel} showWaste sort={sort} />
+          <Breakdown theme={theme} title={t("analytics.section.byPlaybook")} rows={data.byPlaybook} chart={data.daily?.byPlaybook} sort={sort} />
+          <Breakdown theme={theme} title={t("analytics.section.byStep")} rows={data.byStep} chart={data.daily?.byStep} showWaste sort={sort} />
+          <Breakdown theme={theme} title={t("analytics.section.byRole")} rows={data.byRole} chart={data.daily?.byRole} showWaste sort={sort} />
+          <Breakdown theme={theme} title={t("analytics.section.byModel")} rows={data.byModel} chart={data.daily?.byModel} showWaste sort={sort} />
           <TopAgents theme={theme} rows={data.topAgents} />
         </>
       ) : null}
@@ -279,6 +283,7 @@ function Stat(props: { theme: Theme; label: string; value: string; hint?: string
 
 function Summary(props: { theme: Theme; data: Analytics }) {
   const { theme, data } = props;
+  const { t, locale } = useTranslation(messages);
   const total: Usage = data.total;
   const overhead = tokensOf(data.overhead.manager) + tokensOf(data.overhead.deciders);
   const share = tokensOf(total) > 0 ? Math.round((overhead / tokensOf(total)) * 100) : 0;
@@ -287,37 +292,56 @@ function Summary(props: { theme: Theme; data: Analytics }) {
   const lost = steps.reduce((sum, row) => sum + row.lostTokens, 0);
   const stalled = steps.reduce((sum, row) => sum + row.stalledAttempts, 0);
   const cacheBase = total.inputTokens + total.cachedInputTokens;
+  const n = (value: number) => compactNumber(value, locale);
+  const runsHint = [
+    data.runsWithoutUsage ? t("analytics.summary.withoutUsage", { count: data.runsWithoutUsage }) : "",
+    data.runsWithInvalidManagerUsage ? t("analytics.summary.invalidManager", { count: data.runsWithInvalidManagerUsage }) : "",
+  ].filter(Boolean).join(" · ");
   return (
     <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 10 }}>
-      <Stat theme={theme} label="Runs" value={String(data.runs)} hint={[data.runsWithoutUsage ? `${data.runsWithoutUsage} without usage` : "", data.runsWithInvalidManagerUsage ? `manager usage of ${data.runsWithInvalidManagerUsage} older runs hidden (inflated)` : ""].filter(Boolean).join(" · ") || undefined} />
-      <Stat theme={theme} label="Tokens (excl. cache)" value={compactNumber(tokensOf(total))} hint={`${compactNumber(total.inputTokens)} in · ${compactNumber(total.outputTokens)} out · ${compactNumber(total.cachedInputTokens)} cached`} />
-      <Stat theme={theme} label="Repeat passes" value={compactNumber(repeats)} hint="earlier attempts of a step: feedback loops, polls, retries" />
-      <Stat theme={theme} label="Lost work" value={compactNumber(lost)} hint={`tokens of failed or interrupted attempts${stalled > 0 ? ` · ${stalled} stalled passes` : ""}`} />
-      <Stat theme={theme} label="Cache hits" value={cacheBase > 0 ? `${Math.round((total.cachedInputTokens / cacheBase) * 100)}%` : "–"} />
-      <Stat theme={theme} label="Managers + deciders" value={`${share}%`} hint="of the tokens, outside the steps" />
+      <Stat theme={theme} label={t("analytics.summary.runs")} value={data.runs.toLocaleString(locale)} hint={runsHint || undefined} />
+      <Stat theme={theme} label={t("analytics.summary.tokens")} value={n(tokensOf(total))} hint={t("analytics.summary.tokensHint", { input: n(total.inputTokens), output: n(total.outputTokens), cached: n(total.cachedInputTokens) })} />
+      <Stat theme={theme} label={t("analytics.summary.repeats")} value={n(repeats)} hint={t("analytics.summary.repeatsHint")} />
+      <Stat theme={theme} label={t("analytics.summary.lost")} value={n(lost)} hint={`${t("analytics.summary.lostHint")}${stalled > 0 ? ` · ${t("analytics.summary.stalledPasses", { count: stalled })}` : ""}`} />
+      <Stat theme={theme} label={t("analytics.summary.cache")} value={cacheBase > 0 ? `${Math.round((total.cachedInputTokens / cacheBase) * 100)}%` : "–"} />
+      <Stat theme={theme} label={t("analytics.summary.overhead")} value={`${share}%`} hint={t("analytics.summary.overheadHint")} />
     </View>
   );
 }
 
 type SortBy = "tokens" | "lost";
 
+type PassesKey =
+  | "analytics.passes.feedback"
+  | "analytics.passes.polls"
+  | "analytics.passes.retries"
+  | "analytics.passes.interrupted"
+  | "analytics.passes.total"
+  | "analytics.passes.withParts"
+  | "analytics.passes.lost"
+  | "analytics.passes.stalled"
+  | "analytics.listSeparator";
+type TFn = (key: PassesKey, params?: Record<string, string | number>) => string;
+
 /** "12 passes (5 feedback, 3 polls, 2 retries, 1 interrupted) · lost 4.2k (35%) · 3 stalled", leaving out what is zero. */
-function passesText(row: UsageRow): string {
+function passesText(t: TFn, locale: string, row: UsageRow): string {
   const parts = [
-    row.feedbackAttempts ? `${row.feedbackAttempts} feedback` : "",
-    row.pollAttempts ? `${row.pollAttempts} polls` : "",
-    row.retryAttempts ? `${row.retryAttempts} retries` : "",
-    row.interruptedAttempts ? `${row.interruptedAttempts} interrupted` : "",
+    row.feedbackAttempts ? t("analytics.passes.feedback", { count: row.feedbackAttempts }) : "",
+    row.pollAttempts ? t("analytics.passes.polls", { count: row.pollAttempts }) : "",
+    row.retryAttempts ? t("analytics.passes.retries", { count: row.retryAttempts }) : "",
+    row.interruptedAttempts ? t("analytics.passes.interrupted", { count: row.interruptedAttempts }) : "",
   ].filter(Boolean);
-  let text = `${row.attempts} passes${parts.length > 0 ? ` (${parts.join(", ")})` : ""}`;
-  if (row.lostAttempts > 0) text += ` · lost ${compactNumber(row.lostTokens)} (${Math.round(row.lostShare * 100)}%)`;
-  if (row.stalledAttempts > 0) text += ` · ${row.stalledAttempts} stalled`;
+  const passes = t("analytics.passes.total", { count: row.attempts });
+  let text = parts.length > 0 ? t("analytics.passes.withParts", { passes, parts: parts.join(t("analytics.listSeparator")) }) : passes;
+  if (row.lostAttempts > 0) text += ` · ${t("analytics.passes.lost", { tokens: compactNumber(row.lostTokens, locale), percent: Math.round(row.lostShare * 100) })}`;
+  if (row.stalledAttempts > 0) text += ` · ${t("analytics.passes.stalled", { count: row.stalledAttempts })}`;
   return text;
 }
 
 /** One breakdown: its title, the per-day chart, then the table rows, all in one card with separators. */
 function Breakdown(props: { theme: Theme; title: string; rows: UsageRow[]; chart: DailySeries | undefined; showWaste?: boolean; sort: SortBy }) {
   const { theme, chart } = props;
+  const { t, locale } = useTranslation(messages);
   const rows = props.showWaste ? sortRows(props.rows, props.sort) : props.rows;
   if (rows.length === 0) return null;
   const colors = colorsOf(theme, chart);
@@ -339,10 +363,10 @@ function Breakdown(props: { theme: Theme; title: string; rows: UsageRow[]; chart
                   <ManagerMark theme={theme} row={row} />
                   <Text style={{ flexShrink: 1, color: theme.colors.foreground, fontSize: 13 }}>{row.key}</Text>
                 </View>
-                <Text style={{ color: theme.colors.foreground, fontSize: 13, fontWeight: "600" }}>{compactNumber(tokensOf(row.usage))}</Text>
+                <Text style={{ color: theme.colors.foreground, fontSize: 13, fontWeight: "600" }}>{compactNumber(tokensOf(row.usage), locale)}</Text>
                 <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>
-                  {props.showWaste ? passesText(row) : `${row.runs} runs`}
-                  {row.usage.contextPeak > 0 ? ` · ctx ${compactNumber(row.usage.contextPeak)}` : ""}
+                  {props.showWaste ? passesText(t, locale, row) : t("analytics.row.runs", { count: row.runs })}
+                  {row.usage.contextPeak > 0 ? ` · ${t("analytics.row.ctx", { value: compactNumber(row.usage.contextPeak, locale) })}` : ""}
                 </Text>
               </View>
               <View style={{ height: 4, borderRadius: 2, backgroundColor: theme.colors.surface2 }}>
@@ -360,24 +384,25 @@ function Breakdown(props: { theme: Theme; title: string; rows: UsageRow[]; chart
 /** The agents that spent the most, whatever they are: managers, step agents, any other agent. */
 function TopAgents(props: { theme: Theme; rows: AgentRow[] }) {
   const { theme, rows } = props;
+  const { t, locale } = useTranslation(messages);
   if (rows.length === 0) return null;
   return (
     <View style={{ gap: 8 }}>
       <Text accessibilityRole="header" style={{ color: theme.colors.foreground, fontSize: 15, fontWeight: "700" }}>
-        Top agents
+        {t("analytics.section.topAgents")}
       </Text>
       <View style={{ borderRadius: 10, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface1, overflow: "hidden" }}>
         {rows.map((row, index) => (
           <View key={row.agentId} style={{ gap: 2, padding: 10, borderTopWidth: index === 0 ? 0 : 1, borderTopColor: theme.colors.border }}>
             <View style={{ flexDirection: "row", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
               <Text style={{ flex: 1, minWidth: 140, color: theme.colors.foreground, fontSize: 13 }}>{row.title || row.agentId}</Text>
-              <Text style={{ color: theme.colors.foreground, fontSize: 13, fontWeight: "600" }}>{compactNumber(tokensOf(row.usage))}</Text>
+              <Text style={{ color: theme.colors.foreground, fontSize: 13, fontWeight: "600" }}>{compactNumber(tokensOf(row.usage), locale)}</Text>
               <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>
-                {row.usage.turns} turns · {compactNumber(row.usage.inputTokens)} in · {compactNumber(row.usage.cachedInputTokens)} cached · {compactNumber(row.usage.outputTokens)} out · ctx {compactNumber(row.usage.contextPeak)}
+                {t("analytics.agent.usage", { turns: t("analytics.agent.turns", { count: row.usage.turns }), input: compactNumber(row.usage.inputTokens, locale), cached: compactNumber(row.usage.cachedInputTokens, locale), output: compactNumber(row.usage.outputTokens, locale), context: compactNumber(row.usage.contextPeak, locale) })}
               </Text>
             </View>
             <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>
-              {[row.kind, row.role ? `role ${row.role}` : null, row.model, row.agentId.slice(0, 8)].filter(Boolean).join(" · ")}
+              {[row.kind, row.role ? t("analytics.agent.role", { role: row.role }) : null, row.model, row.agentId.slice(0, 8)].filter(Boolean).join(" · ")}
             </Text>
           </View>
         ))}

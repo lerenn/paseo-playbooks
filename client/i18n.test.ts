@@ -25,6 +25,13 @@ function keys(resource: Record<string, unknown>, prefix = ""): string[] {
   );
 }
 
+function entries(resource: Record<string, unknown>, prefix = ""): [string, string][] {
+  return Object.entries(resource).flatMap(([key, value]) =>
+    typeof value === "string" ? [[`${prefix}${key}`, value] as [string, string]] : entries(value as Record<string, unknown>, `${prefix}${key}.`),
+  );
+}
+
+const placeholders = (text: string) => [...new Set(text.match(/\{\{\s*\w+\s*\}\}/g) ?? [])].map((p) => p.replace(/\s/g, "")).sort();
 const base = (key: string) => key.replace(/_(zero|one|two|few|many|other)$/, "");
 
 describe("panel translations", () => {
@@ -38,6 +45,18 @@ describe("panel translations", () => {
     const english = new Set(keys(resources.en).map(base));
     for (const locale of ["fr", "zh-CN"]) {
       expect(new Set(keys(resources[locale] as Record<string, unknown>).map(base)), locale).toEqual(english);
+    }
+  });
+
+  it("has no key in fr or zh-CN that English lacks, and the same placeholders", () => {
+    const english = new Map(entries(resources.en));
+    for (const locale of ["fr", "zh-CN"]) {
+      for (const [key, text] of entries(resources[locale] as Record<string, unknown>)) {
+        // A plural form English does not have (zh-CN has _other only) is judged against its _other.
+        const source = english.get(key) ?? english.get(`${base(key)}_other`) ?? english.get(base(key));
+        expect(source, `${locale}: ${key} is not an English key`).toBeDefined();
+        expect(placeholders(text), `${locale}: ${key}`).toEqual(placeholders(source!));
+      }
     }
   });
 

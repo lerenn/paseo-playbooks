@@ -171,11 +171,13 @@ kept by the column (per project, this session only), not by the daemon.
 
 The panel follows the Paseo app language: English, French (`fr`) and Simplified Chinese
 (`zh-CN`), with English as the fallback for any other language or any string not yet
-translated. The messages live in `client/i18n.ts` (`defineTranslations` from `@getpaseo/plugin`).
-The panel chrome, the Start and Run Playbook forms and the registration titles are translated so
-far; run cards, statuses, the graph, analytics and the Sidekick follow in later steps. A new
-user-facing string in a translated component goes into all three languages in the same pull
-request. Playbook text written by authors is shown as written. See
+translated. The messages live in `client/i18n.ts`, with one fragment per area in `client/i18n-*.ts`
+(`defineTranslations` from `@getpaseo/plugin`).
+Everything the panel shows is translated: run cards and statuses, the graph and stages, the run
+tabs and step sheet, gates and loop limits, analytics, the Quota limitation tab, the Sidekick,
+profiles, buttons, empty states, errors and accessibility labels, with plural forms and
+language-aware dates and numbers. A new user-facing string goes into all three languages in the
+same pull request. Playbook text written by authors is shown as written. See
 `docs/adrs/2026-11-20-panel-ui-translations.md`.
 
 ## Colours

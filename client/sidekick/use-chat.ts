@@ -1,7 +1,8 @@
-import { usePaseo, useRpc } from "@getpaseo/plugin/client";
+import { usePaseo, useRpc, useTranslation } from "@getpaseo/plugin/client";
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { promptWithFiles } from "../../shared/attachments";
 import { saveSidekickAttachmentRpc } from "../../shared/contracts";
+import { messages } from "../i18n";
 import type { Pending } from "./attach";
 import { initialState, reduce, type PermissionRequest, type RawItem, type WindowInfo } from "./reduce";
 import { FIRST_PAGE, OLDER_PAGE, RELOAD_PAGE } from "./window";
@@ -25,6 +26,9 @@ function windowOf(page: { epoch: string; startCursor?: { epoch: string; seq: num
  */
 export function useSidekickChat(agentId: string | null) {
   const paseo = usePaseo();
+  const { t } = useTranslation(messages);
+  const tRef = useRef(t);
+  tRef.current = t;
   const [state, dispatch] = useReducer(reduce, undefined, initialState);
   const [info, setInfo] = useState<AgentInfo>({ model: null, mode: null });
   const generation = useRef(0);
@@ -70,7 +74,7 @@ export function useSidekickChat(agentId: string | null) {
           if (event.type === "replacement" || event.type === "subscription_restored") {
             void load().catch(() => undefined);
           } else if (event.type === "error") {
-            dispatch({ type: "connection", status: "error", error: String(event.error ?? "Subscription error") });
+            dispatch({ type: "connection", status: "error", error: String(event.error ?? tRef.current("sidekick.chat.subscriptionError")) });
             void release?.();
             retry = setTimeout(() => void start(), 4000);
           } else {

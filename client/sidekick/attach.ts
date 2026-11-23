@@ -1,5 +1,7 @@
 /// <reference lib="dom" />
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "@getpaseo/plugin/client";
+import { messages } from "../i18n";
 import { attachmentKind, refusal, type AttachmentKind } from "../../shared/attachments";
 
 /** A file or image waiting in the composer. */
@@ -41,6 +43,9 @@ export function filesOf(transfer: DataTransfer | null): File[] {
  * Each is checked against the limits of shared/attachments.ts; a refused one is reported through `onError`.
  */
 export function useAttachments(container: { current: unknown }, onError: (message: string) => void) {
+  const { t } = useTranslation(messages);
+  const tRef = useRef(t);
+  tRef.current = t;
   const [items, setItems] = useState<Pending[]>([]);
   const itemsRef = useRef(items);
   itemsRef.current = items;
@@ -63,7 +68,7 @@ export function useAttachments(container: { current: unknown }, onError: (messag
         itemsRef.current = [...itemsRef.current, pending];
         setItems(itemsRef.current);
       } catch (error) {
-        errorRef.current(error instanceof Error ? error.message : "Could not read the file");
+        errorRef.current(error instanceof Error ? error.message : tRef.current("sidekick.chat.readFailed"));
       }
     }
   }, []);

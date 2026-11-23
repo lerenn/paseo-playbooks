@@ -25,7 +25,7 @@ function kindLabel(t: (key: "quota.kind.quota" | "quota.kind.headroom" | "quota.
   }
 }
 
-const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString() : "");
+const whenAt = (iso: string | null, locale: string) => (iso ? new Date(iso).toLocaleString(locale) : "");
 
 /** The Quota limitation tab: per provider its usage windows and the pacing's numbers, the held runs and the exhausted marks. */
 export function QuotaView(props: { theme: Theme; workspaces: ReadonlyArray<{ projectId: string; workspaceId: string }>; refreshSignal: number }) {
@@ -131,15 +131,15 @@ function ProjectRowView(props: { theme: Theme; row: ProjectRow; first: boolean; 
 
 function ProviderView(props: { theme: Theme; provider: ProviderRow; canEdit: boolean; onChanged: () => void }) {
   const { theme, provider, canEdit, onChanged } = props;
-  const { t } = useTranslation(messages);
+  const { t, locale } = useTranslation(messages);
   const muted = theme.colors.foregroundMuted;
   const flag = provider.status === "unavailable" ? t("quota.state.unavailable") : provider.status === "unreported" ? t("quota.state.unreported") : provider.state === "override" ? t("quota.state.override") : null;
   return (
     <View style={{ gap: 3, borderLeftWidth: 2, borderLeftColor: theme.colors.border, paddingLeft: 8 }}>
       <Text style={{ color: theme.colors.foreground, fontSize: 12, fontWeight: "600" }}>{provider.provider}</Text>
       {flag ? <Text style={{ color: provider.status === "unavailable" ? semanticColor(theme, "failed") : muted, fontSize: 12 }}>{flag}</Text> : null}
-      {provider.readAt ? <Text style={{ color: muted, fontSize: 11 }}>{t("quota.readAt", { when: when(provider.readAt) })}</Text> : null}
-      {provider.overrideUntil ? <Text style={{ color: muted, fontSize: 11 }}>{t("quota.overrideUntil", { when: when(provider.overrideUntil) })}</Text> : null}
+      {provider.readAt ? <Text style={{ color: muted, fontSize: 11 }}>{t("quota.readAt", { when: whenAt(provider.readAt, locale) })}</Text> : null}
+      {provider.overrideUntil ? <Text style={{ color: muted, fontSize: 11 }}>{t("quota.overrideUntil", { when: whenAt(provider.overrideUntil, locale) })}</Text> : null}
       {provider.slots.length === 0 ? <Text style={{ color: muted, fontSize: 12 }}>{t("quota.noReading")}</Text> : null}
       {provider.slots.map((slot) => (
         <SlotView key={slot.id} theme={theme} slot={slot} />
@@ -154,7 +154,7 @@ function ProviderView(props: { theme: Theme; provider: ProviderRow; canEdit: boo
       {provider.exhausted.length > 0 ? (
         <Lines theme={theme} title={t("quota.exhausted")}>
           {provider.exhausted.map((mark) => (
-            <Text key={`${mark.runId}/${mark.target}`} style={{ color: theme.colors.foreground, fontSize: 12 }}>{`${mark.target} · ${mark.title} · ${t("quota.until", { when: when(mark.until) })}`}</Text>
+            <Text key={`${mark.runId}/${mark.target}`} style={{ color: theme.colors.foreground, fontSize: 12 }}>{`${mark.target} · ${mark.title} · ${t("quota.until", { when: whenAt(mark.until, locale) })}`}</Text>
           ))}
         </Lines>
       ) : null}
@@ -165,7 +165,7 @@ function ProviderView(props: { theme: Theme; provider: ProviderRow; canEdit: boo
 /** A usage window: name, a bar and the numbers. Paced: grey usage up to the pace ceiling, red above it, green for what is still free, a tick at the ceiling. Not paced: usage only. */
 function SlotView(props: { theme: Theme; slot: SlotRow }) {
   const { theme, slot } = props;
-  const { t } = useTranslation(messages);
+  const { t, locale } = useTranslation(messages);
   const muted = theme.colors.foregroundMuted;
   const { bar } = slot;
   const facts = [
@@ -188,7 +188,7 @@ function SlotView(props: { theme: Theme; slot: SlotRow }) {
         {bar.tick !== null ? <View style={{ position: "absolute", left: pct(Math.min(bar.tick, 99)), width: 2, height: 8, backgroundColor: theme.colors.foreground }} /> : null}
       </View>
       <Text style={{ color: slot.over > 0 ? semanticColor(theme, "failed") : muted, fontSize: 12 }}>{facts.join(" · ")}</Text>
-      {slot.resetsAt ? <Text style={{ color: muted, fontSize: 11 }}>{t("quota.resets", { when: when(slot.resetsAt) })}</Text> : null}
+      {slot.resetsAt ? <Text style={{ color: muted, fontSize: 11 }}>{t("quota.resets", { when: whenAt(slot.resetsAt, locale) })}</Text> : null}
       {slot.stale ? <Text style={{ color: muted, fontSize: 11 }}>{t("quota.stale")}</Text> : null}
     </View>
   );

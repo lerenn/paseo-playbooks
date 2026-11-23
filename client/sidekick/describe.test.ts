@@ -1,5 +1,12 @@
+import { PluginTranslationRuntime } from "@getpaseo/plugin/client/host";
 import { describe, expect, it } from "vitest";
-import { describePermission, humanizeTool, shortToolName, toolIcon, toolSummary } from "./describe";
+import { messages } from "../i18n";
+import { describePermission as describeWith, humanizeTool as humanizeWith, shortToolName, toolIcon, toolSummary, type DescribeT } from "./describe";
+
+const runtime = new PluginTranslationRuntime({ getLocale: () => "en", subscribe: () => () => {} });
+const t: DescribeT = (key, params) => runtime.t(messages, key as never, params as never) as string;
+const describePermission = (name: string | undefined, input: unknown) => describeWith(t, name, input);
+const humanizeTool = (name: string) => humanizeWith(t, name);
 
 describe("describePermission", () => {
   it("says what the Sidekick wants to do, with the key arguments on one line", () => {

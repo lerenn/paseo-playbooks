@@ -1,8 +1,17 @@
 /** Pure helpers of the Analytics charts: number and date labels, axis ticks, colours. */
 
-export function compactNumber(value: number): string {
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1)}M`;
-  if (value >= 1_000) return `${(value / 1_000).toFixed(value >= 10_000 ? 0 : 1)}k`;
+/** A fixed number of decimals, with the decimal separator of `locale` (the language of the app) when given. */
+function decimals(value: number, digits: number, locale: string | undefined): string {
+  try {
+    return value.toLocaleString(locale, { minimumFractionDigits: digits, maximumFractionDigits: digits, useGrouping: false });
+  } catch {
+    return value.toFixed(digits);
+  }
+}
+
+export function compactNumber(value: number, locale?: string): string {
+  if (value >= 1_000_000) return `${decimals(value / 1_000_000, value >= 10_000_000 ? 0 : 1, locale)}M`;
+  if (value >= 1_000) return `${decimals(value / 1_000, value >= 10_000 ? 0 : 1, locale)}k`;
   return String(Math.round(value));
 }
 
@@ -46,11 +55,19 @@ export function axisTicks(peak: number, count = 3): number[] {
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
-/** "2026-11-13" -> "Nov 13". Anything else comes back as it is. */
-export function shortDate(day: string): string {
-  const match = /^\d{4}-(\d{2})-(\d{2})$/.exec(day);
-  const month = match ? MONTHS[Number(match[1]) - 1] : undefined;
-  return match && month ? `${month} ${Number(match[2])}` : day;
+/** "2026-11-13" -> "Nov 13" (month and day in the language of `locale` when it is not English). Anything else comes back as it is. */
+export function shortDate(day: string, locale?: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day);
+  const month = match ? MONTHS[Number(match[2]) - 1] : undefined;
+  if (!match || !month) return day;
+  if (locale && !/^en(-|$)/i.test(locale)) {
+    try {
+      return new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]))).toLocaleDateString(locale, { month: "short", day: "numeric", timeZone: "UTC" });
+    } catch {
+      // fall through to the English form
+    }
+  }
+  return `${month} ${Number(match[3])}`;
 }
 
 /** Which days get a date label: the first, the middle and the last (fewer when there are fewer days). */

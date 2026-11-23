@@ -19,12 +19,17 @@ language, and accepts translated messages as registration titles.
 - React components call `useTranslation(messages)`. Registration titles (workspace panel, screen,
   sidebar row, command center item, header button) are `messages.message(key)` values, so the
   host resolves them and updates them on a language change.
-- First step, shipped together: those titles and the header button's waiting state, the panel
-  toolbar and empty state, the Start button and its menu, the Run Playbook and Start forms
-  (including accessibility labels and toasts), the project picker and the sidebar badge label.
-  The rest of the panel and screen (run cards and menus, statuses, graph, analytics, Sidekick,
-  gate text) stays English until later steps move it into the catalogue; a string not yet in the
-  catalogue simply shows in English.
+- First step (#250): the registration titles, header button, panel toolbar and empty state, the
+  Start button and the Run Playbook and Start forms. Final step (#249): everything else in the
+  panel and screen: run cards, statuses, graph and stages, run tabs and step sheet, gates and
+  loop limits, analytics, the Quota limitation tab, Sidekick, profiles, errors and accessibility
+  labels. Plurals use `_one`/`_other` keys and dates and numbers follow the app language.
+- Layout: `client/i18n.ts` is still the one catalogue; to keep it reviewable it merges one fragment
+  per area from `client/i18n-<area>.ts` (cards, detail, graph, analytics, sidekick, shell). A
+  string with no catalogue entry still shows in English.
+- Glossary: run = exécution / 运行, step = étape / 步骤, gate = validation / 审批, manager =
+  gestionnaire / 管理器, hold = mise en attente / 暂缓, pause = pause / 暂停, quota = quota / 配额,
+  workspace = espace de travail / 工作区. "playbook" stays untranslated.
 - Never translated: the name "Playbooks", the term "Playbook Manager", and anything a playbook
   author wrote (titles, descriptions, input names, step names, values). Agent prompts, tool
   contracts, run state and playbook YAML are unchanged.
@@ -39,7 +44,7 @@ language, and accepts translated messages as registration titles.
 
 - Supersedes the listing ADR's rule that UI labels stay in English in the translations; its other
   rules stand. That bullet now points here.
-- The listing translations keep the English labels where they name controls that are not yet
-  translated, until the panel is fully moved over.
+- Text produced by the server (error messages, run state text) is not translated and shows in
+  English.
 - Every new UI string costs three catalogue entries.
 - Adding a language means a new `resources` entry plus listing files, through a new ADR.

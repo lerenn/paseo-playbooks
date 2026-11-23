@@ -32,45 +32,50 @@ const pick = (input: Input, keys: string[]): string | null => {
   return parts.length > 0 ? parts.join(" · ") : null;
 };
 
-const KNOWN: Record<string, { sentence: string; keys: string[] }> = {
-  create_agent: { sentence: "start a subagent", keys: ["title", "provider", "model", "workspaceId"] },
-  send_agent_prompt: { sentence: "send a message to an agent", keys: ["agentId", "prompt"] },
-  archive_agent: { sentence: "archive an agent", keys: ["agentId"] },
-  update_agent: { sentence: "rename this conversation", keys: ["name", "title"] },
-  cancel_agent: { sentence: "cancel an agent's turn", keys: ["agentId"] },
-  kill_agent: { sentence: "stop an agent", keys: ["agentId"] },
-  set_agent_mode: { sentence: "change an agent's mode", keys: ["agentId", "modeId"] },
-  cancel_run: { sentence: "cancel a run", keys: ["runId"] },
-  restart_run: { sentence: "restart a run", keys: ["runId"] },
-  subscribe_events: { sentence: "subscribe to run events", keys: ["events", "filter"] },
-  unsubscribe_events: { sentence: "unsubscribe from run events", keys: ["subscriptionId"] },
-  list_runs: { sentence: "list the runs", keys: [] },
-  get_run: { sentence: "read a run", keys: ["runId"] },
-  list_gates: { sentence: "list the gates", keys: [] },
-  resume_gate: { sentence: "answer a gate", keys: ["runId", "gateId", "choice"] },
-  defer_gate: { sentence: "set a gate aside in Waiting", keys: ["runId", "gateId", "reason"] },
-  return_gate: { sentence: "bring a gate back to review", keys: ["runId", "gateId"] },
-  validate_playbooks: { sentence: "validate the playbooks", keys: [] },
-  Bash: { sentence: "run a shell command", keys: ["command"] },
-  Edit: { sentence: "edit a file", keys: ["file_path"] },
-  Write: { sentence: "write a file", keys: ["file_path"] },
-  NotebookEdit: { sentence: "edit a notebook", keys: ["notebook_path"] },
+/** The translator the helpers need: the panel's `t`, narrowed to the keys used here. */
+export type DescribeT = (key: `sidekick.action.${ActionName}` | "sidekick.perm.wants" | "sidekick.perm.wantsUse" | "sidekick.perm.unknownTool" | "sidekick.perm.tool", params?: { action?: string; tool?: string }) => string;
+
+type ActionName = "create_agent" | "send_agent_prompt" | "archive_agent" | "update_agent" | "cancel_agent" | "kill_agent" | "set_agent_mode" | "cancel_run" | "restart_run" | "subscribe_events" | "unsubscribe_events" | "list_runs" | "get_run" | "list_gates" | "resume_gate" | "defer_gate" | "return_gate" | "validate_playbooks" | "Bash" | "Edit" | "Write" | "NotebookEdit";
+
+const KNOWN: Record<string, { keys: string[] }> = {
+  create_agent: { keys: ["title", "provider", "model", "workspaceId"] },
+  send_agent_prompt: { keys: ["agentId", "prompt"] },
+  archive_agent: { keys: ["agentId"] },
+  update_agent: { keys: ["name", "title"] },
+  cancel_agent: { keys: ["agentId"] },
+  kill_agent: { keys: ["agentId"] },
+  set_agent_mode: { keys: ["agentId", "modeId"] },
+  cancel_run: { keys: ["runId"] },
+  restart_run: { keys: ["runId"] },
+  subscribe_events: { keys: ["events", "filter"] },
+  unsubscribe_events: { keys: ["subscriptionId"] },
+  list_runs: { keys: [] },
+  get_run: { keys: ["runId"] },
+  list_gates: { keys: [] },
+  resume_gate: { keys: ["runId", "gateId", "choice"] },
+  defer_gate: { keys: ["runId", "gateId", "reason"] },
+  return_gate: { keys: ["runId", "gateId"] },
+  validate_playbooks: { keys: [] },
+  Bash: { keys: ["command"] },
+  Edit: { keys: ["file_path"] },
+  Write: { keys: ["file_path"] },
+  NotebookEdit: { keys: ["notebook_path"] },
 };
 
-export function describePermission(name: string | undefined, input: unknown): Described {
-  const toolId = name ?? "unknown tool";
+export function describePermission(t: DescribeT, name: string | undefined, input: unknown): Described {
+  const toolId = name ?? t("sidekick.perm.unknownTool");
   const short = shortToolName(toolId);
-  const known = KNOWN[short];
+  const known = Object.hasOwn(KNOWN, short) ? KNOWN[short] : undefined;
   const fields = input && typeof input === "object" ? (input as Input) : {};
-  if (!known) return { sentence: `The Sidekick wants to use ${short}`, summary: pick(fields, ["name", "title", "agentId", "runId", "path"]), toolId };
+  if (!known) return { sentence: t("sidekick.perm.wantsUse", { tool: short }), summary: pick(fields, ["name", "title", "agentId", "runId", "path"]), toolId };
   const summary = short === "Bash" ? text(fields.command) : pick(fields, known.keys);
-  return { sentence: `The Sidekick wants to ${known.sentence}`, summary, toolId };
+  return { sentence: t("sidekick.perm.wants", { action: t(`sidekick.action.${short as ActionName}`) }), summary, toolId };
 }
 
 /** "mcp__paseo__create_agent" -> "Create agent"; "Bash" -> "Bash"; "ToolSearch" -> "Toolsearch". */
-export function humanizeTool(name: string): string {
+export function humanizeTool(t: DescribeT, name: string): string {
   const words = shortToolName(name).replace(/[_-]+/g, " ").trim();
-  return words ? words.charAt(0).toUpperCase() + words.slice(1).toLowerCase() : "Tool";
+  return words ? words.charAt(0).toUpperCase() + words.slice(1).toLowerCase() : t("sidekick.perm.tool");
 }
 
 const SUMMARY_KEYS = ["command", "title", "query", "path", "file_path", "filePath", "url", "name", "description", "prompt", "pattern", "id"];
