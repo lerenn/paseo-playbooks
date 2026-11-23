@@ -2264,6 +2264,7 @@ export class Runtime {
         await this.tickPhase("archiveAgedWorkspaces", () => this.archiveAgedWorkspaces());
         await this.tickPhase("autoArchiveRuns", () => this.autoArchiveRuns());
         await this.tickPhase("autoArchiveFailedWorkspaces", () => this.autoArchiveFailedWorkspaces());
+        await this.tickPhase("retryAutoArchivedWorkspaces", () => this.retryAutoArchivedWorkspaces());
       } while (this.tickAgain);
     } finally {
       this.ticking = false;
@@ -4473,7 +4474,7 @@ export class Runtime {
   }
 
   /** archiveRun, with what happened to the workspace (`workspaceArchived: null` when the run was already archived: nothing was tried). */
-  async archiveRunAndWorkspace(runId: string, keepWorkspace: string | null = null): Promise<{ archivedAt: string; workspaceArchived: { archived: boolean; reason: string } | null }> {
+  async archiveRunAndWorkspace(runId: string, keepWorkspace: string | null = null, auto = false): Promise<{ archivedAt: string; workspaceArchived: { archived: boolean; reason: string; retry?: boolean } | null }> {
     const first = await this.store.mutate(runId, (run) => {
       if (!isTerminal(run.status)) throw new UserError(`run ${runId} is ${run.status}: cancel it before archiving`);
       if (isActive(run)) throw new UserError(`run ${runId} is wrapping up (after-tasks running): wait or cancel them before archiving`);
@@ -4489,14 +4490,17 @@ export class Runtime {
       await this.store.mutate(runId, (current) => void engine.noteEvent(current, "workspace_kept", null, `workspace ${current.workspaceId} kept until ${keepWorkspace}: the run failed and can be restarted (auto_archive.keep_failed_workspace)`, nowIso())).catch(() => undefined);
       return { archivedAt: first.archivedAt, workspaceArchived: { archived: false, reason: `kept until ${keepWorkspace}: the run failed and can be restarted` } };
     }
-    const outcome = await this.archiveWorkspaceWithRun(run).catch((error: unknown) => ({ archived: false, reason: `could not check: ${errorText(error)}` }));
+    const outcome: { archived: boolean; reason: string; retry?: boolean } = await this.archiveWorkspaceWithRun(run).catch((error: unknown) => ({ archived: false, reason: `could not check: ${errorText(error)}`, retry: true }));
     await this.store
       .mutate(runId, (current) => {
         if (outcome.archived) {
           current.workspaceArchive = "done";
           engine.noteEvent(current, "workspace_archived", null, `workspace ${current.workspaceId} archived with the run (workspace.archive_with_run)`, nowIso());
+        } else {
+          engine.noteEvent(current, "workspace_kept", null, `workspace ${current.workspaceId} not archived with the run: ${outcome.reason}`, nowIso());
+          // auto_archive: a refusal that cannot clear is final; one that can (a busy agent) is asked again by retryAutoArchivedWorkspaces.
+          if (auto && outcome.retry === false) current.workspaceArchive = "skipped";
         }
-        else engine.noteEvent(current, "workspace_kept", null, `workspace ${current.workspaceId} not archived with the run: ${outcome.reason}`, nowIso());
       })
       .catch((error) => console.error(`[playbooks] could not record the workspace archive of ${runId}:`, errorText(error)));
     if (!outcome.archived) console.error(`[playbooks] workspace ${run.workspaceId} kept when archiving ${runId}: ${outcome.reason}`);
@@ -4511,18 +4515,32 @@ export class Runtime {
    * human's own agent is never archived. The run's worktree is a separate directory with its own
    * cleanup (cleanupEndedWorktrees): archiving the workspace touches neither it nor its state.
    */
-  private async archiveWorkspaceWithRun(run: Run, siblings: "unarchived" | "active" = "unarchived"): Promise<{ archived: boolean; reason: string }> {
-    const skip = (reason: string) => ({ archived: false, reason });
+  private async archiveWorkspaceWithRun(run: Run, siblings: "unarchived" | "active" = "unarchived"): Promise<{ archived: boolean; reason: string; retry?: boolean }> {
+    /** `retry`: the refusal can clear by itself (a busy agent, another run still in it): the auto-archive sweeps ask again. Unsaved work, an agent that is not the run's and a vanished workspace stay refused. */
+    const skip = (reason: string, retry = false) => ({ archived: false, reason, retry });
     if (!run.workspaceCreated) return skip("the run did not create its workspace (the project checkout or a workspace someone made is never archived)");
     const others = this.store.list().filter((other) => other.id !== run.id && other.workspaceId === run.workspaceId && (siblings === "active" ? isActive(other) : !other.archivedAt));
-    if (others.length > 0) return skip(`run ${others[0]!.id} still uses it${siblings === "active" ? " and is active" : " and is not archived"}`);
+    if (others.length > 0) return skip(`run ${others[0]!.id} still uses it${siblings === "active" ? " and is active" : " and is not archived"}`, true);
     const workspace = await this.workspaceOf(run.workspaceId);
     if (!workspace) return skip("the workspace no longer exists or is already archived");
     const listed = await this.api().agents.list({ filter: { projectKeys: [run.projectId] } });
     const agents = listed.entries.map((entry) => entry.agent).filter((agent) => agent.workspaceId === run.workspaceId && !agent.archivedAt && !agent.internal);
     const busy = agents.find((agent) => agent.status === "running" || agent.status === "initializing" || (agent.pendingPermissions?.length ?? 0) > 0);
-    if (busy) return skip(`agent ${busy.id} is running or waiting on a permission`);
-    const own = (agent: (typeof agents)[number]) => agent.labels?.[MANAGER_LABEL] !== undefined || agent.labels?.[RUN_LABEL] !== undefined || agent.labels?.[STEP_LABEL] !== undefined || agent.labels?.[GATE_LABEL] !== undefined;
+    if (busy) return skip(`agent ${busy.id} is running or waiting on a permission`, true);
+    // The run's own agents: a manager, step or gate agent (plugin labels), an agent a run recorded, and every agent a step created itself
+    // (a subagent, however deep: its parent chain ends at one of those). Nothing else is the run's.
+    const recorded = new Set(this.store.list().filter((other) => other.workspaceId === run.workspaceId).flatMap((other) => [other.managerAgentId, ...Object.values(other.steps).flatMap((step) => step.attempts.map((attempt) => attempt.agentId))]).filter(Boolean));
+    const labelled = (agent: (typeof agents)[number]) => agent.labels?.[MANAGER_LABEL] !== undefined || agent.labels?.[RUN_LABEL] !== undefined || agent.labels?.[STEP_LABEL] !== undefined || agent.labels?.[GATE_LABEL] !== undefined || recorded.has(agent.id);
+    const byId = new Map(agents.map((agent) => [agent.id, agent]));
+    const parentOf = (agent: (typeof agents)[number]) => (agent as { parentAgentId?: string | null }).parentAgentId ?? agent.labels?.["paseo.parent"] ?? null;
+    const own = (agent: (typeof agents)[number]): boolean => {
+      const seen = new Set<string>();
+      for (let current: (typeof agents)[number] | undefined = agent; current && !seen.has(current.id); current = byId.get(parentOf(current) ?? "")) {
+        if (labelled(current)) return true;
+        seen.add(current.id);
+      }
+      return false;
+    };
     const foreign = agents.filter((agent) => !own(agent));
     if (foreign.length > 0) return skip(`it holds agents that are not part of a run: ${foreign.map((agent) => agent.id).join(", ")}`);
     const dir = workspace.workspaceDirectory;
@@ -4530,7 +4548,16 @@ export class Runtime {
       const unsaved = await unsavedWork(dir).catch((error: unknown) => `could not check its git state: ${errorText(error)}`);
       if (unsaved) return skip(unsaved);
     }
-    await this.archiveWorkspace(run.workspaceId);
+    // Leftover agents of the run (idle or finished: none is busy, checked above) are archived first, so they are not left listed
+    // however the workspace archive treats them. A failure here is not fatal: the workspace archive is still tried.
+    for (const agent of agents.filter((candidate) => candidate.labels?.[MANAGER_LABEL] === undefined)) {
+      await this.api().agents.ref(agent.id).archive().catch((error: unknown) => console.error(`[playbooks] could not archive leftover agent ${agent.id} of ${run.id}:`, errorText(error)));
+    }
+    try {
+      await this.archiveWorkspace(run.workspaceId);
+    } catch (error) {
+      return skip(`archive_workspace failed: ${errorText(error)}`, true);
+    }
     return { archived: true, reason: "archived" };
   }
 
@@ -4594,7 +4621,9 @@ export class Runtime {
    * `auto_archive.keep_failed_workspace` (ADR 2026-11-23-auto-archive-failed-run-workspaces): the workspace of a failed run that can
    * be restarted was kept when the run was archived; this archives it once the keep period has passed since the failure, with the
    * checks of `workspace.archive_with_run` (unsaved or unpushed work, a running agent, a human's agent, another active run in it keep
-   * it). A restarted run is not failed, so nothing is archived; a refusal is written once and not retried.
+   * it). A restarted run is not failed, so nothing is archived. A refusal that can clear (a busy agent, another active run) is asked again
+   * every AUTO_ARCHIVE_RETRY_MS for keep_failed_workspace more; one that cannot (unsaved work, a human's agent) is final and written once
+   * (ADR 2026-11-23-auto-archive-leftover-agents).
    */
   private async autoArchiveFailedWorkspaces(): Promise<void> {
     const now = Date.now();
@@ -4603,17 +4632,58 @@ export class Runtime {
       if (looked >= AUTO_ARCHIVE_PER_TICK) break;
       const until = workspaceKeptUntil(candidate);
       if (until === null || candidate.batch || isPipeline(candidate) || now < Date.parse(until)) continue;
+      if (now - (this.workspaceRetryTried.get(candidate.id) ?? 0) < AUTO_ARCHIVE_RETRY_MS) continue;
       looked += 1;
-      const outcome = await this.archiveWorkspaceWithRun(candidate, "active").catch((error: unknown) => ({ archived: false, reason: `could not check: ${errorText(error)}` }));
-      await this.store
-        .mutate(candidate.id, (run) => {
-          if (run.status !== "failed") return; // restarted while the daemon was asked
-          run.workspaceArchive = outcome.archived ? "done" : "skipped";
-          if (outcome.archived) engine.noteEvent(run, "workspace_archived", null, `workspace ${run.workspaceId} archived ${Math.round(run.playbook.autoArchive.keepFailedWorkspaceMs / 60_000)} min after the run failed (auto_archive.keep_failed_workspace)`, nowIso());
-          else engine.noteEvent(run, "workspace_kept", null, `workspace ${run.workspaceId} not archived after the keep period: ${outcome.reason}`, nowIso());
-        })
-        .catch((error: unknown) => console.error(`[playbooks] could not record the workspace archive of ${candidate.id}:`, errorText(error)));
-      if (!outcome.archived) console.error(`[playbooks] workspace ${candidate.workspaceId} of failed ${candidate.id} kept: ${outcome.reason}`);
+      this.workspaceRetryTried.set(candidate.id, now);
+      const outcome = await this.archiveWorkspaceWithRun(candidate, "active").catch((error: unknown) => ({ archived: false, reason: `could not check: ${errorText(error)}`, retry: true }));
+      await this.settleAutoWorkspace(candidate.id, outcome, until, "after the keep period", (run) => `archived ${Math.round(run.playbook.autoArchive.keepFailedWorkspaceMs / 60_000)} min after the run failed (auto_archive.keep_failed_workspace)`, (run) => run.status === "failed");
+    }
+  }
+
+  /** When `autoArchiveFailedWorkspaces` / `retryAutoArchivedWorkspaces` last asked about a run's workspace: not asked again for AUTO_ARCHIVE_RETRY_MS. */
+  private readonly workspaceRetryTried = new Map<string, number>();
+
+  /**
+   * Records the outcome of an auto_archive workspace attempt. A refusal that can clear by itself (`retry`: a busy agent, another run
+   * in it, the daemon failing) is asked again on a later sweep until `since` + keep_failed_workspace has passed (then it is final);
+   * one that cannot (unsaved work, an agent that is not the run's) is final at once. A refusal is written once per distinct reason.
+   */
+  private async settleAutoWorkspace(runId: string, outcome: { archived: boolean; reason: string; retry?: boolean }, since: string, when: string, archivedNote: (run: Run) => string, applies: (run: Run) => boolean): Promise<void> {
+    await this.store
+      .mutate(runId, (run) => {
+        if (!applies(run) || run.workspaceArchive !== null) return;
+        if (outcome.archived) {
+          run.workspaceArchive = "done";
+          engine.noteEvent(run, "workspace_archived", null, `workspace ${run.workspaceId} ${archivedNote(run)}`, nowIso());
+          return;
+        }
+        const giveUp = outcome.retry !== true || Date.now() >= Date.parse(since) + run.playbook.autoArchive.keepFailedWorkspaceMs;
+        if (giveUp) run.workspaceArchive = "skipped";
+        const text = `workspace ${run.workspaceId} not archived ${when}: ${outcome.reason}${giveUp ? "" : " (asked again on a later sweep)"}`;
+        if (run.history.findLast((event) => event.type === "workspace_kept")?.detail !== text) engine.noteEvent(run, "workspace_kept", null, text, nowIso());
+      })
+      .catch((error: unknown) => console.error(`[playbooks] could not record the workspace archive of ${runId}:`, errorText(error)));
+    if (!outcome.archived) console.error(`[playbooks] workspace of ${runId} kept: ${outcome.reason}`);
+  }
+
+  /**
+   * An auto-archived run whose workspace archive was refused for a reason that can clear (an agent still running or waiting on a
+   * permission, another run in it) is asked again every AUTO_ARCHIVE_RETRY_MS, for keep_failed_workspace after the run was archived;
+   * then the refusal is final. A failed run held by keep_failed_workspace is handled by `autoArchiveFailedWorkspaces`.
+   */
+  private async retryAutoArchivedWorkspaces(): Promise<void> {
+    const now = Date.now();
+    let looked = 0;
+    for (const candidate of this.store.list()) {
+      if (looked >= AUTO_ARCHIVE_PER_TICK) break;
+      if (!candidate.playbook.autoArchive.enabled || !candidate.playbook.workspace.archiveWithRun || !candidate.archivedAt || !candidate.workspaceCreated || candidate.workspaceArchive !== null) continue;
+      if (!isTerminal(candidate.status) || isActive(candidate) || candidate.batch || isPipeline(candidate) || workspaceKeptUntil(candidate) !== null) continue;
+      if (!candidate.history.some((event) => event.type === "run_auto_archived") || !candidate.history.some((event) => event.type === "workspace_kept" && event.at >= candidate.archivedAt!)) continue;
+      if (now - (this.workspaceRetryTried.get(candidate.id) ?? 0) < AUTO_ARCHIVE_RETRY_MS) continue;
+      looked += 1;
+      this.workspaceRetryTried.set(candidate.id, now);
+      const outcome = await this.archiveWorkspaceWithRun(candidate, "active").catch((error: unknown) => ({ archived: false, reason: `could not check: ${errorText(error)}`, retry: true }));
+      await this.settleAutoWorkspace(candidate.id, outcome, candidate.archivedAt, "after the run was archived", () => "archived on a later sweep (auto_archive)", () => true);
     }
   }
 
@@ -4622,7 +4692,7 @@ export class Runtime {
     if (managerId && this.busyManagers.has(managerId)) return;
     const manager = managerId ? (await this.api().agents.ref(managerId).refresh().catch(() => null))?.agent ?? null : null;
     if (manager && !manager.archivedAt && (manager.status === "running" || manager.status === "initializing" || manager.activeTurn || (manager.pendingPermissions?.length ?? 0) > 0)) return;
-    const { workspaceArchived } = await this.archiveRunAndWorkspace(candidate.id, workspaceKeptUntil(candidate));
+    const { workspaceArchived } = await this.archiveRunAndWorkspace(candidate.id, workspaceKeptUntil(candidate), true);
     // The manager goes only when the plugin made it (a restart_run takeOver may have made a human's agent the manager) and no other run uses it.
     const shared = this.store.list().some((other) => other.id !== candidate.id && !other.archivedAt && other.managerAgentId === managerId);
     let managerArchived = false;
