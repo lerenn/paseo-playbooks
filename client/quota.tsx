@@ -51,8 +51,7 @@ export function QuotaView(props: { theme: Theme; workspaces: ReadonlyArray<{ pro
   const muted = theme.colors.foregroundMuted;
   return (
     <View style={{ gap: 14 }}>
-      <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 8 }}>
-        <Text style={{ flex: 1, minWidth: 0, color: muted, fontSize: 12 }}>{t("quota.intro")}</Text>
+      <View style={{ flexDirection: "row", alignItems: "flex-start", justifyContent: "flex-end", gap: 8 }}>
         <Pressable accessibilityRole="button" accessibilityLabel={t("quota.refresh")} hitSlop={8} onPress={load} style={{ borderRadius: 8, borderWidth: 1, borderColor: theme.colors.border, padding: 7 }}>
           <Icon name="RefreshCw" size={16} color={muted} />
         </Pressable>

@@ -79,7 +79,6 @@ export const messages = defineTranslations({
       },
       quota: {
         tab: "Quota limitation",
-        intro: "How the plugin paces work against each provider's usage windows. Percent points of the window; the plugin reads usage, keeps a reserve, and starts work while the headroom covers its estimated cost. The limits shown are those a new run of each project gets (the folder's defaults/main.yaml, then config.yaml, then the built-in ones); usage and reservations are shared by all projects.",
         loading: "Loading…",
         refresh: "Refresh quota limitation",
         projects: "Limits per project",
@@ -189,7 +188,6 @@ export const messages = defineTranslations({
       },
       quota: {
         tab: "Limitation de quota",
-        intro: "Comment le plugin rythme le travail selon les fenêtres d'usage de chaque fournisseur. Points de pourcentage de la fenêtre ; le plugin lit l'usage, garde une réserve et démarre le travail tant que la marge couvre son coût estimé. Les limites sont celles d'une nouvelle exécution de chaque projet (defaults/main.yaml du dossier, puis config.yaml, puis valeurs intégrées) ; l'usage et les réservations sont communs à tous les projets.",
         loading: "Chargement…",
         refresh: "Actualiser la limitation de quota",
         projects: "Limites par projet",
@@ -298,7 +296,6 @@ export const messages = defineTranslations({
       },
       quota: {
         tab: "配额限制",
-        intro: "插件如何根据各提供商的用量窗口来调节工作节奏。数值为窗口的百分点；插件读取用量、保留余量，并在余量足以覆盖预估成本时才启动工作。所示限制为各项目新运行所采用的限制（文件夹的 defaults/main.yaml，其次 config.yaml，最后内置默认值）；用量和预留由所有项目共享。",
         loading: "加载中…",
         refresh: "刷新配额限制",
         projects: "各项目的限制",
