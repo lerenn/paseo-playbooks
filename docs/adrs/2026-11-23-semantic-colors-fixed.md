@@ -18,6 +18,7 @@ finished one (`statusSuccess` is green too).
   highlights, muted text, and the chart series of Analytics (they already use their own fixed palette).
 - A new use of a state or a severity colour goes through `semanticColor` / `semanticOn`, never `theme.colors.status*` or `accent`.
 - No state changes its tone, and no sort order changes.
+- A run that is paused or on hold (rate limiting) uses the paused violet on its tab, its dot and its stage batch card; a running run stays blue. "Needs you" is always the waiting orange.
 
 ## Consequences
 
