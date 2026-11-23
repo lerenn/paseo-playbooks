@@ -273,6 +273,20 @@ A running step is never interrupted. `get_run` shows why in `rateHold` (kind `he
 headroom, position in the queue, priority, retry time), the manager and the Sidekick are told (`run.held`, `run.released`), and the run's tab
 says "on hold" with a "Continue anyway" button for a quota or headroom hold (one hour, per provider).
 
+**Provider usage unavailable.** Whether a provider's usage can be read is a condition of the provider, not of a run
+(`docs/adrs/2026-11-23-provider-usage-unavailable.md`). It is derived from the pacing's readings (nothing new is stored on runs): a provider
+is *unavailable* when the usage endpoint keeps failing and its last good reading is older than `quota_limit.max_age`. The Quota limitation
+tab shows it once per provider, in violet and not as an error (`claude: Usage unavailable since 15:42 (HTTP 429) · last read 15:31`); under
+each project the provider's last known windows are greyed and marked stale, and the allowed-so-far, headroom and throttle parts read
+"unknown". The `quota.limitation` RPC carries it per provider in `usage` (`available`, `since` = first failure of the streak, `lastReadAt`,
+`reason`, `failures`; an older panel ignores it). Two plugin events, on transitions only: `provider.usage_unavailable` (provider, since,
+reason, failures, lastReadAt) and `provider.usage_restored` (provider, since, reason, unavailableMs); they carry no run, so they may be
+subscribed unscoped. A run whose steps use an unavailable provider is still held (no fail-open), with the reason `waiting for quota data on
+<provider>` and no per-run detail; its manager is **never** told of this hold (nor of its end), and a later real quota hold of the same run
+still gets its one notice (`docs/adrs/2026-11-23-hold-notice-per-episode.md`). A switch of a run's hold between headroom and waiting for quota
+data keeps one hold: no new `run.held`, no `run.released`, the hold keeps its start. The warden has no provider-level finding (its checks are
+per run); the two events cover it.
+
 ### Profiles
 
 A profile is an extra, opt-in repository of playbooks, with the same layout as the playbooks folder

@@ -2629,8 +2629,6 @@ export class Runtime {
     }
   }
 
-<<<<<<< HEAD
-=======
   /**
    * Emits `provider.usage_unavailable` when a provider's usage reading becomes unavailable and `provider.usage_restored` when it
    * is back: on transitions only (ADR 2026-11-23-provider-usage-unavailable). The state is the pacer's; this keeps only what was announced.
@@ -2655,10 +2653,6 @@ export class Runtime {
     }
   }
 
-  /** Per run: the kind, provider and window of the hold its manager was last told about (memory only: a restart tells once more at most). */
-  private readonly holdNotified = new Map<string, string>();
-
->>>>>>> 0853985 (wip: provider usage state)
   /** Per run: when a quota-blocked manager's recovery is tried again, and how many tries have not recovered it (the interval doubles, 30 s to 10 min). */
   private readonly managerRetry = new Map<string, { next: number; failures: number }>();
 
