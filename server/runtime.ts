@@ -11,7 +11,7 @@ type PaseoApi = PluginHandlerContext["paseo"];
 import type { AdmissionStatus, ScriptOutput } from "../shared/types";
 import type { GateWaitCondition } from "../shared/types";
 import type { AgentSettings, AgentTarget, Attempt, FanoutChild as FanoutChildState, PoolPass as PoolPassState, Gate, Job, Playbook, Run, RunDefinition, RunWorktree, Step, VarValue, WardenFinding } from "../shared/types";
-import { addUsage, DEFAULT_EXHAUSTED_FOR_MS, DEFAULT_PERMISSION_POLICY } from "../shared/types";
+import { addUsage, DEFAULT_EXHAUSTED_FOR_MS, DEFAULT_PERMISSION_POLICY, workspaceKeptUntil } from "../shared/types";
 import { UsageLedger } from "./usage-ledger";
 import { analyze, type Analytics } from "../shared/analytics";
 import {
@@ -2263,6 +2263,7 @@ export class Runtime {
         await this.tickPhase("archiveEndedWorkspaces", () => this.archiveEndedWorkspaces());
         await this.tickPhase("archiveAgedWorkspaces", () => this.archiveAgedWorkspaces());
         await this.tickPhase("autoArchiveRuns", () => this.autoArchiveRuns());
+        await this.tickPhase("autoArchiveFailedWorkspaces", () => this.autoArchiveFailedWorkspaces());
       } while (this.tickAgain);
     } finally {
       this.ticking = false;
@@ -4472,7 +4473,7 @@ export class Runtime {
   }
 
   /** archiveRun, with what happened to the workspace (`workspaceArchived: null` when the run was already archived: nothing was tried). */
-  async archiveRunAndWorkspace(runId: string): Promise<{ archivedAt: string; workspaceArchived: { archived: boolean; reason: string } | null }> {
+  async archiveRunAndWorkspace(runId: string, keepWorkspace: string | null = null): Promise<{ archivedAt: string; workspaceArchived: { archived: boolean; reason: string } | null }> {
     const first = await this.store.mutate(runId, (run) => {
       if (!isTerminal(run.status)) throw new UserError(`run ${runId} is ${run.status}: cancel it before archiving`);
       if (isActive(run)) throw new UserError(`run ${runId} is wrapping up (after-tasks running): wait or cancel them before archiving`);
@@ -4483,6 +4484,11 @@ export class Runtime {
     if (!first.fresh) return { archivedAt: first.archivedAt, workspaceArchived: null };
     const run = this.store.get(runId)!;
     if (!run.playbook.workspace.archiveWithRun) return { archivedAt: first.archivedAt, workspaceArchived: { archived: false, reason: "workspace.archive_with_run is off" } };
+    if (keepWorkspace !== null) {
+      // auto_archive.keep_failed_workspace: a restartable failed run keeps its workspace until autoArchiveFailedWorkspaces archives it.
+      await this.store.mutate(runId, (current) => void engine.noteEvent(current, "workspace_kept", null, `workspace ${current.workspaceId} kept until ${keepWorkspace}: the run failed and can be restarted (auto_archive.keep_failed_workspace)`, nowIso())).catch(() => undefined);
+      return { archivedAt: first.archivedAt, workspaceArchived: { archived: false, reason: `kept until ${keepWorkspace}: the run failed and can be restarted` } };
+    }
     const outcome = await this.archiveWorkspaceWithRun(run).catch((error: unknown) => ({ archived: false, reason: `could not check: ${errorText(error)}` }));
     await this.store
       .mutate(runId, (current) => {
@@ -4584,12 +4590,39 @@ export class Runtime {
     }
   }
 
+  /**
+   * `auto_archive.keep_failed_workspace` (ADR 2026-11-23-auto-archive-failed-run-workspaces): the workspace of a failed run that can
+   * be restarted was kept when the run was archived; this archives it once the keep period has passed since the failure, with the
+   * checks of `workspace.archive_with_run` (unsaved or unpushed work, a running agent, a human's agent, another active run in it keep
+   * it). A restarted run is not failed, so nothing is archived; a refusal is written once and not retried.
+   */
+  private async autoArchiveFailedWorkspaces(): Promise<void> {
+    const now = Date.now();
+    let looked = 0;
+    for (const candidate of this.store.list()) {
+      if (looked >= AUTO_ARCHIVE_PER_TICK) break;
+      const until = workspaceKeptUntil(candidate);
+      if (until === null || candidate.batch || isPipeline(candidate) || now < Date.parse(until)) continue;
+      looked += 1;
+      const outcome = await this.archiveWorkspaceWithRun(candidate, "active").catch((error: unknown) => ({ archived: false, reason: `could not check: ${errorText(error)}` }));
+      await this.store
+        .mutate(candidate.id, (run) => {
+          if (run.status !== "failed") return; // restarted while the daemon was asked
+          run.workspaceArchive = outcome.archived ? "done" : "skipped";
+          if (outcome.archived) engine.noteEvent(run, "workspace_archived", null, `workspace ${run.workspaceId} archived ${Math.round(run.playbook.autoArchive.keepFailedWorkspaceMs / 60_000)} min after the run failed (auto_archive.keep_failed_workspace)`, nowIso());
+          else engine.noteEvent(run, "workspace_kept", null, `workspace ${run.workspaceId} not archived after the keep period: ${outcome.reason}`, nowIso());
+        })
+        .catch((error: unknown) => console.error(`[playbooks] could not record the workspace archive of ${candidate.id}:`, errorText(error)));
+      if (!outcome.archived) console.error(`[playbooks] workspace ${candidate.workspaceId} of failed ${candidate.id} kept: ${outcome.reason}`);
+    }
+  }
+
   private async autoArchiveRun(candidate: Run): Promise<void> {
     const managerId = isManagerless(candidate) ? null : candidate.managerAgentId || null;
     if (managerId && this.busyManagers.has(managerId)) return;
     const manager = managerId ? (await this.api().agents.ref(managerId).refresh().catch(() => null))?.agent ?? null : null;
     if (manager && !manager.archivedAt && (manager.status === "running" || manager.status === "initializing" || manager.activeTurn || (manager.pendingPermissions?.length ?? 0) > 0)) return;
-    const { workspaceArchived } = await this.archiveRunAndWorkspace(candidate.id);
+    const { workspaceArchived } = await this.archiveRunAndWorkspace(candidate.id, workspaceKeptUntil(candidate));
     // The manager goes only when the plugin made it (a restart_run takeOver may have made a human's agent the manager) and no other run uses it.
     const shared = this.store.list().some((other) => other.id !== candidate.id && !other.archivedAt && other.managerAgentId === managerId);
     let managerArchived = false;

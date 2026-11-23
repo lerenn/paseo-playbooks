@@ -461,10 +461,13 @@ const RawAutoArchiveSchema = z
     enabled: z.boolean().optional(),
     /** Grace period after the run ended (a duration such as 30m or 2h). Default 30m. */
     after: z.string().refine((value) => parseDuration(value) !== null, { message: "auto_archive.after must be a duration such as 30m or 2h" }).optional(),
+    /** How long the workspace of a failed run that can be restarted is kept (a duration such as 24h), counted from the failure; its agents are archived after `after` as usual. Default 24h. */
+    keep_failed_workspace: z.string().refine((value) => parseDuration(value) !== null, { message: "auto_archive.keep_failed_workspace must be a duration such as 24h or 2d" }).optional(),
   })
   .strict();
 
 export const DEFAULT_AUTO_ARCHIVE_AFTER_MS = 30 * 60_000;
+export const DEFAULT_KEEP_FAILED_WORKSPACE_MS = 24 * 3_600_000;
 
 export const DEFAULT_WORKSPACE_ARCHIVE_AFTER_MS = 6 * 3_600_000;
 
@@ -2545,7 +2548,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     agentRules: mergeAgentRules(defaults.agentRules ?? [], ownRules.rules, [...blocks.values()]),
     managerInstructions: managerInstructions(folder.managerText, qid, pb.manager?.prompt, [...blocks.values()]),
     outcomes: playbookOutcomes,
-    autoArchive: { enabled: pb.auto_archive?.enabled ?? defaults.auto_archive?.enabled ?? false, afterMs: parseDuration(pb.auto_archive?.after ?? defaults.auto_archive?.after ?? "") ?? DEFAULT_AUTO_ARCHIVE_AFTER_MS },
+    autoArchive: { enabled: pb.auto_archive?.enabled ?? defaults.auto_archive?.enabled ?? false, afterMs: parseDuration(pb.auto_archive?.after ?? defaults.auto_archive?.after ?? "") ?? DEFAULT_AUTO_ARCHIVE_AFTER_MS, keepFailedWorkspaceMs: parseDuration(pb.auto_archive?.keep_failed_workspace ?? defaults.auto_archive?.keep_failed_workspace ?? "") ?? DEFAULT_KEEP_FAILED_WORKSPACE_MS },
     workspace: {
       archive: pb.workspace?.archive ?? defaults.workspace?.archive ?? "never",
       keepFailed: pb.workspace?.keep_failed ?? defaults.workspace?.keep_failed ?? true,

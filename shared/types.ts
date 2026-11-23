@@ -564,7 +564,9 @@ export const PlaybookSchema = z.object({
     .object({ archive: z.enum(["never", "on_end"]), keepFailed: z.boolean(), archiveWithRun: z.boolean().default(false), archiveAfterMs: z.number().nullable().default(null) })
     .default({ archive: "never", keepFailed: true, archiveWithRun: false, archiveAfterMs: null }),
   /** `auto_archive`: the plugin archives a finished run (and its idle manager) `afterMs` after it ended. Off unless `enabled`. Unset on runs from before it (= off). */
-  autoArchive: z.object({ enabled: z.boolean(), afterMs: z.number().int().positive() }).default({ enabled: false, afterMs: 30 * 60_000 }),
+  autoArchive: z
+    .object({ enabled: z.boolean(), afterMs: z.number().int().positive(), keepFailedWorkspaceMs: z.number().int().positive().default(24 * 3_600_000) })
+    .default({ enabled: false, afterMs: 30 * 60_000, keepFailedWorkspaceMs: 24 * 3_600_000 }),
   /**
    * Where the run's agents work: the workspace checkout (`none`), or a private git worktree the
    * plugin creates for the run (`worktree`). Unset on runs from before isolation.
@@ -1479,6 +1481,27 @@ export function restartBlocker(run: Run, stepId: string): string | null {
   const missing = step.needs.filter((need) => !isStepDone(run.steps[need]?.status ?? "pending"));
   if (missing.length > 0) return `"${stepId}" needs ${missing.join(", ")}, which did not complete; restart from an earlier step`;
   return null;
+}
+
+/** When the run last ended (its end event; the last update for a run with none). */
+export function runEndedAt(run: Pick<Run, "history" | "updatedAt">): string {
+  return run.history.findLast((event) => event.type === "run_completed" || event.type === "run_failed" || event.type === "run_canceled")?.at ?? run.updatedAt;
+}
+
+/** Whether a finished run can be restarted from at least one step. */
+export function isRestartable(run: Run): boolean {
+  return run.playbook.steps.some((step) => restartBlocker(run, step.id) === null);
+}
+
+/**
+ * `auto_archive.keep_failed_workspace`: when a failed, restartable run's workspace is kept until (ISO time), or null when the
+ * rule does not hold it (auto_archive off, not failed, not restartable, no workspace of the run's own, `archive_with_run` off, or
+ * the workspace was already dealt with). Counted from the failure only, so later updates of the run do not move it.
+ */
+export function workspaceKeptUntil(run: Run): string | null {
+  if (!run.playbook.autoArchive.enabled || !run.playbook.workspace.archiveWithRun || run.status !== "failed" || isActive(run)) return null;
+  if (!run.workspaceCreated || run.workspaceArchive !== null || !isRestartable(run)) return null;
+  return new Date(Date.parse(runEndedAt(run)) + run.playbook.autoArchive.keepFailedWorkspaceMs).toISOString();
 }
 
 /** A step attempt's timeout: resolved at its start, else the step's (attempts from before templated timeouts). */

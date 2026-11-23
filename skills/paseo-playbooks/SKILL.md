@@ -132,6 +132,7 @@ workspace:             # what happens to the workspace a run created with newWor
 auto_archive:          # archive a finished run and its manager, restartable with restart_run (off by default)
   enabled: true        # default false
   after: 30m           # grace period after the run ended (default 30m); an open gate, an open hand-off job or a busy manager keeps it
+  keep_failed_workspace: 24h  # a failed run that can be restarted keeps its workspace this long after the failure (default 24h); its agents still go after `after`
 reload_stale_sessions: true  # after a plugin update, reload idle agents still holding the old plugin's tools (default true; false disables)
 isolation: none        # none (default) | worktree | { mode: worktree, submodules: none | all | [paths], base: <branch> }: see "Isolated runs"
 ```

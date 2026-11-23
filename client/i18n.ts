@@ -25,6 +25,7 @@ export const messages = defineTranslations({
       },
       panel: {
         refresh: "Refresh playbooks",
+        workspaceKept: "Workspace kept until {{when}}: the run failed and can be restarted",
         startWithAgent: "Start {{title}} with this workspace's agent",
         moreStartWays: "More ways to start {{title}}",
         startOnNewAgent: "Start on a new agent",
@@ -91,6 +92,7 @@ export const messages = defineTranslations({
       },
       panel: {
         refresh: "Actualiser les playbooks",
+        workspaceKept: "Espace de travail conservé jusqu'à {{when}} : l'exécution a échoué et peut être relancée",
         startWithAgent: "Démarrer {{title}} avec l'agent de cet espace de travail",
         moreStartWays: "Autres façons de démarrer {{title}}",
         startOnNewAgent: "Démarrer sur un nouvel agent",
@@ -156,6 +158,7 @@ export const messages = defineTranslations({
       },
       panel: {
         refresh: "刷新 playbook",
+        workspaceKept: "工作区保留至 {{when}}：该运行已失败，可重新启动",
         startWithAgent: "使用此工作区的智能体开始 {{title}}",
         moreStartWays: "开始 {{title}} 的更多方式",
         startOnNewAgent: "在新智能体上开始",

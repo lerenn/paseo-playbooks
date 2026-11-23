@@ -6,7 +6,7 @@ import { askHumanText, choicesOfGate, describeCondition, GATE_SUMMARY_MAX, waits
 import { z } from "zod";
 import type { PlaybookEntry, Run, When } from "../shared/types";
 import { repairReport } from "./malformed";
-import { isActive, isAgentlessAttempt, isPaused, isPipeline, isTerminal, restartBlocker, runningAfterTasks, VarValueSchema } from "../shared/types";
+import { isActive, isAgentlessAttempt, isPaused, isPipeline, isTerminal, restartBlocker, runningAfterTasks, VarValueSchema, workspaceKeptUntil } from "../shared/types";
 import * as engine from "./engine";
 import { resolveForNewRun } from "./fresh";
 import { hasPlaybooks, loadPlaybooks } from "./loader";
@@ -753,6 +753,8 @@ export function runListing(run: Run, slow: Record<string, SlowInfo> = {}) {
     after: run.playbook.after.map((task) => ({ id: task.id, title: task.title, trigger: task.trigger, status: run.after[task.id]?.status ?? "pending" })),
     /** Steps restart_run accepts (empty while the run is active). */
     restartableFrom: isTerminal(run.status) ? run.playbook.steps.filter((step) => restartBlocker(run, step.id) === null).map((step) => step.id) : [],
+    /** ISO time until which auto_archive keeps the workspace of this failed, restartable run (`auto_archive.keep_failed_workspace`); null when it is not held. */
+    workspaceKeptUntil: workspaceKeptUntil(run),
   };
 }
 
