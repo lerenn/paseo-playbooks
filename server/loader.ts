@@ -30,7 +30,7 @@ import { BusError, checkTypes, FilterValueSchema } from "./bus";
 import { JOB_TYPES } from "./job-events";
 import { OVERSIGHT_TYPES } from "./oversight-events";
 import { noteDeprecatedKey, quotaLimitsLayerOf, readProjectDefault, readProjectProfiles, type QuotaLimitsLayer } from "./config";
-import { dayNumbers, parseClock, validTimezone } from "./closed-hours";
+import { dayNumbers, parseClock, validTimezone, type ClosedHours } from "./closed-hours";
 import { bareId, DEFAULT_REPO, qualified } from "../shared/repos";
 import { MAX_SUBAGENT_ARCHIVE_AFTER_MS } from "./sidekick-archive";
 import { branchNameProblem } from "./branch-name";
@@ -585,11 +585,11 @@ const RawRateLimitSchema = z
   })
   .strict();
 
-/** `quota_limits.quota.closed_hours` (ADR 2026-11-23-quota-closed-hours). */
+/** `closed_hours` (ADR 2026-11-23-closed-hours-shared; first `quota_limits.quota.closed_hours`, ADR 2026-11-23-quota-closed-hours, still accepted). */
 const RawClosedHoursSchema = z
   .object({
     /** An IANA timezone (`Europe/Paris`); default the plugin host's timezone. */
-    timezone: z.string().refine(validTimezone, { message: "quota_limits.quota.closed_hours.timezone must be an IANA timezone such as Europe/Paris" }).optional(),
+    timezone: z.string().refine(validTimezone, { message: "closed_hours.timezone must be an IANA timezone such as Europe/Paris" }).optional(),
     /** The closed slots: each a set of days and a `from`-`to` time of the day. Overlaps are merged; a slot does not wrap past midnight (write two). */
     slots: z
       .array(
@@ -631,7 +631,7 @@ const RawQuotaLimitsSchema = z
         pacing: z.boolean().optional(),
         /** Percentage of a usage window the playbooks may use (above 0, at most 100). Default 97. */
         usable_percent: z.number().gt(0).max(100).optional(),
-        /** Weekly slots that do not count towards what is allowed so far (ADR 2026-11-23-quota-closed-hours): the allowance stays flat while one is closed. */
+        /** Deprecated: write `closed_hours` at the top of the defaults. Still read (the top-level one wins). */
         closed_hours: RawClosedHoursSchema.optional(),
         /** A usage reading younger than this is used as is (`5m`). */
         refresh_interval: z.string().refine((value) => parseDuration(value) !== null, { message: "quota_limits.quota.refresh_interval must be a duration such as 5m" }).optional(),
@@ -872,6 +872,7 @@ const RawPlaybookSchema = z.object({
     /** Deprecated name of `quota_limit`. */
     rate_limit: RawRateLimitSchema.optional(),
     /** Not a playbook field: read here only to refuse it. */
+    closed_hours: z.unknown().refine((value) => value === undefined, "`closed_hours` is not set in a playbook: put it in `defaults/main.yaml` (or the user config)").optional(),
     quota_limits: z.unknown().refine((value) => value === undefined, "`quota_limits` is not set in a playbook: put it in `defaults/main.yaml` (or the user config); a playbook only has `quota_limit: { priority }`").optional(),
     /** House rules added to the prompt of every agent of the playbook, after the repository's `agent_rules` (a list of short strings; checked by `parseAgentRules`). */
     agent_rules: z.unknown().optional(),
@@ -943,6 +944,8 @@ const RawDefaultsSchema = z.object({
     quota_limit: RawRateLimitSchema.optional(),
     /** Deprecated name of `quota_limit`. */
     rate_limit: RawRateLimitSchema.optional(),
+    /** Slots of the week that do not count for the quota allowance nor for the warden's time thresholds (ADR 2026-11-23-closed-hours-shared). */
+    closed_hours: RawClosedHoursSchema.optional(),
     /** The quota pacing and hard caps, for the runs of this folder (the user config's `quota_limits` is under it; see ADR 2026-11-23-quota-limits-in-defaults). */
     quota_limits: RawQuotaLimitsSchema.optional(),
     /** Deprecated name of `quota_limits`. */
@@ -1112,7 +1115,7 @@ async function loadDefaults(root: string, relDir: string): Promise<{ defaults: R
   }
   const fail = (message: string) => errors.push(`${rel}: ${message}`);
   const defaults: RawDefaults = { ...parsed.data, tiers };
-  const quotaLimits = quotaLimitsLayerOf({ quota_limits: parsed.data.quota_limits, rate_limits: parsed.data.rate_limits });
+  const quotaLimits = quotaLimitsLayerOf({ quota_limits: parsed.data.quota_limits, rate_limits: parsed.data.rate_limits, closed_hours: parsed.data.closed_hours });
   if (quotaLimits) defaults.quotaLimits = quotaLimits;
   if (parsed.data.rate_limit !== undefined) noteDeprecatedKey("rate_limit", "quota_limit");
   if (parsed.data.agent) defaults.agent = resolveAgent(parsed.data.agent, tiers, "agent", fail);
@@ -1497,7 +1500,7 @@ export async function reloadStaleSessionsSetting(workspaceDir: string): Promise<
 }
 
 /** The warden settings of the workspace's `defaults/main.yaml` for the PR checks: null unless `warden.enabled` and a `pr_checks` check is set (or when the file is invalid). */
-export async function wardenPrSetting(workspaceDir: string): Promise<{ intervalMs: number; cooldownMs: number; checks: WardenPrConfig } | null> {
+export async function wardenPrSetting(workspaceDir: string): Promise<{ intervalMs: number; cooldownMs: number; checks: WardenPrConfig; closedHours: ClosedHours | null | undefined } | null> {
   for (const relDir of PLAYBOOKS_DIRS) {
     const file = path.join(workspaceDir, relDir, "defaults", "main.yaml");
     if ((await readText(file)) === null) continue;
@@ -1509,7 +1512,8 @@ export async function wardenPrSetting(workspaceDir: string): Promise<{ intervalM
     const fail = () => void (failed = true);
     const warden = resolveWarden(parsed.data.warden, DEFAULT_WARDEN, "warden", fail);
     const checks = resolveWardenPr(parsed.data.warden.pr_checks, "warden.pr_checks", fail);
-    return warden.enabled && checks && !failed ? { intervalMs: warden.intervalMs, cooldownMs: warden.cooldownMs, checks } : null;
+    const closedHours = quotaLimitsLayerOf({ quota_limits: parsed.data.quota_limits, rate_limits: parsed.data.rate_limits, closed_hours: parsed.data.closed_hours })?.quota?.closedHours;
+    return warden.enabled && checks && !failed ? { intervalMs: warden.intervalMs, cooldownMs: warden.cooldownMs, checks, closedHours } : null;
   }
   return null;
 }

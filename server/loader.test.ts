@@ -392,9 +392,18 @@ steps:
 
   it("reads quota.closed_hours and refuses a bad day, time, slot or timezone with a clear message", async () => {
     const steps = "steps:\n  - id: a\n    role: { name: investigator, prompt: go }\n";
-    const good = await workspace({ "defaults/main.yaml": "quota_limits:\n  quota:\n    usable_percent: 90\n    closed_hours:\n      timezone: Europe/Paris\n      slots:\n        - { days: [saturday, sunday], from: \"00:00\", to: \"24:00\" }\n        - { days: monday, from: \"00:00\", to: \"08:00\" }\n", "pr.yaml": steps });
+    const good = await workspace({ "defaults/main.yaml": "quota_limits: { quota: { usable_percent: 90 } }\nclosed_hours:\n  timezone: Europe/Paris\n  slots:\n    - { days: [saturday, sunday], from: \"00:00\", to: \"24:00\" }\n    - { days: monday, from: \"00:00\", to: \"08:00\" }\n", "pr.yaml": steps });
     const loaded = await loadPlaybooks(good);
     expect(JSON.stringify(loaded.entries[0]!.errors)).toBe("[]");
+    expect(loaded.entries[0]!.playbook!.quotaLimits.quota?.closedHours?.timezone).toBe("Europe/Paris");
+    expect(loaded.entries[0]!.playbook!.quotaLimits.quota?.usablePercent).toBe(90);
+    // The earlier location, quota_limits.quota.closed_hours, still works; the top-level block wins when both are there.
+    const old = await workspace({ "defaults/main.yaml": "quota_limits: { quota: { closed_hours: { timezone: UTC, slots: [{ days: monday, from: \"00:00\", to: \"08:00\" }] } } }\n", "pr.yaml": steps });
+    expect((await loadPlaybooks(old)).entries[0]!.playbook!.quotaLimits.quota?.closedHours?.timezone).toBe("UTC");
+    const both = await workspace({ "defaults/main.yaml": "quota_limits: { quota: { closed_hours: { timezone: UTC, slots: [{ days: monday, from: \"00:00\", to: \"08:00\" }] } } }\nclosed_hours: { timezone: Asia/Tokyo, slots: [{ days: monday, from: \"00:00\", to: \"08:00\" }] }\n", "pr.yaml": steps });
+    expect((await loadPlaybooks(both)).entries[0]!.playbook!.quotaLimits.quota?.closedHours?.timezone).toBe("Asia/Tokyo");
+    const inPlaybook = await workspace({ "pr.yaml": `closed_hours: { slots: [{ days: monday, from: "00:00", to: "08:00" }] }\n${steps}` });
+    expect(JSON.stringify(await loadPlaybooks(inPlaybook))).toContain("not set in a playbook");
     const cases: Array<[string, string]> = [
       ["{ days: funday, from: \"00:00\", to: \"08:00\" }", "unknown day"],
       ["{ days: monday, from: \"8am\", to: \"09:00\" }", "not a time"],
@@ -404,12 +413,12 @@ steps:
       ["{ days: monday, from: \"00:00\" }", "to"],
     ];
     for (const [slot, message] of cases) {
-      const bad = await workspace({ "defaults/main.yaml": `quota_limits: { quota: { closed_hours: { timezone: UTC, slots: [${slot}] } } }\n`, "pr.yaml": steps });
+      const bad = await workspace({ "defaults/main.yaml": `closed_hours: { timezone: UTC, slots: [${slot}] }\n`, "pr.yaml": steps });
       expect(JSON.stringify(await loadPlaybooks(bad)), slot).toContain(message);
     }
-    const tz = await workspace({ "defaults/main.yaml": "quota_limits: { quota: { closed_hours: { timezone: Mars/Olympus, slots: [{ days: monday, from: \"00:00\", to: \"08:00\" }] } } }\n", "pr.yaml": steps });
+    const tz = await workspace({ "defaults/main.yaml": "closed_hours: { timezone: Mars/Olympus, slots: [{ days: monday, from: \"00:00\", to: \"08:00\" }] }\n", "pr.yaml": steps });
     expect(JSON.stringify(await loadPlaybooks(tz))).toContain("IANA timezone");
-    const empty = await workspace({ "defaults/main.yaml": "quota_limits: { quota: { closed_hours: { slots: [] } } }\n", "pr.yaml": steps });
+    const empty = await workspace({ "defaults/main.yaml": "closed_hours: { slots: [] }\n", "pr.yaml": steps });
     expect((await loadPlaybooks(empty)).entries[0]!.errors.length).toBeGreaterThan(0);
   });
 

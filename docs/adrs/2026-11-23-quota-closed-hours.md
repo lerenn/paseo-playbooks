@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted. Refines `2026-11-20-dynamic-rate-limits.md` and `2026-11-23-quota-limits-in-defaults.md`.
+Accepted. Where the block is declared is superseded by `2026-11-23-closed-hours-shared.md` (the key moved to the top level; the quota formula here is unchanged). Refines `2026-11-20-dynamic-rate-limits.md` and `2026-11-23-quota-limits-in-defaults.md`.
 
 ## Context
 

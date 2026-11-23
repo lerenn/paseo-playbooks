@@ -209,15 +209,20 @@ export function parseQuotaLimits(value: unknown, legacy = false): QuotaLimitsLay
  * wins as a whole when both are there). `undefined` when neither is there.
  */
 export function quotaLimitsLayerOf(holder: Record<string, unknown>): QuotaLimitsLayer | undefined {
+  let layer: QuotaLimitsLayer | undefined;
   if (holder.quota_limits !== undefined) {
     if (holder.rate_limits !== undefined) console.warn("[playbooks] both `quota_limits` and the deprecated `rate_limits` are set: `rate_limits` is ignored");
-    return parseQuotaLimits(holder.quota_limits);
-  }
-  if (holder.rate_limits !== undefined) {
+    layer = parseQuotaLimits(holder.quota_limits);
+  } else if (holder.rate_limits !== undefined) {
     noteDeprecatedKey("rate_limits", "quota_limits");
-    return parseQuotaLimits(holder.rate_limits, true);
+    layer = parseQuotaLimits(holder.rate_limits, true);
   }
-  return undefined;
+  // The shared top-level `closed_hours` (ADR 2026-11-23-closed-hours-shared) is carried in the quota layer so the quota reads it where it
+  // always did; it wins over the deprecated `quota_limits.quota.closed_hours`, which still works.
+  const closed = parseClosedHours(holder.closed_hours);
+  if (closed !== undefined) layer = { ...layer, quota: { ...layer?.quota, closedHours: closed } };
+  else if (layer?.quota?.closedHours !== undefined) noteDeprecatedKey("quota_limits.quota.closed_hours", "closed_hours");
+  return layer;
 }
 
 /** The limits in effect: the built-in defaults, then each layer in turn, a later layer overriding the fields it sets. */

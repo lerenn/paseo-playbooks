@@ -243,16 +243,19 @@ quota_limits:
     usable_percent: 97     # a 100 h window then allows 0.97 points an hour (what is allowed so far); 97 is also the hard cap
     refresh_interval: 5m   # a reading younger than this is used as is
     max_age: 30m           # an older reading holds new work ("waiting for quota data") until a refresh succeeds
-    closed_hours:          # optional: slots that do not count towards what is allowed so far (see below)
-      timezone: Europe/Paris   # IANA zone; default: the host's timezone
-      slots:
-        - { days: [saturday, sunday], from: "00:00", to: "24:00" }   # days: a name, a list, or weekdays / weekend / everyday
-        - { days: monday, from: "00:00", to: "08:00" }               # HH:MM, to after from; 24:00 = end of the day; no wrapping past midnight
   steps: 4                 # optional hard cap: agent and script steps running at once, across all projects
   playbooks: 2             # optional hard cap: runs admitted at once
 ```
 
-**Closed hours** (`quota.closed_hours`, ADR `docs/adrs/2026-11-23-quota-closed-hours.md`): a provider's weekly window may reset on a weekday afternoon, so nights and weekends inside it would accrue allowance nobody can use. Declared slots are left out of both the time elapsed and the length of the window: allowed so far = Max usable quota × (open hours elapsed ÷ open hours in the window), never above Max usable quota, flat while a slot is closed. Slots are wall-clock times of the zone (a daylight-saving day is 23 or 25 hours); a window with no open hour falls back to the plain rule and the Quota limitation tab says so. Nothing else changes: runs are not paused or held because a slot is closed, exempt runs and holds behave as before, and the exhausted-window rule is unchanged. The tab shows `Closed hours: Sat-Sun, Mon 00:00-08:00 (Europe/Paris)` under the project and a line while the allowance is frozen. `validate_playbooks` refuses an unknown day, a bad time, `from` not before `to` and an unknown timezone.
+```yaml
+closed_hours:                  # top level of defaults/main.yaml (or config.yaml), next to quota_limits and warden
+  timezone: Europe/Paris       # IANA zone; default: the host's timezone
+  slots:
+    - { days: [saturday, sunday], from: "00:00", to: "24:00" }   # days: a name, a list, or weekdays / weekend / everyday
+    - { days: monday, from: "00:00", to: "08:00" }               # HH:MM, to after from; 24:00 = end of the day; no wrapping past midnight
+```
+
+**Closed hours** (`closed_hours`, shared by the quota and the warden; ADRs `docs/adrs/2026-11-23-quota-closed-hours.md` and `docs/adrs/2026-11-23-closed-hours-shared.md`; `quota_limits.quota.closed_hours`, where it first shipped, still works and the top-level block wins): ADR `docs/adrs/2026-11-23-quota-closed-hours.md`): a provider's weekly window may reset on a weekday afternoon, so nights and weekends inside it would accrue allowance nobody can use. Declared slots are left out of both the time elapsed and the length of the window: allowed so far = Max usable quota × (open hours elapsed ÷ open hours in the window), never above Max usable quota, flat while a slot is closed. Slots are wall-clock times of the zone (a daylight-saving day is 23 or 25 hours); a window with no open hour falls back to the plain rule and the Quota limitation tab says so. Nothing else changes: runs are not paused or held because a slot is closed, exempt runs and holds behave as before, and the exhausted-window rule is unchanged. The **warden** pauses its clocks during closed hours: the time thresholds of `stale_definition`, `slow`, `gate_open`, `stalled` and `held`, and of the PR checks `pr_review_stale`, `pr_draft_idle` and `run_failed`'s window, count open time only (as held time is already left out), so nothing fires from time spent closed and a clock resumes when the slot ends. The tab shows `Closed hours: Sat-Sun, Mon 00:00-08:00 (Europe/Paris)` under the project and a line while the allowance is frozen. `validate_playbooks` refuses an unknown day, a bad time, `from` not before `to` and an unknown timezone.
 
 **Headroom** of a provider window = what is allowed so far (`usable_percent` × elapsed / window length, the tightest window winning)
 minus current usage minus what work already started still has to use. Work starts while the headroom covers its **estimated cost**: the

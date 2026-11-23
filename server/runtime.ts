@@ -1122,6 +1122,8 @@ export class Runtime {
       this.wardenSeen.set(listed.id, now);
       try {
         const config = listed.playbook.warden;
+        // Closed hours (ADR 2026-11-23-closed-hours-shared) pause the time thresholds: the run's own resolved schedule.
+        const closed = this.limitsOf(listed).quota.closedHours ?? null;
         const found: Candidate[] = [];
         const guarded = async (name: string, check: () => Promise<Candidate[]> | Candidate[]) => {
           try {
@@ -1131,20 +1133,20 @@ export class Runtime {
           }
         };
         const { staleDefinition, managerBlocked, loops, slow, gateOpen, stalled, held } = config.checks;
-        if (staleDefinition.action !== "none") await guarded("stale_definition", async () => staleDefinitionCandidate(listed, await io.originSha(listed), staleDefinition.afterMs, now, staleDefinition.action as Act));
+        if (staleDefinition.action !== "none") await guarded("stale_definition", async () => staleDefinitionCandidate(listed, await io.originSha(listed), staleDefinition.afterMs, now, staleDefinition.action as Act, closed));
         if (managerBlocked.action !== "none") await guarded("manager_blocked", async () => managerBlockedCandidates(listed, await io.manager(listed), managerBlocked.action as Act));
         if (loops.action !== "none") await guarded("loops", () => loopCandidates(listed, loops.above, loops.action as Act));
-        if (slow.action !== "none") await guarded("slow", () => slowCandidates(listed, (slowIndex ??= new SlowIndex(this.store.list())).of(listed, now), slow.action as Act));
-        if (gateOpen.action !== "none") await guarded("gate_open", () => gateOpenCandidates(listed, gateOpen.afterMs, now, gateOpen.action as Act));
+        if (slow.action !== "none") await guarded("slow", () => slowCandidates(listed, (slowIndex ??= new SlowIndex(this.store.list())).of(listed, now), slow.action as Act, now, closed));
+        if (gateOpen.action !== "none") await guarded("gate_open", () => gateOpenCandidates(listed, gateOpen.afterMs, now, gateOpen.action as Act, closed));
         if (stalled.action !== "none") {
           await guarded("stalled", async () => {
             const info = stalledInfo(listed);
             if (!info || now - info.idleSince < stalled.afterMs) return [];
             const manager = await io.manager(listed);
-            return stalledCandidates(listed, info, stalled.afterMs, now, manager, manager === null || manager === "running" ? false : await io.managerQuota(listed), stalled.action as Act);
+            return stalledCandidates(listed, info, stalled.afterMs, now, manager, manager === null || manager === "running" ? false : await io.managerQuota(listed), stalled.action as Act, closed);
           });
         }
-        if (held.action !== "none") await guarded("held", () => heldCandidates(listed, this.store.list(), held.afterMs, now, held.action as Act));
+        if (held.action !== "none") await guarded("held", () => heldCandidates(listed, this.store.list(), held.afterMs, now, held.action as Act, closed));
         // The state is written before any effect: a crash or a failed effect never repeats a report.
         const reported = await this.store.mutate(listed.id, (run) => {
           const { next, report } = diffFindings(run.warden.findings, found, iso, config.cooldownMs);
@@ -1199,7 +1201,7 @@ export class Runtime {
         this.wardenPrSeen.set(projectId, now);
         const runs = this.store.list().filter((run) => run.projectId === projectId && !run.archivedAt);
         const { prs, failedRepos, rulesets } = await this.wardenPrRead(project.root, setting.checks, runs, projectId);
-        const candidates = prCandidates(prs, runs, setting.checks, now, rulesets);
+        const candidates = prCandidates(prs, runs, setting.checks, now, rulesets, setting.closedHours !== undefined ? setting.closedHours : (await this.userQuotaLayer()).quota?.closedHours ?? null);
         const iso = new Date(now).toISOString();
         const existing = await store.read(projectId);
         const { next, report } = diffFindings(existing, candidates, iso, setting.cooldownMs);

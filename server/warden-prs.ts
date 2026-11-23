@@ -6,6 +6,7 @@ import { WardenFindingSchema, type Run, type WardenFinding, type WardenPrConfig 
 import { z } from "zod";
 import { isActive } from "../shared/types";
 import type { Candidate } from "./warden";
+import { openAge, type ClosedHours } from "./closed-hours";
 
 /**
  * The warden's PR-level checks (ADR 2026-11-20-warden-pr-checks). Like the run checks they only detect: they propose an
@@ -143,7 +144,7 @@ export function lastReceipt(pr: OpenPr, bot: NonNullable<WardenPrConfig["reviewB
 }
 
 /** The candidates of every configured PR check over `prs`; `runs` are the project's runs (owners, running fix steps); `rulesets` the required checks read per `repo@base` (a missing key: none known). */
-export function prCandidates(prs: OpenPr[], runs: Run[], config: WardenPrConfig, now: number, rulesets: Map<string, string[]> = new Map()): Candidate[] {
+export function prCandidates(prs: OpenPr[], runs: Run[], config: WardenPrConfig, now: number, rulesets: Map<string, string[]> = new Map(), closed?: ClosedHours | null): Candidate[] {
   const out: Candidate[] = [];
   for (const pr of prs) {
     const owner = ownerOf(pr, runs);
@@ -163,7 +164,7 @@ export function prCandidates(prs: OpenPr[], runs: Run[], config: WardenPrConfig,
     if (config.reviewStale && config.reviewBot && !pr.isDraft) {
       const committed = ms(pr.headCommittedAt);
       const receipt = lastReceipt(pr, config.reviewBot);
-      const stale = committed !== null && now - committed >= config.reviewStale.afterMs && (receipt === null || receipt < committed);
+      const stale = committed !== null && openAge(closed, committed, now) >= config.reviewStale.afterMs && (receipt === null || receipt < committed);
       if (stale) make("pr_review_stale", pr.headSha, `has no automated-review receipt for its head ${pr.headSha.slice(0, 8)} (pushed ${Math.round((now - committed) / 60_000)} min ago${receipt === null ? ", no receipt at all" : ""})`, config.reviewBot.retrigger ? `re-trigger the review: ${fill(config.reviewBot.retrigger, { sha: pr.headSha, branch: pr.headRefName, pr: String(pr.number), name: "" })}` : "re-trigger the automated review");
     }
     if (config.requiredChecks) {
@@ -188,10 +189,10 @@ export function prCandidates(prs: OpenPr[], runs: Run[], config: WardenPrConfig,
     if (config.unowned && !owner) make("pr_unowned", "none", "is open and no run owns it", "start a run for it, or close it if it is abandoned");
     if (config.draftIdle && pr.isDraft) {
       const updated = ms(pr.updatedAt);
-      if (updated !== null && now - updated >= config.draftIdle.afterMs) make("pr_draft_idle", "idle", `has been a draft with no activity for ${Math.floor((now - updated) / 86_400_000)} day(s)`, "mark it ready, resume the work, or close it");
+      if (updated !== null && openAge(closed, updated, now) >= config.draftIdle.afterMs) make("pr_draft_idle", "idle", `has been a draft with no activity for ${Math.floor((now - updated) / 86_400_000)} day(s)`, "mark it ready, resume the work, or close it");
     }
   }
-  if (config.failedRuns) out.push(...failedRunCandidates(runs, config.failedRuns, now));
+  if (config.failedRuns) out.push(...failedRunCandidates(runs, config.failedRuns, now, closed));
   return out;
 }
 
@@ -222,14 +223,14 @@ export function markerOpen(pr: OpenPr, author: string, marker: { pattern: string
 const trim = (text: string): string => (text.length > 400 ? `${text.slice(0, 400)}…` : text);
 
 /** Runs of the configured playbooks that failed, or whose step failed, within the window: with the run, the failing step and the error. */
-export function failedRunCandidates(runs: Run[], config: NonNullable<WardenPrConfig["failedRuns"]>, now: number): Candidate[] {
+export function failedRunCandidates(runs: Run[], config: NonNullable<WardenPrConfig["failedRuns"]>, now: number, closed?: ClosedHours | null): Candidate[] {
   const out: Candidate[] = [];
   for (const run of runs) {
     if (!config.playbooks.includes(run.playbook.id)) continue;
     const failedStep = Object.entries(run.steps).find(([, state]) => state.status === "failed");
     if (run.status !== "failed" && !failedStep) continue;
     const at = ms(failedStep?.[1].attempts.at(-1)?.endedAt ?? null) ?? ms(run.updatedAt);
-    if (at === null || now - at > config.withinMs) continue;
+    if (at === null || openAge(closed, at, now) > config.withinMs) continue;
     const attempt = failedStep?.[1].attempts.at(-1);
     const stepError = attempt?.report?.summary || attempt?.lastMessage || failedStep?.[1].summary || "";
     const error = trim(run.failure || stepError || "no error text recorded");

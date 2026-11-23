@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseClosedHours, parseQuotaLimits, resolveQuotaLimits } from "./config";
+import { parseClosedHours, parseQuotaLimits, quotaLimitsLayerOf, resolveQuotaLimits } from "./config";
 import { instantOfOpenMs, isClosedAt, openMs } from "./closed-hours";
 import { describeClosedSlots } from "../shared/closed-hours";
 import { paceCeiling, roomFreeAt, windowRooms } from "./rate-limit";
@@ -109,6 +109,16 @@ describe("closed hours: config", () => {
     expect(resolveQuotaLimits(user, folder).quota.closedHours?.slots[0]!.days).toEqual([1]);
     expect(resolveQuotaLimits(user).quota.closedHours).toBeTruthy();
     expect(resolveQuotaLimits().quota.closedHours).toBeUndefined();
+  });
+
+  it("reads the shared top-level closed_hours into the quota layer, which wins over quota.closed_hours", () => {
+    const top = { timezone: "UTC", slots: [{ days: "weekend", from: "00:00", to: "24:00" }] };
+    const layer = quotaLimitsLayerOf({ closed_hours: top })!;
+    expect(layer.quota?.closedHours?.slots[0]!.days).toEqual([0, 6]);
+    const both = quotaLimitsLayerOf({ quota_limits: { quota: { usable_percent: 80, closed_hours: { slots: [{ days: "monday", from: "00:00", to: "08:00" }] } } }, closed_hours: top })!;
+    expect(both.quota?.usablePercent).toBe(80);
+    expect(both.quota?.closedHours?.timezone).toBe("UTC");
+    expect(quotaLimitsLayerOf({})).toBeUndefined();
   });
 
   it("describes the slots for the tab", () => {

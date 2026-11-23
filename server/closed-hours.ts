@@ -145,3 +145,12 @@ export function closedKey(closed: ClosedHours | null | undefined): string | null
   if (!closed || closed.slots.length === 0) return null;
   return JSON.stringify([closed.timezone ?? hostTimezone(), closed.slots.map((slot) => [[...slot.days].sort(), slot.fromMin, slot.toMin])]);
 }
+
+/**
+ * How long ago `from` was at `now`, with closed hours paused (ADR 2026-11-23-closed-hours-shared): the warden's time thresholds count
+ * open time only, so nothing fires from time spent closed, and a clock resumes when a slot ends. Without closed hours, plain elapsed time.
+ */
+export function openAge(closed: ClosedHours | null | undefined, from: number, now: number): number {
+  if (!(now > from)) return 0;
+  return closed && closed.slots.length > 0 ? openMs(closed, from, now) : now - from;
+}

@@ -2,6 +2,7 @@ import { isActive, isTerminal, runningAfterTasks, type Run, WardenAction, Warden
 import { slowDetail, type SlowInfo } from "../shared/slow";
 import { isDeferred } from "../shared/gates";
 import { gateListing, gateHolder } from "./overseer";
+import { openAge, type ClosedHours } from "./closed-hours";
 
 /**
  * The warden's rules (ADR 2026-11-18-warden). Detection only: no I/O of its own (the runtime passes in what needs the
@@ -65,18 +66,26 @@ export function heldMs(run: Run, now: number): number {
 }
 
 /** The step runs slower than their baseline, as the slow-step warning computes them (only steps still running). */
-export function slowCandidates(run: Run, slow: Record<string, SlowInfo>, action: Act): Candidate[] {
+export function slowCandidates(run: Run, slow: Record<string, SlowInfo>, action: Act, now = Date.now(), closed?: ClosedHours | null): Candidate[] {
   return Object.entries(slow)
     .filter(([id]) => run.steps[id]?.status === "running")
-    .map(([id, info]) => ({ check: "slow" as const, subject: id, signature: `${id}@${run.steps[id]?.attempts[0]?.startedAt ?? ""}`, detail: `step ${id} has run ${slowDetail(info)}`, action }));
+    .flatMap(([id, shown]) => {
+      // Closed hours pause the clock: the step's elapsed time counts its open time only, and it is slow only if that still passes the factor.
+      const started = Date.parse(run.steps[id]?.attempts[0]?.startedAt ?? "");
+      const elapsedMs = closed && Number.isFinite(started) ? Math.min(shown.elapsedMs, openAge(closed, started, now)) : shown.elapsedMs;
+      const info = { ...shown, elapsedMs, ratio: elapsedMs / shown.baselineMs };
+      if (elapsedMs !== shown.elapsedMs && info.ratio <= run.playbook.slowWarning.factor) return [];
+      return [{ check: "slow" as const, subject: id, signature: `${id}@${run.steps[id]?.attempts[0]?.startedAt ?? ""}`, detail: `step ${id} has run ${slowDetail(info)}`, action }];
+    });
 }
 
 /** Gates open for `afterMs` or more (the same age as gate.stale: gateListing's). */
-export function gateOpenCandidates(run: Run, afterMs: number, now: number, action: Act): Candidate[] {
+export function gateOpenCandidates(run: Run, afterMs: number, now: number, action: Act, closed?: ClosedHours | null): Candidate[] {
   return run.gates
     .filter((gate) => gate.status === "pending" && !isDeferred(gate))
     .flatMap((gate) => {
-      const age = gateListing(run, gate, now).ageMinutes;
+      const opened = Date.parse(gate.requestedAt);
+      const age = closed && Number.isFinite(opened) ? Math.floor(openAge(closed, opened, now) / 60_000) : gateListing(run, gate, now).ageMinutes;
       return age !== null && age * 60_000 >= afterMs ? [{ check: "gate_open" as const, subject: gate.id, signature: gate.id, detail: `gate ${gate.id} (${gate.kind}) of step ${gate.stepId} has been open ${age} min, held by ${gateHolder(gate).heldBy}`, action }] : [];
     });
 }
@@ -93,11 +102,11 @@ export function loopCandidates(run: Run, above: number, action: Act): Candidate[
  * the run has held for `afterMs` or more (the definition is pinned when the run starts, so its age is the run's). A healthy
  * run on a recent pin is not reported. Not looked at: whether origin changed a file this run's steps use (ADR 2026-11-20-warden-stale-definition-age).
  */
-export function staleDefinitionCandidate(run: Run, originSha: string | null, afterMs: number, now: number, action: Act): Candidate[] {
+export function staleDefinitionCandidate(run: Run, originSha: string | null, afterMs: number, now: number, action: Act, closed?: ClosedHours | null): Candidate[] {
   const definition = run.definition;
   if (!definition || !originSha) return [];
   if (onlyWaitingOnGate(run)) return [];
-  const aged = now - Date.parse(run.createdAt) - heldMs(run, now) >= afterMs;
+  const aged = openAge(closed, Date.parse(run.createdAt), now) - heldMs(run, now) >= afterMs;
   const stale = definition.source === "workspace" || (aged && definition.sha !== null && definition.sha !== originSha);
   if (!stale) return [];
   const pinned = definition.source === "workspace" ? "the workspace checkout" : `${definition.ref ?? "origin"}@${(definition.sha ?? "").slice(0, 8)}`;
@@ -140,9 +149,10 @@ export function stalledInfo(run: Run): StalledInfo | null {
 }
 
 /** The run has been stalled for `afterMs` or more. `manager`: its state, and whether it is stopped on a quota notice. */
-export function stalledCandidates(run: Run, info: StalledInfo | null, afterMs: number, now: number, manager: "running" | "idle" | "gone" | null, quotaBlocked: boolean, action: Act): Candidate[] {
-  if (!info || now - info.idleSince < afterMs) return [];
-  const minutes = Math.round((now - info.idleSince) / 60_000);
+export function stalledCandidates(run: Run, info: StalledInfo | null, afterMs: number, now: number, manager: "running" | "idle" | "gone" | null, quotaBlocked: boolean, action: Act, closed?: ClosedHours | null): Candidate[] {
+  const idle = info ? openAge(closed, info.idleSince, now) : 0;
+  if (!info || idle < afterMs) return [];
+  const minutes = Math.round(idle / 60_000);
   const managerText = manager === null ? "no manager" : quotaBlocked ? "the manager is quota-blocked" : `the manager is ${manager}`;
   const since = new Date(info.idleSince).toISOString();
   return [{ check: "stalled", subject: null, signature: since, detail: `no running, ready or queued step and no open gate for ${minutes} min; ${managerText}; last: ${info.last}; steps ${info.steps}`, action, value: minutes, state: `${manager ?? "none"}${quotaBlocked ? "+quota" : ""}` }];
@@ -153,12 +163,12 @@ export function stalledCandidates(run: Run, info: StalledInfo | null, afterMs: n
  * usage window, the run's place and priority in the queue, who is ahead of it (the other held runs of the same provider and
  * window with a lower position), the estimated cost against the headroom and the retry time.
  */
-export function heldCandidates(run: Run, runs: Run[], afterMs: number, now: number, action: Act): Candidate[] {
+export function heldCandidates(run: Run, runs: Run[], afterMs: number, now: number, action: Act, closed?: ClosedHours | null): Candidate[] {
   const hold = run.rateHold;
   if (!hold || !isActive(run) || isTerminal(run.status) || run.pausedAt) return [];
   const since = Date.parse(hold.since);
-  if (!Number.isFinite(since) || now - since < afterMs) return [];
-  const minutes = Math.round((now - since) / 60_000);
+  if (!Number.isFinite(since) || openAge(closed, since, now) < afterMs) return [];
+  const minutes = Math.round(openAge(closed, since, now) / 60_000);
   const ahead = hold.position === null ? [] : runs.filter((other) => other.id !== run.id && other.rateHold && !other.archivedAt && isActive(other) && other.rateHold.provider === hold.provider && other.rateHold.window === hold.window && other.rateHold.position !== null && other.rateHold.position < (hold.position as number)).sort((a, b) => a.rateHold!.position! - b.rateHold!.position!);
   const where = hold.provider ? `${hold.provider}${hold.window ? ` ${hold.window}` : ""}` : "no provider";
   const queue = hold.position === null ? "no queue position" : `position ${hold.position}${hold.priority === null ? "" : `, priority ${hold.priority}`}`;
