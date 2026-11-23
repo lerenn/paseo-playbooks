@@ -230,3 +230,45 @@ describe("dynamic capacity from quota headroom", () => {
     expect(internals.costs.stepCost("work", "claude", "weekly")).toBeCloseTo(3, 1);
   });
 });
+
+describe("quota limits from the playbook defaults, per run", () => {
+  const claude = (used: number) => ({ providers: [{ providerId: "claude", status: "available", windows: [weekly(used)] }] });
+  type Layer = { quotaLimits: unknown };
+
+  it("paces a run by its own defaults, with no user config: a project that sets usable_percent is paced, another is not", async () => {
+    // Used 10: at 50 usable the ceiling is 14.9 (4.9 free < 10 for the run); a run with nothing set is not paced.
+    const { store, internals, read } = await setup("", { current: claude(10) });
+    await read();
+    await store.mutate("r0", (run) => void ((run.playbook as unknown as Layer).quotaLimits = { quota: { pacing: true, usablePercent: 50 } }));
+    expect(await internals.rateCheck(store.get("r0")!, "", false)).toBeNull();
+    expect(await internals.rateCheck(store.get("r0")!, "", true)).toMatchObject({ kind: "headroom", provider: "claude", window: "weekly" });
+    expect(await internals.rateCheck(store.get("r1")!, "", true)).toBeNull();
+  });
+
+  it("uses each run's own usable_percent over the same global reading, and the defaults over the user config", async () => {
+    // The user config paces at 97 (18.87 free: a 10-point run fits); r0's defaults say 50 (4.9 free: it does not), r1's say nothing.
+    const { store, internals, read } = await setup("quota_limits: { quota: { usable_percent: 97, refresh_interval: 1h, max_age: 2h } }", { current: claude(10) });
+    await read();
+    await store.mutate("r0", (run) => void ((run.playbook as unknown as Layer).quotaLimits = { quota: { usablePercent: 50 } }));
+    await store.mutate("r1", (run) => void (run.priority = 9));
+    expect(await internals.rateCheck(store.get("r1")!, "", true)).toBeNull();
+    expect(await internals.rateCheck(store.get("r0")!, "", true)).toMatchObject({ kind: "headroom" });
+  });
+
+  it("a folder can turn the user config's pacing off for its own runs", async () => {
+    const { store, internals, read } = await setup("quota_limits: { quota: { pacing: true, refresh_interval: 1h, max_age: 2h } }", { current: claude(25) });
+    await read();
+    await store.mutate("r0", (run) => void ((run.playbook as unknown as Layer).quotaLimits = { quota: { pacing: false } }));
+    expect(await internals.rateCheck(store.get("r0")!, "", true)).toBeNull();
+    expect(await internals.rateCheck(store.get("r1")!, "", true)).toMatchObject({ kind: "headroom" });
+  });
+
+  it("gates each run by the cap of its own config while counting every run", async () => {
+    const { store, runtime } = await setup("");
+    await runtime.startStep("m", "r0", "a", "go");
+    // r0's config has no cap and passes; r1's config caps the runs at 1, and r0 counts: r1 waits.
+    await store.mutate("r1", (run) => void ((run.playbook as unknown as Layer).quotaLimits = { playbooks: 1 }));
+    await expect(runtime.startStep("m", "r1", "a", "go")).rejects.toBeInstanceOf(RateHeldError);
+    expect(store.get("r1")!.rateHold!.kind).toBe("playbooks");
+  });
+});

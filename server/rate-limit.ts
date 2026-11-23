@@ -217,7 +217,7 @@ export function runningStepCount(runs: Run[]): number {
   return count;
 }
 
-/** The queue priority of a run: its own (`start_playbook`), else its playbook's `rate_limit.priority`; a fan-out child follows its parent's. Higher goes first. */
+/** The queue priority of a run: its own (`start_playbook`), else its playbook's `quota_limit.priority`; a fan-out child follows its parent's. Higher goes first. */
 export function runPriority(run: Run, runs: Run[]): number {
   const root = run.parent ? runs.find((candidate) => candidate.id === run.parent?.runId) : undefined;
   const owner = root ?? run;

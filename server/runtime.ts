@@ -72,7 +72,7 @@ import { StaleSessions } from "./stale-sessions";
 import { fetchAllWorkspaces, WorkspaceLookup } from "./workspace-lookup";
 import type { RunStore } from "./store";
 import { holdsBlock, planAdmissions, slotHolders } from "../shared/slots";
-import { DEFAULT_MANAGER_RECOVERY, DEFAULT_RATE_LIMITS, readManagerRecoveryConfig, readRateLimitsConfig, type ManagerRecoveryConfig, type RateLimitsConfig } from "./config";
+import { DEFAULT_MANAGER_RECOVERY, DEFAULT_RATE_LIMITS, readManagerRecoveryConfig, readQuotaLimitsLayer, resolveQuotaLimits, type ManagerRecoveryConfig, type QuotaLimitsLayer, type RateLimitsConfig } from "./config";
 import { CostHistory, exhaustionVerdict, planPace, type Admitted as AdmittedRun, orderCandidates, planHeadroom, windowKey, type Candidate as RateCandidate, type PlanContext } from "./rate-budget";
 import { limitVerdict, QuotaPacer, runPriority, runProviders, usedPct, type HoldVerdict, type ReadChange } from "./rate-limit";
 import { pluginDataDir } from "./data-dir";
@@ -666,7 +666,7 @@ export class Runtime {
   /** The quota points each running or just ended agent attempt has been measured to use so far, folded into `costs` when it ends. */
   private readonly attemptUse = new Map<string, { playbookId: string; provider: string; points: Record<string, number> }>();
   private readonly warnedUnreported = new Set<string>();
-  private rateConfig: { at: number; value: RateLimitsConfig } | null = null;
+  private rateConfig: { at: number; value: QuotaLimitsLayer } | null = null;
   private limitTimer: ReturnType<typeof setInterval> | null = null;
   /** Usage skips already written to a run's log (`run|target|window|reset`), so a skip is logged once. */
   private readonly usageLogged = new Set<string>();
@@ -2275,11 +2275,25 @@ export class Runtime {
 
   // ---------------------------------------------------------------- rate limiting (ADR 2026-11-20-rate-limiting)
 
-  /** `rate_limits` of config.yaml, re-read at most every 5 s so a change applies without a reload. */
-  private async rateLimits(): Promise<RateLimitsConfig> {
+  /** `quota_limits` of config.yaml (or the deprecated `rate_limits`), re-read at most every 5 s so a change applies without a reload. */
+  private async userQuotaLayer(): Promise<QuotaLimitsLayer> {
     const now = Date.now();
-    if (!this.rateConfig || now - this.rateConfig.at > 5_000) this.rateConfig = { at: now, value: await readRateLimitsConfig().catch(() => DEFAULT_RATE_LIMITS) };
+    if (!this.rateConfig || now - this.rateConfig.at > 5_000) this.rateConfig = { at: now, value: await readQuotaLimitsLayer().catch(() => ({})) };
     return this.rateConfig.value;
+  }
+
+  /** The user-level limits (built-in defaults under config.yaml): what no project's defaults change. */
+  private async rateLimits(): Promise<RateLimitsConfig> {
+    return resolveQuotaLimits(await this.userQuotaLayer());
+  }
+
+  /**
+   * The limits in effect for a run (ADR 2026-11-23-quota-limits-in-defaults): the built-in defaults, then config.yaml, then the
+   * `quota_limits` of the run's own playbook defaults (the order `manager_recovery` and the other defaults follow: the folder's defaults win).
+   * Uses the layer read by the last `userQuotaLayer()`.
+   */
+  private limitsOf(run: Run): RateLimitsConfig {
+    return resolveQuotaLimits(this.rateConfig?.value, run.playbook.quotaLimits);
   }
 
   /** Steps being started right now (agent created, attempt not yet running), other than `exceptKey`: they count against the step limit. */
@@ -2299,7 +2313,8 @@ export class Runtime {
    * fan-out is never held (a fan-out's own step would deadlock the runs it started). `starting` reserves the quota of work that passes.
    */
   private async rateCheck(run: Run, exceptKey = "", quota = true): Promise<HoldVerdict | null> {
-    const config = await this.rateLimits();
+    await this.userQuotaLayer();
+    const config = this.limitsOf(run);
     let verdict: HoldVerdict | null = null;
     if (config.steps !== null || config.playbooks !== null) verdict = limitVerdict(run, this.store.list(), config, this.reservedStarts(exceptKey));
     if (!verdict && quota && config.quota.pacing) verdict = this.paceVerdict(this.store.get(run.id) ?? run, config, exceptKey !== "");
@@ -2312,7 +2327,7 @@ export class Runtime {
     return {
       now: Date.now(),
       config,
-      probe: (provider) => this.pacer.probe(provider, config.quota),
+      probe: (provider, run) => this.pacer.probe(provider, run ? this.limitsOf(run).quota : config.quota),
       stepCost: (run, provider, windowId) => this.costs.stepCost(run.playbook.id, provider, windowId),
       reserved: (provider, windowId) => {
         const key = windowKey(provider, windowId);
@@ -2366,7 +2381,7 @@ export class Runtime {
     const providers = runProviders(run, DEFAULT_PROVIDER);
     if (providers.length === 0) return null;
     const ctx = this.planContext(config);
-    if (this.rateAdmitted(run)) return exhaustionVerdict(providers, ctx).verdict ?? this.paceFit(run, ctx);
+    if (this.rateAdmitted(run)) return exhaustionVerdict(providers, ctx, run).verdict ?? this.paceFit(run, ctx);
     this.pruneQuotaReservations();
     const plan = planHeadroom(this.rateCandidates(run), ctx);
     const hold = plan.holds.get(run.id) ?? null;

@@ -489,7 +489,7 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
           .min(-1000)
           .max(1000)
           .optional()
-          .describe("Rate limiting: this run's priority in the queue for provider quota, overriding the playbook's `rate_limit.priority` (default 0). Higher goes first; ties go to the oldest run. Only matters while rate limiting holds work (`rate_limits` in the user config)"),
+          .describe("Rate limiting: this run's priority in the queue for provider quota, overriding the playbook's `quota_limit.priority` (default 0). Higher goes first; ties go to the oldest run. Only matters while rate limiting holds work (`quota_limits` in defaults/main.yaml or the user config)"),
         autoStart: z
           .boolean()
           .default(true)

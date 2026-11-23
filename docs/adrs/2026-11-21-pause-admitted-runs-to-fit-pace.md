@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted. Supersedes the "never evicted, held between steps only when its quota is exhausted" rule of decision 4 in `2026-11-20-dynamic-rate-limits.md`. Its remark on step mode is moot: `2026-11-21-remove-rate-limit-mode.md` removed the mode.
+Accepted. Supersedes the "never evicted, held between steps only when its quota is exhausted" rule of decision 4 in `2026-11-20-dynamic-rate-limits.md`. Its remark on step mode is moot: `2026-11-21-remove-rate-limit-mode.md` removed the mode. The location and name of the settings (`rate_limits` of the user config only; `rate_limit.priority`) are superseded by `2026-11-23-quota-limits-in-defaults.md` (`quota_limits`, also in `defaults/main.yaml`; `quota_limit.priority`).
 
 ## Context
 

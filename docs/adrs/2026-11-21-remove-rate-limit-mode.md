@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted. Supersedes the mode (decision 4) of `2026-11-20-dynamic-rate-limits.md`, and the step-mode remarks of `2026-11-20-rate-limiting.md` and `2026-11-21-pause-admitted-runs-to-fit-pace.md`.
+Accepted. Supersedes the mode (decision 4) of `2026-11-20-dynamic-rate-limits.md`, and the step-mode remarks of `2026-11-20-rate-limiting.md` and `2026-11-21-pause-admitted-runs-to-fit-pace.md`. The location and name of the settings (`rate_limits` of the user config only; `rate_limit.priority`) are superseded by `2026-11-23-quota-limits-in-defaults.md` (`quota_limits`, also in `defaults/main.yaml`; `quota_limit.priority`).
 
 ## Context
 

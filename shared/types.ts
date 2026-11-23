@@ -541,8 +541,16 @@ export const PlaybookSchema = z.object({
   managerNudge: ManagerNudgeSchema.default(DEFAULT_MANAGER_NUDGE),
   /** `warden`: the periodic checks. Unset on runs from before it (= off). */
   warden: WardenConfigSchema.default(DEFAULT_WARDEN),
-  /** `rate_limit`: the queue priority of the playbook's runs when rate limiting holds work (higher first) (costs come only from measured history). Unset on runs from before it (= 0). */
+  /** `quota_limit` (was `rate_limit`): the queue priority of the playbook's runs when rate limiting holds work (higher first) (costs come only from measured history). Unset on runs from before it (= 0). */
   rateLimit: z.object({ priority: z.number() }).default({ priority: 0 }),
+  /** `quota_limits` of the playbook's `defaults/main.yaml` (ADR 2026-11-23-quota-limits-in-defaults): the fields it sets; the run's effective limits are these over the user config over the built-in defaults. Unset on runs from before it (= nothing set). */
+  quotaLimits: z
+    .object({
+      steps: z.number().nullable().optional(),
+      playbooks: z.number().nullable().optional(),
+      quota: z.object({ pacing: z.boolean().optional(), usablePercent: z.number().optional(), refreshMs: z.number().optional(), maxAgeMs: z.number().optional() }).optional(),
+    })
+    .default({}),
   /** `manager.mode`: `none` = no manager agent, the plugin drives the run. Unset on runs from before it (= always_on). */
   managerMode: ManagerModeSchema.default(DEFAULT_MANAGER_MODE),
   /** How long an exhausted `provider/model` is skipped before it is tried again (`providers.exhausted_for`), in ms. */
@@ -1207,7 +1215,7 @@ export const RunSchema = z.object({
   rateHold: RateHoldSchema.nullable().default(null),
   /** A warning about pacing, set while a provider the run uses reports no usage (so its work is not paced); null otherwise. */
   rateNote: z.string().nullable().default(null),
-  /** The priority `start_playbook` gave this run, overriding the playbook's `rate_limit.priority`; null = the playbook's. */
+  /** The priority `start_playbook` gave this run, overriding the playbook's `quota_limit.priority`; null = the playbook's. */
   priority: z.number().nullable().default(null),
   /** The manager watchdog's memory (nudges sent per reported step, the manager's open question). */
   managerWatch: ManagerWatchSchema.default({ steps: {}, question: null }),

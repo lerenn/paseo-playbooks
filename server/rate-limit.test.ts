@@ -1,8 +1,8 @@
 import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
-import { DEFAULT_RATE_LIMITS, readRateLimitsConfig } from "./config";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { DEFAULT_RATE_LIMITS, readRateLimitsConfig, resetDeprecationNotes, resolveQuotaLimits, parseQuotaLimits } from "./config";
 import { newRun, setRateHold, startAttempt } from "./engine";
 import { loadPlaybooks } from "./loader";
 import { admittedRunIds, limitVerdict, paceCeiling, QuotaPacer, roomFreeAt, roomHeadroom, runningStepCount, windowLengthMs, windowRooms } from "./rate-limit";
@@ -220,5 +220,49 @@ describe("rate_limits config", () => {
   it("reads the block and falls back on malformed values", async () => {
     expect(await read("rate_limits: { steps: 4, playbooks: 2, quota: { pacing: true, usable_percent: 90, refresh_interval: 2m, max_age: 10m } }")).toEqual({ steps: 4, playbooks: 2, quota: { pacing: true, usablePercent: 90, refreshMs: 120_000, maxAgeMs: 600_000 } });
     expect(await read("rate_limits: { steps: 0, playbooks: x, quota: { pacing: yes, usable_percent: 400, max_age: soon } }")).toEqual(DEFAULT_RATE_LIMITS);
+  });
+});
+
+describe("quota_limits config", () => {
+  async function read(yaml: string) {
+    const dir = await mkdtemp(path.join(tmpdir(), "ql-config-"));
+    temps.push(dir);
+    const file = path.join(dir, "config.yaml");
+    await writeFile(file, yaml);
+    return readRateLimitsConfig(file);
+  }
+
+  it("reads quota_limits with the same block keys as the old rate_limits", async () => {
+    expect(await read("quota_limits: { steps: 4, playbooks: 2, quota: { pacing: true, usable_percent: 90, refresh_interval: 2m, max_age: 10m } }")).toEqual({ steps: 4, playbooks: 2, quota: { pacing: true, usablePercent: 90, refreshMs: 120_000, maxAgeMs: 600_000 } });
+  });
+
+  it("turns pacing on with usable_percent alone, unless pacing is false; the legacy rate_limits keeps needing pacing: true", () => {
+    expect(resolveQuotaLimits(parseQuotaLimits({ quota: { usable_percent: 90 } })).quota).toMatchObject({ pacing: true, usablePercent: 90 });
+    expect(resolveQuotaLimits(parseQuotaLimits({ quota: { usable_percent: 90, pacing: false } })).quota.pacing).toBe(false);
+    expect(resolveQuotaLimits(parseQuotaLimits({ steps: 3 })).quota.pacing).toBe(false);
+    expect(resolveQuotaLimits(parseQuotaLimits({ quota: { usable_percent: 90 } }, true)).quota).toMatchObject({ pacing: false, usablePercent: 90 });
+  });
+
+  it("keeps rate_limits working as an alias, notes it once, and lets quota_limits win when both are given", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      resetDeprecationNotes();
+      expect((await read("rate_limits: { steps: 4 }")).steps).toBe(4);
+      expect((await read("rate_limits: { steps: 5 }")).steps).toBe(5);
+      expect(warn.mock.calls.filter(([text]) => String(text).includes("`rate_limits` is deprecated") && String(text).includes("`quota_limits`"))).toHaveLength(1);
+      expect((await read("rate_limits: { steps: 4, playbooks: 9 }\nquota_limits: { steps: 7 }")).playbooks).toBeNull();
+      expect((await read("rate_limits: { steps: 4 }\nquota_limits: { steps: 7 }")).steps).toBe(7);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("layers fields: built-in, then the user config, then the folder's defaults (a later layer overrides only what it sets)", () => {
+    const user = parseQuotaLimits({ steps: 4, quota: { pacing: true, usable_percent: 80, refresh_interval: "2m" } });
+    const folder = parseQuotaLimits({ playbooks: 2, quota: { usable_percent: 90 } });
+    expect(resolveQuotaLimits(user, folder)).toEqual({ steps: 4, playbooks: 2, quota: { pacing: true, usablePercent: 90, refreshMs: 120_000, maxAgeMs: 30 * 60_000 } });
+    expect(resolveQuotaLimits(user, undefined)).toMatchObject({ steps: 4, quota: { usablePercent: 80 } });
+    expect(resolveQuotaLimits(undefined, folder).quota).toMatchObject({ pacing: true, usablePercent: 90 });
+    expect(resolveQuotaLimits()).toEqual(DEFAULT_RATE_LIMITS);
   });
 });

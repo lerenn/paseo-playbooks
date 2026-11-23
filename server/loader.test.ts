@@ -1,7 +1,8 @@
 import { chmod, cp, mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { resetDeprecationNotes } from "./config";
 import { hasPlaybooks, loadPlaybooks } from "./loader";
 
 const EXAMPLES = path.resolve(__dirname, "..", "examples");
@@ -345,6 +346,62 @@ steps:
       const bad = await workspace({ "pr.yaml": `rate_limit: ${block}\n${steps}` });
       expect((await loadPlaybooks(bad)).entries[0]!.errors.length, block).toBeGreaterThan(0);
     }
+  });
+
+  it("reads quota_limit.priority (and the old rate_limit alias, noted once; the new key wins) in a playbook and in defaults", async () => {
+    const steps = "steps:\n  - id: a\n    role: { name: investigator, prompt: go }\n";
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      resetDeprecationNotes();
+      const dir = await workspace({ "defaults/main.yaml": "quota_limit: { priority: 2 }\n", "new.yaml": `quota_limit: { priority: 9 }\n${steps}`, "old.yaml": `rate_limit: { priority: 7 }\n${steps}`, "both.yaml": `rate_limit: { priority: 7 }\nquota_limit: { priority: 4 }\n${steps}`, "plain.yaml": steps });
+      const entries = (await loadPlaybooks(dir)).entries;
+      const priority = (id: string) => entries.find((entry) => entry.id === id)!.playbook!.rateLimit.priority;
+      expect([priority("new"), priority("old"), priority("both"), priority("plain")]).toEqual([9, 7, 4, 2]);
+      const old = await workspace({ "defaults/main.yaml": "rate_limit: { priority: 3 }\n", "plain.yaml": steps });
+      expect((await loadPlaybooks(old)).entries[0]!.playbook!.rateLimit.priority).toBe(3);
+      expect(warn.mock.calls.filter(([text]) => String(text).includes("`rate_limit` is deprecated") && String(text).includes("`quota_limit`"))).toHaveLength(1);
+      for (const block of ["{ priority: high }", "{ weight: 3 }"]) {
+        const bad = await workspace({ "pr.yaml": `quota_limit: ${block}\n${steps}` });
+        expect((await loadPlaybooks(bad)).entries[0]!.errors.length, block).toBeGreaterThan(0);
+      }
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("reads quota_limits in defaults into every playbook; usable_percent alone turns pacing on; rate_limits stays an alias; the new key wins", async () => {
+    const steps = "steps:\n  - id: a\n    role: { name: investigator, prompt: go }\n";
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      resetDeprecationNotes();
+      const only = await workspace({ "defaults/main.yaml": "quota_limits: { quota: { usable_percent: 90 } }\n", "plain.yaml": steps });
+      expect((await loadPlaybooks(only)).entries[0]!.playbook!.quotaLimits).toEqual({ quota: { pacing: true, usablePercent: 90 } });
+      const full = await workspace({ "defaults/main.yaml": "quota_limits: { steps: 4, playbooks: 2, quota: { pacing: false, usable_percent: 80, refresh_interval: 2m, max_age: 10m } }\n", "plain.yaml": steps });
+      expect((await loadPlaybooks(full)).entries[0]!.playbook!.quotaLimits).toEqual({ steps: 4, playbooks: 2, quota: { pacing: false, usablePercent: 80, refreshMs: 120_000, maxAgeMs: 600_000 } });
+      const legacy = await workspace({ "defaults/main.yaml": "rate_limits: { quota: { usable_percent: 90 } }\n", "plain.yaml": steps });
+      expect((await loadPlaybooks(legacy)).entries[0]!.playbook!.quotaLimits).toEqual({ quota: { usablePercent: 90 } });
+      expect(warn.mock.calls.filter(([text]) => String(text).includes("`rate_limits` is deprecated") && String(text).includes("`quota_limits`"))).toHaveLength(1);
+      const both = await workspace({ "defaults/main.yaml": "rate_limits: { steps: 9 }\nquota_limits: { playbooks: 1 }\n", "plain.yaml": steps });
+      expect((await loadPlaybooks(both)).entries[0]!.playbook!.quotaLimits).toEqual({ playbooks: 1 });
+      const none = await workspace({ "plain.yaml": steps });
+      expect((await loadPlaybooks(none)).entries[0]!.playbook!.quotaLimits).toEqual({});
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("refuses a bad quota_limits in defaults (and in the old rate_limits), and a playbook's own quota_limits", async () => {
+    const steps = "steps:\n  - id: a\n    role: { name: investigator, prompt: go }\n";
+    for (const block of ["{ steps: 0 }", "{ playbooks: 1.5 }", "{ quota: { usable_percent: 400 } }", "{ quota: { usable_percent: 0 } }", "{ quota: { pacing: yes please } }", "{ quota: { max_age: soon } }", "{ quota: { refresh_interval: 0 } }", "{ speed: 3 }", "{ quota: { window: weekly } }", "5"]) {
+      for (const key of ["quota_limits", "rate_limits"]) {
+        const bad = await workspace({ "defaults/main.yaml": `${key}: ${block}\n`, "pr.yaml": steps });
+        const loaded = await loadPlaybooks(bad);
+        expect(JSON.stringify(loaded), `${key}: ${block}`).toContain("defaults/main.yaml");
+        expect(loaded.entries[0]!.errors.length, `${key}: ${block}`).toBeGreaterThan(0);
+      }
+    }
+    const own = await workspace({ "pr.yaml": `quota_limits: { steps: 2 }\n${steps}` });
+    expect((await loadPlaybooks(own)).entries[0]!.errors.length).toBeGreaterThan(0);
   });
 
   it("refuses the removed rate_limit.estimate with a message saying so, in a playbook and in defaults", async () => {

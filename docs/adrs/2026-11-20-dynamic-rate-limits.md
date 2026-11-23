@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted, except decision 4 (the mode) and the manual `rate_limit.estimate` of decisions 2 and 5, superseded by `2026-11-21-remove-rate-limit-estimate.md`; the mode of decision 4 is superseded by `2026-11-21-remove-rate-limit-mode.md`. Supersedes decisions 2, 3 and the "usage at or above the ceiling holds" rule of 4 in `2026-11-20-rate-limiting.md`.
+Accepted, except decision 4 (the mode) and the manual `rate_limit.estimate` of decisions 2 and 5, superseded by `2026-11-21-remove-rate-limit-estimate.md`; the mode of decision 4 is superseded by `2026-11-21-remove-rate-limit-mode.md`. Supersedes decisions 2, 3 and the "usage at or above the ceiling holds" rule of 4 in `2026-11-20-rate-limiting.md`. The location and name of the settings (`rate_limits` of the user config only; `rate_limit.priority`) are superseded by `2026-11-23-quota-limits-in-defaults.md` (`quota_limits`, also in `defaults/main.yaml`; `quota_limit.priority`).
 
 ## Context
 

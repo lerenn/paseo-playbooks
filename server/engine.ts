@@ -81,7 +81,7 @@ export interface NewRunInput {
   definition?: RunDefinition;
   /** Set when a fan-out step started the run. */
   parent?: Run["parent"];
-  /** `start_playbook`'s priority, overriding the playbook's `rate_limit.priority`. */
+  /** `start_playbook`'s priority, overriding the playbook's `quota_limit.priority`. */
   priority?: number | null;
   inputs: Record<string, unknown>;
   now: string;

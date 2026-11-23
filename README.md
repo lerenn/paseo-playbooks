@@ -221,13 +221,17 @@ per type. `filter` matches them by equality, e.g. `{ playbook: "release_trains",
 ### Rate limits
 
 Off by default. The plugin paces playbook work against each provider's quota, so **how much runs at once is the result of the quota
-left, not a setting**. In the user config (`$PASEO_HOME/plugin-data/lerenn/paseo-playbooks/config.yaml`, applied without a reload;
-ADRs `docs/adrs/2026-11-20-rate-limiting.md` and `docs/adrs/2026-11-20-dynamic-rate-limits.md` and `docs/adrs/2026-11-21-pause-admitted-runs-to-fit-pace.md`; the former `rate_limits.mode` was removed, see `docs/adrs/2026-11-21-remove-rate-limit-mode.md`; a config that still sets it loads, the key is ignored and noted once in the log):
+left, not a setting**. Set it in a repository's or profile's `defaults/main.yaml` (the file where a playbook's defaults live), in the user config
+(`$PASEO_HOME/plugin-data/lerenn/paseo-playbooks/config.yaml`, applied without a reload), or both. Precedence, field by field: the folder's
+`defaults/main.yaml`, then the user config, then the built-in defaults (the order `manager_recovery` and the other defaults follow). It is resolved **per run**
+from the run's own playbook folder: a run is paced by its own `usable_percent` and `pacing`, while the quota readings, reservations and queue stay global per provider; each
+run is gated by the `steps` and `playbooks` caps of its own resolved config, counting all runs. A change to `defaults/main.yaml` applies to the runs started after it, like the other defaults.
+ADRs `docs/adrs/2026-11-23-quota-limits-in-defaults.md`, `docs/adrs/2026-11-20-rate-limiting.md` and `docs/adrs/2026-11-20-dynamic-rate-limits.md` and `docs/adrs/2026-11-21-pause-admitted-runs-to-fit-pace.md`; the former `rate_limits.mode` was removed, see `docs/adrs/2026-11-21-remove-rate-limit-mode.md`; a config that still sets it loads, the key is ignored and noted once in the log):
 
 ```yaml
-rate_limits:
+quota_limits:
   quota:
-    pacing: true           # work starts only while the quota headroom covers its estimated cost
+    pacing: true           # (turned on by usable_percent alone) work starts only while the quota headroom covers its estimated cost
     usable_percent: 97     # a 100 h window then allows 0.97 points an hour (the pace ceiling); 97 is also the hard cap
     refresh_interval: 5m   # a reading younger than this is used as is
     max_age: 30m           # an older reading holds new work ("quota data unavailable") until a refresh succeeds
@@ -238,7 +242,7 @@ rate_limits:
 **Headroom** of a provider window = its pace ceiling (`usable_percent` × elapsed / window length, the tightest window winning)
 minus current usage minus what work already started still has to use. Work starts while the headroom covers its **estimated cost**: the
 average quota points the playbook's steps used, measured from the usage readings and kept in `rate-history.json` (there is no manual estimate;
-`rate_limit.estimate` was removed and is refused at load). A playbook with no history is **not paced by cost** (it starts
+`quota_limit.estimate` was removed and is refused at load). A playbook with no history is **not paced by cost** (it starts
 without a headroom check and reserves nothing) until its first measure exists; the hard cap (`usable_percent`) and "quota data unavailable" still hold it.
 The rest is held; the plugin lifts the hold itself.
 
@@ -248,8 +252,10 @@ The rest is held; the plugin lifts the hold itself.
   oldest first; the lowest priority and newest are paused. Paused runs resume one by one, in the same order, when the pace relaxes or a
   continuing run finishes; the capacity is re-checked each time, so never more runs than it allows progress. Runs with no measured cost
   are not paced and never paused. Held and paused runs are re-checked at once when a run ends or is archived or a step ends (debounced, one check per burst), with the 15 s timer as fallback. A run is also held between steps when its quota is exhausted (a window at `usable_percent`).
-- **Priority**: `rate_limit: { priority: 0 }` on a playbook (or in `defaults/main.yaml`), overridden per run by `start_playbook`'s `priority`.
+- **Priority**: `quota_limit: { priority: 0 }` on a playbook (or in `defaults/main.yaml`), overridden per run by `start_playbook`'s `priority`.
   Higher goes first, ties oldest first, also for the optional caps. A held run blocks lower ones on the same provider, so a large run is not starved.
+- **Old names**: `rate_limits` (config or defaults) and `rate_limit` (playbook or defaults) still work as deprecated aliases and log a one-time note naming the new key; when both are set, the new key wins. Only the config keys were renamed: `rateHold`, `run.held`, `run.released` and `rate-history.json` are unchanged.
+- To pace at 90% for a profile, put `quota_limits: { quota: { usable_percent: 90 } }` in its `defaults/main.yaml`.
 - A provider that reports no usage is not paced; the run carries a note (`rateNote` in `get_run`, shown in the run's menu) and the plugin logs it once.
 
 A running step is never interrupted. `get_run` shows why in `rateHold` (kind `headroom`, `pace` (an admitted run paused to fit the pace, with its position in the resume queue), `quota`, `steps` or `playbooks`, reason, estimated cost,

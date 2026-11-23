@@ -29,7 +29,7 @@ import { AgentSettingsSchema, type AgentTarget, DEFAULT_EXHAUSTED_FOR_MS, DEFAUL
 import { BusError, checkTypes, FilterValueSchema } from "./bus";
 import { JOB_TYPES } from "./job-events";
 import { OVERSIGHT_TYPES } from "./oversight-events";
-import { readProjectDefault, readProjectProfiles } from "./config";
+import { noteDeprecatedKey, quotaLimitsLayerOf, readProjectDefault, readProjectProfiles, type QuotaLimitsLayer } from "./config";
 import { bareId, DEFAULT_REPO, qualified } from "../shared/repos";
 import { MAX_SUBAGENT_ARCHIVE_AFTER_MS } from "./sidekick-archive";
 import { branchNameProblem } from "./branch-name";
@@ -574,13 +574,38 @@ function resolveManagerNudge(raw: RawManagerNudge | undefined, where: string, fa
   return out;
 }
 
-/** `rate_limit`: how the playbook's runs queue for quota (ADR 2026-11-20-dynamic-rate-limits). */
+/** `quota_limit` (was `rate_limit`, still accepted): how the playbook's runs queue for quota (ADR 2026-11-20-dynamic-rate-limits, ADR 2026-11-23-quota-limits-in-defaults). */
 const RawRateLimitSchema = z
   .object({
     /** Which held run goes first when headroom returns: higher first, ties oldest first. A whole number, default 0; `start_playbook` may override it per run. */
     priority: z.number().int().min(-1000).max(1000).optional(),
     /** Removed (ADR 2026-11-21-remove-rate-limit-estimate): costs come only from measured history. Kept in the schema only to refuse it with a clear message. */
-    estimate: z.unknown().refine((value) => value === undefined, "`rate_limit.estimate` was removed: the cost of a playbook comes only from its measured history (a playbook with no history is not paced until its first measure); delete the field").optional(),
+    estimate: z.unknown().refine((value) => value === undefined, "`quota_limit.estimate` (formerly `rate_limit.estimate`) was removed: the cost of a playbook comes only from its measured history (a playbook with no history is not paced until its first measure); delete the field").optional(),
+  })
+  .strict();
+
+/** `quota_limits` (was `rate_limits`, still accepted): the quota pacing and the hard caps (ADR 2026-11-23-quota-limits-in-defaults). Repository defaults only. */
+const RawQuotaLimitsSchema = z
+  .object({
+    /** Optional hard cap: most steps running at once across all projects (a whole number above 0). */
+    steps: z.number().int().min(1).optional(),
+    /** Optional hard cap: most runs admitted at once across all projects (a whole number above 0). */
+    playbooks: z.number().int().min(1).optional(),
+    quota: z
+      .object({
+        /** Pace work against each provider's usage. Turned on by `usable_percent` alone; `false` turns it off. */
+        pacing: z.boolean().optional(),
+        /** Percentage of a usage window the playbooks may use (above 0, at most 100). Default 97. */
+        usable_percent: z.number().gt(0).max(100).optional(),
+        /** A usage reading younger than this is used as is (`5m`). */
+        refresh_interval: z.string().refine((value) => parseDuration(value) !== null, { message: "quota_limits.quota.refresh_interval must be a duration such as 5m" }).optional(),
+        /** A reading older than this is unusable (`30m`). */
+        max_age: z.string().refine((value) => parseDuration(value) !== null, { message: "quota_limits.quota.max_age must be a duration such as 30m" }).optional(),
+      })
+      .strict()
+      .optional(),
+    /** Removed (ADR 2026-11-21-remove-rate-limit-mode); still ignored with a note. */
+    mode: z.unknown().optional(),
   })
   .strict();
 
@@ -802,8 +827,12 @@ const RawPlaybookSchema = z.object({
     manager_recovery: RawManagerRecoverySchema.optional(),
     /** The warden's periodic checks; see RawWardenSchema. Off unless `enabled: true`. */
     warden: RawWardenSchema.optional(),
-    /** Queue priority of the playbook's runs when rate limiting holds work; see RawRateLimitSchema. */
+    /** Queue priority of the playbook's runs when quota limiting holds work; see RawRateLimitSchema. */
+    quota_limit: RawRateLimitSchema.optional(),
+    /** Deprecated name of `quota_limit`. */
     rate_limit: RawRateLimitSchema.optional(),
+    /** Not a playbook field: read here only to refuse it. */
+    quota_limits: z.unknown().refine((value) => value === undefined, "`quota_limits` is not set in a playbook: put it in `defaults/main.yaml` (or the user config); a playbook only has `quota_limit: { priority }`").optional(),
     /** House rules added to the prompt of every agent of the playbook, after the repository's `agent_rules` (a list of short strings; checked by `parseAgentRules`). */
     agent_rules: z.unknown().optional(),
     outcomes: z.array(z.string()).min(1).optional(),
@@ -871,7 +900,13 @@ const RawDefaultsSchema = z.object({
     /** The warden's periodic checks (repo-wide default; a playbook may override field by field). Off unless `enabled: true`. */
     warden: RawWardenSchema.optional(),
     /** Queue priority of every playbook's runs when rate limiting holds work (a playbook may override it). */
+    quota_limit: RawRateLimitSchema.optional(),
+    /** Deprecated name of `quota_limit`. */
     rate_limit: RawRateLimitSchema.optional(),
+    /** The quota pacing and hard caps, for the runs of this folder (the user config's `quota_limits` is under it; see ADR 2026-11-23-quota-limits-in-defaults). */
+    quota_limits: RawQuotaLimitsSchema.optional(),
+    /** Deprecated name of `quota_limits`. */
+    rate_limits: RawQuotaLimitsSchema.optional(),
     timeout: z.string().optional(),
     /** Default `manage` of every step. */
     manage: RawManageSchema.optional(),
@@ -889,7 +924,7 @@ const RawDefaultsSchema = z.object({
     silence: z.unknown().optional(),
     archive_agents: z.unknown().optional(),
   });
-type RawDefaults = Omit<z.infer<typeof RawDefaultsSchema>, "tiers"> & { tiers?: Tiers; managerCompact?: ManagerCompact; managerNudge?: Partial<ManagerNudge>; wardenConfig?: WardenConfig; wardenPr?: WardenPrConfig | null; managerMode?: ManagerMode; agentRules?: string[] };
+type RawDefaults = Omit<z.infer<typeof RawDefaultsSchema>, "tiers"> & { tiers?: Tiers; managerCompact?: ManagerCompact; managerNudge?: Partial<ManagerNudge>; wardenConfig?: WardenConfig; wardenPr?: WardenPrConfig | null; managerMode?: ManagerMode; agentRules?: string[]; quotaLimits?: QuotaLimitsLayer };
 
 function formatZodError(file: string, error: z.ZodError): string[] {
   return error.issues.map((issue) => {
@@ -1037,6 +1072,9 @@ async function loadDefaults(root: string, relDir: string): Promise<{ defaults: R
   }
   const fail = (message: string) => errors.push(`${rel}: ${message}`);
   const defaults: RawDefaults = { ...parsed.data, tiers };
+  const quotaLimits = quotaLimitsLayerOf({ quota_limits: parsed.data.quota_limits, rate_limits: parsed.data.rate_limits });
+  if (quotaLimits) defaults.quotaLimits = quotaLimits;
+  if (parsed.data.rate_limit !== undefined) noteDeprecatedKey("rate_limit", "quota_limit");
   if (parsed.data.agent) defaults.agent = resolveAgent(parsed.data.agent, tiers, "agent", fail);
   if (parsed.data.manager) {
     const { compact, nudge, lifecycle, ...settings } = parsed.data.manager;
@@ -1671,6 +1709,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
   const parsed = RawPlaybookSchema.safeParse(raw.value);
   if (!parsed.success) return fail(formatZodError(file, parsed.error));
   const pb = parsed.data;
+  if (pb.rate_limit !== undefined) noteDeprecatedKey("rate_limit", "quota_limit");
   entry.title = pb.title ?? id;
   entry.hidden = pb.hidden;
   const errors: string[] = [];
@@ -2546,7 +2585,8 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     managerCompact: pb.manager?.compact ?? defaults.managerCompact ?? DEFAULT_MANAGER_COMPACT,
     managerNudge,
     warden,
-    rateLimit: { priority: pb.rate_limit?.priority ?? defaults.rate_limit?.priority ?? 0 },
+    rateLimit: { priority: pb.quota_limit?.priority ?? pb.rate_limit?.priority ?? defaults.quota_limit?.priority ?? defaults.rate_limit?.priority ?? 0 },
+    quotaLimits: defaults.quotaLimits ?? {},
     managerMode,
     exhaustedForMs: (defaults.providers?.exhausted_for ? parseDuration(defaults.providers.exhausted_for) : null) ?? DEFAULT_EXHAUSTED_FOR_MS,
     onExhausted: defaults.providers?.on_exhausted ?? "fail",

@@ -1344,11 +1344,11 @@ that agent is still alive (`role: { archive_agents: false }`, idle): the plugin 
 
 ## Rate limits
 
-Off by default; set in the user config (`rate_limits: { steps, playbooks, quota: { pacing, usable_percent, refresh_interval, max_age } }`).
+Off by default; set in a repository's or profile's `defaults/main.yaml` and/or the user config (`quota_limits: { steps, playbooks, quota: { pacing, usable_percent, refresh_interval, max_age } }`; `usable_percent` alone turns pacing on; the folder's defaults override the user config, field by field, resolved per run from the run's own playbook folder, each run gated by the caps of its own config; the old `rate_limits` and `rate_limit` still work as deprecated aliases).
 With `quota.pacing` the quota left decides how much runs: work starts while a provider's headroom (pace ceiling minus usage minus what started work
-still uses) covers its estimated cost (the measured history of its steps; with none it is not paced by cost until its first measure; the old manual `rate_limit.estimate` was removed and is refused at load); `steps` and `playbooks` are only optional hard caps.
+still uses) covers its estimated cost (the measured history of its steps; with none it is not paced by cost until its first measure; the old manual `quota_limit.estimate` was removed and is refused at load); `steps` and `playbooks` are only optional hard caps.
 A run is admitted whole when the headroom covers its estimated cost; the pace may later pause admitted runs between steps (kind `pace`). A playbook may set
-`rate_limit: { priority: 0 }` (priority: a whole number, higher first, ties oldest first; also in `defaults/main.yaml`), and `start_playbook` takes `priority` to override it per run.
+`quota_limit: { priority: 0 }` (priority: a whole number, higher first, ties oldest first; also in `defaults/main.yaml`), and `start_playbook` takes `priority` to override it per run.
 The plugin may hold a run's new steps (not enough headroom, a provider at its usable share, a cap). `get_run` shows `rateHold`
 (kind headroom | pace | quota | steps | playbooks, reason, provider, window, retryAt, estimatedCost, headroom, position, priority) and `rateNote` (a used provider reports no usage, so it is not paced); `run.held` / `run.released` are events. A held run needs nothing from an agent: running steps finish, the
 plugin starts the ready steps itself when capacity or quota returns. Never start, retry, restart or cancel because of a hold.

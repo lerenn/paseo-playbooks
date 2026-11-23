@@ -84,7 +84,8 @@ export interface Candidate {
 export interface PlanContext {
   now: number;
   config: RateLimitsConfig;
-  probe: (provider: string) => Probe;
+  /** The provider's usage rooms, seen through the limits of `run` (its own `usable_percent`); without a run, the user-level limits. */
+  probe: (provider: string, run?: Run) => Probe;
   /** Points one step of the run's playbook is expected to use on the window: its measured history; null while there is none (not paced by estimate). */
   stepCost: (run: Run, provider: string, windowId: string) => number | null;
   /** Points started work still has to use on the window (reservations not yet visible in the readings). */
@@ -118,20 +119,17 @@ export function planHeadroom(candidates: Candidate[], ctx: PlanContext): Plan {
   const holds = new Map<string, HoldVerdict>();
   const unreported = new Set<string>();
   const admitted = new Map<string, Record<string, number>>();
-  const left = new Map<string, number>();
+  // Points taken so far per window; the headroom itself is read through each candidate's own limits (its usable percent).
+  const taken = new Map<string, number>();
   const blocked = new Set<string>();
   let position = 0;
-  const available = (room: WindowRoom): number => {
-    const key = windowKey(room.provider, room.id);
-    if (!left.has(key)) left.set(key, roomHeadroom(room) - ctx.reserved(room.provider, room.id));
-    return left.get(key)!;
-  };
+  const available = (room: WindowRoom): number => roomHeadroom(room) - ctx.reserved(room.provider, room.id) - (taken.get(windowKey(room.provider, room.id)) ?? 0);
   for (const candidate of candidates) {
     const takes: Array<{ room: WindowRoom; cost: number }> = [];
     let hold: HoldVerdict | null = null;
     let waitsBehind = false;
     for (const [provider, count] of candidate.demand) {
-      const probe = ctx.probe(provider);
+      const probe = ctx.probe(provider, candidate.run);
       if (probe.state === "override") continue;
       if (probe.state === "unreported") {
         unreported.add(provider);
@@ -186,7 +184,7 @@ export function planHeadroom(candidates: Candidate[], ctx: PlanContext): Plan {
       holds.set(candidate.run.id, hold);
       continue;
     }
-    for (const take of takes) left.set(windowKey(take.room.provider, take.room.id), available(take.room) - take.cost);
+    for (const take of takes) taken.set(windowKey(take.room.provider, take.room.id), (taken.get(windowKey(take.room.provider, take.room.id)) ?? 0) + take.cost);
     admitted.set(candidate.run.id, Object.fromEntries(takes.map((take) => [windowKey(take.room.provider, take.room.id), take.cost])));
   }
   return { holds, unreported, admitted };
@@ -196,14 +194,14 @@ export function planHeadroom(candidates: Candidate[], ctx: PlanContext): Plan {
  * A run already admitted is only held between steps when a provider's quota is exhausted (a window at or above
  * the usable percent) or its data is unavailable; never for lack of headroom.
  */
-export function exhaustionVerdict(providers: string[], ctx: Pick<PlanContext, "now" | "probe">): { verdict: HoldVerdict | null; unreported: Set<string> } {
+export function exhaustionVerdict(providers: string[], ctx: Pick<PlanContext, "now" | "probe">, run?: Run): { verdict: HoldVerdict | null; unreported: Set<string> } {
   const unreported = new Set<string>();
   let worst: HoldVerdict | null = null;
   const consider = (verdict: HoldVerdict) => {
     if (!worst || Date.parse(verdict.retryAt ?? "") > Date.parse(worst.retryAt ?? "")) worst = verdict;
   };
   for (const provider of providers) {
-    const probe = ctx.probe(provider);
+    const probe = ctx.probe(provider, run);
     if (probe.state === "unreported") unreported.add(provider);
     if (probe.state === "unavailable") consider(probe.verdict);
     if (probe.state !== "ok") continue;
@@ -234,19 +232,15 @@ export interface Admitted {
  */
 export function planPace(runs: Admitted[], ctx: Pick<PlanContext, "now" | "probe">, other: (provider: string, windowId: string) => number): Map<string, HoldVerdict> {
   const paused = new Map<string, HoldVerdict>();
-  const left = new Map<string, number>();
+  const taken = new Map<string, number>();
   const blocked = new Set<string>();
   let position = 0;
-  const available = (room: WindowRoom): number => {
-    const key = windowKey(room.provider, room.id);
-    if (!left.has(key)) left.set(key, roomHeadroom(room) - other(room.provider, room.id));
-    return left.get(key)!;
-  };
+  const available = (room: WindowRoom): number => roomHeadroom(room) - other(room.provider, room.id) - (taken.get(windowKey(room.provider, room.id)) ?? 0);
   for (const entry of [...runs].sort((a, b) => b.priority - a.priority || a.run.createdAt.localeCompare(b.run.createdAt) || a.run.id.localeCompare(b.run.id))) {
     const takes: Array<{ room: WindowRoom; cost: number }> = [];
     let short: { room: WindowRoom; cost: number; free: number } | null = null;
     for (const provider of entry.providers) {
-      const probe = ctx.probe(provider);
+      const probe = ctx.probe(provider, entry.run);
       if (probe.state !== "ok") continue;
       for (const room of probe.rooms) {
         const cost = entry.need[windowKey(provider, room.id)] ?? 0;
@@ -257,7 +251,7 @@ export function planPace(runs: Admitted[], ctx: Pick<PlanContext, "now" | "probe
       }
     }
     if (!short) {
-      for (const take of takes) left.set(windowKey(take.room.provider, take.room.id), available(take.room) - take.cost);
+      for (const take of takes) taken.set(windowKey(take.room.provider, take.room.id), (taken.get(windowKey(take.room.provider, take.room.id)) ?? 0) + take.cost);
       continue;
     }
     position += 1;
