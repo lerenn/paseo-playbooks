@@ -5,7 +5,7 @@ import { Pressable, Text, View } from "react-native";
 import { quotaLimitationRpc } from "../shared/contracts";
 import type { QuotaLimitation } from "../shared/quota-limitation";
 import { messages } from "./i18n";
-import { formatWait, projectRows, type ProjectRow, type ProviderRow, type SlotRow, type Tone } from "./quota-rows";
+import { formatWait, projectRows, unavailableProviders, type ProjectRow, type ProviderRow, type SlotRow, type Tone } from "./quota-rows";
 import { semanticColor } from "./semantic-colors";
 import type { Theme } from "./theme";
 
@@ -68,6 +68,9 @@ function Body(props: { theme: Theme; data: QuotaLimitation }) {
   return (
     <View style={{ gap: 10 }}>
       <Text style={{ color: muted, fontSize: 12 }}>{t("quota.counts", { steps: data.stepsRunning, runs: data.runsActive })}</Text>
+      {unavailableProviders(data).map((item) => (
+        <UsageDownLine key={item.provider} theme={theme} {...item} />
+      ))}
       {data.limitHeld.length > 0 ? (
         <Card theme={theme}>
           <Section theme={theme} title={t("quota.limitHeld")} first>
@@ -89,6 +92,15 @@ function Body(props: { theme: Theme; data: QuotaLimitation }) {
 
 /** Green, red and grey are fixed hues (`semantic-colors`), the same in every theme; the text beside a bar carries the numbers too. */
 const toneColor = (theme: Theme, tone: Tone) => (tone === "over" ? semanticColor(theme, "failed") : tone === "warn" ? semanticColor(theme, "waiting") : tone === "ok" ? semanticColor(theme, "done") : theme.colors.foregroundMuted);
+
+/** The provider-level line of an unavailable usage reading: violet, not an error (the plugin keeps trying and holds runs by itself). Shown once per provider. */
+function UsageDownLine(props: { theme: Theme; provider: string; since: string | null; reason: string | null; lastReadAt: string | null }) {
+  const { theme, provider, since, reason, lastReadAt } = props;
+  const { t, locale } = useTranslation(messages);
+  const time = (iso: string) => new Date(iso).toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" });
+  const parts = [`${provider}: ${since ? t("quota.usageDown", { when: time(since) }) : t("quota.state.unavailable")}${reason ? t("quota.usageReason", { reason }) : ""}`, lastReadAt ? t("quota.usageLastRead", { when: time(lastReadAt) }) : null].filter((part): part is string => part !== null);
+  return <Text style={{ color: semanticColor(theme, "paused"), fontSize: 12 }}>{parts.join(" · ")}</Text>;
+}
 
 function ProjectRowView(props: { theme: Theme; row: ProjectRow; first: boolean }) {
   const { theme, row, first } = props;
@@ -137,14 +149,14 @@ function ProviderView(props: { theme: Theme; provider: ProviderRow }) {
   return (
     <View style={{ gap: 3, borderLeftWidth: 2, borderLeftColor: theme.colors.border, paddingLeft: 8 }}>
       <Text style={{ color: theme.colors.foreground, fontSize: 12, fontWeight: "600" }}>{provider.provider}</Text>
-      {flag ? <Text style={{ color: provider.status === "unavailable" ? semanticColor(theme, "failed") : muted, fontSize: 12 }}>{flag}</Text> : null}
+      {flag ? <Text style={{ color: provider.status === "unavailable" ? semanticColor(theme, "paused") : muted, fontSize: 12 }}>{flag}</Text> : null}
       {provider.readAt ? <Text style={{ color: muted, fontSize: 11 }}>{t("quota.readAt", { when: whenAt(provider.readAt, locale) })}</Text> : null}
       {provider.overrideUntil ? <Text style={{ color: muted, fontSize: 11 }}>{t("quota.overrideUntil", { when: whenAt(provider.overrideUntil, locale) })}</Text> : null}
       {provider.slots.length === 0 ? <Text style={{ color: muted, fontSize: 12 }}>{t("quota.noReading")}</Text> : null}
       {provider.slots.map((slot) => (
-        <SlotView key={slot.id} theme={theme} slot={slot} />
+        <SlotView key={slot.id} theme={theme} slot={slot} unavailable={provider.unavailable} />
       ))}
-      <ThrottleView theme={theme} provider={provider} />
+      {provider.unavailable && provider.slots.some((slot) => slot.paced) ? <Text style={{ color: semanticColor(theme, "paused"), fontSize: 12 }}>{t("quota.throttleUnknown")}</Text> : <ThrottleView theme={theme} provider={provider} />}
       {provider.reservations.length > 0 ? (
         <Lines theme={theme} title={t("quota.reservations")}>
           {provider.reservations.map((run) => (
@@ -199,12 +211,14 @@ function ThrottleView(props: { theme: Theme; provider: ProviderRow }) {
 }
 
 /** A usage window: name, a bar and the numbers. Paced: grey usage up to what is allowed so far, red above it, green for what is still free, a tick at the allowed-so-far mark. Not paced: usage only. */
-function SlotView(props: { theme: Theme; slot: SlotRow }) {
-  const { theme, slot } = props;
+function SlotView(props: { theme: Theme; slot: SlotRow; unavailable: boolean }) {
+  const { theme, slot, unavailable } = props;
   const { t, locale } = useTranslation(messages);
   const muted = theme.colors.foregroundMuted;
   const { bar } = slot;
-  const facts = [
+  const facts = unavailable
+    ? [slot.used === null ? null : t("quota.used", { value: slot.used }), slot.paced ? t("quota.headroomUnknown") : null].filter((fact): fact is string => fact !== null)
+    : [
     slot.used === null ? null : t("quota.used", { value: slot.used }),
     slot.reserved > 0 ? t("quota.reserved", { value: slot.reserved }) : null,
     slot.paced ? (slot.over > 0 ? t("quota.overBy", { value: slot.over }) : t("quota.free", { value: slot.free ?? 0 })) : t("quota.notPaced"),
@@ -212,18 +226,18 @@ function SlotView(props: { theme: Theme; slot: SlotRow }) {
   ].filter((fact): fact is string => fact !== null);
   const pct = (value: number) => `${value}%` as const;
   return (
-    <View style={{ gap: 3, paddingTop: 4 }}>
+    <View style={{ gap: 3, paddingTop: 4, ...(unavailable ? { opacity: 0.6 } : {}) }}>
       <Text style={{ color: theme.colors.foreground, fontSize: 12 }}>
         {slot.name}
         {slot.modelScoped ? ` · ${t("quota.modelWindow")}` : ""}
       </Text>
       <View style={{ height: 8, borderRadius: 4, backgroundColor: theme.colors.surface2, overflow: "hidden" }}>
         <View style={{ position: "absolute", left: 0, width: pct(bar.grey), height: 8, backgroundColor: theme.colors.foregroundMuted }} />
-        {bar.green > 0 ? <View style={{ position: "absolute", left: pct(bar.greenFrom), width: pct(bar.green), height: 8, backgroundColor: semanticColor(theme, "done") }} /> : null}
-        {bar.red > 0 ? <View style={{ position: "absolute", left: pct(bar.redFrom), width: pct(bar.red), height: 8, backgroundColor: semanticColor(theme, "failed") }} /> : null}
-        {bar.tick !== null ? <View style={{ position: "absolute", left: pct(Math.min(bar.tick, 99)), width: 2, height: 8, backgroundColor: theme.colors.foreground }} /> : null}
+        {!unavailable && bar.green > 0 ? <View style={{ position: "absolute", left: pct(bar.greenFrom), width: pct(bar.green), height: 8, backgroundColor: semanticColor(theme, "done") }} /> : null}
+        {!unavailable && bar.red > 0 ? <View style={{ position: "absolute", left: pct(bar.redFrom), width: pct(bar.red), height: 8, backgroundColor: semanticColor(theme, "failed") }} /> : null}
+        {!unavailable && bar.tick !== null ? <View style={{ position: "absolute", left: pct(Math.min(bar.tick, 99)), width: 2, height: 8, backgroundColor: theme.colors.foreground }} /> : null}
       </View>
-      <Text style={{ color: slot.over > 0 ? semanticColor(theme, "failed") : muted, fontSize: 12 }}>{facts.join(" · ")}</Text>
+      <Text style={{ color: slot.over > 0 && !unavailable ? semanticColor(theme, "failed") : muted, fontSize: 12 }}>{facts.join(" · ")}</Text>
       {slot.resetsAt ? <Text style={{ color: muted, fontSize: 11 }}>{t("quota.resets", { when: whenAt(slot.resetsAt, locale) })}</Text> : null}
       {slot.stale ? <Text style={{ color: muted, fontSize: 11 }}>{t("quota.stale")}</Text> : null}
     </View>

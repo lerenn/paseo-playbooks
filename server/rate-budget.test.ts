@@ -97,8 +97,8 @@ describe("headroom plan", () => {
   it("holds above the usable percent as a quota hold until the window resets, and when data is unavailable", async () => {
     const runs = await mk(1);
     expect(planHeadroom([want(runs[0]!)], ctxOf(98)).holds.get("r0")).toMatchObject({ kind: "quota", provider: "claude", window: "weekly" });
-    const none = ctxOf(10, { probe: () => ({ state: "unavailable", verdict: { kind: "quota", reason: "quota data unavailable for claude", provider: "claude", window: null, retryAt: new Date(NOW).toISOString() } }) });
-    expect(planHeadroom([want(runs[0]!)], none).holds.get("r0")!.reason).toContain("unavailable");
+    const none = ctxOf(10, { probe: () => ({ state: "unavailable", verdict: { kind: "quota", reason: "waiting for quota data on claude", provider: "claude", window: null, retryAt: new Date(NOW).toISOString() } }) });
+    expect(planHeadroom([want(runs[0]!)], none).holds.get("r0")!.reason).toContain("waiting for quota data");
   });
 
   it("does not pace by cost a playbook with no history yet: it reserves nothing, but the hard cap still holds", async () => {
@@ -160,7 +160,7 @@ describe("zero-cost runs", () => {
   it("are still held when the quota is exhausted or its data unavailable", async () => {
     const runs = await mk(1);
     expect(planHeadroom([want(runs[0]!)], ctxOf(98, costs(["r0"]))).holds.get("r0")).toMatchObject({ kind: "quota" });
-    const none = ctxOf(10, { ...costs(["r0"]), probe: () => ({ state: "unavailable", verdict: { kind: "quota", reason: "quota data unavailable for claude", provider: "claude", window: null, retryAt: new Date(NOW).toISOString() } }) });
+    const none = ctxOf(10, { ...costs(["r0"]), probe: () => ({ state: "unavailable", verdict: { kind: "quota", reason: "waiting for quota data on claude", provider: "claude", window: null, retryAt: new Date(NOW).toISOString() } }) });
     expect(planHeadroom([want(runs[0]!)], none).holds.has("r0")).toBe(true);
   });
 

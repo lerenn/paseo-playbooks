@@ -76,6 +76,7 @@ export function buildQuotaLimitation(input: { projects: ProjectLimitsInput[]; no
       pacedBy,
       state: view.state,
       readAt: iso(view.readAt),
+      usage: { available: view.usage.available, since: iso(view.usage.since), lastReadAt: iso(view.usage.lastReadAt), reason: view.usage.reason, failures: view.usage.failures },
       overrideUntil: iso(view.overrideUntil),
       windows,
       reservations: mine.flatMap((reservation) => {

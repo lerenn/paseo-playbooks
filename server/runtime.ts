@@ -11,7 +11,7 @@ type PaseoApi = PluginHandlerContext["paseo"];
 import type { AdmissionStatus, RunPriorityView, ScriptOutput } from "../shared/types";
 import type { GateWaitCondition } from "../shared/types";
 import type { AgentSettings, AgentTarget, Attempt, FanoutChild as FanoutChildState, PoolPass as PoolPassState, Gate, Job, Playbook, Run, RunDefinition, RunWorktree, Step, VarValue, WardenFinding } from "../shared/types";
-import { addUsage, DEFAULT_EXHAUSTED_FOR_MS, DEFAULT_PERMISSION_POLICY, workspaceKeptUntil } from "../shared/types";
+import { addUsage, isUnavailableHold, DEFAULT_EXHAUSTED_FOR_MS, DEFAULT_PERMISSION_POLICY, workspaceKeptUntil } from "../shared/types";
 import { UsageLedger } from "./usage-ledger";
 import { analyze, type Analytics } from "../shared/analytics";
 import {
@@ -623,6 +623,7 @@ export class Runtime {
     if (!this.limitTimer) {
       // Held runs are looked at again while any is held (a quota ceiling catches up with time, a backoff ends).
       this.limitTimer = setInterval(() => {
+        void this.syncProviderUsage();
         if (this.store.list().some((run) => run.rateHold || (isActive(run) && run.managerQuotaBlockedId !== null && run.managerQuotaBlockedId === run.managerAgentId))) void this.tick().catch((error) => console.error("[playbooks] tick for held runs failed:", errorText(error)));
       }, 15_000);
       (this.limitTimer as unknown as { unref?: () => void }).unref?.();
@@ -661,9 +662,14 @@ export class Runtime {
       } catch (error) {
         console.error("[playbooks] could not attribute quota usage:", errorText(error));
       }
+      void this.syncProviderUsage();
       void this.tick().catch((error) => console.error("[playbooks] tick after a quota read failed:", errorText(error)));
     },
+    Date.now,
+    () => void this.syncProviderUsage(),
   );
+  /** Providers whose usage reading is unavailable, with the `since` announced (provider.usage_unavailable): memory only, a restart announces again at most once. */
+  private readonly usageAnnounced = new Map<string, { since: string; reason: string }>();
   /** What steps cost in quota per playbook, measured from the usage readings (ADR 2026-11-20-dynamic-rate-limits); kept in a file. */
   private readonly costs = new CostHistory(path.join(pluginDataDir(), "rate-history.json"));
   /** Quota that started work has yet to use, per run: est − spent counts against the headroom until the readings catch up. */
@@ -2594,7 +2600,10 @@ export class Runtime {
     if (!isActive(run)) return;
     // One notice per hold episode (ADR 2026-11-23-hold-notice-per-episode): the episode lasts until a step starts again, whatever
     // the kind, reason, provider, window or position does in between. The decision and its record are one mutation.
-    if (change === "held" && verdict) {
+    // A hold that only waits for the provider's usage reading is a condition of the provider, not of the run: no notice (ADR 2026-11-23-provider-usage-unavailable),
+    // and the episode stays armed, so a later real hold of the same run is still told once. A switch between the two is a plain update (change null).
+    if (verdict && isUnavailableHold(verdict)) return;
+    if ((change === "held" || change === null) && verdict) {
       let send = false;
       await this.store.mutate(runId, (current) => {
         if (engine.holdEpisodeState(current) !== "armed") return;
@@ -2620,6 +2629,36 @@ export class Runtime {
     }
   }
 
+<<<<<<< HEAD
+=======
+  /**
+   * Emits `provider.usage_unavailable` when a provider's usage reading becomes unavailable and `provider.usage_restored` when it
+   * is back: on transitions only (ADR 2026-11-23-provider-usage-unavailable). The state is the pacer's; this keeps only what was announced.
+   */
+  private async syncProviderUsage(): Promise<void> {
+    try {
+      const states = this.pacer.usageStates((await this.rateLimits()).quota);
+      for (const [provider, state] of states) {
+        const announced = this.usageAnnounced.get(provider);
+        if (!state.available && !announced) {
+          const since = new Date(state.since ?? Date.now()).toISOString();
+          const reason = state.reason ?? "read failed";
+          this.usageAnnounced.set(provider, { since, reason });
+          await this.bus.emit("provider.usage_unavailable", { provider, since, reason, failures: state.failures, lastReadAt: state.lastReadAt === null ? null : new Date(state.lastReadAt).toISOString() }, { runId: null, source: "runs" });
+        } else if (state.available && announced) {
+          this.usageAnnounced.delete(provider);
+          await this.bus.emit("provider.usage_restored", { provider, since: announced.since, reason: announced.reason, unavailableMs: Math.max(0, Date.now() - Date.parse(announced.since)) }, { runId: null, source: "runs" });
+        }
+      }
+    } catch (error) {
+      console.error("[playbooks] could not announce the provider usage state:", errorText(error));
+    }
+  }
+
+  /** Per run: the kind, provider and window of the hold its manager was last told about (memory only: a restart tells once more at most). */
+  private readonly holdNotified = new Map<string, string>();
+
+>>>>>>> 0853985 (wip: provider usage state)
   /** Per run: when a quota-blocked manager's recovery is tried again, and how many tries have not recovered it (the interval doubles, 30 s to 10 min). */
   private readonly managerRetry = new Map<string, { next: number; failures: number }>();
 

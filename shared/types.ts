@@ -1125,7 +1125,7 @@ export const RateHoldSchema = z.object({
    * share, or unreadable; `headroom`: the quota headroom does not cover the estimated cost yet (ADR 2026-11-20-dynamic-rate-limits).
    */
   kind: z.enum(["steps", "playbooks", "quota", "headroom", "pace"]),
-  /** One line for humans and agents ("quota data unavailable", "claude weekly at 41% above its allowance so far 36%"). */
+  /** One line for humans and agents ("waiting for quota data", "claude weekly at 41% above its allowance so far 36%"). */
   reason: z.string(),
   /** The provider whose quota holds the run (quota holds), else null. */
   provider: z.string().nullable().default(null),
@@ -1142,6 +1142,13 @@ export const RateHoldSchema = z.object({
   priority: z.number().nullable().default(null),
 });
 export type RateHold = z.infer<typeof RateHoldSchema>;
+
+/**
+ * Whether a hold only waits for a provider's usage reading (ADR 2026-11-23-provider-usage-unavailable): a `quota` hold on a
+ * provider with no window. That is a condition of the provider's reading, not of the run: its manager is never told of it, and a
+ * switch between it and another quota hold of the same run does not start a new hold.
+ */
+export const isUnavailableHold = (hold: Pick<RateHold, "kind" | "provider" | "window">): boolean => hold.kind === "quota" && hold.provider !== null && hold.window === null;
 
 /** A stage's admission check (`queue.admit`), live in memory: running or waiting, the last outcome and the last failure. */
 export const AdmissionStatusSchema = z.object({

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { QuotaLimitation } from "../shared/quota-limitation";
-import { barOf, formatWait, projectRows, throttleOf } from "./quota-rows";
+import type { QuotaLimitation, QuotaProvider } from "../shared/quota-limitation";
+import { barOf, formatWait, projectRows, throttleOf, unavailableProviders } from "./quota-rows";
 
 const slot = (over: Partial<QuotaLimitation["providers"][number]["windows"][number]> = {}) => ({ id: "weekly", name: "Weekly", modelScoped: false, used: 38, reserved: 5, paces: [{ usable: 90, ceiling: 60, headroom: 22, free: 17, projects: ["App"] }], resetsAt: null, stale: false, ...over });
 const provider = (windows = [slot()], over: Partial<QuotaLimitation["providers"][number]> = {}): QuotaLimitation["providers"][number] => ({ provider: "claude", pacedBy: ["App"], state: "ok", readAt: null, overrideUntil: null, windows, reservations: [], held: [], exhausted: [], ...over });
@@ -118,5 +118,36 @@ describe("quota throttle", () => {
     expect(formatWait(result.longestWaitMs!)).toBe("2h 30m");
     expect(formatWait(14 * 60_000)).toBe("14m");
     expect(formatWait(5_000)).toBe("<1m");
+  });
+});
+
+describe("a provider whose usage is unavailable", () => {
+  const data = (usage: QuotaProvider["usage"], state: QuotaProvider["state"] = "unavailable"): QuotaLimitation => ({
+    now: "2026-11-20T12:00:00.000Z",
+    projects: [{ projectId: "p", label: "App", limits: [{ repos: ["default"], pacing: true, usablePercent: 90, stepsLimit: null, runsLimit: null }] }, { projectId: "q", label: "Lib", limits: [{ repos: ["default"], pacing: true, usablePercent: 90, stepsLimit: null, runsLimit: null }] }],
+    stepsRunning: 0,
+    runsActive: 0,
+    limitHeld: [],
+    providers: [{ provider: "claude", pacedBy: ["App", "Lib"], state, readAt: "2026-11-20T11:00:00.000Z", ...(usage ? { usage } : {}), overrideUntil: null, windows: [{ id: "weekly", name: "Weekly", modelScoped: false, used: 60, reserved: 0, paces: [{ usable: 90, ceiling: 50, headroom: -10, free: -10, projects: ["App", "Lib"] }], resetsAt: "2026-11-27T00:00:00.000Z", stale: false }], reservations: [], held: [], exhausted: [] }],
+  });
+  const down = { available: false, since: "2026-11-20T10:42:00.000Z", lastReadAt: "2026-11-20T10:31:00.000Z", reason: "HTTP 429", failures: 4 };
+
+  it("is listed once, whatever the number of projects, with since, reason and last read", () => {
+    expect(unavailableProviders(data(down))).toEqual([{ provider: "claude", since: down.since, reason: "HTTP 429", lastReadAt: down.lastReadAt }]);
+    expect(projectRows(data(down))).toHaveLength(2);
+  });
+
+  it("is not listed while available, nor by an older server that sends no usage field", () => {
+    expect(unavailableProviders(data({ ...down, available: true, since: null, reason: null }, "ok"))).toEqual([]);
+    expect(unavailableProviders(data(undefined, "ok"))).toEqual([]);
+  });
+
+  it("shows the last known windows as stale, over nothing, with no throttle", () => {
+    const row = projectRows(data(down))[0]!;
+    const provider = row.sets[0]!.providers[0]!;
+    expect(provider).toMatchObject({ unavailable: true, status: "unavailable" });
+    expect(provider.slots[0]).toMatchObject({ stale: true, used: 60 });
+    expect(provider.throttle.percent).toBeNull();
+    expect(row.throttled).toBe(false);
   });
 });

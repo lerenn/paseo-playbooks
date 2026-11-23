@@ -123,6 +123,18 @@ export const OVERSIGHT_TYPES: EventTypeDef[] = [
     line: (event) => `- run.released: ${runName(event.payload)} is no longer on hold; its steps continue. Tools: get_run { runId: "${event.runId}" }.`,
   },
   {
+    type: "provider.usage_unavailable",
+    description: "A provider's usage reading became unavailable (the usage endpoint keeps failing and the last good reading is older than quota_limit.max_age): provider, since (first failure of the streak), reason (short, e.g. HTTP 429), failures and the last good read. A condition of the provider, not of a run: runs that use it wait for the reading. Once per outage.",
+    payload: z.object({ provider: z.string(), since: z.string(), reason: z.string(), failures: z.number().int(), lastReadAt: z.string().nullable() }),
+    line: (event) => `- provider.usage_unavailable: the usage of ${event.payload.provider} cannot be read since ${event.payload.since} (${event.payload.reason}${event.payload.lastReadAt ? `; last good read ${event.payload.lastReadAt}` : ""}). Runs that use it wait for the reading and resume by themselves: nothing to do. Tools: list_runs, get_run.`,
+  },
+  {
+    type: "provider.usage_restored",
+    description: "A provider's usage reading is back after provider.usage_unavailable: provider, since (when it became unavailable), reason (the last failure) and unavailableMs. Once per outage.",
+    payload: z.object({ provider: z.string(), since: z.string(), reason: z.string(), unavailableMs: z.number() }),
+    line: (event) => `- provider.usage_restored: the usage of ${event.payload.provider} can be read again (it was unavailable since ${event.payload.since}, ${event.payload.reason}). Runs that waited for it continue by themselves.`,
+  },
+  {
     type: "step.started",
     description: "A step attempt started (agent and script steps; each attempt of a retried or looped step again): stepId and attempt number.",
     payload: z.object(stepFields),

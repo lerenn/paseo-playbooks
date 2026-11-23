@@ -146,9 +146,41 @@ describe("the hold notice to the manager (ADR 2026-11-23-warden-held-check)", ()
     const s = await spy();
     await s.apply(verdict());
     await s.apply(verdict({ kind: "headroom", reason: "insufficient quota headroom on claude weekly" }));
-    await s.apply(verdict({ kind: "unavailable", reason: "quota data unavailable for claude", window: null }));
+    await s.apply(verdict({ kind: "quota", reason: "waiting for quota data on claude", window: null }));
     await s.apply(verdict({ kind: "headroom", window: "five_hour", provider: "codex" }));
     expect(s.texts()).toHaveLength(1);
+  });
+
+  const waiting = (extra: object = {}) => ({ kind: "quota" as const, reason: "waiting for quota data on claude", provider: "claude", window: null, retryAt: "2026-11-24T10:00:00Z", ...extra });
+
+  it("never tells the manager of a hold that only waits for the provider's usage reading, nor of its end", async () => {
+    const s = await spy();
+    await s.apply(waiting());
+    await s.apply(waiting({ retryAt: "2026-11-24T10:05:00Z" }));
+    await s.apply(null);
+    expect(s.texts()).toEqual([]);
+  });
+
+  it("a real headroom hold after an unavailable one in the same run still gets its one notice, and the flips add none", async () => {
+    const s = await spy();
+    await s.apply(waiting());
+    await s.apply(verdict({ kind: "headroom", reason: "insufficient quota headroom on claude weekly" }));
+    await s.apply(waiting());
+    await s.apply(verdict({ kind: "headroom", reason: "insufficient quota headroom on claude weekly" }));
+    expect(s.texts()).toHaveLength(1);
+    expect(s.texts()[0]).toContain("insufficient quota headroom");
+  });
+
+  it("a flip between headroom and unavailable keeps one hold: one run_held, no release, the start kept", async () => {
+    const s = await spy();
+    await s.apply(verdict({ kind: "headroom" }));
+    const since = s.store.get("r1")!.rateHold!.since;
+    await s.apply(waiting());
+    await s.apply(verdict({ kind: "headroom" }));
+    const run = s.store.get("r1")!;
+    expect(run.history.filter((entry) => entry.type === "run_held")).toHaveLength(1);
+    expect(run.history.filter((entry) => entry.type === "run_released")).toHaveLength(0);
+    expect(run.rateHold!.since).toBe(since);
   });
 
   it("a hold lifted and re-taken before any step starts sends nothing more", async () => {
@@ -521,5 +553,28 @@ describe("runs exempt from quota limiting (ADR 2026-11-23-quota-exempt-runs)", (
     expect(inner.parentExempt({ runId: "r0", stepId: "a", key: "k" })).toBe(true);
     expect(inner.parentExempt({ runId: "r1", stepId: "a", key: "k" })).toBe(false);
     expect(inner.parentExempt(undefined)).toBe(false);
+  });
+});
+
+describe("provider usage events (ADR 2026-11-23-provider-usage-unavailable)", () => {
+  it("emits one provider.usage_unavailable when the reading goes down and one provider.usage_restored when it is back, nothing in between", async () => {
+    const s = await setup("");
+    const emit = vi.spyOn(s.runtime.bus, "emit");
+    const sync = () => (s.runtime as unknown as { syncProviderUsage(): Promise<void> }).syncProviderUsage();
+    const states = vi.spyOn(s.internals.pacer as unknown as { usageStates(): Map<string, unknown> }, "usageStates");
+    const since = Date.parse("2026-11-24T15:42:00Z");
+    states.mockReturnValue(new Map([["claude", { available: true, since: null, lastReadAt: since, reason: null, failures: 0 }]]));
+    await sync();
+    states.mockReturnValue(new Map([["claude", { available: false, since, lastReadAt: since - 600_000, reason: "HTTP 429", failures: 3 }]]));
+    await sync();
+    await sync();
+    states.mockReturnValue(new Map([["claude", { available: false, since, lastReadAt: since - 600_000, reason: "HTTP 500", failures: 4 }]]));
+    await sync();
+    states.mockReturnValue(new Map([["claude", { available: true, since: null, lastReadAt: since + 900_000, reason: null, failures: 0 }]]));
+    await sync();
+    await sync();
+    expect(emit.mock.calls.map((call) => call[0])).toEqual(["provider.usage_unavailable", "provider.usage_restored"]);
+    expect(emit.mock.calls[0]![1]).toMatchObject({ provider: "claude", since: "2026-11-24T15:42:00.000Z", reason: "HTTP 429", failures: 3 });
+    expect(emit.mock.calls[1]![1]).toMatchObject({ provider: "claude", since: "2026-11-24T15:42:00.000Z", reason: "HTTP 429" });
   });
 });

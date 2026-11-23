@@ -131,6 +131,34 @@ export interface PacerView {
   readAt: number | null;
   overrideUntil: number | null;
   entry: ProviderUsage | null;
+  /** The provider's usage reading as a condition of the provider, whatever runs ask (see `ProviderUsageState`). */
+  usage: ProviderUsageState;
+}
+
+/**
+ * Whether the provider's usage can be read (ADR 2026-11-23-provider-usage-unavailable). Unavailable = the reading is missing or older
+ * than `max_age` AND reads have been failing (a start-up read that has not ended yet is not a failure). Derived from the pacer's
+ * readings and its failure streak; nothing is stored.
+ */
+export interface ProviderUsageState {
+  available: boolean;
+  /** First failure of the current streak (ms); null while available. */
+  since: number | null;
+  /** The last successful read (ms), null when never. */
+  lastReadAt: number | null;
+  /** A short reason for the last failure ("HTTP 429", the first line of the error), null while available. */
+  reason: string | null;
+  /** Failed reads in a row. */
+  failures: number;
+}
+
+/** A short reason from the error of a failed read: its HTTP status when it names one, else its first line (80 characters at most). */
+export function failureReason(error: unknown): string {
+  const text = (error instanceof Error ? error.message : String(error)).trim();
+  const status = /\b(?:HTTP\s*)?([45]\d\d)\b/.exec(text);
+  if (status) return `HTTP ${status[1]}`;
+  const line = text.split("\n")[0]!.trim();
+  return line.length > 80 ? `${line.slice(0, 79)}…` : line || "read failed";
 }
 
 /**
@@ -142,6 +170,9 @@ export class QuotaPacer {
   private readings = new Map<string, Reading>();
   private inflight: Promise<void> | null = null;
   private failures = 0;
+  /** First failed read of the current streak and the short reason of the last one (cleared by a successful read). */
+  private failingSince: number | null = null;
+  private lastFailure: string | null = null;
   private nextAttempt = 0;
   private overrides = new Map<string, number>();
   /** Providers asked about, so a read records "no entry" for one the daemon does not list. */
@@ -151,6 +182,7 @@ export class QuotaPacer {
     private readonly fetch: () => Promise<UsageSnapshot>,
     private readonly onChange: (changes: ReadChange[]) => void = () => undefined,
     private readonly clock: () => number = Date.now,
+    private readonly onFailure: () => void = () => undefined,
   ) {}
 
   /** What the pacing knows about `provider` now (and starts a background refresh when its reading is due). */
@@ -163,7 +195,7 @@ export class QuotaPacer {
     const age = reading ? now - reading.at : Infinity;
     if (age >= config.refreshMs) this.refresh();
     if (!reading || age > config.maxAgeMs) {
-      return { state: "unavailable", verdict: { kind: "quota", reason: `quota data unavailable for ${provider}`, provider, window: null, retryAt: new Date(Math.max(now, this.nextAttempt)).toISOString() } };
+      return { state: "unavailable", verdict: { kind: "quota", reason: `waiting for quota data on ${provider}`, provider, window: null, retryAt: new Date(Math.max(now, this.nextAttempt)).toISOString() } };
     }
     const entry = reading.entry;
     if (!entry || (entry.status !== undefined && entry.status !== "available")) return { state: "unreported" };
@@ -185,14 +217,23 @@ export class QuotaPacer {
       const at = this.clock();
       const before = new Map(this.readings);
       this.failures = 0;
+      this.failingSince = null;
+      this.lastFailure = null;
       this.nextAttempt = 0;
       for (const provider of this.asked) this.readings.set(provider, { entry: null, at });
       for (const entry of snapshot.providers) this.readings.set(entry.providerId, { entry, at });
       const changes = [...this.readings].map(([provider, after]) => ({ provider, before: before.get(provider) ?? null, after })).filter((change) => change.after.at === at);
       this.onChange(changes);
-    } catch {
+    } catch (error) {
       this.nextAttempt = this.clock() + QUOTA_BACKOFF_MS[Math.min(this.failures, QUOTA_BACKOFF_MS.length - 1)]!;
       this.failures += 1;
+      this.failingSince ??= this.clock();
+      this.lastFailure = failureReason(error);
+      try {
+        this.onFailure();
+      } catch {
+        // A listener never changes the pacing.
+      }
     }
   }
 
@@ -206,6 +247,20 @@ export class QuotaPacer {
 
   clearOverride(provider: string): void {
     this.overrides.delete(provider);
+  }
+
+  /** The usage reading of `provider` as a condition of the provider (see `ProviderUsageState`). */
+  usageState(provider: string, config: RateLimitsConfig["quota"]): ProviderUsageState {
+    const now = this.clock();
+    const reading = this.readings.get(provider);
+    const stale = !reading || now - reading.at > config.maxAgeMs;
+    const down = stale && this.failures > 0;
+    return { available: !down, since: down ? this.failingSince : null, lastReadAt: reading ? reading.at : null, reason: down ? this.lastFailure : null, failures: this.failures };
+  }
+
+  /** The usage state of every provider the pacing has a reading or a question for. */
+  usageStates(config: RateLimitsConfig["quota"]): Map<string, ProviderUsageState> {
+    return new Map([...new Set([...this.readings.keys(), ...this.asked])].sort().map((provider) => [provider, this.usageState(provider, config)]));
   }
 
   /** What the pacing holds about every provider it has a reading or a question for, for the Quota limitation tab (reads only; starts a refresh when one is due). */
@@ -223,7 +278,7 @@ export class QuotaPacer {
       else if (!reading || age > config.maxAgeMs) state = "unavailable";
       else if (!entry || (entry.status !== undefined && entry.status !== "available") || windowRooms(entry, config.usablePercent, now).length === 0) state = "unreported";
       else state = "ok";
-      return { provider, state, readAt: reading ? reading.at : null, overrideUntil: until !== undefined && until > now ? until : null, entry };
+      return { provider, state, readAt: reading ? reading.at : null, overrideUntil: until !== undefined && until > now ? until : null, entry, usage: this.usageState(provider, config) };
     });
   }
 

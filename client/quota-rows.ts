@@ -61,6 +61,8 @@ export interface ProviderRow {
   status: ProviderStatus;
   state: QuotaProvider["state"];
   readAt: string | null;
+  /** The provider's usage reading is unavailable now: its windows are the last known ones (stale), and headroom and throttle are unknown. */
+  unavailable: boolean;
   overrideUntil: string | null;
   slots: SlotRow[];
   /** Smallest `free` over the paced windows; null when none is paced. */
@@ -182,7 +184,9 @@ function slotRow(slot: QuotaWindow, set: QuotaProjectLimits, label: string): Slo
 }
 
 function providerRow(provider: QuotaProvider, set: QuotaProjectLimits, project: QuotaProject, nowMs: number): ProviderRow {
-  const slots = provider.windows.map((slot) => slotRow(slot, set, project.label));
+  const unavailable = provider.state === "unavailable" || provider.usage?.available === false;
+  // While the reading is unavailable the windows are the last known ones: stale, whatever their reset says.
+  const slots = provider.windows.map((slot) => ({ ...slotRow(slot, set, project.label), ...(unavailable ? { stale: true } : {}) }));
   const pacedSlots = slots.filter((slot) => slot.paced);
   const free = pacedSlots.length > 0 ? Math.min(...pacedSlots.map((slot) => slot.free ?? 0)) : null;
   const mine = <T extends { projectId?: string | undefined }>(items: T[]) => items.filter((item) => item.projectId === undefined || item.projectId === project.projectId);
@@ -205,7 +209,7 @@ function providerRow(provider: QuotaProvider, set: QuotaProjectLimits, project: 
       .map(({ kind: _kind, reason: _reason, window: _window, retryAt: _retryAt, ...run }) => ({ ...run, remaining: {}, exempt: false, hold: tag(run.runId) })),
   ];
   const throttle = throttleOf({ slots, reservations, held: mine(provider.held), unitCost: project.unitCost?.[provider.provider], nowMs });
-  return { provider: provider.provider, status, state: provider.state, readAt: provider.readAt, overrideUntil: provider.overrideUntil, slots, free, reservations, exhausted: mine(provider.exhausted), throttle: set.pacing ? throttle : { ...throttle, percent: null, source: null } };
+  return { provider: provider.provider, status, state: provider.state, readAt: provider.readAt, unavailable, overrideUntil: provider.overrideUntil, slots, free, reservations, exhausted: mine(provider.exhausted), throttle: set.pacing && !unavailable ? throttle : { ...throttle, percent: null, source: null } };
 }
 
 const STATUS_RANK: Record<ProviderStatus, number> = { over: 3, unavailable: 2, unreported: 1, ok: 0, off: 0 };
@@ -253,4 +257,9 @@ export function formatWait(ms: number): string {
   if (minutes < 1) return "<1m";
   const hours = Math.floor(minutes / 60);
   return hours > 0 ? `${hours}h ${minutes % 60}m` : `${minutes}m`;
+}
+
+/** The providers whose usage reading is unavailable now, for the provider-level line (once per provider, not per project row). */
+export function unavailableProviders(data: QuotaLimitation): Array<{ provider: string; since: string | null; reason: string | null; lastReadAt: string | null }> {
+  return data.providers.flatMap((provider) => (provider.usage?.available === false ? [{ provider: provider.provider, since: provider.usage.since, reason: provider.usage.reason, lastReadAt: provider.usage.lastReadAt ?? provider.readAt }] : []));
 }

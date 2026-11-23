@@ -19,7 +19,7 @@ const NOW = Date.parse("2026-11-20T12:00:00Z");
 const config = { ...DEFAULT_RATE_LIMITS, quota: { ...DEFAULT_RATE_LIMITS.quota, usablePercent: 90, pacing: true } };
 const projectsOn = [{ projectId: "p", label: "App", sets: [{ repos: ["default"], config }] }];
 const weekly = (usedPct: number, elapsedHours: number) => ({ id: "weekly", label: "Weekly", usedPct, resetsAt: new Date(NOW + (168 - elapsedHours) * HOUR).toISOString() });
-const view = (over: Partial<PacerView> = {}): PacerView => ({ provider: "claude", state: "ok", readAt: NOW - 1000, overrideUntil: null, entry: { providerId: "claude", status: "available", windows: [weekly(60, 84)] }, ...over });
+const view = (over: Partial<PacerView> = {}): PacerView => ({ provider: "claude", state: "ok", readAt: NOW - 1000, overrideUntil: null, entry: { providerId: "claude", status: "available", windows: [weekly(60, 84)] }, usage: { available: true, since: null, lastReadAt: NOW - 1000, reason: null, failures: 0 }, ...over });
 
 async function oneRun(): Promise<Run> {
   const dir = await mkdtemp(path.join(tmpdir(), "quota-tab-"));
@@ -135,5 +135,14 @@ describe("QuotaPacer.view", () => {
     now = NOW;
     pacer.override("claude", HOUR);
     expect(pacer.view(config.quota)[0]).toMatchObject({ state: "override", overrideUntil: NOW + HOUR });
+  });
+});
+
+describe("the provider's usage state in the payload", () => {
+  it("carries available, since, last read and reason per provider", () => {
+    const down = { available: false, since: NOW - 3 * HOUR, lastReadAt: NOW - 4 * HOUR, reason: "HTTP 429", failures: 5 };
+    const out = buildQuotaLimitation({ projects: projectsOn, nowMs: NOW, views: [view({ state: "unavailable", usage: down }), view({ provider: "codex" })], runs: [], reservations: [] });
+    expect(out.providers[0]!.usage).toEqual({ available: false, since: new Date(NOW - 3 * HOUR).toISOString(), lastReadAt: new Date(NOW - 4 * HOUR).toISOString(), reason: "HTTP 429", failures: 5 });
+    expect(out.providers[1]!.usage).toMatchObject({ available: true, since: null, reason: null });
   });
 });

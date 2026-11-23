@@ -8,7 +8,7 @@ import { blockEntrySteps, blockStepIds, holdsBlock, innermostBlock } from "../sh
 import { ADMISSION_CHOICES, PERMISSION_CHOICES, askChoices, askHumanText, askTransitionOf, choicesOfGate, GATE_SUMMARY_MAX, outcomeTransition, isDeferred, waitsForHuman } from "../shared/gates";
 import { parse as parseYaml, stringify as toYaml } from "yaml";
 import type { GateWaitCondition, PoolPass, AfterTask, AskChoice, Attempt, AttemptAgent, FanoutChild, FanoutState, Gate, GateDecider, Job, Playbook, RateHold, Run, RunDefinition, RunStep, RunWorktree, Step, Transition, VarValue, When } from "../shared/types";
-import { isActive, isAgentlessAttempt, isFanoutAttempt, isManagerless, MAX_FANOUT_PAST, MAX_POOL_PASSES, isPaused, isPipeline, isStepDone, isStepLive, isTerminal, restartBlocker, runningAfterTasks } from "../shared/types";
+import { isActive, isUnavailableHold, isAgentlessAttempt, isFanoutAttempt, isManagerless, MAX_FANOUT_PAST, MAX_POOL_PASSES, isPaused, isPipeline, isStepDone, isStepLive, isTerminal, restartBlocker, runningAfterTasks } from "../shared/types";
 import { coerceValue, formatValue, type ListItem, lookup, parseDuration, parseList, renderTemplate, replaceRefs, resolveValue, singleRef, templateRefs } from "../shared/vars";
 
 export class EngineError extends Error {}
@@ -1825,6 +1825,13 @@ export function setRateHold(run: Run, hold: (Omit<RateHold, "since" | "estimated
   const detail = { estimatedCost: hold.estimatedCost ?? null, headroom: hold.headroom ?? null, position: hold.position ?? null, priority: hold.priority ?? null };
   if (current && current.kind === hold.kind && current.provider === hold.provider && current.window === hold.window) {
     run.rateHold = { ...current, reason: hold.reason, retryAt: hold.retryAt, ...detail };
+    return null;
+  }
+  // A switch between two quota holds where one only waits for the provider's reading (ADR 2026-11-23-provider-usage-unavailable)
+  // is the same hold: no new `run_held`, so no run.held event churn; the hold keeps its start.
+  const quotaKind = (kind: string) => kind === "quota" || kind === "headroom" || kind === "pace";
+  if (current && quotaKind(current.kind) && quotaKind(hold.kind) && isUnavailableHold(current) !== isUnavailableHold(hold)) {
+    run.rateHold = { ...hold, ...detail, since: current.since };
     return null;
   }
   run.rateHold = { ...hold, ...detail, since: now };

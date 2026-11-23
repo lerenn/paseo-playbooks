@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_RATE_LIMITS, readRateLimitsConfig, resetDeprecationNotes, resolveQuotaLimits, parseQuotaLimits } from "./config";
 import { newRun, setRateHold, startAttempt } from "./engine";
 import { loadPlaybooks } from "./loader";
-import { admittedRunIds, limitVerdict, paceCeiling, QuotaPacer, roomFreeAt, roomHeadroom, runningStepCount, windowLengthMs, windowRooms } from "./rate-limit";
+import { admittedRunIds, limitVerdict, paceCeiling, QuotaPacer, failureReason, roomFreeAt, roomHeadroom, runningStepCount, windowLengthMs, windowRooms } from "./rate-limit";
 import type { UsageSnapshot } from "./usage";
 import type { Probe } from "./rate-limit";
 import type { Run } from "../shared/types";
@@ -78,7 +78,7 @@ describe("quota cache", () => {
 
   it("holds as unavailable before the first read, then decides from the data", async () => {
     const { quota } = pacer([ok(10)]);
-    expect(unavailable(quota.probe("claude", config))).toContain("quota data unavailable");
+    expect(unavailable(quota.probe("claude", config))).toContain("waiting for quota data on claude");
     await quota.refresh();
     expect(quota.probe("claude", config).state).toBe("ok");
   });
@@ -98,7 +98,7 @@ describe("quota cache", () => {
     const t = pacer([ok(10), down, down, down, down, down, ok(10)]);
     await t.quota.refresh();
     t.advance(31 * MIN);
-    expect(unavailable(t.quota.probe("claude", config))).toContain("quota data unavailable");
+    expect(unavailable(t.quota.probe("claude", config))).toContain("waiting for quota data on claude");
     await settle();
     expect(t.calls()).toBe(2);
     // Inside the backoff: no new call.
@@ -111,11 +111,41 @@ describe("quota cache", () => {
       const before = t.calls();
       const verdict = unavailable(t.quota.probe("claude", config));
       await settle();
-      if (t.calls() === before + 1 && t.calls() < 7) expect(verdict).toContain("unavailable");
+      if (t.calls() === before + 1 && t.calls() < 7) expect(verdict).toContain("waiting for quota data");
     }
     expect(t.calls()).toBe(7);
     expect(t.quota.probe("claude", config).state).toBe("ok");
     expect(t.changes()).toBe(2);
+  });
+
+  it("tracks the provider's usage state: available until reads fail and the reading is past max age, with since, reason and failures", async () => {
+    const t = pacer([ok(10), new Error("usage endpoint answered HTTP 429 Too Many Requests"), new Error("HTTP 429"), ok(10)]);
+    expect(t.quota.usageState("claude", config)).toMatchObject({ available: true, since: null, lastReadAt: null, failures: 0 });
+    await t.quota.refresh();
+    const first = NOW;
+    t.advance(MIN);
+    await t.quota.refresh();
+    // A failure inside max age: the reading still decides, so the provider is not unavailable.
+    expect(t.quota.usageState("claude", config)).toMatchObject({ available: true, since: null, lastReadAt: first, failures: 1 });
+    t.advance(31 * MIN);
+    await t.quota.refresh();
+    expect(t.quota.usageState("claude", config)).toEqual({ available: false, since: first + MIN, lastReadAt: first, reason: "HTTP 429", failures: 2 });
+    expect(t.quota.view(config)[0]!.usage.available).toBe(false);
+    t.advance(11 * MIN);
+    await t.quota.refresh();
+    expect(t.quota.usageState("claude", config)).toMatchObject({ available: true, since: null, reason: null, failures: 0 });
+  });
+
+  it("a start-up read that has not ended is not an outage", () => {
+    const t = pacer([ok(10)]);
+    t.quota.probe("claude", config);
+    expect(t.quota.usageState("claude", config).available).toBe(true);
+  });
+
+  it("failureReason names the HTTP status, else the first line", () => {
+    expect(failureReason(new Error("request failed with status 503"))).toBe("HTTP 503");
+    expect(failureReason(new Error("socket hang up\nat x"))).toBe("socket hang up");
+    expect(failureReason("x".repeat(200)).length).toBeLessThanOrEqual(80);
   });
 
   it("lets a provider through while it has a continue-anyway override; a provider with no report is unreported", async () => {

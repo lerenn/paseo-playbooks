@@ -109,7 +109,7 @@ export interface RateLimitsConfig {
     usablePercent: number;
     /** A reading younger than this is used as is; an older one is refreshed in the background (ms). */
     refreshMs: number;
-    /** A reading older than this is unusable: new steps are held as "quota data unavailable" (ms). */
+    /** A reading older than this is unusable: new steps are held as "waiting for quota data" (ms). */
     maxAgeMs: number;
   };
 }

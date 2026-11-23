@@ -46,6 +46,11 @@ export const QuotaProviderSchema = z.object({
   /** `ok`: fresh reading; `override`: "continue anyway" is on; `unavailable`: no fresh reading, new work is held; `unreported`: no usage reported, not paced. */
   state: z.enum(["ok", "override", "unavailable", "unreported"]),
   readAt: z.string().nullable(),
+  /**
+   * The provider's usage reading as a condition of the provider (ADR 2026-11-23-provider-usage-unavailable), derived from the pacer's
+   * readings and failure streak: available, or unavailable since the first failure of the streak with a short reason. Absent from an older server.
+   */
+  usage: z.object({ available: z.boolean(), since: z.string().nullable(), lastReadAt: z.string().nullable(), reason: z.string().nullable(), failures: z.number() }).optional(),
   overrideUntil: z.string().nullable(),
   windows: z.array(QuotaWindowSchema),
   /** Runs whose estimated cost is reserved on this provider (admitted or queued), with what they still have to use per window id. */

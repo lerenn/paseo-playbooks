@@ -242,7 +242,7 @@ quota_limits:
     pacing: true           # (turned on by usable_percent alone) work starts only while the quota headroom covers its estimated cost
     usable_percent: 97     # a 100 h window then allows 0.97 points an hour (what is allowed so far); 97 is also the hard cap
     refresh_interval: 5m   # a reading younger than this is used as is
-    max_age: 30m           # an older reading holds new work ("quota data unavailable") until a refresh succeeds
+    max_age: 30m           # an older reading holds new work ("waiting for quota data") until a refresh succeeds
   steps: 4                 # optional hard cap: agent and script steps running at once, across all projects
   playbooks: 2             # optional hard cap: runs admitted at once
 ```
@@ -251,7 +251,7 @@ quota_limits:
 minus current usage minus what work already started still has to use. Work starts while the headroom covers its **estimated cost**: the
 average quota points the playbook's steps used, measured from the usage readings and kept in `rate-history.json` (there is no manual estimate;
 `quota_limit.estimate` was removed and is refused at load). A playbook with no history is **not paced by cost** (it starts
-without a headroom check and reserves nothing) until its first measure exists; the hard cap (`usable_percent`) and "quota data unavailable" still hold it.
+without a headroom check and reserves nothing) until its first measure exists; the hard cap (`usable_percent`) and "waiting for quota data" still hold it.
 A playbook whose estimate is **zero** (at most 0.05 points) is treated the same: it can't move the pace, so it is never held for headroom, never paused to fit the pace, reserves nothing and isn't blocked behind a held higher-priority run; an exhausted window or unavailable data still hold it.
 The rest is held; the plugin lifts the hold itself.
 
