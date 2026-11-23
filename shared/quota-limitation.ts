@@ -15,7 +15,7 @@ export const QuotaWindowSchema = z.object({
     z.object({
       /** The share of the window those projects may use (`usable_percent`). */
       usable: z.number(),
-      /** The pace ceiling now (never above `usable`). */
+      /** What is allowed so far now (never above `usable`). */
       ceiling: z.number(),
       /** Ceiling minus usage (negative when usage is ahead of the pace). */
       headroom: z.number(),

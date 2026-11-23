@@ -27,8 +27,8 @@ const iso = (ms: number | null) => (ms === null ? null : new Date(ms).toISOStrin
 
 /**
  * What the Quota limitation tab shows: the limits each project's runs get, and for each provider the pacing tracks: its usage
- * windows and the numbers the pacing decides from (usage, pace ceiling, reservations, headroom), the runs held or paused for pace
- * and the exhausted marks. The usage and reservations are global per provider; the pace ceiling, headroom and free share are
+ * windows and the numbers the pacing decides from (usage, allowed so far, reservations, headroom), the runs held or paused for pace
+ * and the exhausted marks. The usage and reservations are global per provider; what is allowed so far, headroom and free share are
  * given for each distinct `usable_percent` among the projects with pacing on. Read-only: it recomputes the figures from the same
  * pieces the admission uses.
  */

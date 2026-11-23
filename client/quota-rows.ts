@@ -27,7 +27,7 @@ export interface SlotRow {
   ceiling: number | null;
   /** Ceiling minus usage and reservations (negative: over). */
   free: number | null;
-  /** Usage above the pace ceiling, 0 when none. */
+  /** Usage above what is allowed so far, 0 when none. */
   over: number;
   resetsAt: string | null;
   stale: boolean;

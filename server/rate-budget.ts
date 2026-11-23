@@ -7,7 +7,7 @@ import { byQueue, roomFreeAt, roomHeadroom, runPriority, type HoldVerdict, type 
 
 /**
  * Dynamic capacity (ADR 2026-11-20-dynamic-rate-limits): the work that may start is what the quota headroom covers. Headroom of a
- * usage window = its pace ceiling minus current usage minus what started work still has to use; work starts while the headroom
+ * usage window = what is allowed so far minus current usage minus what started work still has to use; work starts while the headroom
  * covers its estimated cost. This file holds the cost history and the admission plan; the runtime applies them. All amounts are
  * quota points (percent of a usage window).
  */
@@ -239,7 +239,7 @@ export interface Admitted {
 /**
  * Dynamic capacity over admitted runs (ADR 2026-11-21-pause-admitted-runs-to-fit-pace): the runs that may keep progressing are the
  * ones whose remaining cost fits under the pace, taken by priority then oldest first, each taking its need from the headroom
- * (pace ceiling minus usage, minus `other` reservations). The rest are paused between steps (never a running step), with their
+ * (allowed so far minus usage, minus `other` reservations). The rest are paused between steps (never a running step), with their
  * place in the queue. A run that does not fit blocks lower runs on the same provider (a strict order), so resuming goes one by one
  * in that order and never exceeds the capacity. A run with no need (no cost measured, or at most ZERO_COST_POINTS) is not paced and never paused.
  * `quota` and unavailable data are the business of `exhaustionVerdict`, not decided here.

@@ -105,7 +105,7 @@ export interface RateLimitsConfig {
   quota: {
     /** Pace work against each provider's usage windows: start it while the headroom covers its estimated cost. */
     pacing: boolean;
-    /** Percentage of a window the playbooks may use (the rest is a reserve): the hard cap, and the pace ceiling's slope. */
+    /** Percentage of a window the playbooks may use (the rest is a reserve): the hard cap, and the slope of what is allowed so far. */
     usablePercent: number;
     /** A reading younger than this is used as is; an older one is refreshed in the background (ms). */
     refreshMs: number;

@@ -1125,7 +1125,7 @@ export const RateHoldSchema = z.object({
    * share, or unreadable; `headroom`: the quota headroom does not cover the estimated cost yet (ADR 2026-11-20-dynamic-rate-limits).
    */
   kind: z.enum(["steps", "playbooks", "quota", "headroom", "pace"]),
-  /** One line for humans and agents ("quota data unavailable", "claude weekly at 41% above its pace ceiling 36%"). */
+  /** One line for humans and agents ("quota data unavailable", "claude weekly at 41% above its allowance so far 36%"). */
   reason: z.string(),
   /** The provider whose quota holds the run (quota holds), else null. */
   provider: z.string().nullable().default(null),

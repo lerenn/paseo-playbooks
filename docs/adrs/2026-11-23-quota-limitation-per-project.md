@@ -15,7 +15,7 @@ user config, then built-in). The tab showed only the user-level limits, so it sa
   among them (a profile's defaults can differ from the default repository's; the repositories of each set are named when there are several).
 - The tab opens with a card per project: pacing on or off, usable percent, step cap, run cap. The global top card (one pacing flag,
   one percent) is gone; it keeps the steps running and active runs, which the caps count over all projects, and the runs held by a cap.
-- Usage windows and reservations stay global per provider. A window's pace ceiling, headroom and free share are listed for each
+- Usage windows and reservations stay global per provider. A window's allowed so far, headroom and free share are listed for each
   distinct `usable_percent` among the projects with pacing on, with those projects named.
 - A provider is shown as paced only when some project has pacing on, and names those projects; otherwise "Not paced: no project has
   pacing on" (its raw usage is still shown). The reading's freshness (`state`) is still judged at the user-level settings.

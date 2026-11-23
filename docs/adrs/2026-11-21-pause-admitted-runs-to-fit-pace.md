@@ -11,7 +11,7 @@ the pace tightened, ten admitted runs kept spending a quota that only had room f
 
 ## Decision
 
-1. **Dynamic capacity over running runs.** Capacity is still the quota headroom (pace ceiling minus usage), each admitted run
+1. **Dynamic capacity over running runs.** Capacity is still the quota headroom (allowed so far minus usage), each admitted run
    taking what it still has to use (the remainder of its reservation). Admitted runs compete for it by priority (higher first), then
    oldest first. Those that fit keep progressing; the others are **paused** with a `rateHold` of kind `pace` (reason, provider,
    window, `estimatedCost`, `headroom`, `position` in the resume queue, `priority`; `run.held` carries them).
@@ -29,5 +29,5 @@ the pace tightened, ten admitted runs kept spending a quota that only had room f
 ## Consequences
 
 - Quota spent by outside work lowers the capacity and can pause runs that were admitted under a looser pace.
-- A run whose remainder never fits (very large estimate) waits until the pace ceiling grows to cover it.
+- A run whose remainder never fits (very large estimate) waits until what is allowed so far grows to cover it.
 - `rateHold.kind` and the `run.held` payload gain the value `pace`.

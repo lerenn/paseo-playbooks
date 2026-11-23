@@ -56,16 +56,16 @@ export interface WindowRoom {
   id: string;
   name: string;
   used: number;
-  /** The most the playbooks may have used by now: the pace ceiling, never above the usable percent (the hard cap). */
+  /** The most the playbooks may have used by now: what is allowed so far, never above the usable percent (the hard cap). */
   ceiling: number;
   usable: number;
-  /** Window start and length (ms) when known (the pace ceiling needs both); null for a window with no pace. */
+  /** Window start and length (ms) when known (what is allowed so far needs both); null for a window with no pace. */
   startMs: number | null;
   lengthMs: number | null;
   resetsAt: number | null;
 }
 
-/** The room left in a window before reservations: the pace ceiling minus usage (negative when usage is ahead of the pace). */
+/** The room left in a window before reservations: what is allowed so far minus usage (negative when usage is ahead of the pace). */
 export const roomHeadroom = (room: WindowRoom): number => room.ceiling - room.used;
 
 /**
@@ -86,7 +86,7 @@ export function windowRooms(entry: ProviderUsage, usable: number, nowMs: number)
   return rooms;
 }
 
-/** When `needed` points (usage plus reservations plus the cost) fit under the pace ceiling, or the window's reset when they never will; null when unknown. */
+/** When `needed` points (usage plus reservations plus the cost) fit under what is allowed so far, or the window's reset when they never will; null when unknown. */
 export function roomFreeAt(room: WindowRoom, needed: number): number | null {
   if (needed >= room.usable) return room.resetsAt;
   if (room.startMs === null || room.lengthMs === null) return null;

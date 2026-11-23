@@ -31,7 +31,7 @@ steps:
 `;
 
 const HOUR = 3_600_000;
-/** A weekly window with `used` points, 50 of 168 hours gone: the pace ceiling is 28.87 points at 97 usable. */
+/** A weekly window with `used` points, 50 of 168 hours gone: what is allowed so far is 28.87 points at 97 usable. */
 const weekly = (used: number) => ({ id: "weekly", label: "weekly", usedPct: used, resetsAt: new Date(Date.now() + 118 * HOUR).toISOString() });
 
 async function setup(rateLimits: string, usage: { current: unknown } = { current: { providers: [] } }, options: { history?: boolean } = {}) {
@@ -116,7 +116,7 @@ describe("rate limiting in the runtime", () => {
 });
 
 describe("the hold notice to the manager (ADR 2026-11-23-warden-held-check)", () => {
-  const verdict = (extra: object = {}) => ({ kind: "pace" as const, reason: "claude weekly at 41% above its pace ceiling 36%", provider: "claude", window: "weekly", retryAt: "2026-11-24T10:00:00Z", estimatedCost: null, headroom: null, position: null, priority: null, ...extra });
+  const verdict = (extra: object = {}) => ({ kind: "pace" as const, reason: "claude weekly at 41% above its allowance so far 36%", provider: "claude", window: "weekly", retryAt: "2026-11-24T10:00:00Z", estimatedCost: null, headroom: null, position: null, priority: null, ...extra });
   const spy = async () => {
     const s = await setup("");
     const enqueue = vi.spyOn(s.runtime as never, "enqueue" as never).mockResolvedValue(undefined as never);
@@ -129,14 +129,14 @@ describe("the hold notice to the manager (ADR 2026-11-23-warden-held-check)", ()
   it("is short, and tells the manager not to start steps", async () => {
     const s = await spy();
     await s.apply(verdict());
-    expect(s.texts()).toEqual(["Rate limit hold (claude weekly at 41% above its pace ceiling 36%). The plugin resumes the run by itself: do not start, retry or restart steps, or cancel the run."]);
+    expect(s.texts()).toEqual(["Rate limit hold (claude weekly at 41% above its allowance so far 36%). The plugin resumes the run by itself: do not start, retry or restart steps, or cancel the run."]);
   });
 
   it("is sent once: a new retry time, position, headroom or reason does not repeat it", async () => {
     const s = await spy();
     await s.apply(verdict());
     await s.apply(verdict({ retryAt: "2026-11-24T11:00:00Z" }));
-    await s.apply(verdict({ reason: "claude weekly at 40% above its pace ceiling 36%", position: 2, headroom: 3, estimatedCost: 9 }));
+    await s.apply(verdict({ reason: "claude weekly at 40% above its allowance so far 36%", position: 2, headroom: 3, estimatedCost: 9 }));
     expect(s.texts()).toHaveLength(1);
     expect(s.store.get("r1")!.rateHold!.position).toBe(2);
   });

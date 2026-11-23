@@ -18,7 +18,7 @@ const NOW = Date.parse("2026-11-20T12:00:00Z");
 /** A window of `length` hours with `elapsed` hours gone. */
 const windowOf = (id: string, length: number, elapsed: number, usedPct: number) => ({ id, label: id, usedPct, resetsAt: new Date(NOW + (length - elapsed) * HOUR).toISOString() });
 
-describe("pace ceiling", () => {
+describe("allowed so far (pace ceiling)", () => {
   it("reads the window length from its id", () => {
     expect(windowLengthMs({ id: "five_hour" })).toBe(5 * HOUR);
     expect(windowLengthMs({ id: "5h" })).toBe(5 * HOUR);
@@ -32,7 +32,7 @@ describe("pace ceiling", () => {
     expect(pace.ceiling).toBeCloseTo(9.7, 5);
   });
 
-  it("headroom is the pace ceiling minus usage, and says when the ceiling catches up", () => {
+  it("headroom is what is allowed so far minus usage, and says when it catches up", () => {
     const entry = { providerId: "claude", status: "available", windows: [windowOf("weekly", 168, 84, 60)] };
     const [room] = windowRooms(entry, 97, NOW);
     expect(room!.ceiling).toBeCloseTo(48.5, 5);

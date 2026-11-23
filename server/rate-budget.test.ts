@@ -29,7 +29,7 @@ async function mk(count: number, header = ""): Promise<Run[]> {
   return Array.from({ length: count }, (_, i) => newRun({ id: `r${i}`, playbook: entry.playbook!, workspaceId: "ws", workspaceDir: dir, projectId: "p", branch: null, managerAgentId: "m", inputs: {}, now: new Date(NOW + i * 1000).toISOString() }));
 }
 
-/** 50 of 168 hours gone, 97 usable: the pace ceiling is 28.9 points; usage `used` leaves 28.9 - used of headroom. */
+/** 50 of 168 hours gone, 97 usable: what is allowed so far is 28.9 points; usage `used` leaves 28.9 - used of headroom. */
 function ctxOf(used: number | null, extra: Partial<PlanContext> = {}, reserved: Record<string, number> = {}): PlanContext {
   const probe = (): Probe => (used === null ? { state: "unreported" } : { state: "ok", rooms: windowRooms({ providerId: "claude", windows: [usage(used)] }, 97, NOW) });
   return { now: NOW, config: DEFAULT_RATE_LIMITS, probe, stepCost: () => 2, reserved: (provider, id) => reserved[windowKey(provider, id)] ?? 0, ...extra };

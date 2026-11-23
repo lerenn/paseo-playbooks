@@ -6,7 +6,7 @@ Accepted. Refines `2026-11-21-pause-admitted-runs-to-fit-pace.md` and `2026-11-2
 
 ## Context
 
-An admitted run's remaining need (what the pace plan takes from the headroom) was its reservation's remainder, `est - spent`, where `est` was fixed when the run was admitted. A run admitted while its playbook had no cost history got an `est` of 0, so its need stayed 0 for its whole life: once the history appeared, the run kept starting steps although the window was over the pace ceiling, because a run with no need is never paused.
+An admitted run's remaining need (what the pace plan takes from the headroom) was its reservation's remainder, `est - spent`, where `est` was fixed when the run was admitted. A run admitted while its playbook had no cost history got an `est` of 0, so its need stayed 0 for its whole life: once the history appeared, the run kept starting steps although the window was over what is allowed so far, because a run with no need is never paused.
 
 ## Decision
 

@@ -166,7 +166,7 @@ function ProviderView(props: { theme: Theme; provider: ProviderRow }) {
   );
 }
 
-/** The throttle line (violet, as on hold), its counts and a one-line caption (the formula). Shown when the provider has a window with a pace ceiling or something held or paused. */
+/** The throttle line (violet, as on hold), its counts and a one-line caption (the formula). Shown when the provider has a window with an allowed-so-far figure or something held or paused. */
 function ThrottleView(props: { theme: Theme; provider: ProviderRow }) {
   const { theme, provider } = props;
   const { t, locale } = useTranslation(messages);
@@ -197,7 +197,7 @@ function ThrottleView(props: { theme: Theme; provider: ProviderRow }) {
   );
 }
 
-/** A usage window: name, a bar and the numbers. Paced: grey usage up to the pace ceiling, red above it, green for what is still free, a tick at the ceiling. Not paced: usage only. */
+/** A usage window: name, a bar and the numbers. Paced: grey usage up to what is allowed so far, red above it, green for what is still free, a tick at the allowed-so-far mark. Not paced: usage only. */
 function SlotView(props: { theme: Theme; slot: SlotRow }) {
   const { theme, slot } = props;
   const { t, locale } = useTranslation(messages);

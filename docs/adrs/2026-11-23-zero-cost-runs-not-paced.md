@@ -6,7 +6,7 @@ Accepted. Refines `2026-11-23-quota-limits-in-defaults.md`, `2026-11-21-pause-ad
 
 ## Context
 
-A run whose measured history was `{points: 0, steps: 1}` had an estimate of 0 (not "no estimate"), so it was paced by cost. With usage at or over the pace ceiling the free headroom is 0 or negative, and the admission test `free >= cost` failed, or a held higher-priority waiter blocked it. A run estimated to cost nothing was held for headroom although it cannot hurt the pace.
+A run whose measured history was `{points: 0, steps: 1}` had an estimate of 0 (not "no estimate"), so it was paced by cost. With usage at or over what is allowed so far the free headroom is 0 or negative, and the admission test `free >= cost` failed, or a held higher-priority waiter blocked it. A run estimated to cost nothing was held for headroom although it cannot hurt the pace.
 
 ## Decision
 

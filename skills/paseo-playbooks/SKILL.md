@@ -1345,7 +1345,7 @@ that agent is still alive (`role: { archive_agents: false }`, idle): the plugin 
 ## Rate limits
 
 Off by default; set in a repository's or profile's `defaults/main.yaml` and/or the user config (`quota_limits: { steps, playbooks, quota: { pacing, usable_percent, refresh_interval, max_age } }`; `usable_percent` alone turns pacing on; the folder's defaults override the user config, field by field, resolved per run from the run's own playbook folder, each run gated by the caps of its own config; the old `rate_limits` and `rate_limit` still work as deprecated aliases).
-With `quota.pacing` the quota left decides how much runs: work starts while a provider's headroom (pace ceiling minus usage minus what started work
+With `quota.pacing` the quota left decides how much runs: work starts while a provider's headroom (allowed so far minus usage minus what started work
 still uses) covers its estimated cost (the measured history of its steps; with none it is not paced by cost until its first measure; the old manual `quota_limit.estimate` was removed and is refused at load); `steps` and `playbooks` are only optional hard caps.
 A run is admitted whole when the headroom covers its estimated cost; the pace may later pause admitted runs between steps (kind `pace`). A playbook may set
 `quota_limit: { priority: 0 }` (priority: a whole number, higher first, ties oldest first; also in `defaults/main.yaml`), and `start_playbook` takes `priority` to override it per run.

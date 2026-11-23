@@ -34,7 +34,7 @@ async function oneRun(): Promise<Run> {
 }
 
 describe("quota limitation view", () => {
-  it("shows usage, pace ceiling, reservations and headroom per window", async () => {
+  it("shows usage, allowed so far, reservations and headroom per window", async () => {
     const run = await oneRun();
     const out = buildQuotaLimitation({
       projects: projectsOn,
@@ -55,7 +55,7 @@ describe("quota limitation view", () => {
 
   it("lists held runs of the provider, exhausted marks, and runs held by a cap apart", async () => {
     const run = await oneRun();
-    run.rateHold = { kind: "pace", reason: "claude weekly above its pace ceiling", provider: "claude", window: "weekly", since: new Date(NOW).toISOString(), retryAt: null, estimatedCost: null, headroom: null, position: null, priority: null };
+    run.rateHold = { kind: "pace", reason: "claude weekly above its allowance so far", provider: "claude", window: "weekly", since: new Date(NOW).toISOString(), retryAt: null, estimatedCost: null, headroom: null, position: null, priority: null };
     run.exhausted = [{ target: "claude/m", at: new Date(NOW - 1000).toISOString() }];
     const out = buildQuotaLimitation({ projects: projectsOn, nowMs: NOW, views: [view()], runs: [run], reservations: [] });
     expect(out.providers[0]!.held).toMatchObject([{ runId: "r1", kind: "pace", window: "weekly" }]);

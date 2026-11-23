@@ -283,7 +283,7 @@ export const analyticsStateRpc = defineRpc({
   output: AnalyticsSchema,
 });
 
-/** The Quota limitation tab: the resolved limits per project, and per provider its usage windows, pace ceilings, reservations, headroom, held runs and exhausted marks. */
+/** The Quota limitation tab: the resolved limits per project, and per provider its usage windows, allowed-so-far values, reservations, headroom, held runs and exhausted marks. */
 export const quotaLimitationRpc = defineRpc({
   name: "quota.limitation",
   /** One workspace per project to resolve the limits of (the panel's projects); without any, no project is listed. */

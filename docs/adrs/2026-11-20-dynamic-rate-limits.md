@@ -12,7 +12,7 @@ work costs.
 
 ## Decision
 
-1. **Headroom.** Per provider window: the pace ceiling (`usable_percent` × elapsed / window length, as before, never above `usable_percent`,
+1. **Headroom.** Per provider window: what is allowed so far (`usable_percent` × elapsed / window length, as before, never above `usable_percent`,
    the tightest window and provider winning) minus current usage minus what started work still has to use. Work starts while the headroom
    covers its estimated cost; the rest is held. The parallelism is the result, not a setting. `steps` and `playbooks` stay only as
    optional hard caps on top (unset = none). A window above `usable_percent` holds as a quota hold until it resets, as before.
