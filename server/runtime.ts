@@ -57,7 +57,7 @@ import { BusError, EventBus, globToRegExp, type BusEvent, type Notifier, type Su
 import { blockedOnGate, MANAGER_WATCH_CHECK_MS, nudgeDue, STUCK_AFTER_NUDGES } from "./manager-watch";
 import type { WardenPrConfig } from "../shared/types";
 import { listOpenPrs, prCandidates, reposOfRun, rulesetChecks, rulesetKey, WardenPrStore, type OpenPr } from "./warden-prs";
-import { diffFindings, gateOpenCandidates, loopCandidates, managerBlockedCandidates, slowCandidates, stalledCandidates, stalledInfo, staleDefinitionCandidate, WARDEN_CHECK_MS, WARDEN_MAX_RUNS_PER_PASS, wardenPrSummary, wardenSummary, type Act, type Candidate, type WardenIo } from "./warden";
+import { diffFindings, gateOpenCandidates, heldCandidates, loopCandidates, managerBlockedCandidates, slowCandidates, stalledCandidates, stalledInfo, staleDefinitionCandidate, WARDEN_CHECK_MS, WARDEN_MAX_RUNS_PER_PASS, wardenPrSummary, wardenSummary, type Act, type Candidate, type WardenIo } from "./warden";
 import { SlowIndex } from "./slow";
 import { gatePayload, OversightProducer, registerOversightTypes, runFieldsOf } from "./oversight-events";
 import { JOB_TYPES, publicJobEvents } from "./job-events";
@@ -1115,7 +1115,7 @@ export class Runtime {
             console.error(`[playbooks] warden check ${name} failed on ${listed.id}:`, errorText(error));
           }
         };
-        const { staleDefinition, managerBlocked, loops, slow, gateOpen, stalled } = config.checks;
+        const { staleDefinition, managerBlocked, loops, slow, gateOpen, stalled, held } = config.checks;
         if (staleDefinition.action !== "none") await guarded("stale_definition", async () => staleDefinitionCandidate(listed, await io.originSha(listed), staleDefinition.afterMs, now, staleDefinition.action as Act));
         if (managerBlocked.action !== "none") await guarded("manager_blocked", async () => managerBlockedCandidates(listed, await io.manager(listed), managerBlocked.action as Act));
         if (loops.action !== "none") await guarded("loops", () => loopCandidates(listed, loops.above, loops.action as Act));
@@ -1129,6 +1129,7 @@ export class Runtime {
             return stalledCandidates(listed, info, stalled.afterMs, now, manager, manager === null || manager === "running" ? false : await io.managerQuota(listed), stalled.action as Act);
           });
         }
+        if (held.action !== "none") await guarded("held", () => heldCandidates(listed, this.store.list(), held.afterMs, now, held.action as Act));
         // The state is written before any effect: a crash or a failed effect never repeats a report.
         const reported = await this.store.mutate(listed.id, (run) => {
           const { next, report } = diffFindings(run.warden.findings, found, iso, config.cooldownMs);
@@ -2323,6 +2324,8 @@ export class Runtime {
     if (config.steps !== null || config.playbooks !== null) verdict = limitVerdict(run, this.store.list(), config, this.reservedStarts(exceptKey));
     if (!verdict && quota && config.quota.pacing) verdict = this.paceVerdict(this.store.get(run.id) ?? run, config, exceptKey !== "");
     await this.noteUnreported(run.id, config);
+    // A check that skips the quota (script starts) never lifts a quota hold: it only looked at the limits, so the hold it did not look at stays.
+    if (!verdict && !quota && this.store.get(run.id)?.rateHold && ["quota", "headroom", "pace"].includes(this.store.get(run.id)!.rateHold!.kind)) return null;
     await this.applyHold(run.id, verdict);
     return verdict;
   }
@@ -2553,15 +2556,26 @@ export class Runtime {
     await this.store.mutate(runId, (run) => void (change = engine.setRateHold(run, verdict, nowIso())));
     const run = this.store.get(runId);
     if (!run) return;
+    if (!isActive(run)) this.holdNotified.delete(runId);
+    const key = verdict ? `${verdict.kind}|${verdict.provider ?? ""}|${verdict.window ?? ""}` : "";
     if (change === "held" && verdict) {
-      await this.enqueue(runId, [`Rate limit: this run is on hold (${verdict.reason}${verdict.retryAt ? `; the plugin looks again at ${verdict.retryAt}` : ""}). Running steps finish; no new step starts until then. The plugin resumes the run by itself: do not start, retry or restart steps, and do not cancel the run.`]);
+      // Once per hold (ADR 2026-11-23-warden-held-check): not again when the hold is released and re-taken with the same kind, provider and window.
+      if (this.holdNotified.get(runId) === key) return;
+      this.holdNotified.set(runId, key);
+      await this.enqueue(runId, [`Rate limit hold (${verdict.reason}). The plugin resumes the run by itself: do not start, retry or restart steps, or cancel the run.`]);
       await this.deliver(runId);
     } else if (change === "released") {
+      // Only a manager that was told of the hold has something to learn, and only when a step now waits for it.
       const ready = engine.readyForManager(run);
-      await this.enqueue(runId, [`Rate limit lifted: the run continues.${ready.length > 0 ? ` Ready for you: ${ready.join(", ")}.` : " The plugin starts the ready steps by itself."}`]);
+      if (!this.holdNotified.has(runId) || ready.length === 0) return;
+      this.holdNotified.delete(runId);
+      await this.enqueue(runId, [`Rate limit lifted. Ready for you: ${ready.join(", ")}.`]);
       await this.deliver(runId);
     }
   }
+
+  /** Per run: the kind, provider and window of the hold its manager was last told about (memory only: a restart tells once more at most). */
+  private readonly holdNotified = new Map<string, string>();
 
   /** Per run: when a quota-blocked manager's recovery is tried again, and how many tries have not recovered it (the interval doubles, 30 s to 10 min). */
   private readonly managerRetry = new Map<string, { next: number; failures: number }>();

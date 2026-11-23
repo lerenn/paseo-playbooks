@@ -3,11 +3,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_WARDEN, GateSchema, type Gate, type Run } from "../shared/types";
-import { newRun, startAttempt } from "./engine";
+import { newRun, noteEvent, startAttempt } from "./engine";
 import { loadPlaybooks } from "./loader";
 import { Runtime } from "./runtime";
 import { RunStore } from "./store";
-import { diffFindings, stalledCandidates, stalledInfo, WARDEN_MAX_RUNS_PER_PASS } from "./warden";
+import { diffFindings, heldMs, stalledCandidates, stalledInfo, WARDEN_MAX_RUNS_PER_PASS } from "./warden";
 
 const EXAMPLES = path.resolve(__dirname, "..", "examples");
 const temps: string[] = [];
@@ -498,5 +498,142 @@ describe("repeat suppression", () => {
     await s.store.mutate("run_x", (run) => void (run.pausedAt = new Date(T0).toISOString()));
     await s.look(600); // state changed (paused), past the cooldown
     expect(await s.events("warden.finding")).toHaveLength(2);
+  });
+});
+
+describe("held runs (ADR 2026-11-23-warden-held-check)", () => {
+  const at = (m: number) => new Date(T0 + m * MIN).toISOString();
+  const hold = (extra: object = {}) => ({ kind: "headroom" as const, reason: "claude weekly headroom 3 below the estimated cost 12", provider: "claude", window: "weekly", since: at(0), retryAt: at(400), estimatedCost: 12, headroom: 3, position: 2, priority: 5, ...extra });
+  const holdRun = (s: Awaited<ReturnType<typeof setup>>, id = "run_x", extra: object = {}) =>
+    s.store.mutate(id, (run) => {
+      run.steps.release!.status = "ready";
+      run.rateHold = hold(extra);
+    });
+  const findings = (s: Awaited<ReturnType<typeof setup>>, id = "run_x") => Object.values(s.store.get(id)!.warden.findings);
+
+  it("held is on by default with a 2h threshold, and is configurable", async () => {
+    expect(DEFAULT_WARDEN.checks.held).toEqual({ afterMs: 120 * MIN, action: "report" });
+    const s = await setup(ON("{ held: { after: 1h } }"));
+    expect(s.store.get("run_x")!.playbook.warden.checks.held).toEqual({ afterMs: 60 * MIN, action: "report" });
+    const off = await setup(ON("{ held: { action: none } }"));
+    await holdRun(off);
+    await off.look(600);
+    expect(off.store.get("run_x")!.warden.findings).toEqual({});
+  });
+
+  it("reports a run held longer than `after`, with reason, provider and window, queue place, who is ahead, cost and retry time", async () => {
+    const s = await setup(ON("{ held: {}, stalled: { action: none } }"), { runs: 2 });
+    await holdRun(s);
+    await holdRun(s, "run_1", { position: 1, priority: 9 });
+    await s.look(100);
+    expect(findings(s)).toEqual([]);
+    await s.look(130);
+    const [found] = findings(s);
+    expect(found).toMatchObject({ check: "held", subject: null, value: 130, state: "headroom" });
+    expect(found!.detail).toContain("held 130 min for quota (headroom: claude weekly headroom 3 below the estimated cost 12)");
+    expect(found!.detail).toContain("claude weekly; position 2, priority 5; ahead: run_1 (release); estimated cost 12 vs headroom 3; retry at " + at(400));
+    expect(await s.events("warden.finding")).toHaveLength(2); // run_1 (position 1, nobody ahead) is reported too
+    expect(findings(s, "run_1")[0]!.detail).toContain("no other held run ahead");
+  });
+
+  it("is not reported for a run paused by a human, or one that is not held", async () => {
+    const s = await setup(ON("{ held: {} }"));
+    await holdRun(s);
+    await s.store.mutate("run_x", (run) => void (run.pausedAt = at(10)));
+    await s.look(600);
+    expect(findings(s)).toEqual([]);
+    const free = await setup(ON("{ held: {} }"));
+    await free.look(600);
+    expect(findings(free).filter((f) => f.check === "held")).toEqual([]);
+  });
+
+  it("repeats on the doubling rule (value = hold minutes) and when the hold kind changes", async () => {
+    const s = await setup(ON("{ held: {}, stalled: { action: none } }"));
+    await holdRun(s);
+    await s.look(120);
+    for (const m of [150, 200, 239]) await s.look(m);
+    expect(await s.events("warden.finding")).toHaveLength(1);
+    await s.look(255);
+    expect(await s.events("warden.finding")).toHaveLength(2);
+    await s.store.mutate("run_x", (run) => void (run.rateHold = { ...run.rateHold!, kind: "pace" }));
+    await s.look(330); // past the cooldown, kind changed
+    expect(await s.events("warden.finding")).toHaveLength(3);
+  });
+
+  it("heldMs sums the closed holds and the open one", async () => {
+    const s = await setup(ON());
+    await s.store.mutate("run_x", (run) => {
+      noteEvent(run, "run_held", null, "x", at(10));
+      noteEvent(run, "run_released", null, "x", at(40));
+      run.rateHold = hold({ since: at(100) });
+    });
+    expect(heldMs(s.store.get("run_x")!, T0 + 160 * MIN)).toBe(90 * MIN);
+  });
+
+  it("stalled: a held run is never stalled, and its idle clock starts at the release", async () => {
+    const s = await setup(ON("{ stalled: {}, held: { action: none } }"));
+    await s.store.mutate("run_x", (run) => {
+      run.steps.release!.status = "reported";
+      run.rateHold = hold();
+    });
+    expect(stalledInfo(s.store.get("run_x")!)).toBeNull();
+    await s.look(600);
+    expect(findings(s)).toEqual([]);
+    await s.store.mutate("run_x", (run) => {
+      run.rateHold = null;
+      noteEvent(run, "run_released", null, "lifted", at(600));
+    });
+    await s.look(620);
+    expect(findings(s)).toEqual([]);
+    await s.look(640);
+    expect(findings(s)[0]).toMatchObject({ check: "stalled" });
+    expect(findings(s)[0]!.detail).toContain("for 40 min");
+  });
+
+  it("stale_definition: time spent held does not age the pin", async () => {
+    const s = await setup(ON("{ held: { action: none } }"));
+    await s.isolate("old");
+    s.spies.origin.mockResolvedValue("new");
+    await s.store.mutate("run_x", (run) => {
+      noteEvent(run, "run_held", null, "x", at(0));
+      noteEvent(run, "run_released", null, "x", at(11 * 60));
+    });
+    await s.look(13 * 60); // 13h old, 11h of it held: 2h of age
+    expect(s.store.get("run_x")!.warden.findings).toEqual({});
+    await s.store.mutate("run_x", (run) => void (run.rateHold = hold({ since: at(13 * 60) })));
+    await s.look(25 * 60); // 24h old, 11h + 12h held: 1h of age
+    expect(s.store.get("run_x")!.warden.findings).toEqual({});
+    await s.look(40 * 60); // the hold now lasts 27h: still 1h of age
+    expect(s.store.get("run_x")!.warden.findings).toEqual({});
+  });
+
+  it("stale_definition: the state that drives repeats ignores the hold, so a held run does not re-report when it flips", async () => {
+    const s = await setup(ON("{ held: { action: none } }"));
+    await s.isolate("old");
+    s.spies.origin.mockResolvedValue("new");
+    await s.look(13 * 60);
+    expect(await s.events("warden.finding")).toHaveLength(1);
+    await holdRun(s);
+    await s.look(15 * 60);
+    expect(await s.events("warden.finding")).toHaveLength(1);
+  });
+
+  it("loops, gate_open and manager_blocked keep reporting on a held run: a hold changes none of their facts", async () => {
+    const s = await setup(ON("{ loops: { above: 1 }, gate_open: { after: 30m }, manager_blocked: {}, held: { action: none } }"));
+    await holdRun(s);
+    await s.store.mutate("run_x", (run) => void (run.loops["a->b"] = 9));
+    await s.gate({ by: "manager" });
+    s.status.m = "closed";
+    await s.look(60);
+    expect(Object.keys(s.store.get("run_x")!.warden.findings).sort()).toEqual(["gate_open:g1", "loops:a->b", "manager_blocked:g1"]);
+  });
+
+  it("slow: a ready step that cannot start because of the hold is not slow", async () => {
+    const s = await setup(ON("{ slow: {}, held: { action: none } }"));
+    await holdRun(s);
+    const { SlowIndex } = await import("./slow");
+    vi.spyOn(SlowIndex.prototype, "of").mockReturnValue({ release: { elapsedMs: 30 * MIN, baselineMs: 5 * MIN, ratio: 6, samples: 5 } });
+    await s.look(30);
+    expect(s.store.get("run_x")!.warden.findings).toEqual({});
   });
 });

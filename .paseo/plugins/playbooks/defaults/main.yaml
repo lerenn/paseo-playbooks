@@ -27,6 +27,7 @@ warden: { enabled: false }
 #     slow: { action: report }               # a running step is slower than its baseline
 #     gate_open: { after: 30m, action: report }
 #     stalled: { after: 30m, action: report } # an active run with nothing running, ready or queued and no open gate
+#     held: { after: 2h, action: report }     # an active run held for quota (not paused by a human) longer than this
 # warden:                      # PR checks (defaults only; each check is off unless its block is set; needs a Sidekick and the gh CLI)
 #   enabled: true
 #   pr_checks:

@@ -1,7 +1,7 @@
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { newRun } from "./engine";
 import { loadPlaybooks } from "./loader";
 import { RateHeldError, Runtime } from "./runtime";
@@ -88,7 +88,7 @@ describe("rate limiting in the runtime", () => {
     expect(hold.kind).toBe("playbooks");
     expect(hold.reason).toContain("playbook limit");
     expect(store.get("r1")!.steps.a!.status).toBe("ready");
-    expect(store.get("r1")!.inbox.join("\n") + sent.join("\n")).toContain("Rate limit: this run is on hold");
+    expect(store.get("r1")!.inbox.join("\n") + sent.join("\n")).toContain("Rate limit hold (");
     // The first run ends: the plugin lifts the hold without any agent action.
     await store.mutate("r0", (run) => void (run.status = "completed"));
     await (runtime as unknown as { releaseHolds(): Promise<void> }).releaseHolds();
@@ -112,6 +112,72 @@ describe("rate limiting in the runtime", () => {
     await runtime.startStep("m", "r0", "a", "go");
     await expect(runtime.startStep("m", "r1", "a", "go")).rejects.toThrow(/step limit reached/);
     expect(store.get("r1")!.rateHold!.kind).toBe("steps");
+  });
+});
+
+describe("the hold notice to the manager (ADR 2026-11-23-warden-held-check)", () => {
+  const verdict = (extra: object = {}) => ({ kind: "pace" as const, reason: "claude weekly at 41% above its pace ceiling 36%", provider: "claude", window: "weekly", retryAt: "2026-11-24T10:00:00Z", estimatedCost: null, headroom: null, position: null, priority: null, ...extra });
+  const spy = async () => {
+    const s = await setup("");
+    const enqueue = vi.spyOn(s.runtime as never, "enqueue" as never).mockResolvedValue(undefined as never);
+    vi.spyOn(s.runtime as never, "deliver" as never).mockResolvedValue(undefined as never);
+    const apply = (v: unknown) => (s.runtime as unknown as { applyHold(id: string, v: unknown): Promise<void> }).applyHold("r1", v);
+    const texts = () => enqueue.mock.calls.map((call) => (call[1] as string[]).join(" "));
+    return { ...s, apply, texts };
+  };
+
+  it("is short, and tells the manager not to start steps", async () => {
+    const s = await spy();
+    await s.apply(verdict());
+    expect(s.texts()).toEqual(["Rate limit hold (claude weekly at 41% above its pace ceiling 36%). The plugin resumes the run by itself: do not start, retry or restart steps, or cancel the run."]);
+  });
+
+  it("is sent once: a new retry time, position, headroom or reason does not repeat it", async () => {
+    const s = await spy();
+    await s.apply(verdict());
+    await s.apply(verdict({ retryAt: "2026-11-24T11:00:00Z" }));
+    await s.apply(verdict({ reason: "claude weekly at 40% above its pace ceiling 36%", position: 2, headroom: 3, estimatedCost: 9 }));
+    expect(s.texts()).toHaveLength(1);
+    expect(s.store.get("r1")!.rateHold!.position).toBe(2);
+  });
+
+  it("is sent again when the kind or the provider and window change", async () => {
+    const s = await spy();
+    await s.apply(verdict());
+    await s.apply(verdict({ kind: "headroom" }));
+    await s.apply(verdict({ kind: "headroom", window: "five_hour" }));
+    await s.apply(verdict({ kind: "headroom", window: "five_hour", provider: "codex" }));
+    expect(s.texts()).toHaveLength(4);
+  });
+
+  it("is not sent again when a hold is lifted and re-taken with the same kind, provider and window", async () => {
+    const s = await spy();
+    await s.apply(verdict());
+    await s.store.mutate("r1", (run) => void (run.steps.a!.status = "running")); // nothing waits for the manager at the release
+    await s.apply(null);
+    await s.apply(verdict());
+    expect(s.texts()).toHaveLength(1);
+  });
+
+  it("a release is told only when the manager knew of the hold and a step now waits for it", async () => {
+    const quiet = await spy();
+    await quiet.apply(null);
+    expect(quiet.texts()).toEqual([]);
+    const s = await spy();
+    await s.apply(verdict());
+    await s.apply(null);
+    expect(s.texts()).toHaveLength(2);
+    expect(s.texts()[1]).toBe("Rate limit lifted. Ready for you: a.");
+    await s.apply(verdict()); // the release reset it: the next hold is told again
+    expect(s.texts()).toHaveLength(3);
+  });
+
+  it("a script start that skips the quota does not lift a quota hold", async () => {
+    const s = await spy();
+    await s.apply(verdict());
+    await s.internals.rateCheck(s.store.get("r1"), "", false);
+    expect(s.store.get("r1")!.rateHold).not.toBeNull();
+    expect(s.texts()).toHaveLength(1);
   });
 });
 

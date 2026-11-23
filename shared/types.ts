@@ -101,10 +101,12 @@ export const WardenConfigSchema = z.object({
     gateOpen: z.object({ afterMs: z.number().int().positive(), action: WardenActionSchema }),
     /** An active run with no running, ready or queued step and no open gate for longer than `afterMs` (ADR 2026-11-23-warden-stalled-and-repeat-suppression). */
     stalled: z.object({ afterMs: z.number().int().positive().default(30 * 60_000), action: WardenActionSchema }).default({ afterMs: 30 * 60_000, action: "report" }),
+    /** An active run held for quota (not paused by a human) for longer than `afterMs` (ADR 2026-11-23-warden-held-check). */
+    held: z.object({ afterMs: z.number().int().positive().default(2 * 3_600_000), action: WardenActionSchema }).default({ afterMs: 2 * 3_600_000, action: "report" }),
   }),
 });
 export type WardenConfig = z.infer<typeof WardenConfigSchema>;
-export const WARDEN_RUN_CHECKS = ["stale_definition", "manager_blocked", "loops", "slow", "gate_open", "stalled"] as const;
+export const WARDEN_RUN_CHECKS = ["stale_definition", "manager_blocked", "loops", "slow", "gate_open", "stalled", "held"] as const;
 /** The PR-level checks (ADR 2026-11-20-warden-pr-checks): over the project's open pull requests, each off unless configured. */
 export const WARDEN_PR_CHECKS = ["pr_no_reviewer", "pr_conflicting", "pr_review_stale", "pr_required_checks", "pr_review_findings", "pr_unowned", "pr_draft_idle", "run_failed"] as const;
 export const WARDEN_CHECKS = [...WARDEN_RUN_CHECKS, ...WARDEN_PR_CHECKS] as const;
@@ -120,6 +122,7 @@ export const DEFAULT_WARDEN: WardenConfig = {
     slow: { action: "report" },
     gateOpen: { afterMs: 30 * 60_000, action: "report" },
     stalled: { afterMs: 30 * 60_000, action: "report" },
+    held: { afterMs: 2 * 3_600_000, action: "report" },
   },
 };
 

@@ -163,7 +163,7 @@ export const OVERSIGHT_TYPES: EventTypeDef[] = [
   },
   {
     type: "warden.finding",
-    description: "The warden (warden.enabled) found something that may need action, once per finding (until it clears or changes; again after warden.cooldown, and only when its count doubled or the run's state changed): check (stale_definition, manager_blocked, loops or stalled; slow and gate_open findings reuse step.slow and gate.stale), subject (the gate or edge; null for the run), detail, since.",
+    description: "The warden (warden.enabled) found something that may need action, once per finding (until it clears or changes; again after warden.cooldown, and only when its count doubled or the run's state changed): check (stale_definition, manager_blocked, loops, stalled or held; slow and gate_open findings reuse step.slow and gate.stale), subject (the gate or edge; null for the run), detail, since.",
     payload: z.object({ ...runFields, check: z.enum(WARDEN_RUN_CHECKS), subject: z.string().nullable(), detail: z.string(), since: z.string() }),
     line: (event) => `- warden.finding: ${runName(event.payload)} in ${String(event.payload.workspaceDir)}, ${String(event.payload.check)}: ${String(event.payload.detail)}. Tools: get_run { runId: "${event.runId}" }.`,
   },

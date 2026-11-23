@@ -45,6 +45,25 @@ export interface WardenIo {
 
 export const findingKey = (check: WardenCheck, subject: string | null): string => `${check}:${subject ?? ""}`;
 
+/**
+ * Milliseconds the run spent held for quota (ADR 2026-11-23-warden-held-check): each `run_held` up to its `run_released`
+ * (or now while the hold lasts), summed from the history. A hold is an expected, self-resolving state, so time-based checks
+ * subtract it instead of counting it as the run being slow, old or idle.
+ */
+export function heldMs(run: Run, now: number): number {
+  let total = 0;
+  let since: number | null = null;
+  for (const entry of run.history) {
+    if (entry.type === "run_held" && since === null) since = Date.parse(entry.at);
+    else if (entry.type === "run_released" && since !== null) {
+      total += Math.max(0, Date.parse(entry.at) - since);
+      since = null;
+    }
+  }
+  if (since === null && run.rateHold) since = Date.parse(run.rateHold.since);
+  return since !== null && Number.isFinite(since) ? total + Math.max(0, now - since) : total;
+}
+
 /** The step runs slower than their baseline, as the slow-step warning computes them (only steps still running). */
 export function slowCandidates(run: Run, slow: Record<string, SlowInfo>, action: Act): Candidate[] {
   return Object.entries(slow)
@@ -78,7 +97,7 @@ export function staleDefinitionCandidate(run: Run, originSha: string | null, aft
   const definition = run.definition;
   if (!definition || !originSha) return [];
   if (onlyWaitingOnGate(run)) return [];
-  const aged = now - Date.parse(run.createdAt) >= afterMs;
+  const aged = now - Date.parse(run.createdAt) - heldMs(run, now) >= afterMs;
   const stale = definition.source === "workspace" || (aged && definition.sha !== null && definition.sha !== originSha);
   if (!stale) return [];
   const pinned = definition.source === "workspace" ? "the workspace checkout" : `${definition.ref ?? "origin"}@${(definition.sha ?? "").slice(0, 8)}`;
@@ -109,6 +128,8 @@ export interface StalledInfo {
 export function stalledInfo(run: Run): StalledInfo | null {
   if (!isActive(run) || isTerminal(run.status) || run.pausedAt || run.playbook.singleton || run.batch) return null;
   if (hasWork(run) || hasOpenGate(run)) return null;
+  // A held run is waiting for quota by design (the plugin resumes it): never stalled, and the idle clock restarts at the release (an event).
+  if (run.rateHold) return null;
   const event = [...run.history].reverse().find((entry) => entry.type !== "warden");
   const at = Date.parse(event?.at ?? run.createdAt);
   const counts = new Map<string, string[]>();
@@ -125,6 +146,25 @@ export function stalledCandidates(run: Run, info: StalledInfo | null, afterMs: n
   const managerText = manager === null ? "no manager" : quotaBlocked ? "the manager is quota-blocked" : `the manager is ${manager}`;
   const since = new Date(info.idleSince).toISOString();
   return [{ check: "stalled", subject: null, signature: since, detail: `no running, ready or queued step and no open gate for ${minutes} min; ${managerText}; last: ${info.last}; steps ${info.steps}`, action, value: minutes, state: `${manager ?? "none"}${quotaBlocked ? "+quota" : ""}` }];
+}
+
+/**
+ * An active run held for quota (not paused by a human) for `afterMs` or more. The finding gives the reason, the provider and
+ * usage window, the run's place and priority in the queue, who is ahead of it (the other held runs of the same provider and
+ * window with a lower position), the estimated cost against the headroom and the retry time.
+ */
+export function heldCandidates(run: Run, runs: Run[], afterMs: number, now: number, action: Act): Candidate[] {
+  const hold = run.rateHold;
+  if (!hold || !isActive(run) || isTerminal(run.status) || run.pausedAt) return [];
+  const since = Date.parse(hold.since);
+  if (!Number.isFinite(since) || now - since < afterMs) return [];
+  const minutes = Math.round((now - since) / 60_000);
+  const ahead = hold.position === null ? [] : runs.filter((other) => other.id !== run.id && other.rateHold && !other.archivedAt && isActive(other) && other.rateHold.provider === hold.provider && other.rateHold.window === hold.window && other.rateHold.position !== null && other.rateHold.position < (hold.position as number)).sort((a, b) => a.rateHold!.position! - b.rateHold!.position!);
+  const where = hold.provider ? `${hold.provider}${hold.window ? ` ${hold.window}` : ""}` : "no provider";
+  const queue = hold.position === null ? "no queue position" : `position ${hold.position}${hold.priority === null ? "" : `, priority ${hold.priority}`}`;
+  const front = ahead.length > 0 ? `ahead: ${ahead.map((other) => `${other.id} (${other.playbook.id})`).join(", ")}` : hold.position === null ? "ahead: unknown" : "no other held run ahead";
+  const cost = hold.estimatedCost === null && hold.headroom === null ? "" : `; estimated cost ${hold.estimatedCost ?? "?"} vs headroom ${hold.headroom ?? "?"}`;
+  return [{ check: "held", subject: null, signature: hold.since, detail: `held ${minutes} min for quota (${hold.kind}: ${hold.reason}); ${where}; ${queue}; ${front}${cost}; ${hold.retryAt ? `retry at ${hold.retryAt}` : "no retry time (waits for room)"}`, action, value: minutes, state: hold.kind }];
 }
 
 /** Open gates only the manager can decide, while the manager is idle; any open gate while it is gone. */
