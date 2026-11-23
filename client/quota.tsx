@@ -1,7 +1,6 @@
 import { useRpc, useTranslation } from "@getpaseo/plugin/client";
-import { Icon } from "@getpaseo/plugin/client/ui";
 import { useCallback, useEffect, useState } from "react";
-import { Pressable, Text, View } from "react-native";
+import { Text, View } from "react-native";
 import { quotaLimitationRpc } from "../shared/contracts";
 import type { QuotaLimitation, QuotaProject, QuotaProvider, QuotaWindow } from "../shared/quota-limitation";
 import { messages } from "./i18n";
@@ -26,8 +25,8 @@ function kindLabel(t: (key: "quota.kind.quota" | "quota.kind.headroom" | "quota.
 const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString() : "");
 
 /** The Quota limitation tab: per provider its usage windows and the pacing's numbers, the held runs and the exhausted marks. */
-export function QuotaView(props: { theme: Theme; workspaces: ReadonlyArray<{ projectId: string; workspaceId: string }> }) {
-  const { theme, workspaces } = props;
+export function QuotaView(props: { theme: Theme; workspaces: ReadonlyArray<{ projectId: string; workspaceId: string }>; refreshSignal: number }) {
+  const { theme, workspaces, refreshSignal } = props;
   const { t } = useTranslation(messages);
   const fetchQuota = useRpc(quotaLimitationRpc);
   const [data, setData] = useState<QuotaLimitation | null>(null);
@@ -47,16 +46,11 @@ export function QuotaView(props: { theme: Theme; workspaces: ReadonlyArray<{ pro
     load();
     const timer = setInterval(load, POLL_MS);
     return () => clearInterval(timer);
-  }, [load]);
+  }, [load, refreshSignal]);
 
   const muted = theme.colors.foregroundMuted;
   return (
     <View style={{ gap: 14 }}>
-      <View style={{ flexDirection: "row", alignItems: "flex-start", justifyContent: "flex-end", gap: 8 }}>
-        <Pressable accessibilityRole="button" accessibilityLabel={t("quota.refresh")} hitSlop={8} onPress={load} style={{ borderRadius: 8, borderWidth: 1, borderColor: theme.colors.border, padding: 7 }}>
-          <Icon name="RefreshCw" size={16} color={muted} />
-        </Pressable>
-      </View>
       {error ? <Text style={{ color: semanticColor(theme, "failed") }}>{error}</Text> : null}
       {!data && !error ? <Text style={{ color: muted }}>{t("quota.loading")}</Text> : null}
       {data ? <Body theme={theme} data={data} /> : null}

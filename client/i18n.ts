@@ -80,7 +80,6 @@ export const messages = defineTranslations({
       quota: {
         tab: "Quota limitation",
         loading: "Loading…",
-        refresh: "Refresh quota limitation",
         projects: "Limits per project",
         providersTitle: "Providers",
         noProjects: "No project to show.",
@@ -190,7 +189,6 @@ export const messages = defineTranslations({
       quota: {
         tab: "Limitation de quota",
         loading: "Chargement…",
-        refresh: "Actualiser la limitation de quota",
         projects: "Limites par projet",
         providersTitle: "Fournisseurs",
         noProjects: "Aucun projet à afficher.",
@@ -299,7 +297,6 @@ export const messages = defineTranslations({
       quota: {
         tab: "配额限制",
         loading: "加载中…",
-        refresh: "刷新配额限制",
         projects: "各项目的限制",
         providersTitle: "提供商",
         noProjects: "没有可显示的项目。",

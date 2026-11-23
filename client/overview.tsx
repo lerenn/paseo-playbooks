@@ -363,6 +363,7 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
   // Run Playbook: each project's playbooks are listed from its first workspace (the panel's query, same cache key).
   const listDefinitions = useRpc(listPlaybooks);
   const runProjects = useMemo(() => projectsOf(workspaces), [workspaces]);
+  const [refreshTick, setRefreshTick] = useState(0);
   const quotaWorkspaces = useMemo(() => runProjects.map(({ projectId, workspaceId }) => ({ projectId, workspaceId })), [runProjects]);
   // The Sidekick column and the runs go first: the definitions of every project (a read of each project's files) start after a short head start.
   const definitionsReady = useAfter(DEFINITIONS_DELAY_MS);
@@ -473,6 +474,7 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
             hitSlop={8}
             onPress={() => {
               store.refresh();
+              setRefreshTick((tick) => tick + 1);
               void queryClient.invalidateQueries({ queryKey: ["playbooks"] });
             }}
             style={{ borderRadius: 8, borderWidth: 1, borderColor: theme.colors.border, padding: 7 }}
@@ -491,7 +493,7 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
         {tab === "analytics" ? (
           <AnalyticsView theme={theme} />
         ) : tab === "quota" ? (
-          <QuotaView theme={theme} workspaces={quotaWorkspaces} />
+          <QuotaView theme={theme} workspaces={quotaWorkspaces} refreshSignal={refreshTick} />
         ) : tab === "profiles" ? (
           <ProfilesView theme={theme} workspaces={workspaces} />
         ) : (
