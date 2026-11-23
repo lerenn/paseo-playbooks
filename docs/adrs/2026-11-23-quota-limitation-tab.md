@@ -1,6 +1,6 @@
 # A Quota limitation tab in the Playbooks screen
 
-Status: Accepted
+Status: Accepted. The user-level limits rule is refined by `2026-11-23-quota-limitation-per-project.md`.
 
 ## Context
 

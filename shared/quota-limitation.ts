@@ -8,16 +8,23 @@ export const QuotaWindowSchema = z.object({
   modelScoped: z.boolean(),
   /** The raw usage reading; null when the provider gave none. */
   used: z.number().nullable(),
-  /** The share of the window the playbooks may use (`usable_percent`). */
-  usable: z.number(),
-  /** The pace ceiling now (never above `usable`); null when the window is not paced. */
-  ceiling: z.number().nullable(),
-  /** Ceiling minus usage (negative when usage is ahead of the pace); null when not paced. */
-  headroom: z.number().nullable(),
   /** What admitted and queued runs still have to use of the window. */
   reserved: z.number(),
-  /** Headroom minus reservations: what a new run can still take; null when not paced. */
-  free: z.number().nullable(),
+  /** The pace figures, one per distinct `usable_percent` among the projects that have pacing on; empty when no project paces or the window is not paced (a model window, a reset window, no reading). */
+  paces: z.array(
+    z.object({
+      /** The share of the window those projects may use (`usable_percent`). */
+      usable: z.number(),
+      /** The pace ceiling now (never above `usable`). */
+      ceiling: z.number(),
+      /** Ceiling minus usage (negative when usage is ahead of the pace). */
+      headroom: z.number(),
+      /** Headroom minus reservations: what a new run can still take. */
+      free: z.number(),
+      /** Labels of the projects with this percent. */
+      projects: z.array(z.string()),
+    }),
+  ),
   resetsAt: z.string().nullable(),
   /** The window already reset: its reading is stale until the next refresh. */
   stale: z.boolean(),
@@ -28,7 +35,9 @@ export const QuotaRunRefSchema = z.object({ runId: z.string(), title: z.string()
 
 export const QuotaProviderSchema = z.object({
   provider: z.string(),
-  /** `ok`: paced on its windows; `override`: "continue anyway" is on; `unavailable`: no fresh reading, new work is held; `unreported`: no usage reported, not paced. */
+  /** Labels of the projects whose resolved limits have pacing on (empty: nothing is paced, whatever the reading says). */
+  pacedBy: z.array(z.string()),
+  /** `ok`: fresh reading; `override`: "continue anyway" is on; `unavailable`: no fresh reading, new work is held; `unreported`: no usage reported, not paced. */
   state: z.enum(["ok", "override", "unavailable", "unreported"]),
   readAt: z.string().nullable(),
   overrideUntil: z.string().nullable(),
@@ -42,14 +51,32 @@ export const QuotaProviderSchema = z.object({
 });
 export type QuotaProvider = z.infer<typeof QuotaProviderSchema>;
 
-export const QuotaLimitationSchema = z.object({
-  now: z.string(),
+/** The limits a run of a project gets (folder defaults, then user config, then built-in), for one set of the project's playbooks. */
+export const QuotaProjectLimitsSchema = z.object({
+  /** The repositories (`default`, profile ids) whose playbooks have these limits; empty when the project has no playbook. */
+  repos: z.array(z.string()),
   pacing: z.boolean(),
   usablePercent: z.number(),
-  refreshSeconds: z.number(),
-  maxAgeSeconds: z.number(),
-  steps: z.object({ limit: z.number().nullable(), running: z.number() }),
-  playbooks: z.object({ limit: z.number().nullable(), admitted: z.number().nullable() }),
+  stepsLimit: z.number().nullable(),
+  runsLimit: z.number().nullable(),
+});
+export type QuotaProjectLimits = z.infer<typeof QuotaProjectLimitsSchema>;
+
+export const QuotaProjectSchema = z.object({
+  projectId: z.string(),
+  label: z.string(),
+  /** Usually one set; several when a profile's defaults differ from the default repository's. */
+  limits: z.array(QuotaProjectLimitsSchema),
+});
+export type QuotaProject = z.infer<typeof QuotaProjectSchema>;
+
+export const QuotaLimitationSchema = z.object({
+  now: z.string(),
+  /** The resolved limits per project the plugin knows. */
+  projects: z.array(QuotaProjectSchema),
+  /** Steps running and runs in the queue, counted over all projects (the caps apply to these). */
+  stepsRunning: z.number(),
+  runsActive: z.number(),
   providers: z.array(QuotaProviderSchema),
   /** Runs held by the step or run caps (no provider). */
   limitHeld: z.array(QuotaRunRefSchema.extend({ kind: z.string(), reason: z.string() })),

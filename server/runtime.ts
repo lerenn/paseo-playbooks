@@ -2574,14 +2574,39 @@ export class Runtime {
     return { config: await this.rateLimits(), overrides: this.pacer.activeOverrides(), held: this.store.list().flatMap((run) => (run.rateHold && isActive(run) ? [{ runId: run.id, hold: run.rateHold }] : [])) };
   }
 
-  /** The Quota limitation tab: the pacing's numbers per provider (read-only; see `buildQuotaLimitation`). */
-  async quotaLimitation(): Promise<QuotaLimitation> {
-    const config = await this.rateLimits();
+  /**
+   * The Quota limitation tab (see `buildQuotaLimitation`): the limits a new run of each given project gets, resolved like a run does
+   * (the playbook folder's defaults, then config.yaml, then the built-in ones; one set per distinct result among the project's
+   * playbooks), and the pacing's numbers per provider. A reading's freshness is judged at the user-level settings.
+   */
+  async quotaLimitation(workspaces: Array<{ projectId: string; workspaceId: string }> = []): Promise<QuotaLimitation> {
+    const user = await this.rateLimits();
+    const layer = this.rateConfig?.value;
     this.pruneQuotaReservations();
+    const seen = new Set<string>();
+    const projects = await Promise.all(
+      workspaces
+        .filter(({ projectId }) => !seen.has(projectId) && seen.add(projectId))
+        .map(async ({ projectId, workspaceId }) => {
+          const workspace = await this.peekWorkspace(workspaceId).catch(() => null);
+          if (!workspace) return null;
+          const loaded = await loadPlaybooks(workspace.workspaceDirectory ?? workspace.projectRootPath, { projectId }).catch(() => null);
+          const sets = new Map<string, { repos: string[]; config: RateLimitsConfig }>();
+          for (const entry of loaded?.entries ?? []) {
+            if (!entry.playbook) continue;
+            const config = resolveQuotaLimits(layer, entry.playbook.quotaLimits);
+            const key = JSON.stringify(config);
+            const set = sets.get(key) ?? { repos: [], config };
+            if (!set.repos.includes(entry.repo)) set.repos.push(entry.repo);
+            sets.set(key, set);
+          }
+          return { projectId, label: workspace.projectDisplayName || path.basename(workspace.projectRootPath), sets: sets.size > 0 ? [...sets.values()] : [{ repos: [], config: user }] };
+        }),
+    );
     return buildQuotaLimitation({
-      config,
+      projects: projects.filter((project) => project !== null).sort((a, b) => a.label.localeCompare(b.label)),
       nowMs: Date.now(),
-      views: this.pacer.view(config.quota),
+      views: this.pacer.view(user.quota),
       runs: this.store.list(),
       reservations: [...this.reservedQuota.values()].map((entry) => ({ runId: entry.runId, est: entry.est, spent: entry.spent, endedAt: entry.endedAt })),
     });
