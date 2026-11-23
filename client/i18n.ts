@@ -1,4 +1,10 @@
 import { defineTranslations } from "@getpaseo/plugin/client";
+import { cardsEn, cardsFr, cardsZh } from "./i18n-cards";
+import { detailEn, detailFr, detailZh } from "./i18n-detail";
+import { analyticsEn, analyticsFr, analyticsZh } from "./i18n-analytics";
+import { sidekickEn, sidekickFr, sidekickZh } from "./i18n-sidekick";
+import { graphEn, graphFr, graphZh } from "./i18n-graph";
+import { shellEn, shellFr, shellZh } from "./i18n-shell";
 
 /**
  * The panel's message catalogue. English is the source and the fallback: a key missing from
@@ -125,6 +131,12 @@ export const messages = defineTranslations({
         applyToChildren: "Apply to children",
         priorityFailed: "Could not change the priority: {{error}}",
       },
+      cards: cardsEn,
+      detail: detailEn,
+      analytics: analyticsEn,
+      sidekick: sidekickEn,
+      shell: shellEn,
+      graph: graphEn,
     },
     fr: {
       title: "Playbooks",
@@ -241,6 +253,12 @@ export const messages = defineTranslations({
         applyToChildren: "Appliquer aux enfants",
         priorityFailed: "Impossible de changer la priorité : {{error}}",
       },
+      cards: cardsFr,
+      detail: detailFr,
+      analytics: analyticsFr,
+      sidekick: sidekickFr,
+      shell: shellFr,
+      graph: graphFr,
     },
     "zh-CN": {
       title: "Playbooks",
@@ -356,6 +374,12 @@ export const messages = defineTranslations({
         applyToChildren: "应用于子运行",
         priorityFailed: "无法更改优先级：{{error}}",
       },
+      cards: cardsZh,
+      detail: detailZh,
+      analytics: analyticsZh,
+      sidekick: sidekickZh,
+      shell: shellZh,
+      graph: graphZh,
     },
   },
 });
