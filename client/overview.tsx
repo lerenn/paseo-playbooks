@@ -13,6 +13,7 @@ import { slowDetail, slowView } from "../shared/slow";
 import { useSlowSteps } from "./slow";
 import { laneTone } from "./lane-tone";
 import { AnalyticsView } from "./analytics";
+import { QuotaView } from "./quota";
 import { useReduceMotion } from "./graph";
 import { LABEL_WIDTH, labelLayout, ROW_HEIGHT } from "./layout";
 import { needsYouRowKey } from "./overview-row-key";
@@ -346,7 +347,7 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
   const settings = useSettings(overviewSettings);
   const [picked, setPicked] = useState<PlaybookSort | null>(null);
   const playbookSort: PlaybookSort = picked ?? (settings.status === "ready" ? settings.values.sort : DEFAULT_PLAYBOOK_SORT);
-  const [tab, setTab] = useState<"runs" | "analytics" | "profiles">("runs");
+  const [tab, setTab] = useState<"runs" | "analytics" | "quota" | "profiles">("runs");
   // The sidebar badge and this screen share one store: one agent subscription, one request per change.
   const overview = useOverview(store);
   const toast = useToast();
@@ -478,11 +479,14 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
         <View accessibilityRole="tablist" style={{ flexDirection: "row", gap: 16, borderBottomWidth: 1, borderBottomColor: theme.colors.border }}>
           <Tab theme={theme} label="Runs" selected={tab === "runs"} onPress={() => setTab("runs")} />
           <Tab theme={theme} label="Analytics" selected={tab === "analytics"} onPress={() => setTab("analytics")} />
+          <Tab theme={theme} label={t("quota.tab")} selected={tab === "quota"} onPress={() => setTab("quota")} />
           <Tab theme={theme} label="Profiles" selected={tab === "profiles"} onPress={() => setTab("profiles")} />
         </View>
 
         {tab === "analytics" ? (
           <AnalyticsView theme={theme} />
+        ) : tab === "quota" ? (
+          <QuotaView theme={theme} />
         ) : tab === "profiles" ? (
           <ProfilesView theme={theme} workspaces={workspaces} />
         ) : (

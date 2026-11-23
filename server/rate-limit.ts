@@ -123,6 +123,16 @@ export type Probe =
   | { state: "unreported" }
   | { state: "ok"; rooms: WindowRoom[] };
 
+/** One provider as the pacing sees it now (see `QuotaPacer.view`). */
+export interface PacerView {
+  provider: string;
+  state: "ok" | "override" | "unavailable" | "unreported";
+  /** When the usage was last read (ms), null when never. */
+  readAt: number | null;
+  overrideUntil: number | null;
+  entry: ProviderUsage | null;
+}
+
 /**
  * The provider usage the quota pacing decides from. A reading younger than `refreshMs` is used; an older one under `maxAgeMs`
  * still decides while one background refresh runs; an older one holds with "quota data unavailable". A failed read never
@@ -196,6 +206,25 @@ export class QuotaPacer {
 
   clearOverride(provider: string): void {
     this.overrides.delete(provider);
+  }
+
+  /** What the pacing holds about every provider it has a reading or a question for, for the Quota limitation tab (reads only; starts a refresh when one is due). */
+  view(config: RateLimitsConfig["quota"]): PacerView[] {
+    const now = this.clock();
+    if (this.readings.size === 0 || [...this.readings.values()].some((reading) => now - reading.at >= config.refreshMs)) void this.refresh();
+    const ids = new Set([...this.readings.keys(), ...this.asked]);
+    return [...ids].sort().map((provider) => {
+      const reading = this.readings.get(provider);
+      const until = this.overrides.get(provider);
+      const age = reading ? now - reading.at : Infinity;
+      const entry = reading?.entry ?? null;
+      let state: PacerView["state"];
+      if (until !== undefined && until > now) state = "override";
+      else if (!reading || age > config.maxAgeMs) state = "unavailable";
+      else if (!entry || (entry.status !== undefined && entry.status !== "available") || windowRooms(entry, config.usablePercent, now).length === 0) state = "unreported";
+      else state = "ok";
+      return { provider, state, readAt: reading ? reading.at : null, overrideUntil: until !== undefined && until > now ? until : null, entry };
+    });
   }
 
   /** The active overrides: provider → ISO end. */

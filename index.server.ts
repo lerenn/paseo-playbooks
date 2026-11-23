@@ -20,6 +20,7 @@ import {
   needsYouRpc,
   overviewStateRpc,
   analyticsStateRpc,
+  quotaLimitationRpc,
   listPlaybooks,
   listProjectProfilesRpc,
   setProfileRpc,
@@ -203,6 +204,7 @@ export default function contribute(server: PluginServerContext) {
       .map((run) => run.workspaceId);
     return { withPlaybooks, waiting: [...new Set(waiting)] };
   });
+  handle(quotaLimitationRpc, async () => runtime.quotaLimitation());
   handle(analyticsStateRpc, async ({ days, playbook, projectId, timeZone }) => runtime.analytics({ days, playbook, projectId, timeZone }));
   handle(overviewStateRpc, async () => ({ runs: store.list().filter((run) => !run.archivedAt).map(summarizeRun) }));
   handle(admissionStatusRpc, async ({ runId }) => {

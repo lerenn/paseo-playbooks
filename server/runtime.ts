@@ -73,6 +73,8 @@ import { fetchAllWorkspaces, WorkspaceLookup } from "./workspace-lookup";
 import type { RunStore } from "./store";
 import { holdsBlock, planAdmissions, slotHolders } from "../shared/slots";
 import { DEFAULT_MANAGER_RECOVERY, DEFAULT_RATE_LIMITS, readManagerRecoveryConfig, readQuotaLimitsLayer, resolveQuotaLimits, type ManagerRecoveryConfig, type QuotaLimitsLayer, type RateLimitsConfig } from "./config";
+import { buildQuotaLimitation } from "./quota-limitation";
+import type { QuotaLimitation } from "../shared/quota-limitation";
 import { CostHistory, exhaustionVerdict, planPace, type Admitted as AdmittedRun, orderCandidates, planHeadroom, windowKey, type Candidate as RateCandidate, type PlanContext } from "./rate-budget";
 import { limitVerdict, QuotaPacer, runPriority, runProviders, usedPct, type HoldVerdict, type ReadChange } from "./rate-limit";
 import { pluginDataDir } from "./data-dir";
@@ -2570,6 +2572,19 @@ export class Runtime {
   /** The global limits and pacing for the panel: the settings, running steps, the overrides and every held run. */
   async rateLimitStatus(): Promise<{ config: RateLimitsConfig; overrides: Record<string, string>; held: Array<{ runId: string; hold: NonNullable<Run["rateHold"]> }> }> {
     return { config: await this.rateLimits(), overrides: this.pacer.activeOverrides(), held: this.store.list().flatMap((run) => (run.rateHold && isActive(run) ? [{ runId: run.id, hold: run.rateHold }] : [])) };
+  }
+
+  /** The Quota limitation tab: the pacing's numbers per provider (read-only; see `buildQuotaLimitation`). */
+  async quotaLimitation(): Promise<QuotaLimitation> {
+    const config = await this.rateLimits();
+    this.pruneQuotaReservations();
+    return buildQuotaLimitation({
+      config,
+      nowMs: Date.now(),
+      views: this.pacer.view(config.quota),
+      runs: this.store.list(),
+      reservations: [...this.reservedQuota.values()].map((entry) => ({ runId: entry.runId, est: entry.est, spent: entry.spent, endedAt: entry.endedAt })),
+    });
   }
 
   /** "Continue anyway": steps whose run uses `provider` start despite the quota pacing for `minutes` (default 60, at most 1440). */

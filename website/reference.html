@@ -594,6 +594,7 @@ event_core: { log: true, parity: warn }</code></pre>
 <pre><code>quota_limits: { quota: { pacing: true, usable_percent: 97, refresh_interval: 5m, max_age: 30m }, steps: 4, playbooks: 2 }</code></pre>
 <p class="file">Example: defaults/main.yaml of a profile (pace at 90%)</p>
 <pre><code>quota_limits: { quota: { usable_percent: 90 } }</code></pre>
+<p>The <b>Quota limitation</b> tab of the Playbooks screen (next to Runs, Analytics and Profiles) shows, per provider, each usage window's raw usage, pace ceiling, reservations of admitted and queued runs, headroom, whether pacing is on, the runs held or paused for pace and the exhausted marks. It is read-only and uses the user-level limits.</p>
 <p class="file">Example: a playbook that goes first</p>
 <pre><code>quota_limit: { priority: 5 }</code></pre>
 

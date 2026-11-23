@@ -256,6 +256,7 @@ The rest is held; the plugin lifts the hold itself.
   Higher goes first, ties oldest first, also for the optional caps. A held run blocks lower ones on the same provider, so a large run is not starved.
 - **Old names**: `rate_limits` (config or defaults) and `rate_limit` (playbook or defaults) still work as deprecated aliases and log a one-time note naming the new key; when both are set, the new key wins. Only the config keys were renamed: `rateHold`, `run.held`, `run.released` and `rate-history.json` are unchanged.
 - To pace at 90% for a profile, put `quota_limits: { quota: { usable_percent: 90 } }` in its `defaults/main.yaml`.
+- The **Quota limitation** tab (Runs, Analytics, Quota limitation, Profiles) shows the figures the pacing decides from, per provider: each usage window's raw usage, pace ceiling (`usable_percent` scaled to the time elapsed), reservations of admitted and queued runs, headroom and what is free, whether pacing is on, the runs held or paused for pace and the exhausted marks. It reads the user-level limits (a project's own `quota_limits` can differ), refreshes every 30 s and is read-only. See `docs/adrs/2026-11-23-quota-limitation-tab.md`.
 - A provider that reports no usage is not paced; the run carries a note (`rateNote` in `get_run`, shown in the run's menu) and the plugin logs it once.
 
 A running step is never interrupted. `get_run` shows why in `rateHold` (kind `headroom`, `pace` (an admitted run paused to fit the pace, with its position in the resume queue), `quota`, `steps` or `playbooks`, reason, estimated cost,
@@ -287,7 +288,7 @@ once, but if that agent is busy, its kickoff waits until its current turn ends).
 next to Start offers "Start on a new agent", which creates a new manager agent in the same
 workspace, and "Start in a new workspace", which creates a new worktree and manager.
 
-The overview screen lists one section per playbook (its runs inside). The **sort** button in the Runs tab (top right of the filter row, not in the Analytics or Profiles tabs),
+The overview screen lists one section per playbook (its runs inside). The **sort** button in the Runs tab (top right of the filter row, not in the Analytics, Quota limitation or Profiles tabs),
 orders those sections: **Name (A-Z)** (the default, so the order never jumps), **Last activity** (the playbook with the most
 recently updated run first), **Status** (the playbook with a run waiting for you first, then working, failed, done, paused,
 seen) or **Start time** (the playbook with the newest run first). The choice is kept by the host, so it survives reloads;
@@ -305,7 +306,7 @@ plainly cannot be decided yet (recorded as its own, never as yours, and it tells
 auth, data loss, billing and production gates stay with you), under the same scope as `resume_gate`; `list_gates` keeps listing deferred gates (`needsReview: false`, `deferral`). Tracking
 reads run state only, never chat; there is no push or Slack notification. See `docs/adrs/2026-11-20-deferred-gates.md`.
 
-The **Run Playbook** button in the header of the overview screen (the one with the Runs, Analytics and Profiles tabs,
+The **Run Playbook** button in the header of the overview screen (the one with the Runs, Analytics, Quota limitation and Profiles tabs,
 next to Sidekick) opens a form to start any valid playbook of a project in a new workspace: a project dropdown
 (preselected to the project chip selected on the screen; with "All projects" you choose one), a workspace name (optional; empty keeps the default title, the playbook title and the
 request), a playbook dropdown, then that playbook's inputs. **Start**, at the bottom, creates the workspace and the run;

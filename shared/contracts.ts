@@ -1,6 +1,7 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 import { AnalyticsSchema } from "./analytics";
+import { QuotaLimitationSchema } from "./quota-limitation";
 import { AdmissionStatusSchema, PlaybookEntrySchema, ProfileInfoSchema, RoleSchema, RunSchema, GateWaitConditionSchema, StepSchema, RunSummarySchema, ScriptOutputSchema, VarValueSchema } from "./types";
 
 export const listPlaybooks = defineRpc({
@@ -273,6 +274,13 @@ export const analyticsStateRpc = defineRpc({
   name: "analytics.state",
   input: z.object({ days: z.number().int().positive().optional(), playbook: z.string().optional(), projectId: z.string().optional(), timeZone: z.string().optional() }),
   output: AnalyticsSchema,
+});
+
+/** The Quota limitation tab: per provider its usage windows, pace ceiling, reservations, headroom, held runs and exhausted marks. */
+export const quotaLimitationRpc = defineRpc({
+  name: "quota.limitation",
+  input: z.object({}),
+  output: QuotaLimitationSchema,
 });
 
 /** One project of the Sidekick column: its Sidekick files, agent (if created) and active runs. */
