@@ -44,3 +44,38 @@ export function resetRequest(runId: string, view: RunPriorityView): PriorityRequ
 export function inheritRequest(runId: string, view: RunPriorityView, checked: boolean): PriorityRequest {
   return { runId, priority: checked ? (view.override ?? view.priority) : view.override, applyToChildren: checked };
 }
+
+/**
+ * The menu's draft: one number (the source of truth) and the text the field shows. Buttons change the number and the text follows;
+ * typing changes the text and the number follows when it parses; leaving the field (or Enter) puts the text back to the number.
+ */
+export interface PriorityDraft {
+  value: number;
+  text: string;
+}
+
+/** The draft a menu starts from each time it opens (and when the server's figure changes): the run's effective priority. */
+export const draftFor = (view: RunPriorityView): PriorityDraft => ({ value: view.priority, text: String(view.priority) });
+
+/** A stepper press: from the number, clamped, and the field shows it. */
+export function stepDraft(draft: PriorityDraft, delta: number): PriorityDraft {
+  const value = stepped(draft.value, delta);
+  return { value, text: String(value) };
+}
+
+/** Typing: the text is kept as typed; the number follows only when it is a valid priority (NaN, empty or out of range leave it alone). */
+export function typeDraft(draft: PriorityDraft, text: string): PriorityDraft {
+  const value = parsePriority(text);
+  return { value: value ?? draft.value, text };
+}
+
+/** Blur or Enter: an invalid text goes back to the number, a valid one is normalised ("+5 " is not accepted, " 5 " becomes "5"). */
+export function commitDraft(draft: PriorityDraft): PriorityDraft {
+  const value = parsePriority(draft.text) ?? draft.value;
+  return { value, text: String(value) };
+}
+
+/** "Apply": sends the draft number when it differs from the effective priority. The typed text must be valid too, so a half-typed field sends nothing. */
+export function applyDraft(runId: string, view: RunPriorityView, draft: PriorityDraft): PriorityRequest | null {
+  return applyRequest(runId, view, draft.text);
+}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { RunPriorityView } from "../shared/types";
-import { applyRequest, inheritRequest, isManual, parsePriority, resetRequest, stepped } from "./run-priority";
+import { applyDraft, applyRequest, commitDraft, draftFor, inheritRequest, isManual, parsePriority, resetRequest, stepDraft, stepped, typeDraft } from "./run-priority";
 
 const view: RunPriorityView = { priority: 2, defaultPriority: 2, override: null, hasChildren: false, inheritChildren: false };
 
@@ -42,5 +42,39 @@ describe("run priority control", () => {
   it("knows a manual priority", () => {
     expect(isManual(view)).toBe(false);
     expect(isManual({ ...view, override: 0 })).toBe(true);
+  });
+});
+
+describe("run priority draft", () => {
+  const v: RunPriorityView = { priority: 0, defaultPriority: 0, override: null, hasChildren: false, inheritChildren: false };
+  it("starts from the effective priority", () => {
+    expect(draftFor({ ...v, priority: 3 })).toEqual({ value: 3, text: "3" });
+  });
+  it("steps from the shown number and the text follows, over repeated presses", () => {
+    let d = draftFor(v);
+    d = stepDraft(stepDraft(d, -1), -1);
+    expect(d).toEqual({ value: -2, text: "-2" });
+    d = stepDraft(d, 1);
+    expect(d).toEqual({ value: -1, text: "-1" });
+  });
+  it("clamps at the range", () => {
+    expect(stepDraft({ value: 1000, text: "1000" }, 1).text).toBe("1000");
+    expect(stepDraft({ value: -1000, text: "-1000" }, -1).text).toBe("-1000");
+  });
+  it("types: keeps the text, follows when valid, ignores NaN", () => {
+    const d = draftFor(v);
+    expect(typeDraft(d, "7")).toEqual({ value: 7, text: "7" });
+    expect(typeDraft(d, "-")).toEqual({ value: 0, text: "-" });
+    expect(typeDraft(d, "abc")).toEqual({ value: 0, text: "abc" });
+    expect(typeDraft(d, "5000")).toEqual({ value: 0, text: "5000" });
+  });
+  it("commits: an invalid text goes back to the number", () => {
+    expect(commitDraft({ value: 4, text: "x" })).toEqual({ value: 4, text: "4" });
+    expect(commitDraft({ value: 4, text: " 9 " })).toEqual({ value: 9, text: "9" });
+  });
+  it("applies only a valid, different draft", () => {
+    expect(applyDraft("r", v, draftFor(v))).toBeNull();
+    expect(applyDraft("r", v, typeDraft(draftFor(v), "x"))).toBeNull();
+    expect(applyDraft("r", v, stepDraft(draftFor(v), 1))).toEqual({ runId: "r", priority: 1 });
   });
 });

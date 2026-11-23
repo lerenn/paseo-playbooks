@@ -5,7 +5,7 @@ import { Pressable, Text, View } from "react-native";
 import { setRunPriorityRpc } from "../shared/contracts";
 import type { RunPriorityView } from "../shared/types";
 import { messages } from "./i18n";
-import { applyRequest, inheritRequest, isManual, parsePriority, resetRequest, stepped, type PriorityRequest } from "./run-priority";
+import { applyDraft, commitDraft, draftFor, inheritRequest, isManual, resetRequest, stepDraft, typeDraft, type PriorityRequest } from "./run-priority";
 import type { Theme } from "./theme";
 import { semanticColor } from "./semantic-colors";
 
@@ -31,11 +31,16 @@ export function RunPriorityMenu(props: { theme: Theme; runId: string; view: RunP
   const { t } = useTranslation(messages);
   const send = useRpc(setRunPriorityRpc);
   const [open, setOpen] = useState(false);
-  const [draft, setDraft] = useState(String(view.priority));
+  const [draft, setDraft] = useState(() => draftFor(view));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // The figure the server sends wins once it changes (another edit, a refresh).
-  useEffect(() => setDraft(String(view.priority)), [view.priority]);
+  useEffect(() => setDraft(draftFor(view)), [view.priority]);
+  // Each opening starts from the run's effective priority, whatever an earlier one left in the field.
+  const toggle = () => {
+    if (!open) setDraft(draftFor(view));
+    setOpen(!open);
+  };
   const manual = isManual(view);
   const muted = theme.colors.foregroundMuted;
   const tint = manual ? theme.colors.accent : muted;
@@ -49,39 +54,39 @@ export function RunPriorityMenu(props: { theme: Theme; runId: string; view: RunP
       .catch((failure: unknown) => setError(t("runs.priorityFailed", { error: failure instanceof Error ? failure.message : String(failure) })))
       .finally(() => setBusy(false));
   };
-  const current = parsePriority(draft) ?? view.priority;
-  const pending = applyRequest(runId, view, draft);
+  const pending = applyDraft(runId, view, draft);
   const small = { minWidth: 32, minHeight: 32, alignItems: "center", justifyContent: "center", borderRadius: 6, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface1, opacity: busy ? 0.5 : 1 } as const;
 
   return (
-    <View>
+    <View style={open ? { zIndex: 100 } : undefined}>
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={t("runs.priorityLabel", { run: runId.replace(/^run_/, ""), value: view.priority, source: manual ? t("runs.sourceManual") : t("runs.sourceDefault") })}
         accessibilityState={{ expanded: open }}
         hitSlop={6}
-        onPress={() => setOpen(!open)}
+        onPress={toggle}
         style={{ flexDirection: "row", alignItems: "center", gap: 3 }}
       >
         <Icon name="ListOrdered" size={15} color={tint} />
         <Text style={{ color: tint, fontSize: 12, fontWeight: manual ? "600" : "400" }}>{view.priority}</Text>
       </Pressable>
       {open ? (
-        <View accessibilityRole="menu" style={{ position: "absolute", top: 26, right: 0, zIndex: 20, minWidth: 240, gap: 8, padding: 10, borderRadius: 10, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface2, elevation: 6 }}>
+        <View accessibilityRole="menu" onStartShouldSetResponder={() => true} style={{ position: "absolute", top: 26, right: 0, zIndex: 100, minWidth: 240, gap: 8, padding: 10, borderRadius: 10, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface2, elevation: 6 }}>
           <Text style={{ color: theme.colors.foreground, fontSize: 12, fontWeight: "600" }}>{t("runs.priorityTitle")}</Text>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-            <Pressable accessibilityRole="button" accessibilityLabel={t("runs.priorityLower")} disabled={busy} onPress={() => setDraft(String(stepped(current, -1)))} style={small}>
+            <Pressable accessibilityRole="button" accessibilityLabel={t("runs.priorityLower")} disabled={busy} onPress={() => setDraft((d) => stepDraft(d, -1))} style={small}>
               <Icon name="Minus" size={14} color={theme.colors.foreground} />
             </Pressable>
             <TextInput
               accessibilityLabel={t("runs.priorityInput")}
-              value={draft}
-              onChangeText={setDraft}
+              value={draft.text}
+              onChangeText={(text) => setDraft((d) => typeDraft(d, text))}
+              onBlur={() => setDraft((d) => commitDraft(d))}
               onSubmitEditing={() => apply(pending)}
               keyboardType="numbers-and-punctuation"
               style={{ width: 64, minHeight: 32, textAlign: "center", color: theme.colors.foreground, fontSize: 13, borderWidth: 1, borderColor: theme.colors.border, borderRadius: 6, backgroundColor: theme.colors.surface1 }}
             />
-            <Pressable accessibilityRole="button" accessibilityLabel={t("runs.priorityRaise")} disabled={busy} onPress={() => setDraft(String(stepped(current, 1)))} style={small}>
+            <Pressable accessibilityRole="button" accessibilityLabel={t("runs.priorityRaise")} disabled={busy} onPress={() => setDraft((d) => stepDraft(d, 1))} style={small}>
               <Icon name="Plus" size={14} color={theme.colors.foreground} />
             </Pressable>
             <Pressable accessibilityRole="button" accessibilityState={{ disabled: busy || !pending }} disabled={busy || !pending} onPress={() => apply(pending)} style={{ ...small, paddingHorizontal: 10, opacity: busy || !pending ? 0.4 : 1, borderColor: theme.colors.accent }}>
