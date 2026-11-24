@@ -1,4 +1,5 @@
-import { useSyncExternalStore } from "react";
+import { useEffect, useSyncExternalStore } from "react";
+import { createLeadRegistry, type BadgeItemId, type LeadRegistry } from "./badge-lead";
 import type { OverviewStore } from "./overview-store";
 import { indexBadges, type WorkspaceBadges } from "./workspace-badges";
 
@@ -14,6 +15,8 @@ export interface BadgeStore {
   subscribe(listener: () => void): () => void;
   /** The same object until the runs change. */
   get(): BadgeIndex;
+  /** Which badges render on each row, for the leading separator. */
+  lead: LeadRegistry;
 }
 
 const EMPTY: BadgeIndex = new Map();
@@ -36,6 +39,7 @@ export function createBadgeStore(overview: OverviewStore, now: () => number = Da
 
   return {
     get,
+    lead: createLeadRegistry(),
     subscribe(listener) {
       listeners.add(listener);
       if (listeners.size === 1) {
@@ -59,4 +63,10 @@ export function createBadgeStore(overview: OverviewStore, now: () => number = Da
 
 export function useWorkspaceBadges(store: BadgeStore, workspaceId: string): WorkspaceBadges | null {
   return useSyncExternalStore(store.subscribe, store.get).get(workspaceId) ?? null;
+}
+
+/** Whether this badge, rendering or not, is the one that carries its row's leading "·": the first of ours that renders. */
+export function useLeadingDot(store: BadgeStore, workspaceId: string, id: BadgeItemId, renders: boolean): boolean {
+  useEffect(() => (renders ? store.lead.register(workspaceId, id) : undefined), [store, workspaceId, id, renders]);
+  return useSyncExternalStore(store.lead.subscribe, () => store.lead.lead(workspaceId)) === id;
 }

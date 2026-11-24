@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { RunSummary } from "../shared/types";
 import { attentionOf, indexBadges, runBadge, stateBadge, RECENT_MS } from "./workspace-badges";
 import { createBadgeStore } from "./workspace-badges-store";
+import { createLeadRegistry, leadingBadge, type BadgeItemId } from "./badge-lead";
 import type { OverviewSnapshot, OverviewStore } from "./overview-store";
 
 const NOW = Date.parse("2026-11-24T12:00:00Z");
@@ -128,5 +129,43 @@ describe("badge store", () => {
     expect(badges.get().get("w1")?.run.state).toBe("failed");
     o.set(null);
     expect(badges.get().size).toBe(0);
+  });
+});
+
+describe("leading separator", () => {
+  const dots = (...rendered: BadgeItemId[]) => leadingBadge(new Set(rendered));
+  it("goes to the first of our badges that renders, in the row's order", () => {
+    expect(dots("playbook-run", "playbook-state", "playbook-attention")).toBe("playbook-run");
+    expect(dots("playbook-state", "playbook-attention")).toBe("playbook-state");
+    expect(dots("playbook-attention")).toBe("playbook-attention");
+    expect(dots()).toBeNull();
+    expect(leadingBadge(undefined)).toBeNull();
+  });
+  it("is tracked per row as badges register and leave", () => {
+    const registry = createLeadRegistry();
+    const seen = vi.fn();
+    registry.subscribe(seen);
+    const state = registry.register("w1", "playbook-state");
+    const attention = registry.register("w1", "playbook-attention");
+    expect(registry.lead("w1")).toBe("playbook-state");
+    expect(registry.lead("w2")).toBeNull();
+    const run = registry.register("w1", "playbook-run");
+    expect(registry.lead("w1")).toBe("playbook-run");
+    run();
+    expect(registry.lead("w1")).toBe("playbook-state");
+    state();
+    expect(registry.lead("w1")).toBe("playbook-attention");
+    attention();
+    expect(registry.lead("w1")).toBeNull();
+    expect(seen).toHaveBeenCalledTimes(6);
+  });
+  it("a badge registered twice stays until both leave", () => {
+    const registry = createLeadRegistry();
+    const first = registry.register("w1", "playbook-run");
+    const again = registry.register("w1", "playbook-run");
+    first();
+    expect(registry.lead("w1")).toBe("playbook-run");
+    again();
+    expect(registry.lead("w1")).toBeNull();
   });
 });

@@ -2,22 +2,32 @@ import { useTranslation, type PluginClientContext, type PluginWorkspaceRowBadgeI
 import { Icon, WorkspaceRowBadge } from "@getpaseo/plugin/client/ui";
 import { Text, View } from "react-native";
 import { messages } from "./i18n";
-import { createBadgeStore, useWorkspaceBadges, type BadgeStore } from "./workspace-badges-store";
+import { createBadgeStore, useLeadingDot, useWorkspaceBadges, type BadgeStore } from "./workspace-badges-store";
 import type { OverviewStore } from "./overview-store";
 import { semanticColor } from "./semantic-colors";
 import type { Theme } from "./theme";
+import type { BadgeTone } from "./workspace-badges";
 
 /** The Playbooks icon (the sidebar item's and the panel's). */
 const ICON = "Workflow";
 
 /**
- * The host's badge has no violet tone, so the paused state badge draws its own with the host badge's layout
- * (a row, the icon and the label 3 apart, shrinking and ellipsized rather than wrapping) in the fixed
- * paused violet. The icon size (12) is a guess at the host's: the typings do not give it.
+ * A badge drawn by the plugin with the host badge's layout and values (read in Paseo 0.17's web UI):
+ * a row, the icon and the label 3 apart, shrinking and ellipsized rather than wrapping, icon 12, text
+ * 12/16. Used where the host's badge cannot: for violet, which the host has no tone for, and for the
+ * leading "·", which the host draws between its own meta items but not before a plugin's. Tones other
+ * than violet use the theme's colours; the host's blue (its running dot) is the plugin's fixed blue here.
  */
-function VioletBadge(props: { theme: Theme; icon: string; label: string; accessibilityLabel: string }) {
-  const color = semanticColor(props.theme, "paused");
-  return (
+function PluginBadge(props: { theme: Theme; tone: BadgeTone; icon: string; label: string; accessibilityLabel: string; dot: boolean }) {
+  const { theme, tone } = props;
+  const color =
+    tone === "violet" ? semanticColor(theme, "paused")
+    : tone === "success" ? theme.colors.statusSuccess
+    : tone === "warning" ? theme.colors.statusWarning
+    : tone === "danger" ? theme.colors.statusDanger
+    : tone === "info" ? semanticColor(theme, "running")
+    : theme.colors.foregroundMuted;
+  const badge = (
     <View accessible accessibilityLabel={props.accessibilityLabel} style={{ flexDirection: "row", alignItems: "center", gap: 3, minWidth: 0, flexShrink: 1 }}>
       <Icon name={props.icon} size={12} color={color} />
       <Text numberOfLines={1} style={{ color, fontSize: 12, lineHeight: 16, minWidth: 0, flexShrink: 1 }}>
@@ -25,40 +35,60 @@ function VioletBadge(props: { theme: Theme; icon: string; label: string; accessi
       </Text>
     </View>
   );
+  if (!props.dot) return badge;
+  // The host's separator is its extra-muted foreground, which the plugin theme lacks: the muted one, dimmed. It never shrinks, the label does.
+  return (
+    <View style={{ flexDirection: "row", alignItems: "center", gap: 6, minWidth: 0, flexShrink: 1 }}>
+      <Text accessibilityElementsHidden importantForAccessibility="no" style={{ color: theme.colors.foregroundMuted, opacity: 0.7, fontSize: 12, lineHeight: 16, flexShrink: 0 }}>
+        {"\u00b7"}
+      </Text>
+      {badge}
+    </View>
+  );
+}
+
+/** The host's badge when nothing needs a custom render (no violet, no leading dot), else the plugin's own. */
+function Badge(props: { theme: Theme; tone: BadgeTone; icon: string; label: string; accessibilityLabel: string; dot: boolean }) {
+  if (props.tone === "violet" || props.dot) return <PluginBadge {...props} />;
+  return <WorkspaceRowBadge icon={props.icon} tone={props.tone} label={props.label} accessibilityLabel={props.accessibilityLabel} />;
 }
 
 function RunBadgeItem(props: PluginWorkspaceRowBadgeItemProps & { store: BadgeStore }) {
   const { t } = useTranslation(messages);
   const badges = useWorkspaceBadges(props.store, props.workspaceId);
+  const dot = useLeadingDot(props.store, props.workspaceId, "playbook-run", badges !== null);
   if (!badges) return null;
   const { run } = badges;
   const label = run.live ? t("shell.badge.steps", { done: run.done, total: run.total }) : t(`shell.badge.state.${run.state as "done"}`);
   const accessibilityLabel = t("shell.badge.runLabel", { playbook: run.playbook, state: t(`shell.badge.stateFull.${run.state}`), done: run.done, total: run.total });
-  return <WorkspaceRowBadge icon={ICON} tone={run.tone} label={label} accessibilityLabel={accessibilityLabel} />;
+  return <Badge theme={props.theme} tone={run.tone} icon={ICON} label={label} accessibilityLabel={accessibilityLabel} dot={dot} />;
 }
 
-/** The state of a live run: an icon and a word, violet (drawn here) when paused. */
+/** The state of a live run: an icon and a word, violet when paused. */
 function StateBadgeItem(props: PluginWorkspaceRowBadgeItemProps & { store: BadgeStore }) {
   const { t } = useTranslation(messages);
   const badges = useWorkspaceBadges(props.store, props.workspaceId);
-  const state = badges?.state;
+  const state = badges?.state ?? null;
+  const dot = useLeadingDot(props.store, props.workspaceId, "playbook-state", state !== null);
   if (!badges || !state) return null;
   const label = t(`shell.badge.stateWord.${state.kind}`);
   const accessibilityLabel = t("shell.badge.runLabel", { playbook: badges.run.playbook, state: t(`shell.badge.stateFull.${badges.run.state}`), done: badges.run.done, total: badges.run.total });
-  if (state.tone === "violet") return <VioletBadge theme={props.theme} icon={state.icon} label={label} accessibilityLabel={accessibilityLabel} />;
-  return <WorkspaceRowBadge icon={state.icon} tone={state.tone} label={label} accessibilityLabel={accessibilityLabel} />;
+  return <Badge theme={props.theme} tone={state.tone} icon={state.icon} label={label} accessibilityLabel={accessibilityLabel} dot={dot} />;
 }
 
 function AttentionBadgeItem(props: PluginWorkspaceRowBadgeItemProps & { store: BadgeStore }) {
   const { t } = useTranslation(messages);
-  const attention = useWorkspaceBadges(props.store, props.workspaceId)?.attention;
+  const attention = useWorkspaceBadges(props.store, props.workspaceId)?.attention ?? null;
+  const dot = useLeadingDot(props.store, props.workspaceId, "playbook-attention", attention !== null);
   if (!attention) return null;
   return (
-    <WorkspaceRowBadge
-      icon="TriangleAlert"
+    <Badge
+      theme={props.theme}
       tone={attention.tone}
+      icon="TriangleAlert"
       label={t(`shell.badge.attention.${attention.kind}`)}
       accessibilityLabel={t("shell.badge.attentionLabel", { reason: t(`shell.badge.attentionFull.${attention.kind}`) })}
+      dot={dot}
     />
   );
 }

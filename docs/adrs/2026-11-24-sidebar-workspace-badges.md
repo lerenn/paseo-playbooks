@@ -45,10 +45,20 @@ per workspace row. Until now a run could only be seen from the Playbooks screen 
   | canceled | none | `canceled`, muted | none |
 
   Attention: `gate` danger, `slow` warning.
-- Violet has no host tone, so the paused state badge is drawn by the plugin with the host badge's
-  layout (a row, centred, gap 3, shrinking and ellipsized, text 12/16, `numberOfLines` 1) from `Icon`,
-  the theme's React Native `View`/`Text` and `semanticColor`, with the same accessibility label. The
-  host's icon size is not in its typings; the plugin uses 12. Every other badge uses `WorkspaceRowBadge`.
+- Violet has no host tone, and the host draws a muted "·" between its own meta items but not before a
+  plugin's badges. So the plugin draws a badge itself (`PluginBadge`) for violet and for the dot, with
+  the host badge's layout and values (read in Paseo 0.17's web UI): a row, centred, gap 3, shrinking and
+  ellipsized, icon 12, text 12/16, `numberOfLines` 1, the same accessibility label. Colours come from
+  the theme (`foregroundMuted`, `statusSuccess/Warning/Danger`), the fixed blue for info (the host's
+  running-dot colour is not in the plugin theme) and the fixed violet from `semanticColor`. Badges
+  needing neither keep using `WorkspaceRowBadge`.
+- A row shows at most one leading dot, on the first of our badges that renders, in the order run, state,
+  attention (not always the run badge: it may be hidden in the Show menu). Each badge registers in the
+  shared store while it renders something (`client/badge-lead.ts`) and asks whether it is first. The
+  dot is the host's separator character at its size (12/16), 6 from the badge (the host's row gap) and
+  never shrinks; the label does, so the row still never wraps. The host's separator colour
+  (`foregroundExtraMuted`, with hover and selected variants) is not in the plugin theme: the dot is
+  `foregroundMuted` at 70 % opacity and does not follow the row's hover or selected colour.
 - Rows do not fetch. All Components read one shared store that rides on the overview store: the
   first mounted row asks it for the runs once (the same request the screen uses, refreshed on agent
   events with a 60 s fallback), the index by workspace id is rebuilt once per new set of runs, and the
