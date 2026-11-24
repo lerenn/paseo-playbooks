@@ -12,7 +12,6 @@ import { useSlowSteps } from "./slow";
 import { NowProvider } from "./now";
 import { useAgentEvents } from "./events";
 import { Graph, useReduceMotion } from "./graph";
-import { PanelHeader } from "./panel-header";
 import { PreReleaseFlag } from "./pre-release";
 import { ProfilePicker, useSetProjectProfile } from "./profiles";
 import { Button, StepSheet } from "./sheet";
@@ -89,13 +88,12 @@ export function PlaybooksPanel(props: PluginWorkspacePanelProps) {
       onRead={markRead}
     />
   );
-  const [headerDismissed, setHeaderDismissed] = useTabState(props.tab, z.boolean(), false);
   const total = cards.length + hiddenCards.length;
 
   const pad = layout.compact ? 12 : 16;
   return (
     <View style={{ flex: 1, backgroundColor: theme.colors.surface0 }}>
-      <PanelHeader theme={theme} compact={layout.compact} pad={pad} dismissed={headerDismissed} onDismiss={() => setHeaderDismissed(true)} />
+      {/* No heading: the tab already says "Playbooks". */}
       <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingHorizontal: pad, paddingVertical: 8, zIndex: 50 }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
           <PreReleaseFlag theme={theme} />

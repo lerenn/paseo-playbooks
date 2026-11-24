@@ -6,6 +6,8 @@ import { Animated, Easing, Pressable, Text, View } from "react-native";
 import { archiveRunRpc, listPlaybooks, markRunSeenRpc } from "../shared/contracts";
 import { gateText, isWaiting, needsReview, waitsForHuman } from "../shared/gates";
 import { BringBack, DeferForm, WaitingInfo } from "./defer";
+import { PanelHeader } from "./panel-header-view";
+import { HEADER, TABS, TAB_ICONS, tabParts } from "./panel-header";
 import { overviewSettings } from "../shared/overview-settings";
 import { closedTabs, closeTab, effectiveTab, normalizeOpenTabs, openTab, visibleTabs, type PanelTab } from "../shared/panel-tabs";
 import { DEFAULT_PLAYBOOK_SORT, PLAYBOOK_SORTS, sortPlaybooks, type PlaybookSort } from "../shared/sort";
@@ -453,6 +455,45 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
   return (
     <StoreContext.Provider value={store}>
     <View style={{ flex: 1, flexDirection: "row", backgroundColor: theme.colors.surface0 }}>
+      <View style={{ flex: 1 }}>
+        <View style={{ zIndex: 60 }}>
+          <PanelHeader
+            theme={theme}
+            compact={layout.compact}
+            actions={
+              <>
+            <RunPlaybookButton theme={theme} compact={layout.compact} loading={runState === "loading"} emptyReason={runState === "empty" ? (runProjects.length === 0 ? t("form.noWorkspaces") : t("form.noRunnable")) : undefined} onPress={() => setRunForm(true)} />
+            {!layout.compact ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={t(sidekickOpen ? "cards.sidekick.close" : "cards.sidekick.open")}
+                accessibilityState={{ expanded: sidekickOpen }}
+                hitSlop={8}
+                onPress={() => setSidekickOpen(!sidekickOpen)}
+                style={{ flexDirection: "row", alignItems: "center", gap: 6, borderRadius: 8, borderWidth: 1, borderColor: sidekickOpen ? theme.colors.accent : theme.colors.border, paddingHorizontal: 10, paddingVertical: 6 }}
+              >
+                <Icon name="Bot" size={16} color={sidekickOpen ? theme.colors.accent : theme.colors.foregroundMuted} />
+                <Text style={{ color: sidekickOpen ? theme.colors.accent : theme.colors.foregroundMuted, fontSize: 12, fontWeight: "600" }}>Sidekick</Text>
+              </Pressable>
+            ) : null}
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t("panel.refresh")}
+              hitSlop={8}
+              onPress={() => {
+                store.refresh();
+                setRefreshTick((tick) => tick + 1);
+                void queryClient.invalidateQueries({ queryKey: ["playbooks"] });
+              }}
+              style={{ borderRadius: 8, borderWidth: 1, borderColor: theme.colors.border, padding: 7 }}
+            >
+              <Icon name="RefreshCw" size={16} color={theme.colors.foregroundMuted} />
+            </Pressable>
+              </>
+            }
+          />
+          <TabBar theme={theme} compact={layout.compact} open={openTabs} selected={tab} onSelect={selectTab} onClose={dismissTab} />
+        </View>
       <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: pad, gap: 18 }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 10, flexWrap: "wrap", zIndex: 50 }}>
           <PreReleaseFlag theme={theme} />
@@ -474,36 +515,8 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
               </>
             ) : null}
           </Text>
-          <RunPlaybookButton theme={theme} compact={layout.compact} loading={runState === "loading"} emptyReason={runState === "empty" ? (runProjects.length === 0 ? t("form.noWorkspaces") : t("form.noRunnable")) : undefined} onPress={() => setRunForm(true)} />
-          {!layout.compact ? (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={t(sidekickOpen ? "cards.sidekick.close" : "cards.sidekick.open")}
-              accessibilityState={{ expanded: sidekickOpen }}
-              hitSlop={8}
-              onPress={() => setSidekickOpen(!sidekickOpen)}
-              style={{ flexDirection: "row", alignItems: "center", gap: 6, borderRadius: 8, borderWidth: 1, borderColor: sidekickOpen ? theme.colors.accent : theme.colors.border, paddingHorizontal: 10, paddingVertical: 6 }}
-            >
-              <Icon name="Bot" size={16} color={sidekickOpen ? theme.colors.accent : theme.colors.foregroundMuted} />
-              <Text style={{ color: sidekickOpen ? theme.colors.accent : theme.colors.foregroundMuted, fontSize: 12, fontWeight: "600" }}>Sidekick</Text>
-            </Pressable>
-          ) : null}
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={t("panel.refresh")}
-            hitSlop={8}
-            onPress={() => {
-              store.refresh();
-              setRefreshTick((tick) => tick + 1);
-              void queryClient.invalidateQueries({ queryKey: ["playbooks"] });
-            }}
-            style={{ borderRadius: 8, borderWidth: 1, borderColor: theme.colors.border, padding: 7 }}
-          >
-            <Icon name="RefreshCw" size={16} color={theme.colors.foregroundMuted} />
-          </Pressable>
         </View>
 
-        <TabBar theme={theme} compact={layout.compact} open={openTabs} selected={tab} onSelect={selectTab} onClose={dismissTab} />
 
         {tab === "analytics" ? (
           <AnalyticsView theme={theme} />
@@ -647,6 +660,7 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
           </>
         )}
       </ScrollView>
+      </View>
       {runForm && runnableProjects.length > 0 ? (
         <OverviewRunForm
           theme={theme}
@@ -702,68 +716,85 @@ function tabLabel(t: (key: "cards.tabs.runs" | "cards.tabs.analytics" | "quota.t
   }
 }
 
-/** Runs, the tabs added with "+", and the "+" menu of the others (hidden once all are open). A tab's x shows only while the tab is hovered or focused, always on a compact layout. */
+/** Runs, the tabs added with "+", and the "+" menu of the others (hidden once all are open). Each tab has an icon; the selected one is bold with an accent underline on a full-width divider. A tab's x shows only while the tab is hovered or focused, always on a compact layout; the tabs scroll sideways when they do not fit. */
 function TabBar(props: { theme: Theme; compact: boolean; open: PanelTab[]; selected: PanelTab; onSelect(tab: PanelTab): void; onClose(tab: PanelTab): void }) {
   const { theme, compact, selected } = props;
   const { t } = useTranslation(messages);
   const [menu, setMenu] = useState(false);
   const closed = closedTabs(props.open);
   return (
-    <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", columnGap: compact ? 12 : 16, borderBottomWidth: 1, borderBottomColor: theme.colors.border, zIndex: 40 }}>
-      <View accessibilityRole="tablist" style={{ flexDirection: "row", flexWrap: "wrap", columnGap: compact ? 12 : 16 }}>
-        {visibleTabs(props.open).map((id) => (
-          <Tab key={id} theme={theme} label={tabLabel(t, id)} selected={selected === id} alwaysCloseable={compact} onPress={() => props.onSelect(id)} onClose={id === "runs" ? undefined : () => props.onClose(id)} closeLabel={t("cards.tabs.close", { tab: tabLabel(t, id) })} />
-        ))}
+    <View style={{ marginTop: HEADER.tabsTop, height: TABS.height, paddingLeft: HEADER.padLeft, zIndex: 40 }}>
+      {/* The divider runs under all tabs; the selected tab's underline is drawn over it. */}
+      <View pointerEvents="none" style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 1, backgroundColor: theme.colors.border }} />
+      <View style={{ flexDirection: "row", alignItems: "stretch" }}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flexGrow: 0, flexShrink: 1 }} contentContainerStyle={{ columnGap: TABS.gap }}>
+          <View accessibilityRole="tablist" style={{ flexDirection: "row", columnGap: TABS.gap }}>
+            {visibleTabs(props.open).map((id) => (
+              <Tab key={id} theme={theme} icon={TAB_ICONS[id]} label={tabLabel(t, id)} selected={selected === id} compact={compact} onPress={() => props.onSelect(id)} onClose={id === "runs" ? undefined : () => props.onClose(id)} closeLabel={t("cards.tabs.close", { tab: tabLabel(t, id) })} />
+            ))}
+          </View>
+        </ScrollView>
+        {closed.length > 0 ? (
+          <View style={{ position: "relative", justifyContent: "center", paddingLeft: 8 }}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t("cards.tabs.add")}
+              accessibilityState={{ expanded: menu }}
+              hitSlop={8}
+              onPress={() => setMenu(!menu)}
+              style={{ paddingVertical: 6, paddingHorizontal: 4 }}
+            >
+              <Icon name="Plus" size={TABS.icon} color={theme.colors.foregroundMuted} />
+            </Pressable>
+            {menu ? (
+              <View accessibilityRole="menu" style={{ position: "absolute", top: TABS.height - 6, left: 0, zIndex: 100, minWidth: 180, padding: 4, borderRadius: 10, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface2, elevation: 6 }}>
+                {closed.map((id) => (
+                  <Pressable
+                    key={id}
+                    accessibilityRole="menuitem"
+                    onPress={() => {
+                      setMenu(false);
+                      props.onSelect(id);
+                    }}
+                    style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 10, paddingVertical: 8, borderRadius: 6 }}
+                  >
+                    <Icon name={TAB_ICONS[id]} size={TABS.icon} color={theme.colors.foregroundMuted} />
+                    <Text style={{ color: theme.colors.foreground, fontSize: 13 }}>{tabLabel(t, id)}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            ) : null}
+          </View>
+        ) : null}
       </View>
-      {closed.length > 0 ? (
-        <View style={{ position: "relative", marginBottom: -1 }}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={t("cards.tabs.add")}
-            accessibilityState={{ expanded: menu }}
-            hitSlop={8}
-            onPress={() => setMenu(!menu)}
-            style={{ paddingVertical: 6, paddingHorizontal: 4 }}
-          >
-            <Icon name="Plus" size={16} color={theme.colors.foregroundMuted} />
-          </Pressable>
-          {menu ? (
-            <View accessibilityRole="menu" style={{ position: "absolute", top: 32, left: 0, zIndex: 100, minWidth: 180, padding: 4, borderRadius: 10, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface2, elevation: 6 }}>
-              {closed.map((id) => (
-                <Pressable
-                  key={id}
-                  accessibilityRole="menuitem"
-                  onPress={() => {
-                    setMenu(false);
-                    props.onSelect(id);
-                  }}
-                  style={{ paddingHorizontal: 10, paddingVertical: 8, borderRadius: 6 }}
-                >
-                  <Text style={{ color: theme.colors.foreground, fontSize: 13 }}>{tabLabel(t, id)}</Text>
-                </Pressable>
-              ))}
-            </View>
-          ) : null}
-        </View>
-      ) : null}
     </View>
   );
 }
 
-function Tab(props: { theme: Theme; label: string; selected: boolean; alwaysCloseable: boolean; onPress(): void; onClose?(): void; closeLabel: string }) {
+function Tab(props: { theme: Theme; icon: string; label: string; selected: boolean; compact: boolean; onPress(): void; onClose?(): void; closeLabel: string }) {
   const { theme, selected } = props;
   const [hover, setHover] = useState(false);
   const [focus, setFocus] = useState(false);
-  const showClose = props.onClose && (hover || focus || props.alwaysCloseable);
+  const showClose = props.onClose && (hover || focus || props.compact);
+  const showLabel = tabParts({ compact: props.compact, selected }).label;
   return (
     <View
-      // Pointer events: fired by a mouse only, hence alwaysCloseable on compact layouts. At rest the x is collapsed to zero width (still focusable: focusing it expands it).
+      // Pointer events: fired by a mouse only, hence always closeable on compact layouts. At rest the x is collapsed to zero width (still focusable: focusing it expands it).
       onPointerEnter={() => setHover(true)}
       onPointerLeave={() => setHover(false)}
-      style={{ flexDirection: "row", alignItems: "center", marginBottom: -1, borderBottomWidth: 2, borderBottomColor: selected ? theme.colors.foreground : "transparent" }}
+      style={{ flexDirection: "row", alignItems: "center", height: TABS.height, paddingHorizontal: TABS.padX, borderBottomWidth: TABS.underline, borderBottomColor: selected ? theme.colors.accent : "transparent" }}
     >
-      <Pressable accessibilityRole="tab" accessibilityState={{ selected }} onPress={props.onPress} onFocus={() => setFocus(true)} onBlur={() => setFocus(false)} style={{ paddingVertical: 8 }}>
-        <Text style={{ color: selected ? theme.colors.foreground : theme.colors.foregroundMuted, fontSize: 13, fontWeight: selected ? "700" : "500" }}>{props.label}</Text>
+      <Pressable
+        accessibilityRole="tab"
+        accessibilityLabel={props.label}
+        accessibilityState={{ selected }}
+        onPress={props.onPress}
+        onFocus={() => setFocus(true)}
+        onBlur={() => setFocus(false)}
+        style={{ flexDirection: "row", alignItems: "center", gap: TABS.iconGap, height: "100%" }}
+      >
+        <Icon name={props.icon} size={TABS.icon} color={selected ? theme.colors.accent : theme.colors.foregroundMuted} />
+        {showLabel ? <Text numberOfLines={1} style={{ color: selected ? theme.colors.foreground : theme.colors.foregroundMuted, fontSize: TABS.labelSize, fontWeight: selected ? "700" : "400" }}>{props.label}</Text> : null}
       </Pressable>
       {props.onClose ? (
         <Pressable accessibilityRole="button" accessibilityLabel={props.closeLabel} hitSlop={8} onPress={props.onClose} onFocus={() => setFocus(true)} onBlur={() => setFocus(false)} style={showClose ? { marginLeft: 6, padding: 2 } : { width: 0, padding: 0, overflow: "hidden", opacity: 0 }}>
