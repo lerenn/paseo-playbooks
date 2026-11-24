@@ -1,6 +1,7 @@
 import { slowSteps, slowView } from "../shared/slow";
 import { waitsForHuman } from "../shared/gates";
 import { isActive, isPaused, type RunSummary } from "../shared/types";
+import type { SemanticTone } from "./semantic-colors";
 
 /**
  * What the two sidebar badges of a workspace row show, as pure functions of the run summaries
@@ -21,6 +22,22 @@ export type HostBadgeTone = "muted" | "success" | "warning" | "danger" | "info";
 export type BadgeTone = HostBadgeTone | "violet";
 
 export type RunBadgeState = "running" | "waiting" | "held" | "paused" | "done" | "failed" | "canceled";
+
+/**
+ * The row's colour: one semantic state per row, applied to ALL our badges on it, the leading dot included
+ * (running blue, waiting or needing the user orange, paused or held violet, done green, failed red; canceled
+ * has none and stays muted). The host's tones cannot express violet or a fixed orange, so a row with a colour
+ * is always drawn by the plugin's own badge.
+ */
+export const STATE_ROW_TONES: Readonly<Record<RunBadgeState, SemanticTone | null>> = {
+  running: "running",
+  waiting: "waiting",
+  held: "paused",
+  paused: "paused",
+  done: "done",
+  failed: "failed",
+  canceled: null,
+};
 
 export const STATE_TONES: Readonly<Record<RunBadgeState, HostBadgeTone>> = {
   running: "info",
@@ -74,6 +91,8 @@ export interface AttentionBadge {
 
 /** What a workspace row shows: its run's badge, and the attention badge when something needs the user. */
 export interface WorkspaceBadges {
+  /** The semantic state colouring every badge of the row and its dot; null: muted. An open gate on the workspace makes it "waiting". */
+  rowTone: SemanticTone | null;
   run: RunBadge;
   /** Null for an ended run, and for one waiting at a gate (the attention badge says it). */
   state: StateBadge | null;
@@ -165,6 +184,10 @@ export function indexBadges(runs: readonly RunSummary[], now: number): Map<strin
     if (need && (!known || URGENCY[need.kind] < URGENCY[known.kind])) attention.set(run.workspaceId, need);
   }
   const index = new Map<string, WorkspaceBadges>();
-  for (const [workspaceId, run] of chosen) index.set(workspaceId, { run: runBadge(run), state: stateBadge(run), attention: attention.get(workspaceId) ?? null });
+  for (const [workspaceId, run] of chosen) {
+    const need = attention.get(workspaceId) ?? null;
+    const rowTone = need?.kind === "gate" ? "waiting" : STATE_ROW_TONES[stateOf(run)];
+    index.set(workspaceId, { rowTone, run: runBadge(run), state: stateBadge(run), attention: need });
+  }
   return index;
 }

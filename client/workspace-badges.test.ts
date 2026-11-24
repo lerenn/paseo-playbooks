@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { RunSummary } from "../shared/types";
-import { attentionOf, indexBadges, runBadge, stateBadge, RECENT_MS } from "./workspace-badges";
+import { attentionOf, indexBadges, runBadge, stateBadge, RECENT_MS, STATE_ROW_TONES } from "./workspace-badges";
 import { createBadgeStore } from "./workspace-badges-store";
 import { createLeadRegistry, leadingBadge, type BadgeItemId } from "./badge-lead";
 import type { OverviewSnapshot, OverviewStore } from "./overview-store";
@@ -167,5 +167,31 @@ describe("leading separator", () => {
     expect(registry.lead("w1")).toBe("playbook-run");
     again();
     expect(registry.lead("w1")).toBeNull();
+  });
+});
+
+describe("row colour (one semantic state for every badge and the dot)", () => {
+  const rowTone = (run: RunSummary) => indexBadges([run], NOW).get("w1")!.rowTone;
+  it("maps each run state to its semantic tone", () => {
+    expect(rowTone(summary())).toBe("running");
+    expect(rowTone(summary({ pausedAt: "x" }))).toBe("paused");
+    expect(rowTone(summary({ rateHold: { kind: "quota", reason: "r" } as never, stepStatuses: ["completed", "pending"] }))).toBe("paused");
+    expect(rowTone(summary({ stepStatuses: ["completed", "queued"] }))).toBe("waiting");
+    expect(rowTone(summary({ gates: [gate] as never }))).toBe("waiting");
+    expect(rowTone(summary({ status: "completed" }))).toBe("done");
+    expect(rowTone(summary({ status: "failed" }))).toBe("failed");
+    expect(rowTone(summary({ status: "canceled" }))).toBeNull();
+  });
+  it("covers every run state", () => {
+    expect(Object.keys(STATE_ROW_TONES).sort()).toEqual(["canceled", "done", "failed", "held", "paused", "running", "waiting"]);
+  });
+  it("is orange for an open gate on the workspace even when another run is the chosen one", () => {
+    const gated = summary({ id: "gated", gates: [gate] as never, updatedAt: new Date(NOW - 3_600_000).toISOString() });
+    const running = summary({ id: "r" });
+    expect(indexBadges([gated, running], NOW).get("w1")!.rowTone).toBe("waiting");
+  });
+  it("a slow step does not change the colour", () => {
+    expect(attentionOf(summary(), true)?.kind).toBe("slow");
+    expect(rowTone(summary())).toBe("running");
   });
 });

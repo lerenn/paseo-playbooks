@@ -32,33 +32,38 @@ per workspace row. Until now a run could only be seen from the Playbooks screen 
   `[workflow] 3/7 [warning] gate`. Rows count 1 badge (ended run), 2 (running, paused, waiting for a
   slot, gate) or 3 (running or paused plus `slow`). On a narrow sidebar the line truncates: the state
   word ellipsizes first (`shrink`), the step count stays.
-- Tones follow `client/semantic-colors.ts` as far as the host's five allow:
+- One rule colours a row: the run's single semantic state (`client/semantic-colors.ts`) is applied to
+  ALL our badges on the row and to the leading dot. An open gate on the workspace makes it waiting
+  (orange) whichever run the run badge shows; a slow step changes nothing. Computed in the pure
+  mapping (`rowTone`, `STATE_ROW_TONES`).
 
-  | State | Semantic tone | Run badge | State badge |
-  | --- | --- | --- | --- |
-  | running | blue | `3/7`, info | `Play` running, info |
-  | waiting for a slot | orange | `3/7`, warning | `Hourglass` waiting, warning |
-  | waiting at a gate | orange | `3/7`, warning | none (attention `gate`, danger) |
-  | paused, held by rate limiting | violet | `3/7`, muted | `Pause` paused, the plugin's own violet badge |
-  | done | green | `done`, success | none |
-  | failed | red | `failed`, danger | none |
-  | canceled | none | `canceled`, muted | none |
+  | State | Row colour (all badges and the dot) | Run badge | State badge | Attention badge |
+  | --- | --- | --- | --- | --- |
+  | running | blue | `3/7` | `Play` running | `slow`, if any |
+  | waiting for a slot | orange | `3/7` | `Hourglass` waiting | `slow`, if any |
+  | waiting at a gate | orange | `3/7` | none | `gate` |
+  | paused, held by rate limiting | violet | `3/7` | `Pause` paused | `slow`, if any |
+  | done | green | `done` | none | none |
+  | failed | red | `failed` | none | none |
+  | canceled | none (muted) | `canceled` | none | none |
 
-  Attention: `gate` danger, `slow` warning.
-- Violet has no host tone, and the host draws a muted "·" between its own meta items but not before a
-  plugin's badges. So the plugin draws a badge itself (`PluginBadge`) for violet and for the dot, with
+  The host's badge tones (muted, success, warning, danger, info) stay in the data as the fallback.
+- The host has no violet tone nor our fixed blue or orange, and it draws a muted "·" between its own meta
+  items but not before a plugin's badges. So the plugin draws a badge itself (`PluginBadge`) for any row with
+  a colour, for violet and for the dot, with
   the host badge's layout and values (read in Paseo 0.17's web UI): a row, centred, gap 3, shrinking and
   ellipsized, icon 12, text 12/16, `numberOfLines` 1, the same accessibility label. Colours come from
   the theme (`foregroundMuted`, `statusSuccess/Warning/Danger`), the fixed blue for info (the host's
   running-dot colour is not in the plugin theme) and the fixed violet from `semanticColor`. Badges
-  needing neither keep using `WorkspaceRowBadge`.
+  needing none of these (a canceled run, alone) keep using `WorkspaceRowBadge`. The dot takes the row's
+  colour at full opacity (muted at 70 % when the row has none).
 - A row shows at most one leading dot, on the first of our badges that renders, in the order run, state,
   attention (not always the run badge: it may be hidden in the Show menu). Each badge registers in the
   shared store while it renders something (`client/badge-lead.ts`) and asks whether it is first. The
   dot is the host's separator character at its size (12/16), 6 from the badge (the host's row gap) and
   never shrinks; the label does, so the row still never wraps. The host's separator colour
   (`foregroundExtraMuted`, with hover and selected variants) is not in the plugin theme: the dot is
-  `foregroundMuted` at 70 % opacity and does not follow the row's hover or selected colour.
+  the row's colour (`foregroundMuted` at 70 % opacity without one) and does not follow the row's hover or selected colour.
 - Rows do not fetch. All Components read one shared store that rides on the overview store: the
   first mounted row asks it for the runs once (the same request the screen uses, refreshed on agent
   events with a 60 s fallback), the index by workspace id is rebuilt once per new set of runs, and the

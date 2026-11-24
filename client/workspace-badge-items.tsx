@@ -4,7 +4,7 @@ import { Text, View } from "react-native";
 import { messages } from "./i18n";
 import { createBadgeStore, useLeadingDot, useWorkspaceBadges, type BadgeStore } from "./workspace-badges-store";
 import type { OverviewStore } from "./overview-store";
-import { semanticColor } from "./semantic-colors";
+import { semanticColor, type SemanticTone } from "./semantic-colors";
 import type { Theme } from "./theme";
 import type { BadgeTone } from "./workspace-badges";
 
@@ -15,13 +15,15 @@ const ICON = "Workflow";
  * A badge drawn by the plugin with the host badge's layout and values (read in Paseo 0.17's web UI):
  * a row, the icon and the label 3 apart, shrinking and ellipsized rather than wrapping, icon 12, text
  * 12/16. Used where the host's badge cannot: for violet, which the host has no tone for, and for the
- * leading "·", which the host draws between its own meta items but not before a plugin's. Tones other
- * than violet use the theme's colours; the host's blue (its running dot) is the plugin's fixed blue here.
+ * leading "·", which the host draws between its own meta items but not before a plugin's. A row with a
+ * semantic state (`rowTone`) draws every badge and the dot in that state's fixed colour; without one the
+ * badge's tone uses the theme's colours.
  */
-function PluginBadge(props: { theme: Theme; tone: BadgeTone; icon: string; label: string; accessibilityLabel: string; dot: boolean }) {
+function PluginBadge(props: { theme: Theme; tone: BadgeTone; rowTone: SemanticTone | null; icon: string; label: string; accessibilityLabel: string; dot: boolean }) {
   const { theme, tone } = props;
   const color =
-    tone === "violet" ? semanticColor(theme, "paused")
+    props.rowTone ? semanticColor(theme, props.rowTone)
+    : tone === "violet" ? semanticColor(theme, "paused")
     : tone === "success" ? theme.colors.statusSuccess
     : tone === "warning" ? theme.colors.statusWarning
     : tone === "danger" ? theme.colors.statusDanger
@@ -39,7 +41,7 @@ function PluginBadge(props: { theme: Theme; tone: BadgeTone; icon: string; label
   // The host's separator is its extra-muted foreground, which the plugin theme lacks: the muted one, dimmed. It never shrinks, the label does.
   return (
     <View style={{ flexDirection: "row", alignItems: "center", gap: 6, minWidth: 0, flexShrink: 1 }}>
-      <Text accessibilityElementsHidden importantForAccessibility="no" style={{ color: theme.colors.foregroundMuted, opacity: 0.7, fontSize: 12, lineHeight: 16, flexShrink: 0 }}>
+      <Text accessibilityElementsHidden importantForAccessibility="no" style={{ color: props.rowTone ? color : theme.colors.foregroundMuted, opacity: props.rowTone ? 1 : 0.7, fontSize: 12, lineHeight: 16, flexShrink: 0 }}>
         {"\u00b7"}
       </Text>
       {badge}
@@ -47,9 +49,9 @@ function PluginBadge(props: { theme: Theme; tone: BadgeTone; icon: string; label
   );
 }
 
-/** The host's badge when nothing needs a custom render (no violet, no leading dot), else the plugin's own. */
-function Badge(props: { theme: Theme; tone: BadgeTone; icon: string; label: string; accessibilityLabel: string; dot: boolean }) {
-  if (props.tone === "violet" || props.dot) return <PluginBadge {...props} />;
+/** The host's badge when nothing needs a custom render (no row colour, no violet, no leading dot), else the plugin's own. */
+function Badge(props: { theme: Theme; tone: BadgeTone; rowTone: SemanticTone | null; icon: string; label: string; accessibilityLabel: string; dot: boolean }) {
+  if (props.rowTone || props.tone === "violet" || props.dot) return <PluginBadge {...props} />;
   return <WorkspaceRowBadge icon={props.icon} tone={props.tone} label={props.label} accessibilityLabel={props.accessibilityLabel} />;
 }
 
@@ -58,10 +60,10 @@ function RunBadgeItem(props: PluginWorkspaceRowBadgeItemProps & { store: BadgeSt
   const badges = useWorkspaceBadges(props.store, props.workspaceId);
   const dot = useLeadingDot(props.store, props.workspaceId, "playbook-run", badges !== null);
   if (!badges) return null;
-  const { run } = badges;
+  const { run, rowTone } = badges;
   const label = run.live ? t("shell.badge.steps", { done: run.done, total: run.total }) : t(`shell.badge.state.${run.state as "done"}`);
   const accessibilityLabel = t("shell.badge.runLabel", { playbook: run.playbook, state: t(`shell.badge.stateFull.${run.state}`), done: run.done, total: run.total });
-  return <Badge theme={props.theme} tone={run.tone} icon={ICON} label={label} accessibilityLabel={accessibilityLabel} dot={dot} />;
+  return <Badge theme={props.theme} tone={run.tone} rowTone={rowTone} icon={ICON} label={label} accessibilityLabel={accessibilityLabel} dot={dot} />;
 }
 
 /** The state of a live run: an icon and a word, violet when paused. */
@@ -73,18 +75,20 @@ function StateBadgeItem(props: PluginWorkspaceRowBadgeItemProps & { store: Badge
   if (!badges || !state) return null;
   const label = t(`shell.badge.stateWord.${state.kind}`);
   const accessibilityLabel = t("shell.badge.runLabel", { playbook: badges.run.playbook, state: t(`shell.badge.stateFull.${badges.run.state}`), done: badges.run.done, total: badges.run.total });
-  return <Badge theme={props.theme} tone={state.tone} icon={state.icon} label={label} accessibilityLabel={accessibilityLabel} dot={dot} />;
+  return <Badge theme={props.theme} tone={state.tone} rowTone={badges.rowTone} icon={state.icon} label={label} accessibilityLabel={accessibilityLabel} dot={dot} />;
 }
 
 function AttentionBadgeItem(props: PluginWorkspaceRowBadgeItemProps & { store: BadgeStore }) {
   const { t } = useTranslation(messages);
-  const attention = useWorkspaceBadges(props.store, props.workspaceId)?.attention ?? null;
+  const badges = useWorkspaceBadges(props.store, props.workspaceId);
+  const attention = badges?.attention ?? null;
   const dot = useLeadingDot(props.store, props.workspaceId, "playbook-attention", attention !== null);
   if (!attention) return null;
   return (
     <Badge
       theme={props.theme}
       tone={attention.tone}
+      rowTone={badges?.rowTone ?? null}
       icon="TriangleAlert"
       label={t(`shell.badge.attention.${attention.kind}`)}
       accessibilityLabel={t("shell.badge.attentionLabel", { reason: t(`shell.badge.attentionFull.${attention.kind}`) })}
