@@ -1,3 +1,11 @@
+**Arrêtez de superviser chaque agent. Livrez avec un système d'ingénierie reproductible.**
+
+Playbooks transforme « que se passe-t-il ensuite ? » en YAML versionné dans votre dépôt. Un
+agent manager l'exécute étape par étape, chaque étape confiée à un sous-agent ou à un script,
+en parallèle ou en boucle, et s'arrête aux validations humaines pour vous laisser décider. Des
+agents spécialisés pour le jugement, des scripts pour les faits, et un graphe relu et versionné
+comme n'importe quel code.
+
 Playbooks transforme un workflow multi-agents en un fichier YAML dans votre dépôt. Un agent
 manager l'exécute étape par étape, chaque étape confiée à un sous-agent, et s'arrête aux
 validations humaines (gates) pour vous laisser décider.
@@ -52,7 +60,7 @@ steps:
 - **Validations humaines** : approuvez, rejetez ou choisissez une option depuis le panneau
   ou dans la conversation.
 - **Règles appliquées par le plugin** : il valide les playbooks, refuse les transitions
-  qu'un playbook n'autorise pas, vérifie les rôles en lecture seule avec git et conserve
+  qu'un playbook n'autorise pas (les boucles sont bornées par `max_loops`, et les agents d'une exécution ne peuvent pas approuver eux-mêmes leur validation humaine), vérifie les rôles en lecture seule avec git et conserve
   l'état des exécutions malgré les redémarrages du daemon. Voir
   [le fonctionnement](https://playbooks.paseo.lerenn.dev/how-it-works.html).
 - **Repli entre fournisseurs** : un niveau de `defaults/main.yaml` peut lister plusieurs
@@ -71,6 +79,15 @@ steps:
   surveille les exécutions, juge quelles décisions pourraient être automatisées et envoie des
   sous-agents modifier les playbooks dans des pull requests que vous fusionnez. Son prompt lui
   interdit d'éditer des fichiers ou de lancer des commandes lui-même.
+
+## Et aussi
+
+- **Limitation du rythme de consommation** (burn rate limiting) : le quota est réparti sur les fenêtres d'usage du fournisseur (quota maximal utilisable, heures de fermeture, burn rate, priorités, exécutions exemptées).
+- **Warden** : une passe périodique optionnelle qui signale définitions obsolètes, boucles, managers bloqués, étapes lentes, validations ouvertes depuis longtemps et exécutions suspendues.
+- **Journal d'usage et analyses** : une ligne de compteurs par tour d'agent, et un onglet Analytics dans le panneau.
+- **Onglets et langues du panneau** : le bouton **+** ouvre Analytics, Burn rate limiting, Off hours et Profiles ; le panneau est traduit en français et en chinois simplifié.
+- **Pools fan-out et pipelines** : une exécution par élément d'une liste, et des pipelines singleton qui font passer des jobs par lots d'étape en étape.
+- **Reprise** : relancer une exécution depuis une étape ; `recover_manager` et reprise automatique d'un manager bloqué par le quota de son fournisseur.
 
 ## Pour commencer
 

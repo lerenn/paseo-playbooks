@@ -1,3 +1,10 @@
+**Stop supervising every agent. Start shipping a repeatable engineering system.**
+
+Playbooks turns "what happens next?" into versioned YAML in your repository. A manager agent
+runs it step by step, each step as a subagent or a script, in parallel or in loops, and stops
+at human gates for your decision. Specialist agents handle judgment, scripts handle facts,
+and the graph is reviewed and versioned like any other engineering code.
+
 Playbooks turns a multi-agent workflow into a YAML file in your repository. A manager agent
 runs it step by step, each step as a subagent, and stops at human gates for your decision.
 
@@ -46,7 +53,7 @@ steps:
   finish, runs as a script from the playbook's `scripts/` folder, with no agent.
 - **Human gates**: approve, reject or pick a choice from the panel or in chat.
 - **Rules enforced by the plugin**: it validates playbooks, refuses transitions a playbook
-  does not allow, checks read-only roles with git, and keeps run state across daemon
+  does not allow (loops are bounded by `max_loops`, and a run's own agents cannot approve their own human gate), checks read-only roles with git, and keeps run state across daemon
   restarts. See [how it works](https://playbooks.paseo.lerenn.dev/how-it-works.html).
 - **Provider fallback**: a tier in `defaults/main.yaml` may list several providers. When a
   step agent runs out of tokens, the same attempt restarts on the next one, and the exhausted
@@ -62,6 +69,15 @@ steps:
   coordinator agent defined by a `sidekick/` folder beside the playbooks. It watches the runs, judges
   which decisions could be automated, and sends subagents to change the playbooks in pull requests
   you merge. Its prompt forbids it to edit files or run commands itself.
+
+## Also
+
+- **Burn rate limiting**: quota pacing against the provider's usage windows (maximum usable quota, closed hours, burn rate, priorities, exempt runs).
+- **Warden**: an opt-in periodic pass that flags stale definitions, loops, blocked managers, slow steps, long-open gates and held runs.
+- **Usage log and analytics**: one line of counters per agent turn, and an Analytics tab in the panel.
+- **Panel tabs and languages**: a **+** button opens Analytics, Burn rate limiting, Off hours and Profiles; the panel is translated into French and Simplified Chinese.
+- **Fan-out pools and pipelines**: one run per item of a list, and singleton pipelines that batch jobs through stages.
+- **Recovery**: restart a run from a step; `recover_manager` and automatic recovery of a manager stuck on its provider's quota.
 
 ## Get started
 

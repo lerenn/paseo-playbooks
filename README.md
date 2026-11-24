@@ -1,13 +1,231 @@
 # Paseo Playbooks
 
-> [!WARNING]
-> Until v1.0, any minor release may change the playbook YAML format in breaking ways. Pin the
-> plugin to a release tag (`paseo plugin install https://github.com/lerenn/paseo-playbooks.git --ref v0.7.0`,
-> then `paseo plugin update paseo-playbooks --ref <tag>`) and read the release notes before upgrading.
+[![CI](https://github.com/lerenn/paseo-playbooks/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/lerenn/paseo-playbooks/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/lerenn/paseo-playbooks?style=flat-square)](https://github.com/lerenn/paseo-playbooks/releases)
+[![Paseo >=0.14.0](https://img.shields.io/badge/Paseo-%3E%3D0.14.0-blue?style=flat-square)](https://github.com/getpaseo/paseo)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](package.json)
+[![GitHub stars](https://img.shields.io/github/stars/lerenn/paseo-playbooks?style=flat-square)](https://github.com/lerenn/paseo-playbooks/stargazers)
 
-Paseo plugin for multi-agent workflows: write a playbook in YAML, and a manager agent runs
-each step as a subagent, in parallel or in loops, through to the human approval gates. See [OVERVIEW.md](OVERVIEW.md) for what it does and
-[docs/adrs/2026-11-02-design.md](docs/adrs/2026-11-02-design.md) for the design.
+**Contents:** [Why Paseo Playbooks](#why-paseo-playbooks) · [The workflow](#the-workflow) · [What makes it different](#what-makes-it-different) · [Meet the Sidekick](#meet-the-sidekick) · [Get started](#get-started) · [Documentation](#documentation) · [Development](#development) · [Status](#status) · [Reference](#reference)
+
+> **Stop supervising every agent. Start shipping a repeatable engineering system.**
+
+Paseo Playbooks turns "what happens next?" into versioned YAML. Investigate, implement,
+review, test, ask for approval, wait, retry, and recover, with specialist agents for
+judgment, scripts for facts, and explicit human gates for consequential decisions.
+
+The Playbooks panel makes the entire process visible across every workspace:
+
+![The Playbooks panel showing a running Docs check playbook as a graph](assets/panel.png)
+
+## Why Paseo Playbooks
+
+One coding agent can complete a task. An engineering system also needs to know:
+
+- who investigates, implements, reviews, tests, and approves;
+- which steps can run in parallel;
+- what data passes between steps;
+- how review loops are bounded;
+- which decisions require a person;
+- how to recover without replaying completed work;
+- how to continue when a provider runs out of quota.
+
+Paseo Playbooks keeps those answers in the repository. The graph is reviewed, versioned,
+validated, and improved like other engineering code, not hidden in a chat or one long prompt.
+
+## The workflow
+
+This playbook investigates a request, implements it, reviews and tests in parallel, and
+asks a human before merging. A reviewer can return work to the implementer at most twice.
+
+```yaml
+title: Pull request
+
+inputs:
+  request:
+    type: string
+    required: true
+
+steps:
+  - id: investigate
+    role:
+      name: investigator
+      prompt: Investigate {{ inputs.request }} and write an implementation plan.
+    inputs: [request]
+    outputs:
+      plan: { type: string }
+
+  - id: implement
+    role:
+      name: implementer
+      prompt: Implement {{ inputs.request }} using {{ inputs.plan }}.
+    needs: [investigate]
+    inputs: [request, plan]
+    outputs:
+      branch: { type: string }
+
+  - id: review
+    role: { name: reviewer, prompt: Review the implementation. }
+    needs: [implement]
+    outcomes: [ok, changes_requested]
+    on:
+      changes_requested: { goto: implement, max_loops: 2 }
+
+  - id: test
+    role: { name: tester, prompt: Run the relevant tests. }
+    needs: [implement]
+
+  - id: approve
+    needs: [review, test]
+    gate: { question: Merge this change? }
+    on:
+      rejected: { goto: implement }
+```
+
+- **Playbook:** the versioned workflow graph.
+- **Role:** reusable instructions and agent settings.
+- **Step:** role agent, script, gate, or nested playbook.
+- **Outcome:** a declared result that routes to a permitted step.
+- **Run:** durable state, history, outputs, workspaces, and recovery data.
+
+## What makes it different
+
+- **A graph is an enforced contract.** The plugin validates roles, inputs, outputs, scripts
+  and transitions before a run, and refuses a transition the playbook does not allow.
+  Loops are bounded by `max_loops`, and a gate is an explicit decision point. A run's own
+  agents cannot approve their own human gate: a person decides it in the panel or in chat,
+  or an agent outside the run relays the person's answer with `resume_gate` (turn that off
+  with `gates: { on_behalf: deny }`). A gate that names `by: manager` or `by: role` as its
+  decider can be decided without a person. See [who decides a gate](https://playbooks.paseo.lerenn.dev/reference.html#deciders).
+- **Agents and scripts work together.** Specialists handle ambiguous judgment while scripts
+  poll CI, deployments, queues, and external conditions.
+- **Human control is visible.** Approval, rejection, deferral, and resume are first-class
+  run operations in the panel and chat.
+- **Interruption is recoverable.** Restart from a failed step, or recover a stuck manager
+  (`recover_manager`, and automatically when its provider's quota runs out), without
+  replaying unrelated work. Temporary workspaces can be retained and cleaned up deliberately.
+  See [Known limits](#known-limits).
+- **Isolation includes provenance.** A run with `isolation: worktree` reads its playbook and
+  roles from its own private Git worktree, off a freshly fetched `origin/<base>`, and keeps
+  that definition frozen for the run (`restart_run` reuses it). If the fetch fails, the
+  workspace checkout's copy is used and the start says so. Definition refreshes, fallbacks,
+  cleanup, and teardown are recorded.
+- **Provider limits do not erase progress.** Agent tiers can fall back across providers;
+  usage-aware selection and quota pacing preserve run state and history.
+- **The system can improve safely.** The Sidekick proposes workflow changes through pull
+  requests, and its prompt forbids it to edit files or run commands itself.
+- **Every workspace has one operational view.** The panel shows live output, gates, loops,
+  failures, history, analytics, quotas, and off-hours policy.
+
+More of what the plugin does:
+
+- **Burn rate limiting:** quota pacing against the provider's usage windows, with a maximum
+  usable quota, closed hours, a burn rate per playbook, run priorities and exempt runs.
+  See [Rate limits](#rate-limits) and the [reference](https://playbooks.paseo.lerenn.dev/reference.html#rate-limits).
+- **Warden:** an opt-in periodic pass, with no LLM, that flags stale definitions, loops,
+  blocked managers, slow steps, long-open gates, stalled runs and held runs.
+  See the [reference](https://playbooks.paseo.lerenn.dev/reference.html#warden) and [Known limits](#known-limits).
+- **Usage log and analytics:** an append-only log with one line of counters per agent turn (never a prompt or output), used to
+  simulate moving roles to cheaper models, and an Analytics tab in the panel. See [Usage log](#usage-log) and the [reference](https://playbooks.paseo.lerenn.dev/reference.html#usage-log).
+- **Panel tabs and languages:** the **+** button opens Analytics, Burn rate limiting, Off hours
+  and Profiles as tabs, and the panel is translated into French and Simplified Chinese.
+  See [Panel languages](#panel-languages) and [Profiles](#profiles).
+- **Fan-out pools, pipelines and trains:** one run per item of a list, kept open by a work pool;
+  singleton pipelines that batch jobs through stages. See the
+  [reference](https://playbooks.paseo.lerenn.dev/reference.html#fanout) and [singletons](https://playbooks.paseo.lerenn.dev/reference.html#singletons).
+
+See [the PR workflow](examples/.paseo/plugins/playbooks/pr.yaml),
+[the release workflow](examples/.paseo/plugins/playbooks/release.yaml),
+and [all example playbooks](examples/.paseo/plugins/playbooks/).
+
+## Meet the Sidekick
+
+Add a `sidekick/` folder beside your playbooks to give a project a long-lived coordinator.
+The Sidekick watches runs, summarizes what needs attention, and sends subagents to improve
+workflows in pull requests.
+
+Its prompt forbids it to edit files or run commands itself. It delegates changes, starts
+playbooks, keeps a short decision ledger, and can relay a person's own answer to a routine
+gate while leaving production and security decisions with people.
+See the [Sidekick reference](https://playbooks.paseo.lerenn.dev/reference.html#sidekick) and [The Sidekick](#the-sidekick) below.
+
+## Get started
+
+### Requirements
+
+- [Paseo](https://github.com/getpaseo/paseo) `0.14` or later.
+- A repository whose playbooks and roles you trust. Agent steps may run with powerful
+  permission modes, including `bypassPermissions`.
+
+Until v1.0, minor releases may change the playbook format in breaking ways. Pin the plugin
+to a tested release tag (the [latest release](https://github.com/lerenn/paseo-playbooks/releases/latest)
+is the usual choice) and read the release notes before upgrading:
+
+```bash
+paseo plugin install https://github.com/lerenn/paseo-playbooks.git --ref <latest tag>
+paseo plugin update paseo-playbooks --ref <newer tag>   # to upgrade later
+```
+
+### Add your first playbook
+
+```bash
+mkdir -p .paseo/plugins
+cp -R examples/.paseo/plugins/playbooks .paseo/plugins/
+```
+
+1. Edit a playbook and its roles under `.paseo/plugins/playbooks/`.
+2. Validate it from a Paseo agent with `validate_playbooks`.
+3. Open the Playbooks panel and press **Start**.
+4. Watch the graph, answer gates, and inspect run history.
+
+The [playbook-writing skill](skills/paseo-playbooks/SKILL.md)
+teaches agents the format and validation rules.
+
+For a full walkthrough, see [Getting started](https://playbooks.paseo.lerenn.dev/getting-started.html).
+
+## Documentation
+
+- [Overview](OVERVIEW.md) (also in [French](OVERVIEW.fr.md) and [Simplified Chinese](OVERVIEW.zh-CN.md))
+- [Getting started](https://playbooks.paseo.lerenn.dev/getting-started.html)
+- [Format reference](https://playbooks.paseo.lerenn.dev/reference.html#playbook)
+- [How it works](https://playbooks.paseo.lerenn.dev/how-it-works.html)
+- [Sidekick reference](https://playbooks.paseo.lerenn.dev/reference.html#sidekick)
+- [Design and decisions](docs/adrs/2026-11-02-design.md) (one ADR per significant decision in [docs/adrs](docs/adrs))
+- [Development and release process](#develop) and [Release](#release)
+
+## Development
+
+```bash
+npm install
+npm run typecheck
+npm test
+```
+
+Install the local checkout, then reload the plugin:
+
+```bash
+paseo plugin install "$PWD"
+paseo plugin reload paseo-playbooks
+paseo plugin logs paseo-playbooks
+```
+
+See [AGENTS.md](AGENTS.md) for contributor guidance and the ADR policy.
+
+## Status
+
+Paseo Playbooks is an actively evolving pre-1.0 plugin. It is best suited to teams that
+want AI-assisted engineering workflows to be explicit, inspectable, and repeatable.
+
+Try one small workflow. Then tell us what the factory should learn next.
+
+This README opening is based on the README proposal in [#316](https://github.com/lerenn/paseo-playbooks/issues/316) by @noor-latif (thank you).
+
+## Reference
+
+Everything below is the reference material that used to open this file, unchanged and in
+its original order.
+
+### Diagrams
 
 The example playbook from the overview (fix, then review and test in parallel, then a human
 gate), as a graph. The source is [assets/example-flow.mmd](assets/example-flow.mmd):
