@@ -38,15 +38,30 @@ export class UsageLedger {
     return this.loaded;
   }
 
-  /** Records a turn's cumulative reading; returns what this turn added. */
-  async record(agentId: string, info: AgentUsageInfo, reading: UsageReading, at = new Date().toISOString()): Promise<UsageReading> {
+  /**
+   * Records a turn's cumulative reading; returns what this turn added, with the cost it added (`costUsd`,
+   * null when the daemon reports none or when the baseline is unknown: a ledger entry from before costs were kept).
+   * A cost that went down (the session's counter restarted) starts over from its new value, as the tokens do.
+   */
+  async record(
+    agentId: string,
+    info: AgentUsageInfo,
+    reading: UsageReading & { totalCostUsd?: number | null },
+    at = new Date().toISOString(),
+  ): Promise<UsageReading & { costUsd: number | null }> {
     await this.load();
     const before = this.agents.get(agentId);
     const delta = usageDelta(before?.last, reading);
     const usage: Usage = addUsage(before?.usage ?? UsageSchema.parse({}), delta);
-    this.agents.set(agentId, { ...info, agentId, at, last: reading, usage });
+    const cost = typeof reading.totalCostUsd === "number" ? reading.totalCostUsd : undefined;
+    const previous = before?.last.totalCostUsd;
+    const costUsd = cost === undefined ? null : !before ? cost : previous === undefined ? null : cost >= previous ? cost - previous : cost;
+    const { totalCostUsd: _cost, ...tokens } = reading;
+    // Keep the last known cost when a turn reports none, so a later reading still has its baseline.
+    const kept = cost ?? previous;
+    this.agents.set(agentId, { ...info, agentId, at, last: kept === undefined ? tokens : { ...tokens, totalCostUsd: kept }, usage });
     this.save();
-    return delta;
+    return { ...delta, costUsd };
   }
 
   /** The agent's turns counted so far (0 for an unknown agent). */

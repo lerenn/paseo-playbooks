@@ -41,4 +41,26 @@ describe("UsageLedger", () => {
     expect(deltas).toEqual([10, 15, 15]);
     expect((await ledger.list())[0]!.usage.inputTokens).toBe(40);
   });
+
+  it("computes a cost delta, also for the first turn after a restart, and starts over when the cost counter restarts", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "ledger-"));
+    const file = path.join(dir, "agent-usage.json");
+    const ledger = new UsageLedger(file);
+    expect((await ledger.record("a", info, { ...reading(1, 0), totalCostUsd: 0.5 })).costUsd).toBe(0.5);
+    expect((await ledger.record("a", info, { ...reading(2, 0), totalCostUsd: 0.75 })).costUsd).toBeCloseTo(0.25);
+    await ledger.flush();
+    const restarted = new UsageLedger(file);
+    expect((await restarted.record("a", info, { ...reading(3, 0), totalCostUsd: 1 })).costUsd).toBeCloseTo(0.25);
+    expect((await restarted.record("a", info, { ...reading(4, 0), totalCostUsd: 0.1 })).costUsd).toBeCloseTo(0.1);
+    expect((await restarted.record("a", info, reading(5, 0))).costUsd).toBeNull();
+    expect((await restarted.record("a", info, { ...reading(6, 0), totalCostUsd: 0.3 })).costUsd).toBeCloseTo(0.2);
+  });
+
+  it("does not guess the cost delta of an entry saved without a cost baseline", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "ledger-"));
+    const ledger = new UsageLedger(path.join(dir, "agent-usage.json"));
+    await ledger.record("a", info, reading(1, 0));
+    expect((await ledger.record("a", info, { ...reading(2, 0), totalCostUsd: 3 })).costUsd).toBeNull();
+    expect((await ledger.record("a", info, { ...reading(3, 0), totalCostUsd: 4 })).costUsd).toBe(1);
+  });
 });

@@ -8,7 +8,7 @@ import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 
 /** The daemon API handed to plugin handlers (typed via the SDK, so the build needs no @getpaseo/client). */
 type PaseoApi = PluginHandlerContext["paseo"];
-import type { AdmissionStatus, RunPriorityView, ScriptOutput } from "../shared/types";
+import type { AdmissionStatus, RunPriorityView, ScriptOutput, UsageReading } from "../shared/types";
 import type { DismissedFinding, GateWaitCondition } from "../shared/types";
 import { dismissRefusal, findingSignature, normalizeFindingFile, normalizeFindingText, normalizePr } from "./findings";
 import type { AgentSettings, AgentTarget, Attempt, FanoutChild as FanoutChildState, PoolPass as PoolPassState, Gate, Job, Playbook, Run, RunDefinition, RunWorktree, Step, VarValue, WardenFinding } from "../shared/types";
@@ -497,8 +497,6 @@ export class Runtime {
 
   private readonly usageLedger: UsageLedger;
   private readonly usageLog: UsageLogWriter;
-  /** The last cumulative cost reading per agent, to turn it into a per-turn cost (in memory: after a restart a cost is not guessed). */
-  private readonly lastCost = new Map<string, number>();
   private readonly sidekickRegistry: SidekickRegistry;
   /** Sidekick agents that asked for a compaction (`sidekick_handoff` with `restart`) once their turn ends; those being compacted now (a `/compact` is running); finish notices held for a busy Sidekick. */
   private readonly sidekickCompactNext = new Set<string>();
@@ -6065,16 +6063,9 @@ export class Runtime {
       const delta = await this.usageLedger.record(
         agentId,
         { title: agent.title ?? "", kind, role: decider ? decider.gate.decider.role ?? null : stepRole, model: [agent.provider, agent.model].filter(Boolean).join("/") || null, runId: run?.id ?? null },
-        reading,
+        reading as UsageReading & { totalCostUsd?: number | null },
       );
       const turnSeq = await this.usageLedger.turnsOf(agentId);
-      const cost = (reading as { totalCostUsd?: number | null }).totalCostUsd;
-      let costUsd: number | null = null;
-      if (typeof cost === "number") {
-        const before = this.lastCost.get(agentId);
-        costUsd = before === undefined ? (turnSeq === 1 ? cost : null) : cost >= before ? cost - before : cost;
-        this.lastCost.set(agentId, cost);
-      }
       const row: UsageRow = {
         v: 1,
         ts: new Date().toISOString(),
@@ -6091,7 +6082,7 @@ export class Runtime {
         kind,
         delta: { input: delta.inputTokens ?? 0, cacheRead: delta.cachedInputTokens ?? 0, cacheWrite: null, output: delta.outputTokens ?? 0 },
         contextUsed: delta.contextWindowUsedTokens ?? 0,
-        costUsd,
+        costUsd: delta.costUsd,
         retry: !decider && found ? found.attempt.retry ?? null : null,
       };
       void this.usageLog.append(row);

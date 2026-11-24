@@ -60,6 +60,8 @@ export const AgentUsageSchema = z.object({
     cachedInputTokens: z.number().optional(),
     outputTokens: z.number().optional(),
     contextWindowUsedTokens: z.number().optional(),
+    /** The cumulative session cost, when the daemon reports one: the baseline of the next cost delta, kept across restarts. */
+    totalCostUsd: z.number().optional(),
   }),
 });
 export type AgentUsage = z.infer<typeof AgentUsageSchema>;

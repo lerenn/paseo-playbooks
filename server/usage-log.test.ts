@@ -143,6 +143,16 @@ describe("the usage log of a runtime", () => {
     expect(JSON.stringify(written)).not.toMatch(/SECRET BRIEF|TITLE/);
   });
 
+  it("logs a cost delta per turn, from the persisted last total, with no totalCostUsd key on the row", async () => {
+    const { runtime, readings, rows } = await setup();
+    readings.free = { ...read(10, 0, 5, 500), totalCostUsd: 1 };
+    await turnEnded(runtime, "free");
+    readings.free = { ...read(12, 0, 6, 500), totalCostUsd: 1.5 };
+    await turnEnded(runtime, "free");
+    const written = ((await rows()) as unknown as Array<Record<string, unknown>>).filter((row) => row.type === undefined);
+    expect(written.map((row) => row.costUsd)).toEqual([1, 0.5]);
+  });
+
   it("logs the per-turn delta, which starts over when the counters restart, and counts turns", async () => {
     const { runtime, readings, rows } = await setup();
     readings.free = read(10, 100, 5, 500);
