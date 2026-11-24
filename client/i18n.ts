@@ -32,6 +32,8 @@ export const messages = defineTranslations({
       },
       panel: {
         refresh: "Refresh playbooks",
+        tagline: "Turn “what happens next?” into versioned YAML: agents for judgment, scripts for facts, human gates for decisions.",
+        dismissHeader: "Hide the Playbooks header",
         workspaceKept: "Workspace kept until {{when}}: the run failed and can be restarted",
         startWithAgent: "Start {{title}} with this workspace's agent",
         moreStartWays: "More ways to start {{title}}",
@@ -214,6 +216,8 @@ export const messages = defineTranslations({
       },
       panel: {
         refresh: "Actualiser les playbooks",
+        tagline: "Transformez « et ensuite ? » en YAML versionné : des agents pour le jugement, des scripts pour les faits, des validations humaines pour les décisions.",
+        dismissHeader: "Masquer l'en-tête Playbooks",
         workspaceKept: "Espace de travail conservé jusqu'à {{when}} : l'exécution a échoué et peut être relancée",
         startWithAgent: "Démarrer {{title}} avec l'agent de cet espace de travail",
         moreStartWays: "Autres façons de démarrer {{title}}",
@@ -395,6 +399,8 @@ export const messages = defineTranslations({
       },
       panel: {
         refresh: "刷新 playbook",
+        tagline: "把“接下来做什么”写成版本化的 YAML：智能体负责判断，脚本负责事实，人工审批负责决策。",
+        dismissHeader: "隐藏 Playbooks 标题栏",
         workspaceKept: "工作区保留至 {{when}}：该运行已失败，可重新启动",
         startWithAgent: "使用此工作区的智能体开始 {{title}}",
         moreStartWays: "开始 {{title}} 的更多方式",
