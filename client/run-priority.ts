@@ -80,7 +80,7 @@ export function applyDraft(runId: string, view: RunPriorityView, draft: Priority
   return applyRequest(runId, view, draft.text);
 }
 
-/** What the "Run now, ignore quota limits" control sends (the runs.set_exempt RPC). */
+/** What the "Run now, ignore burn rate limits" control sends (the runs.set_exempt RPC). */
 export interface ExemptRequest {
   runId: string;
   exempt: boolean;

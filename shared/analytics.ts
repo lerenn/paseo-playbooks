@@ -107,11 +107,11 @@ export const QuotaRateSchema = z.object({
   /** The usage window id (a quota term: weekly, session...). */
   window: z.string(),
   /** Points (percent of the window) per hour of active agent time: the sum of the finished agent attempts' time, never gate, script or waiting time between steps. Null while no agent time was measured. */
-  pointsPerHour: z.number().nullable(),
+  burnRate: z.number().nullable(),
   /** Points one finished agent attempt used on average. */
   pointsPerStep: z.number(),
   /** Estimated points of one finished run: points per attempt x agent attempts per finished run in the range. Null without a finished run. */
-  pointsPerRun: z.number().nullable(),
+  quotaPerRun: z.number().nullable(),
   /** Finished agent attempts the averages rest on (decayed to 200). */
   steps: z.number(),
   /** Agent time behind the rate, ms; null when none was measured. */
@@ -488,9 +488,9 @@ export function analyze(runs: Run[], options: AnalyticsOptions = {}): Analytics 
           playbook: rate.playbook,
           provider: rate.provider,
           window: rate.window,
-          pointsPerHour: rate.pointsPerHour,
+          burnRate: rate.pointsPerHour,
           pointsPerStep: rate.pointsPerStep,
-          pointsPerRun: done && done.runs > 0 ? (rate.pointsPerStep * done.attempts) / done.runs : null,
+          quotaPerRun: done && done.runs > 0 ? (rate.pointsPerStep * done.attempts) / done.runs : null,
           steps: rate.steps,
           agentMs: rate.agentMs,
           lowConfidence: rate.steps < LOW_CONFIDENCE_STEPS || (rate.agentMs ?? 0) < LOW_CONFIDENCE_MS,

@@ -237,10 +237,10 @@ describe("quota rates", () => {
     const finished = { ...run("r1", [usage(1, 1), usage(1, 1)]), status: "completed" };
     const result = analyze([finished], { rates });
     const weekly = result.quotaRates.find((rate) => rate.playbook === "pb" && rate.window === "weekly")!;
-    expect(weekly).toMatchObject({ pointsPerHour: 8, pointsPerStep: 2, pointsPerRun: 4, steps: 8, agentMs: 30 * 60_000, lowConfidence: false });
+    expect(weekly).toMatchObject({ burnRate: 8, pointsPerStep: 2, quotaPerRun: 4, steps: 8, agentMs: 30 * 60_000, lowConfidence: false });
     expect(result.quotaRates.find((rate) => rate.window === "session")!.lowConfidence).toBe(true);
     const old = result.quotaRates.find((rate) => rate.playbook === "old")!;
-    expect(old).toMatchObject({ pointsPerHour: null, pointsPerRun: null, lowConfidence: true });
+    expect(old).toMatchObject({ burnRate: null, quotaPerRun: null, lowConfidence: true });
     expect(analyze([finished], { rates, playbook: "old" }).quotaRates.map((rate) => rate.playbook)).toEqual(["old"]);
     expect(analyze([finished]).quotaRates).toEqual([]);
   });

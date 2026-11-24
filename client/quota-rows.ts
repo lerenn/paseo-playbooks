@@ -1,7 +1,7 @@
-import type { QuotaLimitation, QuotaRunRef, QuotaProject, QuotaProjectLimits, QuotaProvider, QuotaWindow } from "../shared/quota-limitation";
+import type { QuotaBurnRate, QuotaLimitation, QuotaRunRef, QuotaProject, QuotaProjectLimits, QuotaProvider, QuotaWindow } from "../shared/quota-limitation";
 
 /**
- * The Quota limitation tab's rows: for each project (and each set of limits among its playbooks) what each provider's usage
+ * The Burn rate limiting tab's rows: for each project (and each set of limits among its playbooks) what each provider's usage
  * windows look like to it. Pure: the server sends the global figures, the pace per distinct `usable_percent`, and the runs with
  * their project; this picks the pace that belongs to the project and lays the bar out.
  */
@@ -80,8 +80,10 @@ export interface ProviderRow {
 /** A run under "Reservations": what it still has to use (empty for a held run that reserves nothing yet) and a short tag when rate limiting holds it. */
 export interface ReservationRow extends QuotaRunRef {
   remaining: Record<string, number>;
-  /** Not subject to quota limiting: reserves quota, never held or paused. */
+  /** Not subject to burn rate limiting: reserves quota, never held or paused. */
   exempt?: boolean;
+  /** Per window id: the remaining need is agent time x burn rate (ms left, percent points per hour). */
+  basis?: Record<string, { ms: number; burnRate: number }>;
   hold: "held" | "paused" | null;
 }
 
@@ -96,6 +98,8 @@ export interface ProjectRow {
   projectId: string;
   label: string;
   sets: SetRow[];
+  /** The burn rate learned per playbook of the project, with the reset controls' data. */
+  burnRates: QuotaBurnRate[];
   /** Worst state over every set and provider. */
   tone: Tone;
   pacing: boolean;
@@ -246,6 +250,7 @@ export function projectRows(data: QuotaLimitation): ProjectRow[] {
       projectId: project.projectId,
       label: project.label,
       sets,
+      burnRates: project.burnRates ?? [],
       tone,
       pacing,
       percents: [...new Set(project.limits.filter((limits) => limits.pacing).map((limits) => limits.usablePercent))],

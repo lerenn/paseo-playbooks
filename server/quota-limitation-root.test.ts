@@ -25,7 +25,7 @@ async function checkout(defaults: string): Promise<string> {
   return dir;
 }
 
-describe("Quota limitation tab: which checkout is read", () => {
+describe("Burn rate limiting tab: which checkout is read", () => {
   it("reads the project's main checkout, not the stale run worktree the panel listed", async () => {
     const main = await checkout("quota_limits: { quota: { usable_percent: 90 } }\n");
     const stale = await checkout("");

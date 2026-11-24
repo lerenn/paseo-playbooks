@@ -191,7 +191,7 @@ export function parseClosedHours(value: unknown): ClosedHours | null | undefined
 }
 
 /**
- * One layer of quota limits from a parsed `quota_limits` block (or the legacy `rate_limits` one: `legacy`). Anything missing or malformed
+ * One layer of burn rate limits from a parsed `quota_limits` block (or the legacy `rate_limits` one: `legacy`). Anything missing or malformed
  * is left out (a bad value never blocks loading; the loader validates a defaults file strictly before it gets here).
  * `quota.pacing` is the switch: `quota_limits` also turns it on by itself when `quota.usable_percent` is set and `pacing` is not
  * (so `quota_limits: { quota: { usable_percent: 90 } }` paces at 90%); the legacy block keeps its old meaning (pacing only with `pacing: true`).

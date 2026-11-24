@@ -262,6 +262,40 @@ describe("dynamic capacity from quota headroom", () => {
     expect(await internals.rateCheck(store.get("r0")!, "r0/b", true)).toBeNull();
   });
 
+  it("a burn rate reset makes the playbook unpaced at once: reservations emptied, a held run released, the event emitted, the history erased", async () => {
+    const { runtime, store, internals, read } = await setup(pacing(), { current: claude(10) });
+    await read();
+    const emit = vi.spyOn((runtime as unknown as { bus: { emit: (...args: unknown[]) => Promise<unknown> } }).bus, "emit");
+    await runtime.startStep("m", "r0", "a", "go");
+    await expect(runtime.startStep("m", "r1", "a", "go")).rejects.toBeInstanceOf(RateHeldError);
+    const inner = runtime as unknown as { reservedQuota: Map<string, { est: Record<string, number>; spent: Record<string, number> }> };
+    expect(Object.keys(inner.reservedQuota.get("run:r0")!.est).length).toBeGreaterThan(0);
+    const result = await runtime.resetBurnRate("work", null, "test");
+    expect(result.erased).toEqual({ entries: 1, steps: 1, ms: 0 });
+    expect(internals.costs.stepCost("work", "claude", "weekly")).toBeNull();
+    // No history, no need: the admitted run reserves nothing and the held run is no longer paced.
+    expect(inner.reservedQuota.get("run:r0")!.est).toEqual({});
+    expect(store.get("r1")!.rateHold).toBeNull();
+    expect(emit).toHaveBeenCalledWith("quota.burn_rate_reset", { playbook: "work", step: null, erased: { entries: 1, steps: 1, ms: 0 }, by: "test" }, { runId: null, source: "runs" });
+    // Idempotent.
+    expect((await runtime.resetBurnRate("work", null, "test")).erased).toEqual({ entries: 0, steps: 0, ms: 0 });
+    await expect(runtime.resetBurnRate("  ", null, "test")).rejects.toThrow("playbook is required");
+  });
+
+  it("a step reset clears that step's duration only and the run is priced by the unit cost for it", async () => {
+    const seed = { "work|claude\u0000weekly": { points: 6, steps: 1, ms: HOUR, timedPoints: 6 }, "@stepTimes": { "work|a": { ms: 30 * 60_000, n: 1 }, "work|b": { ms: 10 * 60_000, n: 1 } } };
+    const { runtime, internals, read } = await setup(pacing(), { current: claude(1) }, { seed });
+    await read();
+    await runtime.startStep("m", "r0", "a", "go");
+    const inner = runtime as unknown as { reservedQuota: Map<string, { est: Record<string, number>; spent: Record<string, number> }> };
+    const need = () => (inner.reservedQuota.get("run:r0")!.est["claude\u0000weekly"] ?? 0) - (inner.reservedQuota.get("run:r0")!.spent["claude\u0000weekly"] ?? 0);
+    expect(need()).toBeCloseTo(4, 0);
+    expect((await runtime.resetBurnRate("work", "a", "test")).erased).toMatchObject({ steps: 1 });
+    expect(internals.costs.stepDuration("work", "a")).toBeNull();
+    // Step a is priced by the unit cost (6) again, step b by duration (1).
+    expect(need()).toBeCloseTo(7, 0);
+  });
+
   it("holds an admitted run between steps only when its quota is exhausted", async () => {
     const { runtime, store, internals, usage, read } = await setup(pacing(), { current: claude(10) });
     await read();
@@ -474,7 +508,7 @@ describe("dynamic capacity from quota headroom", () => {
   });
 });
 
-describe("quota limits from the playbook defaults, per run", () => {
+describe("burn rate limits from the playbook defaults, per run", () => {
   const claude = (used: number) => ({ providers: [{ providerId: "claude", status: "available", windows: [weekly(used)] }] });
   type Layer = { quotaLimits: unknown };
 
@@ -516,7 +550,7 @@ describe("quota limits from the playbook defaults, per run", () => {
   });
 });
 
-describe("runs exempt from quota limiting (ADR 2026-11-23-quota-exempt-runs)", () => {
+describe("runs exempt from burn rate limiting (ADR 2026-11-23-quota-exempt-runs)", () => {
   const pacing = (extra = "") => `rate_limits: { ${extra} quota: { pacing: true, refresh_interval: 1h, max_age: 2h } }`;
   const claude = (used: number) => ({ providers: [{ providerId: "claude", status: "available", windows: [weekly(used)] }] });
   const exempt = (store: RunStore, id: string) => store.mutate(id, (run) => void (run.quotaExempt = true));

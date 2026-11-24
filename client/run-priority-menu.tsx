@@ -9,7 +9,7 @@ import { applyDraft, childrenChecked, commitDraft, draftFor, exemptRequest, inhe
 import type { Theme } from "./theme";
 import { semanticColor } from "./semantic-colors";
 
-/** The small tag a run exempt from quota limiting wears in a Runs view row, where its priority control would be (ADR 2026-11-23-quota-exempt-runs). */
+/** The small tag a run exempt from burn rate limiting wears in a Runs view row, where its priority control would be (ADR 2026-11-23-quota-exempt-runs). */
 export function RunExemptTag(props: { theme: Theme }) {
   const { theme } = props;
   const { t } = useTranslation(messages);

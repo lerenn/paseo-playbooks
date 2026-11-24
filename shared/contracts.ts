@@ -235,14 +235,21 @@ export const restartRunRpc = defineRpc({
   output: z.object({ status: z.string() }),
 });
 
-/** Sets or clears a run's manual quota priority from the Quota limitation tab (also the set_run_priority agent tool). */
+/** Sets or clears a run's manual quota priority from the Burn rate limiting tab (also the set_run_priority agent tool). */
 export const setRunPriorityRpc = defineRpc({
   name: "runs.set_priority",
   input: z.object({ runId: z.string(), priority: z.number().int().min(-1000).max(1000).nullable(), applyToChildren: z.boolean().optional() }),
   output: z.object({ priorityOverride: z.number().nullable(), inheritChildPriority: z.boolean(), from: z.number().nullable(), changed: z.boolean(), cascaded: z.number().int() }),
 });
 
-/** Exempts a run from quota limiting, or puts it back under the limits, from the Runs view (also the set_run_quota_exempt agent tool). */
+/** Erases the learned burn rate of a playbook, or one step's learned duration, from the Burn rate limiting tab (panel only: no agent tool). Idempotent. */
+export const resetBurnRateRpc = defineRpc({
+  name: "quota.reset_burn_rate",
+  input: z.object({ playbook: z.string().trim().min(1), step: z.string().trim().min(1).optional() }),
+  output: z.object({ erased: z.object({ entries: z.number().int(), steps: z.number(), ms: z.number() }), at: z.string() }),
+});
+
+/** Exempts a run from burn rate limiting, or puts it back under the limits, from the Runs view (also the set_run_quota_exempt agent tool). */
 export const setRunQuotaExemptRpc = defineRpc({
   name: "runs.set_exempt",
   input: z.object({ runId: z.string(), exempt: z.boolean(), applyToChildren: z.boolean().optional() }),
@@ -290,7 +297,7 @@ export const analyticsStateRpc = defineRpc({
   output: AnalyticsSchema,
 });
 
-/** The Quota limitation tab: the resolved limits per project, and per provider its usage windows, allowed-so-far values, reservations, headroom, held runs and exhausted marks. */
+/** The Burn rate limiting tab: the resolved limits per project, and per provider its usage windows, allowed-so-far values, reservations, headroom, held runs and exhausted marks. */
 export const quotaLimitationRpc = defineRpc({
   name: "quota.limitation",
   /** One workspace per project to resolve the limits of (the panel's projects); without any, no project is listed. */

@@ -466,8 +466,8 @@ function QuotaRates(props: { theme: Theme; rates: QuotaRate[] }) {
             {lines.map((rate) => (
               <View key={`${rate.provider}/${rate.window}`} style={{ flexDirection: "row", flexWrap: "wrap", gap: 10, alignItems: "baseline" }}>
                 <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>{`${rate.provider} · ${rate.window}`}</Text>
-                <Text style={{ color: theme.colors.accent, fontSize: 12, fontWeight: "600" }}>{rate.pointsPerHour === null ? t("analytics.quota.noHour") : t("analytics.quota.perHour", { value: points(rate.pointsPerHour) })}</Text>
-                {rate.pointsPerRun === null ? null : <Text style={{ color: theme.colors.foreground, fontSize: 12 }}>{t("analytics.quota.perRun", { value: points(rate.pointsPerRun) })}</Text>}
+                <Text style={{ color: theme.colors.accent, fontSize: 12, fontWeight: "600" }}>{rate.burnRate === null ? t("analytics.quota.noHour") : t("analytics.quota.burnRate", { value: points(rate.burnRate) })}</Text>
+                {rate.quotaPerRun === null ? null : <Text style={{ color: theme.colors.foreground, fontSize: 12 }}>{t("analytics.quota.perRun", { value: points(rate.quotaPerRun) })}</Text>}
                 <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>
                   {[t("analytics.quota.samples", { count: Math.round(rate.steps) }), rate.lowConfidence ? t("analytics.quota.low") : null].filter(Boolean).join(" · ")}
                 </Text>

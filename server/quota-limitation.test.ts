@@ -33,13 +33,32 @@ async function oneRun(): Promise<Run> {
   return newRun({ id: "r1", playbook: entry.playbook!, workspaceId: "ws", workspaceDir: dir, projectId: "p", branch: null, managerAgentId: "m", inputs: {}, now: new Date(NOW).toISOString() });
 }
 
-describe("quota limitation view", () => {
+describe("burn rate limiting view", () => {
   it("tags an exempt run among the reservations and never lists it as held", async () => {
     const run = { ...(await oneRun()), quotaExempt: true };
     const out = buildQuotaLimitation({ projects: projectsOn, nowMs: NOW, views: [view()], runs: [run], reservations: [{ runId: "r1", est: { [windowKey("claude", "weekly")]: 5 }, spent: {}, endedAt: null }] });
     expect(out.providers[0]!.reservations).toEqual([{ runId: "r1", projectId: "p", title: "Work", remaining: { weekly: 5 }, exempt: true }]);
     expect(out.providers[0]!.held).toEqual([]);
     expect(out.runsActive).toBe(1);
+  });
+
+  it("gives a reservation its basis (agent time left at the burn rate) and a project the burn rate rows to reset", async () => {
+    const run = await oneRun();
+    const burn = [{ playbook: "work", title: "Work", resetAt: null, rates: [{ provider: "claude", window: "weekly", burnRate: 6, steps: 3, lowConfidence: true }], steps: [{ id: "a", durationMs: 1_800_000, resetAt: null }] }];
+    const out = buildQuotaLimitation({
+      projects: [{ ...projectsOn[0]!, burnRates: burn }],
+      nowMs: NOW,
+      views: [view()],
+      runs: [run],
+      reservations: [{ runId: "r1", est: { [windowKey("claude", "weekly")]: 3 }, spent: {}, endedAt: null }],
+      basis: () => ({ ms: 1_800_000, burnRate: 6 }),
+    });
+    expect(out.providers[0]!.reservations[0]).toMatchObject({ remaining: { weekly: 3 }, basis: { weekly: { ms: 1_800_000, burnRate: 6 } } });
+    expect(out.projects[0]!.burnRates).toEqual(burn);
+    // Without a basis (the need comes from step costs) the reservation carries none.
+    const plain = buildQuotaLimitation({ projects: projectsOn, nowMs: NOW, views: [view()], runs: [run], reservations: [{ runId: "r1", est: { [windowKey("claude", "weekly")]: 3 }, spent: {}, endedAt: null }] });
+    expect(plain.providers[0]!.reservations[0]).not.toHaveProperty("basis");
+    expect(plain.projects[0]).not.toHaveProperty("burnRates");
   });
 
   it("shows usage, allowed so far, reservations and headroom per window", async () => {
@@ -88,7 +107,7 @@ describe("quota limitation view", () => {
   });
 });
 
-describe("quota limitation per project", () => {
+describe("burn rate limiting per project", () => {
   const off = { ...DEFAULT_RATE_LIMITS, quota: { ...DEFAULT_RATE_LIMITS.quota } };
   const at = (usablePercent: number) => ({ ...config, quota: { ...config.quota, usablePercent } });
 

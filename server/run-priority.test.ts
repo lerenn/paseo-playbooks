@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { setRunPriorityRpc } from "../shared/contracts";
+import { resetBurnRateRpc, setRunPriorityRpc } from "../shared/contracts";
 import { RunSchema, summarizeRun, type Run } from "../shared/types";
 import { newRun } from "./engine";
 import { loadPlaybooks } from "./loader";
@@ -75,7 +75,7 @@ describe("run quota priority override", () => {
     const { store, runtime, kick } = await setup();
     const events: unknown[] = [];
     (runtime as unknown as { bus: { onEmit(fn: (event: { type: string; payload: unknown }) => void): void } }).bus.onEmit((event) => void (event.type === "run.priority_changed" && events.push(event.payload)));
-    const result = await runtime.setRunPriority("c2", 7, undefined, "the Quota limitation tab");
+    const result = await runtime.setRunPriority("c2", 7, undefined, "the Burn rate limiting tab");
     expect(result).toMatchObject({ from: null, to: 7, changed: true, cascaded: 0 });
     expect(kick).toHaveBeenCalled();
     expect(store.get("c2")!.history.at(-1)).toMatchObject({ type: "priority_changed" });
@@ -195,3 +195,16 @@ describe("quotaExempt on a stored run", () => {
     expect(views.get("c1")).toMatchObject({ exempt: true });
   });
 });
+
+describe("quota.reset_burn_rate input", () => {
+  const parse = (input: unknown) => resetBurnRateRpc.input.safeParse(input).success;
+  it("needs a playbook, takes an optional step, refuses empty names", () => {
+    expect(parse({ playbook: "work" })).toBe(true);
+    expect(parse({ playbook: "work", step: "build" })).toBe(true);
+    expect(parse({})).toBe(false);
+    expect(parse({ playbook: "  " })).toBe(false);
+    expect(parse({ playbook: "work", step: "" })).toBe(false);
+    expect(parse({ playbook: 3 })).toBe(false);
+  });
+});
+

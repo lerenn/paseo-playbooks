@@ -1,6 +1,6 @@
 import { activeExhausted } from "./engine";
 import { isActive, type Run } from "../shared/types";
-import type { QuotaLimitation, QuotaProject, QuotaProvider, QuotaWindow } from "../shared/quota-limitation";
+import type { QuotaBurnRate, QuotaLimitation, QuotaProject, QuotaProvider, QuotaWindow } from "../shared/quota-limitation";
 import type { RateLimitsConfig } from "./config";
 import { windowKey } from "./rate-budget";
 import { admittedRunIds, runningStepCount, usedPct, windowRooms, type PacerView } from "./rate-limit";
@@ -27,6 +27,8 @@ export interface ProjectLimitsInput {
   projectId: string;
   label: string;
   unitCost?: Record<string, Record<string, number>>;
+  /** What is learned per playbook of the project (the reset controls). */
+  burnRates?: QuotaBurnRate[];
   sets: Array<{ repos: string[]; config: RateLimitsConfig }>;
 }
 
@@ -34,14 +36,15 @@ const round = (value: number) => Math.round(value * 10) / 10;
 const iso = (ms: number | null) => (ms === null ? null : new Date(ms).toISOString());
 
 /**
- * What the Quota limitation tab shows: the limits each project's runs get, and for each provider the pacing tracks: its usage
+ * What the Burn rate limiting tab shows: the limits each project's runs get, and for each provider the pacing tracks: its usage
  * windows and the numbers the pacing decides from (usage, allowed so far, reservations, headroom), the runs held or paused for pace
  * and the exhausted marks. The usage and reservations are global per provider; what is allowed so far, headroom and free share are
  * given for each distinct `usable_percent` among the projects with pacing on. Read-only: it recomputes the figures from the same
  * pieces the admission uses.
  */
-export function buildQuotaLimitation(input: { projects: ProjectLimitsInput[]; nowMs: number; views: PacerView[]; runs: Run[]; reservations: ReservationView[] }): QuotaLimitation {
+export function buildQuotaLimitation(input: { projects: ProjectLimitsInput[]; nowMs: number; views: PacerView[]; runs: Run[]; reservations: ReservationView[]; basis?: (run: Run, provider: string, windowId: string) => { ms: number; burnRate: number } | null }): QuotaLimitation {
   const { projects, nowMs, views, runs, reservations } = input;
+  const basisOf = input.basis ?? (() => null);
   /** The distinct (usable percent, closed hours) pairs of the projects that pace, with their labels. */
   const pacing = new Map<string, { percent: number; closed: ClosedHours | null | undefined; labels: string[] }>();
   for (const project of projects) {
@@ -95,12 +98,17 @@ export function buildQuotaLimitation(input: { projects: ProjectLimitsInput[]; no
         const run = runs.find((candidate) => candidate.id === reservation.runId);
         if (!run) return [];
         const left: Record<string, number> = {};
+        const basis: Record<string, { ms: number; burnRate: number }> = {};
         for (const key of Object.keys(reservation.est)) {
           const [provider, windowId] = key.split("\u0000");
           const value = remaining(reservation, key);
-          if (provider === view.provider && windowId && value > 0) left[windowId] = round(value);
+          if (provider === view.provider && windowId && value > 0) {
+            left[windowId] = round(value);
+            const known = basisOf(run, provider, windowId);
+            if (known) basis[windowId] = known;
+          }
         }
-        return [{ runId: run.id, projectId: run.projectId, title: titleOf(run), remaining: left, ...(run.quotaExempt ? { exempt: true } : {}) }];
+        return [{ runId: run.id, projectId: run.projectId, title: titleOf(run), remaining: left, ...(Object.keys(basis).length > 0 ? { basis } : {}), ...(run.quotaExempt ? { exempt: true } : {}) }];
       }),
       held: live.flatMap((run) => (run.rateHold && run.rateHold.provider === view.provider ? [{ runId: run.id, projectId: run.projectId, title: titleOf(run), kind: run.rateHold.kind, reason: run.rateHold.reason, window: run.rateHold.window, retryAt: run.rateHold.retryAt, since: run.rateHold.since, estimatedCost: run.rateHold.estimatedCost }] : [])),
       exhausted: live.flatMap((run) =>
@@ -112,10 +120,11 @@ export function buildQuotaLimitation(input: { projects: ProjectLimitsInput[]; no
     };
   });
 
-  const everyone: QuotaProject[] = projects.map(({ projectId, label, sets, unitCost }) => ({
+  const everyone: QuotaProject[] = projects.map(({ projectId, label, sets, unitCost, burnRates }) => ({
     projectId,
     label,
     ...(unitCost ? { unitCost } : {}),
+    ...(burnRates ? { burnRates } : {}),
     limits: sets.map(({ repos, config }) => ({ repos, pacing: config.quota.pacing, usablePercent: config.quota.usablePercent, ...(closedView(config.quota.closedHours) ? { closedHours: closedView(config.quota.closedHours), closedKey: closedKey(config.quota.closedHours), closedNow: closedNowView(config.quota.closedHours, nowMs), closedWeek: closedWeek(config.quota.closedHours!, nowMs) } : {}), stepsLimit: config.steps, runsLimit: config.playbooks })),
   }));
   return {

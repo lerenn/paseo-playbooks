@@ -1,7 +1,7 @@
 import type { ClosedSlotView } from "../shared/closed-hours";
 import type { QuotaLimitation, QuotaProjectLimits } from "../shared/quota-limitation";
 
-/** One distinct `closed_hours` schedule of a project (its playbook sets may differ, like their quota limits). */
+/** One distinct `closed_hours` schedule of a project (its playbook sets may differ, like their burn rate limits). */
 export interface OffHoursSchedule {
   key: string;
   /** The repositories (`default`, profile ids) whose playbooks have it. */

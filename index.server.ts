@@ -39,6 +39,7 @@ import {
   saveSidekickAttachmentRpc,
   restartRunRpc,
   setRunPriorityRpc,
+  resetBurnRateRpc,
   setRunQuotaExemptRpc,
   recoverManagerRpc,
   retryStepRpc,
@@ -250,9 +251,10 @@ export default function contribute(server: PluginServerContext) {
     status: (await runtime.restartRun(runId, stepId, comment?.trim() || null, hostLabel)).run.status,
   }));
   handle(setRunPriorityRpc, async ({ runId, priority, applyToChildren }) => {
-    const result = await runtime.setRunPriority(runId, priority, applyToChildren, "the Quota limitation tab");
+    const result = await runtime.setRunPriority(runId, priority, applyToChildren, "the Burn rate limiting tab");
     return { priorityOverride: result.run.priorityOverride, inheritChildPriority: result.run.inheritChildPriority, from: result.from, changed: result.changed, cascaded: result.cascaded };
   });
+  handle(resetBurnRateRpc, ({ playbook, step }) => runtime.resetBurnRate(playbook, step ?? null, "the Burn rate limiting tab"));
   handle(setRunQuotaExemptRpc, async ({ runId, exempt, applyToChildren }) => {
     const result = await runtime.setRunQuotaExempt(runId, exempt, applyToChildren, "the Runs view");
     return { quotaExempt: result.run.quotaExempt, inheritChildExempt: result.run.inheritChildExempt, from: result.from, changed: result.changed, cascaded: result.cascaded };

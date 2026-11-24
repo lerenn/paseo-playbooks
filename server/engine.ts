@@ -86,7 +86,7 @@ export interface NewRunInput {
   /** A parent's manual priority a new child inherits. */
   priorityOverride?: number | null;
   inheritChildPriority?: boolean;
-  /** Not subject to quota limiting (`start_playbook` `quota.exempt`, or inherited from the parent run). */
+  /** Not subject to burn rate limiting (`start_playbook` `quota.exempt`, or inherited from the parent run). */
   quotaExempt?: boolean;
   inheritChildExempt?: boolean;
   inputs: Record<string, unknown>;
@@ -271,7 +271,7 @@ function createRun(input: NewRunInput, inputs: Record<string, VarValue>, kind: "
     const resolved = resolveTimeout(step, stepInputs(run, step));
     if (!resolved.ok) throw new EngineError(resolved.error);
   }
-  log(run, input.now, "run_started", null, `playbook ${input.playbook.id}${run.quotaExempt ? "; quota: exempt (not subject to quota limiting)" : ""}`);
+  log(run, input.now, "run_started", null, `playbook ${input.playbook.id}${run.quotaExempt ? "; quota: exempt (not subject to burn rate limiting)" : ""}`);
   refreshReady(run, input.now);
   return run;
 }
@@ -1808,7 +1808,7 @@ export function setRunPriority(run: Run, priority: number | null, inherit: boole
 }
 
 /**
- * Sets or clears the run's exemption from quota limiting (and the sticky `inheritChildExempt` flag when `inherit` is given). Throws on a
+ * Sets or clears the run's exemption from burn rate limiting (and the sticky `inheritChildExempt` flag when `inherit` is given). Throws on a
  * finished run. The history records a change of the exemption or of the flag; setting what is already set changes nothing.
  */
 export function setRunExempt(run: Run, exempt: boolean, inherit: boolean | undefined, now: string, note: string): { from: boolean; changed: boolean } {
@@ -1819,7 +1819,7 @@ export function setRunExempt(run: Run, exempt: boolean, inherit: boolean | undef
   if (inherit !== undefined) run.inheritChildExempt = inherit;
   const moved = from !== exempt;
   const flagMoved = inherit !== undefined && inherit !== flagBefore;
-  if (moved || flagMoved) log(run, now, "quota_exempt_changed", null, `${moved ? `quota: ${from ? "exempt" : "limited"} → ${exempt ? "exempt (not subject to quota limiting)" : "limited (back under the quota limits from its next step)"}` : "children follow the exemption"}${flagMoved ? (inherit ? "; new children follow it" : "; children no longer follow it") : ""}${note ? ` (${note})` : ""}`);
+  if (moved || flagMoved) log(run, now, "quota_exempt_changed", null, `${moved ? `quota: ${from ? "exempt" : "limited"} → ${exempt ? "exempt (not subject to burn rate limiting)" : "limited (back under the burn rate limits from its next step)"}` : "children follow the exemption"}${flagMoved ? (inherit ? "; new children follow it" : "; children no longer follow it") : ""}${note ? ` (${note})` : ""}`);
   return { from, changed: moved || flagMoved };
 }
 

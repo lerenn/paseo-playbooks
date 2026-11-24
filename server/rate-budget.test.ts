@@ -307,7 +307,7 @@ describe("quota per hour (ADR 2026-11-24-quota-per-hour)", () => {
     const old = new CostHistory();
     old.add("work", "claude", { weekly: 4 });
     old.addStepTime("work", "a", 30 * MIN);
-    expect(old.remainingNeed("work", "claude", "weekly", steps())).toEqual({ points: 8, byDuration: new Set() });
+    expect(old.remainingNeed("work", "claude", "weekly", steps())).toMatchObject({ points: 8, byDuration: new Set(), allByDuration: false, ms: 0 });
     expect(history.remainingNeed("work", "claude", "other", steps())).toBeNull();
   });
 
@@ -332,3 +332,64 @@ describe("quota per hour (ADR 2026-11-24-quota-per-hour)", () => {
     expect(planHeadroom([want(runs[0]!, 2)], ctxOf(25, { stepCost: () => 2, runCost: () => null })).holds.size).toBe(1);
   });
 });
+
+describe("resetting the learned burn rate (ADR 2026-11-24-burn-rate-naming-and-reset)", () => {
+  const MIN = 60_000;
+  const seeded = () => {
+    const history = new CostHistory();
+    history.add("work", "claude", { weekly: 6, session: 2 }, { weekly: HOUR, session: HOUR });
+    history.add("other", "claude", { weekly: 1 }, { weekly: HOUR });
+    history.addStepTime("work", "a", 30 * MIN);
+    history.addStepTime("work", "b", 10 * MIN);
+    history.addStepTime("other", "a", 5 * MIN);
+    return history;
+  };
+
+  it("a playbook reset erases every cost row and step duration of that playbook only, and says what it erased", () => {
+    const history = seeded();
+    expect(history.reset("work", null, "2026-11-24T12:00:00Z")).toEqual({ entries: 2, steps: 2, ms: 2 * HOUR });
+    expect(history.stepCost("work", "claude", "weekly")).toBeNull();
+    expect(history.remainingNeed("work", "claude", "weekly", [{ stepId: "a", running: false, elapsedMs: 0 }])).toBeNull();
+    expect(history.stepDuration("work", "a")).toBeNull();
+    expect(history.stepCost("other", "claude", "weekly")).toBe(1);
+    expect(history.stepDuration("other", "a")).toBe(5 * MIN);
+    expect(history.resetAt("work")).toBe("2026-11-24T12:00:00Z");
+    // Idempotent: nothing left to erase.
+    expect(history.reset("work", null, "2026-11-24T12:05:00Z")).toEqual({ entries: 0, steps: 0, ms: 0 });
+  });
+
+  it("a step reset clears that step's duration only: the points are learned per playbook, so the step falls back to the cost of a step", () => {
+    const history = seeded();
+    expect(history.reset("work", "a", "2026-11-24T12:00:00Z")).toEqual({ entries: 0, steps: 1, ms: 30 * MIN });
+    expect(history.stepDuration("work", "a")).toBeNull();
+    expect(history.stepDuration("work", "b")).toBe(10 * MIN);
+    expect(history.stepCost("work", "claude", "weekly")).toBe(6);
+    const need = history.remainingNeed("work", "claude", "weekly", [{ stepId: "a", running: false, elapsedMs: 0 }, { stepId: "b", running: false, elapsedMs: 0 }])!;
+    expect([...need.byDuration]).toEqual(["b"]);
+    expect(need.allByDuration).toBe(false);
+    expect(need.points).toBeCloseTo(6 + 1, 9);
+    expect(history.resetAt("work", "a")).toBe("2026-11-24T12:00:00Z");
+    expect(history.resetAt("work")).toBeNull();
+    expect(history.reset("work", "a", "2026-11-24T12:01:00Z")).toEqual({ entries: 0, steps: 0, ms: 0 });
+  });
+
+  it("keeps the reset times in the file, and a file without them loads", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "history-"));
+    temps.push(dir);
+    const file = path.join(dir, "rate-history.json");
+    const history = new CostHistory(file);
+    history.add("work", "claude", { weekly: 6 }, { weekly: HOUR });
+    history.add("other", "claude", { weekly: 1 }, { weekly: HOUR });
+    history.addStepTime("other", "a", 5 * MIN);
+    history.reset("work", null, "2026-11-24T12:00:00Z");
+    history.reset("other", "a", "2026-11-24T13:00:00Z");
+    await history.save();
+    const reloaded = new CostHistory(file);
+    expect(reloaded.resetAt("work")).toBe("2026-11-24T12:00:00Z");
+    expect(reloaded.resetAt("other", "a")).toBe("2026-11-24T13:00:00Z");
+    expect(reloaded.stepCost("work", "claude", "weekly")).toBeNull();
+    await writeFile(file, JSON.stringify({ "work|claude\u0000weekly": { points: 10, steps: 2 } }));
+    expect(new CostHistory(file).resetAt("work")).toBeNull();
+  });
+});
+

@@ -5,7 +5,7 @@ import { barOf, formatWait, projectRows, throttleOf, unavailableProviders } from
 const slot = (over: Partial<QuotaLimitation["providers"][number]["windows"][number]> = {}) => ({ id: "weekly", name: "Weekly", modelScoped: false, used: 38, reserved: 5, paces: [{ usable: 90, ceiling: 60, headroom: 22, free: 17, projects: ["App"] }], resetsAt: null, stale: false, ...over });
 const provider = (windows = [slot()], over: Partial<QuotaLimitation["providers"][number]> = {}): QuotaLimitation["providers"][number] => ({ provider: "claude", pacedBy: ["App"], state: "ok", readAt: null, overrideUntil: null, windows, reservations: [], held: [], exhausted: [], ...over });
 const limits = (over = {}) => ({ repos: ["default"], pacing: true, usablePercent: 90, stepsLimit: null, runsLimit: null, ...over });
-const data = (providers = [provider()], projects = [{ projectId: "p", label: "App", limits: [limits()] }]): QuotaLimitation => ({ now: "2026-11-23T00:00:00Z", projects, stepsRunning: 0, runsActive: 0, providers, limitHeld: [] });
+const data = (providers = [provider()], projects: QuotaLimitation["projects"] = [{ projectId: "p", label: "App", limits: [limits()] }]): QuotaLimitation => ({ now: "2026-11-23T00:00:00Z", projects, stepsRunning: 0, runsActive: 0, providers, limitHeld: [] });
 
 describe("quota bar", () => {
   it("is grey to the usage, green for the free room after the reservations, a tick at the ceiling", () => {
@@ -151,3 +151,15 @@ describe("a provider whose usage is unavailable", () => {
     expect(row.throttled).toBe(false);
   });
 });
+
+describe("burn rate rows", () => {
+  it("carries the project's burn rates and a reservation's basis through to the rows", () => {
+    const burn = [{ playbook: "work", title: "Work", resetAt: "2026-11-24T10:00:00Z", rates: [], steps: [{ id: "a", durationMs: null, resetAt: null }] }];
+    const reservation = { runId: "r1", projectId: "p", title: "Work", remaining: { weekly: 3 }, basis: { weekly: { ms: 1_800_000, burnRate: 6 } } };
+    const [row] = projectRows(data([provider([slot()], { reservations: [reservation] })], [{ projectId: "p", label: "App", burnRates: burn, limits: [limits()] }]));
+    expect(row!.burnRates).toEqual(burn);
+    expect(row!.sets[0]!.providers[0]!.reservations[0]!.basis).toEqual({ weekly: { ms: 1_800_000, burnRate: 6 } });
+    expect(projectRows(data())[0]!.burnRates).toEqual([]);
+  });
+});
+

@@ -279,7 +279,7 @@ export class QuotaPacer {
     return new Map([...new Set([...this.readings.keys(), ...this.asked])].sort().map((provider) => [provider, this.usageState(provider, config)]));
   }
 
-  /** What the pacing holds about every provider it has a reading or a question for, for the Quota limitation tab (reads only; starts a refresh when one is due). */
+  /** What the pacing holds about every provider it has a reading or a question for, for the Burn rate limiting tab (reads only; starts a refresh when one is due). */
   view(config: RateLimitsConfig["quota"]): PacerView[] {
     const now = this.clock();
     if (this.readings.size === 0 || [...this.readings.values()].some((reading) => now - reading.at >= config.refreshMs)) void this.refresh();

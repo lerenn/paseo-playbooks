@@ -15,7 +15,7 @@ import type { AgentSettings, AgentTarget, Attempt, FanoutChild as FanoutChildSta
 import { addUsage, isUnavailableHold, DEFAULT_EXHAUSTED_FOR_MS, DEFAULT_PERMISSION_POLICY, workspaceKeptUntil } from "../shared/types";
 import { UsageLedger } from "./usage-ledger";
 import { type UsageRow, UsageLogWriter, USAGE_DIR } from "./usage-log";
-import { analyze, type Analytics } from "../shared/analytics";
+import { analyze, LOW_CONFIDENCE_MS, LOW_CONFIDENCE_STEPS, type Analytics } from "../shared/analytics";
 import {
   SCRIPT_NOT_YET,
   attemptTimeoutMs,
@@ -76,8 +76,8 @@ import type { RunStore } from "./store";
 import { holdsBlock, planAdmissions, slotHolders } from "../shared/slots";
 import { DEFAULT_MANAGER_RECOVERY, DEFAULT_RATE_LIMITS, readManagerRecoveryConfig, readQuotaLimitsLayer, resolveQuotaLimits, type ManagerRecoveryConfig, type QuotaLimitsLayer, type RateLimitsConfig } from "./config";
 import { buildQuotaLimitation } from "./quota-limitation";
-import type { QuotaLimitation } from "../shared/quota-limitation";
-import { candidateCost, CostHistory, type StepNeed, exhaustionVerdict, planPace, type Admitted as AdmittedRun, orderCandidates, planHeadroom, windowKey, ZERO_COST_POINTS, type Candidate as RateCandidate, type PlanContext } from "./rate-budget";
+import type { QuotaBurnRate, QuotaLimitation } from "../shared/quota-limitation";
+import { candidateCost, CostHistory, type Erased, type StepNeed, exhaustionVerdict, planPace, type Admitted as AdmittedRun, orderCandidates, planHeadroom, windowKey, ZERO_COST_POINTS, type Candidate as RateCandidate, type PlanContext } from "./rate-budget";
 import { gateWaiting, limitVerdict, parentIds, priorityViewOf, QuotaPacer, runPriority, runProviders, usedPct, type HoldVerdict, type ReadChange } from "./rate-limit";
 import { pluginDataDir } from "./data-dir";
 
@@ -2359,7 +2359,7 @@ export class Runtime {
   private async rateCheck(run: Run, exceptKey = "", quota = true): Promise<HoldVerdict | null> {
     await this.userQuotaLayer();
     const config = this.limitsOf(run);
-    // A run exempt from quota limiting (ADR 2026-11-23-quota-exempt-runs) is never held: no cap, no exhausted or unavailable window, no
+    // A run exempt from burn rate limiting (ADR 2026-11-23-quota-exempt-runs) is never held: no cap, no exhausted or unavailable window, no
     // headroom queue, no pace pause, and so no hold notice. It still reserves its estimated cost, which the others' headroom loses.
     if (run.quotaExempt) {
       this.reserveExempt(run, config);
@@ -2377,7 +2377,7 @@ export class Runtime {
   }
 
   /**
-   * The reservation of a run exempt from quota limiting, taken once when its first step starts: its estimated cost per window
+   * The reservation of a run exempt from burn rate limiting, taken once when its first step starts: its estimated cost per window
    * (steps still to run × the playbook's measured cost), so the headroom the other runs see shrinks by it. Nothing here can hold the
    * run: it is not a candidate of the queue, nor part of the pace plan; later `refreshAdmittedNeeds` keeps the figure current.
    */
@@ -2591,6 +2591,20 @@ export class Runtime {
       reserved.endedAt = null;
       this.reservedQuota.set(`run:${run.id}`, reserved);
     }
+  }
+
+  /** What is learned about a playbook's burn rate, as the Burn rate limiting tab lists it (and resets it). */
+  private burnRateView(playbook: { id: string; title?: string | undefined; steps: Array<{ id: string; kind: string }> }): QuotaBurnRate {
+    return {
+      playbook: playbook.id,
+      title: playbook.title ?? playbook.id,
+      resetAt: this.costs.resetAt(playbook.id),
+      rates: this.costs
+        .rows()
+        .filter((row) => row.playbook === playbook.id)
+        .map((row) => ({ provider: row.provider, window: row.window, burnRate: row.pointsPerHour === null ? null : Math.round(row.pointsPerHour * 100) / 100, steps: Math.round(row.steps), lowConfidence: row.steps < LOW_CONFIDENCE_STEPS || (row.agentMs ?? 0) < LOW_CONFIDENCE_MS })),
+      steps: playbook.steps.filter((step) => step.kind === "agent").map((step) => ({ id: step.id, durationMs: this.costs.stepDuration(playbook.id, step.id) === null ? null : Math.round(this.costs.stepDuration(playbook.id, step.id)!), resetAt: this.costs.resetAt(playbook.id, step.id) })),
+    };
   }
 
   /** A reservation whose work ended stays until the next successful usage read (the readings then include its use); an old one is dropped. */
@@ -2807,7 +2821,7 @@ export class Runtime {
   }
 
   /**
-   * The Quota limitation tab (see `buildQuotaLimitation`): the limits a new run of each given project gets, resolved like a run does
+   * The Burn rate limiting tab (see `buildQuotaLimitation`): the limits a new run of each given project gets, resolved like a run does
    * (the playbook folder's defaults of the project's main checkout, with isolated playbooks read from their base on origin like `list_playbooks`, then config.yaml, then the built-in ones; one set per distinct result among the project's
    * playbooks), and the pacing's numbers per provider. A reading's freshness is judged at the user-level settings.
    */
@@ -2831,8 +2845,10 @@ export class Runtime {
           const sets = new Map<string, { repos: string[]; config: RateLimitsConfig }>();
           // The largest measured cost of one step among the project's playbooks, per provider and window (the throttle's fallback need).
           const unitCost: Record<string, Record<string, number>> = {};
+          const burnRates: QuotaBurnRate[] = [];
           for (const { entry } of resolved) {
             if (!entry.playbook) continue;
+            if (!burnRates.some((known) => known.playbook === entry.playbook!.id)) burnRates.push(this.burnRateView(entry.playbook));
             for (const { provider } of views) {
               for (const windowId of this.costs.windows(entry.playbook.id, provider)) {
                 const unit = this.costs.stepCost(entry.playbook.id, provider, windowId);
@@ -2847,7 +2863,7 @@ export class Runtime {
             if (!set.repos.includes(entry.repo)) set.repos.push(entry.repo);
             sets.set(key, set);
           }
-          return { projectId, label: workspace.projectDisplayName || path.basename(workspace.projectRootPath), unitCost, sets: sets.size > 0 ? [...sets.values()] : [{ repos: [], config: user }] };
+          return { projectId, label: workspace.projectDisplayName || path.basename(workspace.projectRootPath), unitCost, burnRates, sets: sets.size > 0 ? [...sets.values()] : [{ repos: [], config: user }] };
         }),
     );
     this.refreshAdmittedNeeds();
@@ -2857,6 +2873,11 @@ export class Runtime {
       views,
       runs: this.store.list(),
       reservations: [...this.reservedQuota.values()].map((entry) => ({ runId: entry.runId, est: entry.est, spent: entry.spent, endedAt: entry.endedAt })),
+      basis: (run, provider, windowId) => {
+        const need = this.costs.remainingNeed(run.playbook.id, provider, windowId, this.rateSteps(run).get(provider) ?? []);
+        const rate = this.costs.burnRate(run.playbook.id, provider, windowId);
+        return need?.allByDuration && rate !== null ? { ms: Math.round(need.ms), burnRate: Math.round(rate * 3_600_000 * 100) / 100 } : null;
+      },
     });
   }
 
@@ -5074,7 +5095,7 @@ export class Runtime {
     return this.store.get(runId)!;
   }
 
-  /** Whether the parent run of a child is exempt from quota limiting: the child is too. */
+  /** Whether the parent run of a child is exempt from burn rate limiting: the child is too. */
   private parentExempt(parent: Run["parent"] | undefined): boolean {
     return parent ? this.store.get(parent.runId)?.quotaExempt === true : false;
   }
@@ -5147,7 +5168,7 @@ export class Runtime {
   }
 
   /**
-   * Exempts a run from quota limiting, or puts it back under the limits (ADR 2026-11-23-run-quota-exempt-toggle). Exempt: any quota,
+   * Exempts a run from burn rate limiting, or puts it back under the limits (ADR 2026-11-23-run-quota-exempt-toggle). Exempt: any quota,
    * headroom, pace or cap hold is lifted at once and the ready steps start without waiting for the 15 s tick; the run keeps reserving its
    * cost. Not exempt: the limits apply again from its next step (a running step is never interrupted). `applyToChildren` sets the sticky
    * `inheritChildExempt` flag like the priority's: true copies the state onto every active descendant now, false stops following,
@@ -5182,6 +5203,35 @@ export class Runtime {
       this.kickLimits();
     }
     return { run, from: result.from, to: exempt, changed: result.changed || cascaded > 0, cascaded };
+  }
+
+  /**
+   * Hard reset of the learned burn rate of a playbook, or of one step's duration (ADR 2026-11-24-burn-rate-naming-and-reset): the
+   * erased data is gone and the playbook (or that step's estimate) is unpaced until measured again. Updates the live history and the
+   * reservations at once, tells the event stream, and looks at the held runs again. Idempotent. Panel only (no agent tool).
+   */
+  async resetBurnRate(playbook: string, step: string | null, by: string): Promise<{ erased: Erased; at: string }> {
+    if (!playbook.trim()) throw new UserError("playbook is required");
+    const at = nowIso();
+    const erased = this.costs.reset(playbook, step, at);
+    await this.costs.save();
+    if (step === null) {
+      // The measures in flight were taken under the old definition: they would teach the history what the reset just erased.
+      for (const [key, entry] of [...this.attemptUse]) if (entry.playbookId === playbook) this.attemptUse.delete(key);
+    }
+    for (const run of this.store.list()) {
+      if (run.playbook.id !== playbook) continue;
+      const reserved = this.reservedQuota.get(`run:${run.id}`);
+      // No history, so no need: a reservation of the playbook (admitted runs, exempt ones too) shrinks to what is already spent.
+      if (step === null && reserved) reserved.est = {};
+    }
+    this.refreshAdmittedNeeds();
+    console.log(`[playbooks] burn rate of ${playbook}${step ? `/${step}` : ""} reset by ${by}: ${erased.entries} rows, ${erased.steps} attempts, ${Math.round(erased.ms / 1000)}s of agent time erased`);
+    await this.bus.emit("quota.burn_rate_reset", { playbook, step, erased, by }, { runId: null, source: "runs" }).catch((error: unknown) => console.error("[playbooks] could not emit quota.burn_rate_reset:", errorText(error)));
+    await this.releaseHolds().catch((error: unknown) => console.error("[playbooks] could not look at the holds after a burn rate reset:", errorText(error)));
+    void this.tick().catch((error) => console.error("[playbooks] tick after a burn rate reset failed:", errorText(error)));
+    this.kickLimits();
+    return { erased, at };
   }
 
   /**
@@ -6541,7 +6591,7 @@ export class Runtime {
     workspaceName?: string | undefined;
     /** Rate-limit priority of the run (overrides the playbook's); unset: the playbook's. */
     priority?: number | undefined;
-    /** Not subject to quota limiting (`start_playbook` `quota.exempt`). */
+    /** Not subject to burn rate limiting (`start_playbook` `quota.exempt`). */
     quotaExempt?: boolean | undefined;
     /** A fan-out step starting a child run: its id (reserved before the workspace exists) and its parent link. */
     child?: { runId: string; parent: NonNullable<Run["parent"]> } | undefined;

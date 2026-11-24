@@ -205,21 +205,27 @@ export const OVERSIGHT_TYPES: EventTypeDef[] = [
   },
   {
     type: "run.priority_changed",
-    description: "A run's manual quota priority was set or cleared (set_run_priority, or the Quota limitation tab): from and to are the override before and after (null = the playbook's priority), inheritChildren whether the run passes it to its children, cascaded how many descendant runs it was copied onto, by who. The pace plan is looked at again at once.",
+    description: "A run's manual quota priority was set or cleared (set_run_priority, or the Burn rate limiting tab): from and to are the override before and after (null = the playbook's priority), inheritChildren whether the run passes it to its children, cascaded how many descendant runs it was copied onto, by who. The pace plan is looked at again at once.",
     payload: z.object({ ...runFields, from: z.number().nullable(), to: z.number().nullable(), inheritChildren: z.boolean(), cascaded: z.number().int(), by: z.string() }),
     line: (event) => `- run.priority_changed: the quota priority override of ${runName(event.payload)} went from ${String(event.payload.from ?? "none")} to ${String(event.payload.to ?? "none")}${Number(event.payload.cascaded) > 0 ? `, copied onto ${String(event.payload.cascaded)} child run(s)` : ""}. Tools: get_run { runId: "${event.runId}" }.`,
   },
   {
     type: "run.quota_exempt_changed",
-    description: "A run was exempted from quota limiting, or put back under the limits (set_run_quota_exempt, or the Runs view's priority menu): from and to are the exemption before and after, inheritChildren whether the run passes a change to its children, cascaded how many descendant runs it was copied onto, by who. An exempt run is never held and still reserves its cost. Worth watching: any agent can exempt its own run.",
+    description: "A run was exempted from burn rate limiting, or put back under the limits (set_run_quota_exempt, or the Runs view's priority menu): from and to are the exemption before and after, inheritChildren whether the run passes a change to its children, cascaded how many descendant runs it was copied onto, by who. An exempt run is never held and still reserves its cost. Worth watching: any agent can exempt its own run.",
     payload: z.object({ ...runFields, from: z.boolean(), to: z.boolean(), inheritChildren: z.boolean(), cascaded: z.number().int(), by: z.string() }),
-    line: (event) => `- run.quota_exempt_changed: ${runName(event.payload)} is now ${event.payload.to ? "exempt from" : "back under"} the quota limits (by ${String(event.payload.by)})${Number(event.payload.cascaded) > 0 ? `, copied onto ${String(event.payload.cascaded)} child run(s)` : ""}. Tools: get_run { runId: "${event.runId}" }.`,
+    line: (event) => `- run.quota_exempt_changed: ${runName(event.payload)} is now ${event.payload.to ? "exempt from" : "back under"} the burn rate limits (by ${String(event.payload.by)})${Number(event.payload.cascaded) > 0 ? `, copied onto ${String(event.payload.cascaded)} child run(s)` : ""}. Tools: get_run { runId: "${event.runId}" }.`,
   },
   {
     type: "finding.dismissed",
     description: "An agent dismissed a review finding of a PR with a written rationale (dismiss_finding): pr (owner/repo#N), the finding's signature, file, severity and category, the rationale and by who. Never sent for a P1 or a security, auth, secrets, credentials, IAM or migration finding (those are refused). Not a gate: nobody is asked; the reply on the PR thread is the caller's. Worth watching: it is how a review loop ends without a human.",
     payload: z.object({ ...runFields, pr: z.string(), signature: z.string(), file: z.string(), severity: z.string(), category: z.string(), rationale: z.string(), by: z.string() }),
     line: (event) => `- finding.dismissed: ${String(event.payload.severity)} ${String(event.payload.category)} finding ${String(event.payload.signature)} in ${String(event.payload.file)} of ${String(event.payload.pr)} was dismissed by ${String(event.payload.by)} in ${runName(event.payload)}: ${String(event.payload.rationale).slice(0, 300)}. Tools: get_run { runId: "${event.runId}" }, list_dismissed_findings { pr: "${String(event.payload.pr)}" }.`,
+  },
+  {
+    type: "quota.burn_rate_reset",
+    description: "The learned burn rate of a playbook, or one step's learned duration, was erased by hand (the Burn rate limiting tab): playbook, step (null for the whole playbook), erased { entries (cost rows), steps (finished attempts they rested on), ms (agent time) }, by who. Not tied to a run. Afterwards the playbook (or that step) is not paced by cost until it is measured again; held runs of it are looked at again.",
+    payload: z.object({ playbook: z.string(), step: z.string().nullable(), erased: z.object({ entries: z.number().int(), steps: z.number(), ms: z.number() }), by: z.string() }),
+    line: (event) => `- quota.burn_rate_reset: the learned burn rate of ${String(event.payload.playbook)}${event.payload.step ? ` step ${String(event.payload.step)} (its duration only)` : ""} was erased by ${String(event.payload.by)}; it is not paced by cost until measured again.`,
   },
   {
     type: "run.canceled",

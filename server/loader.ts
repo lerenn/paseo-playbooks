@@ -894,7 +894,7 @@ const RawPlaybookSchema = z.object({
     manager_recovery: RawManagerRecoverySchema.optional(),
     /** The warden's periodic checks; see RawWardenSchema. Off unless `enabled: true`. */
     warden: RawWardenSchema.optional(),
-    /** Queue priority of the playbook's runs when quota limiting holds work; see RawRateLimitSchema. */
+    /** Queue priority of the playbook's runs when burn rate limiting holds work; see RawRateLimitSchema. */
     quota_limit: RawRateLimitSchema.optional(),
     /** Deprecated name of `quota_limit`. */
     rate_limit: RawRateLimitSchema.optional(),

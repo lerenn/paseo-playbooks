@@ -1251,11 +1251,11 @@ export const RunSchema = z.object({
   rateNote: z.string().nullable().default(null),
   /** The priority `start_playbook` gave this run, overriding the playbook's `quota_limit.priority`; null = the playbook's. */
   priority: z.number().nullable().default(null),
-  /** A manual quota priority set from the Quota limitation tab or `set_run_priority`: wins over `priority` and the playbook's; null = none. */
+  /** A manual quota priority set from the Burn rate limiting tab or `set_run_priority`: wins over `priority` and the playbook's; null = none. */
   priorityOverride: z.number().nullable().default(null),
   /** Set (sticky) by `set_run_priority` with applyToChildren: the children this run starts later start with its `priorityOverride`. */
   inheritChildPriority: z.boolean().default(false),
-  /** Set at start (`start_playbook` `quota: { exempt: true }`, inherited by child runs): the run is not subject to quota limiting (ADR 2026-11-23-quota-exempt-runs). */
+  /** Set at start (`start_playbook` `quota: { exempt: true }`, inherited by child runs): the run is not subject to burn rate limiting (ADR 2026-11-23-quota-exempt-runs). */
   quotaExempt: z.boolean().default(false),
   /** Set (sticky) by `set_run_quota_exempt` with applyToChildren: later changes of `quotaExempt` and the children this run starts later follow it (ADR 2026-11-23-run-quota-exempt-toggle). */
   inheritChildExempt: z.boolean().default(false),
@@ -1347,7 +1347,7 @@ export const RunPriorityViewSchema = z.object({
   hasChildren: z.boolean(),
   /** The run passes its priority to the children it starts (`inheritChildPriority`). */
   inheritChildren: z.boolean(),
-  /** The run is exempt from quota limiting (`quotaExempt`): the menu shows that state, with the way back. */
+  /** The run is exempt from burn rate limiting (`quotaExempt`): the menu shows that state, with the way back. */
   exempt: z.boolean().default(false),
   /** The run passes a change of its exemption to its children (`inheritChildExempt`). */
   inheritChildExempt: z.boolean().default(false),
@@ -1392,7 +1392,7 @@ export const RunSummarySchema = z.object({
   fanouts: z.record(z.string(), z.object({ loop: z.number().int(), children: z.array(FanoutChildSummarySchema), pool: PoolSummarySchema.nullable().default(null), past: z.array(FanoutPassSummarySchema) })).default({}),
   /** The quota priority, only for an active run of a project that paces; null = no priority control (finished, pacing off, or an older server). */
   quotaPriority: RunPriorityViewSchema.nullable().default(null),
-  /** The run is not subject to quota limiting (`quotaExempt`): the Runs view shows an "exempt" tag instead of the priority control. */
+  /** The run is not subject to burn rate limiting (`quotaExempt`): the Runs view shows an "exempt" tag instead of the priority control. */
   quotaExempt: z.boolean().default(false),
 });
 export type RunSummary = z.infer<typeof RunSummarySchema>;

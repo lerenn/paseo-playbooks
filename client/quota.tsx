@@ -6,6 +6,7 @@ import { describeClosedSlots } from "../shared/closed-hours";
 import { quotaLimitationRpc } from "../shared/contracts";
 import type { QuotaLimitation } from "../shared/quota-limitation";
 import { messages } from "./i18n";
+import { BurnRatesView } from "./burn-rates";
 import { formatWait, projectRows, unavailableProviders, type ProjectRow, type ProviderRow, type SlotRow, type Tone } from "./quota-rows";
 import { overAllowanceColor, semanticColor } from "./semantic-colors";
 import { DETAIL_MAX_WIDTH, SPACE, TEXT } from "./spacing";
@@ -28,7 +29,7 @@ function kindLabel(t: (key: "quota.kind.quota" | "quota.kind.headroom" | "quota.
 
 const whenAt = (iso: string | null, locale: string) => (iso ? new Date(iso).toLocaleString(locale) : "");
 
-/** The Quota limitation tab: per provider its usage windows and the pacing's numbers, the held runs and the exhausted marks. */
+/** The Burn rate limiting tab: per provider its usage windows and the pacing's numbers, the held runs and the exhausted marks. */
 export function QuotaView(props: { theme: Theme; workspaces: ReadonlyArray<{ projectId: string; workspaceId: string }>; refreshSignal: number }) {
   const { theme, workspaces, refreshSignal } = props;
   const { t } = useTranslation(messages);
@@ -57,13 +58,13 @@ export function QuotaView(props: { theme: Theme; workspaces: ReadonlyArray<{ pro
     <View style={{ gap: 14 }}>
       {error ? <Text style={{ color: semanticColor(theme, "failed") }}>{error}</Text> : null}
       {!data && !error ? <Text style={{ color: muted }}>{t("quota.loading")}</Text> : null}
-      {data ? <Body theme={theme} data={data} /> : null}
+      {data ? <Body theme={theme} data={data} onChanged={load} /> : null}
     </View>
   );
 }
 
-function Body(props: { theme: Theme; data: QuotaLimitation }) {
-  const { theme, data } = props;
+function Body(props: { theme: Theme; data: QuotaLimitation; onChanged: () => void }) {
+  const { theme, data, onChanged } = props;
   const { t } = useTranslation(messages);
   const muted = theme.colors.foregroundMuted;
   const rows = projectRows(data);
@@ -85,7 +86,7 @@ function Body(props: { theme: Theme; data: QuotaLimitation }) {
       {rows.length === 0 ? <Text style={{ color: muted, fontSize: 12 }}>{t("quota.noProjects")}</Text> : null}
       <Card theme={theme}>
         {rows.map((row, index) => (
-          <ProjectRowView key={row.projectId} theme={theme} row={row} first={index === 0} />
+          <ProjectRowView key={row.projectId} theme={theme} row={row} first={index === 0} onChanged={onChanged} />
         ))}
       </Card>
     </View>
@@ -104,8 +105,8 @@ function UsageDownLine(props: { theme: Theme; provider: string; since: string | 
   return <Text style={{ color: semanticColor(theme, "paused"), fontSize: 12 }}>{parts.join(" · ")}</Text>;
 }
 
-function ProjectRowView(props: { theme: Theme; row: ProjectRow; first: boolean }) {
-  const { theme, row, first } = props;
+function ProjectRowView(props: { theme: Theme; row: ProjectRow; first: boolean; onChanged: () => void }) {
+  const { theme, row, first, onChanged } = props;
   const { t } = useTranslation(messages);
   const [open, setOpen] = useState(false);
   const muted = theme.colors.foregroundMuted;
@@ -144,6 +145,7 @@ function ProjectRowView(props: { theme: Theme; row: ProjectRow; first: boolean }
               ))}
             </View>
           ))}
+          <BurnRatesView theme={theme} items={row.burnRates} onChanged={onChanged} />
         </View>
       ) : null}
     </View>
@@ -193,7 +195,7 @@ function ProviderView(props: { theme: Theme; provider: ProviderRow; folds: Reado
         <Lines theme={theme} title={t("quota.reservations", { count: provider.reservations.length })} open={folds.has(`${foldKey}/${provider.provider}/reservations`)} onToggle={() => toggleFold(`${foldKey}/${provider.provider}/reservations`)}>
           {provider.reservations.map((run) => (
             <View key={run.runId} style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
-              <Text style={{ color: theme.colors.foreground, ...TEXT.body }}>{`${run.title}${Object.keys(run.remaining).length > 0 ? ` · ${Object.entries(run.remaining).map(([name, value]) => t("quota.remaining", { window: name, value })).join(", ")}` : ""}`}</Text>
+              <Text style={{ color: theme.colors.foreground, ...TEXT.body }}>{`${run.title}${Object.keys(run.remaining).length > 0 ? ` · ${Object.entries(run.remaining).map(([name, value]) => (run.basis?.[name] ? t("quota.remainingBasis", { window: name, value, duration: formatWait(run.basis[name]!.ms), rate: run.basis[name]!.burnRate }) : t("quota.remaining", { window: name, value }))).join(", ")}` : ""}`}</Text>
               {run.exempt ? <Text style={{ color: theme.colors.accent, fontSize: 10, fontWeight: "600", borderRadius: 4, borderWidth: 1, borderColor: theme.colors.accent, paddingHorizontal: 4 }}>{t("quota.tagExempt")}</Text> : null}
               {run.hold === null ? null : <Text style={{ color: semanticColor(theme, "paused"), fontSize: 10, fontWeight: "600", borderRadius: 4, borderWidth: 1, borderColor: semanticColor(theme, "paused"), paddingHorizontal: 4 }}>{t(run.hold === "paused" ? "quota.tagPaused" : "quota.tagHeld")}</Text>}
             </View>

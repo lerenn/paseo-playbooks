@@ -217,7 +217,7 @@ export function runCompact(run: Run, only?: string[], slow: Record<string, SlowI
     running: runningSteps(run),
     slowSteps: Object.keys(slow),
     ...rateHoldView(run),
-    /** true: not subject to quota limiting (start_playbook `quota: { exempt: true }`, or inherited from the parent run). */
+    /** true: not subject to burn rate limiting (start_playbook `quota: { exempt: true }`, or inherited from the parent run). */
     quotaExempt: run.quotaExempt,
     inheritChildExempt: run.inheritChildExempt,
     /** Review findings dismissed with a rationale (`dismiss_finding`), per PR and signature. */
@@ -273,7 +273,7 @@ export function runFull(run: Run, only?: string[], slow: Record<string, SlowInfo
     queued: engine.queuedSteps(run),
     slowSteps: Object.keys(slow),
     ...rateHoldView(run),
-    /** true: not subject to quota limiting (start_playbook `quota: { exempt: true }`, or inherited from the parent run). */
+    /** true: not subject to burn rate limiting (start_playbook `quota: { exempt: true }`, or inherited from the parent run). */
     quotaExempt: run.quotaExempt,
     inheritChildExempt: run.inheritChildExempt,
     /** Review findings dismissed with a rationale (`dismiss_finding`), per PR and signature. */
@@ -506,10 +506,10 @@ export function managerTools(runtime: Runtime): AgentToolDefinition[] {
             exempt: z
               .boolean()
               .optional()
-              .describe("true: the run is NOT subject to quota limiting: never held for quota headroom, an exhausted or unavailable usage window, or the step and playbook caps, and never paused to fit the pace. It still reserves its estimated cost, so other runs' headroom shrinks by it, and its measured cost is recorded as usual. Child runs (fan-out, pool, replace_child) inherit it; restart_run keeps it. Fixed at start (not changeable later). Recorded in the run's history. Meant for work that must not wait (e.g. a request from a human in a chat); do not use it to skip the queue for routine work"),
+              .describe("true: the run is NOT subject to burn rate limiting: never held for quota headroom, an exhausted or unavailable usage window, or the step and playbook caps, and never paused to fit the pace. It still reserves its estimated cost, so other runs' headroom shrinks by it, and its measured cost is recorded as usual. Child runs (fan-out, pool, replace_child) inherit it; restart_run keeps it. Fixed at start (not changeable later). Recorded in the run's history. Meant for work that must not wait (e.g. a request from a human in a chat); do not use it to skip the queue for routine work"),
           })
           .optional()
-          .describe("Quota limiting options of this run (see `exempt`). Omitted: the run is limited like any other"),
+          .describe("Burn rate limiting options of this run (see `exempt`). Omitted: the run is limited like any other"),
         autoStart: z
           .boolean()
           .default(true)
@@ -757,7 +757,7 @@ export function runListing(run: Run, slow: Record<string, SlowInfo> = {}) {
     failure: run.failure,
     active: isActive(run),
     paused: isPaused(run),
-    /** true: not subject to quota limiting (never held or paused for quota). */
+    /** true: not subject to burn rate limiting (never held or paused for quota). */
     quotaExempt: run.quotaExempt,
     workspaceId: run.workspaceId,
     workspaceDir: run.workspaceDir,
@@ -873,7 +873,7 @@ export function runTools(runtime: Runtime): AgentToolDefinition[] {
     defineAgentTool({
       name: "get_analytics",
       description:
-        "Where the tokens went, summed over the runs on this daemon (archived ones too), to find how to make playbooks cheaper or better: totals, and breakdowns by playbook, step (with its role and model), role and model, each with attempts, repeat passes (repeatAttempts / repeatTokens: earlier attempts of a step, which is often by design) split by why the earlier attempt ended: feedbackAttempts (a loop-back such as changes_requested), pollAttempts (a goto with a delay: a re-check), retryAttempts (failure or timeout, then run again) and interruptedAttempts (the agent errored, was canceled or lost, or reported nothing); lost work (lostAttempts / lostTokens = retries + interrupted, lostShare = lostTokens over the row's tokens), stalledAttempts / stalledTokens (passes of a loop that returned the same outcome and summary 3 times in a row, or hit its max_loops gate; they overlap the other kinds), the deprecated aliases wastedAttempts / wastedTokens (= repeat passes), input / cached input / output tokens, and peak context. Manager rows have no repeat or lost work. overhead is the managers' and gate deciders' share. quotaRates gives each playbook's quota cost per provider window from the learned history (all time, not narrowed by days): pointsPerHour (quota points per hour of active agent time: the summed duration of finished agent attempts, no gate, script or waiting time between steps), pointsPerStep, pointsPerRun (points per attempt x agent attempts per finished run), steps, agentMs and lowConfidence (under 5 attempts or 10 minutes of agent time). topAgents lists the agents that spent the most (most tokens first; id, title, kind: step, decider, manager, sidekick or other, an agent outside the runs; role, model, turns, input / cached / output tokens, peak context), to find the real drains. Read-only. Use it to spot steps that use the most tokens, lose the most work (high lostShare, stalled loops), or run a bigger model than they need, then propose a change to the playbook, role or model.",
+        "Where the tokens went, summed over the runs on this daemon (archived ones too), to find how to make playbooks cheaper or better: totals, and breakdowns by playbook, step (with its role and model), role and model, each with attempts, repeat passes (repeatAttempts / repeatTokens: earlier attempts of a step, which is often by design) split by why the earlier attempt ended: feedbackAttempts (a loop-back such as changes_requested), pollAttempts (a goto with a delay: a re-check), retryAttempts (failure or timeout, then run again) and interruptedAttempts (the agent errored, was canceled or lost, or reported nothing); lost work (lostAttempts / lostTokens = retries + interrupted, lostShare = lostTokens over the row's tokens), stalledAttempts / stalledTokens (passes of a loop that returned the same outcome and summary 3 times in a row, or hit its max_loops gate; they overlap the other kinds), the deprecated aliases wastedAttempts / wastedTokens (= repeat passes), input / cached input / output tokens, and peak context. Manager rows have no repeat or lost work. overhead is the managers' and gate deciders' share. quotaRates gives each playbook's Burn rate per provider window from the learned history (all time, not narrowed by days): burnRate (quota points, percent of the window, per hour of active agent time, shown as 0.6%/h: the summed duration of finished agent attempts, no gate, script or waiting time between steps), pointsPerStep, quotaPerRun (Quota per run: points per attempt x agent attempts per finished run), steps, agentMs and lowConfidence (under 5 attempts or 10 minutes of agent time). topAgents lists the agents that spent the most (most tokens first; id, title, kind: step, decider, manager, sidekick or other, an agent outside the runs; role, model, turns, input / cached / output tokens, peak context), to find the real drains. Read-only. Use it to spot steps that use the most tokens, lose the most work (high lostShare, stalled loops), or run a bigger model than they need, then propose a change to the playbook, role or model.",
       input: z.object({
         days: z.number().int().positive().optional().describe("Only runs created in the last N days (default: all)"),
         playbook: z.string().optional().describe("Only runs of this playbook name"),
@@ -1200,17 +1200,17 @@ export function runTools(runtime: Runtime): AgentToolDefinition[] {
     defineAgentTool({
       name: "set_run_quota_exempt",
       description:
-        "Exempt a run that is running, queued or held from quota limiting (exempt: true), or put it back under the limits (exempt: false). For work that really must run despite the limits. Exempt: any quota, headroom, pace or cap hold of the run is lifted at once and its ready steps start without waiting for the next check; it is never held or paused again, gets no hold notice, ignores the Max usable quota and the steps/playbooks caps, but still RESERVES its estimated cost, so other runs wait for the headroom it leaves. Not exempt: the limits apply again from its next step (running steps are never interrupted). applyToChildren is STICKY like set_run_priority's: true copies the state onto every active child run now (and their children) and makes later changes follow; false stops following without resetting children; omitted keeps the flag. Idempotent. Refused on a finished or archived run. Records a quota_exempt_changed history entry and emits run.quota_exempt_changed (who changed it is in both): exempting your own run is allowed but visible. A run started with start_playbook's `quota: { exempt: true }` is the same state. get_run shows `quotaExempt` and `inheritChildExempt`.",
+        "Exempt a run that is running, queued or held from burn rate limiting (exempt: true), or put it back under the limits (exempt: false). For work that really must run despite the limits. Exempt: any quota, headroom, pace or cap hold of the run is lifted at once and its ready steps start without waiting for the next check; it is never held or paused again, gets no hold notice, ignores the Max usable quota and the steps/playbooks caps, but still RESERVES its estimated cost, so other runs wait for the headroom it leaves. Not exempt: the limits apply again from its next step (running steps are never interrupted). applyToChildren is STICKY like set_run_priority's: true copies the state onto every active child run now (and their children) and makes later changes follow; false stops following without resetting children; omitted keeps the flag. Idempotent. Refused on a finished or archived run. Records a quota_exempt_changed history entry and emits run.quota_exempt_changed (who changed it is in both): exempting your own run is allowed but visible. A run started with start_playbook's `quota: { exempt: true }` is the same state. get_run shows `quotaExempt` and `inheritChildExempt`.",
       input: z.object({
         runId: IdArg,
-        exempt: z.boolean().describe("true: not subject to quota limiting; false: under the limits again from its next step"),
+        exempt: z.boolean().describe("true: not subject to burn rate limiting; false: under the limits again from its next step"),
         applyToChildren: z.boolean().optional().describe("Sticky: true passes the state to every active child run now and later changes, false stops, omitted keeps it"),
       }),
       execute: ({ runId, exempt, applyToChildren }, { agent }) =>
         guard(async () => {
           const result = await runtime.setRunQuotaExempt(runId, exempt, applyToChildren, `agent ${agent.id}`);
           const text = result.changed
-            ? `Run ${runId}: ${result.from ? "exempt" : "limited"} → ${exempt ? "exempt from quota limiting (any hold is lifted, its ready steps start now)" : "under the quota limits again from its next step"}${result.cascaded > 0 ? `, copied onto ${result.cascaded} child run${result.cascaded === 1 ? "" : "s"}` : ""}.`
+            ? `Run ${runId}: ${result.from ? "exempt" : "limited"} → ${exempt ? "exempt from burn rate limiting (any hold is lifted, its ready steps start now)" : "under the burn rate limits again from its next step"}${result.cascaded > 0 ? `, copied onto ${result.cascaded} child run${result.cascaded === 1 ? "" : "s"}` : ""}.`
             : `Run ${runId}: nothing changed (it is already ${exempt ? "exempt" : "under the limits"}).`;
           return ok(text, { runId, from: result.from, to: exempt, changed: result.changed, cascaded: result.cascaded, inheritChildExempt: result.run.inheritChildExempt });
         }),

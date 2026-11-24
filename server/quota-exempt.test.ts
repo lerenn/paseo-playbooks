@@ -34,7 +34,7 @@ async function setup() {
   return { store, runtime };
 }
 
-describe("a run exempt from quota limiting", () => {
+describe("a run exempt from burn rate limiting", () => {
   it("is started by start_playbook's quota block, says so in its history, and is shown by the run listing", async () => {
     const { store, runtime } = await setup();
     const run = await runtime.startPlaybook({ id: "m", workspaceId: "ws", cwd: "/" }, "w", {}, { quotaExempt: true });

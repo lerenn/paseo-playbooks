@@ -36,6 +36,8 @@ interface StepTime {
 
 /** The key of the per-step durations in the history file: it cannot be a playbook id, and an older reader skips it (no finite `points`). */
 const STEP_TIMES_KEY = "@stepTimes";
+/** When the learned data of a playbook, or of one of its steps, was last reset by hand (ADR 2026-11-24-burn-rate-naming-and-reset): `<playbook>` or `<playbook>|<step>` to an ISO time. */
+const RESETS_KEY = "@resets";
 /** Cap of the weight of old samples, as for the points. */
 const KEEP_SAMPLES = 200;
 /** The burn rate is used for pacing only once this much agent time backs it: below it, the per-step unit cost applies. */
@@ -55,6 +57,17 @@ export interface StepNeed {
 export interface RemainingNeed {
   points: number;
   byDuration: Set<string>;
+  /** Every step is priced by duration x rate: the figure is "about `ms` of agent time at the burn rate". */
+  allByDuration: boolean;
+  /** The summed expected remaining duration of the steps priced by duration. */
+  ms: number;
+}
+
+/** What a reset erased (ADR 2026-11-24-burn-rate-naming-and-reset): cost rows (playbook only), finished attempts they rested on, agent time. */
+export interface Erased {
+  entries: number;
+  steps: number;
+  ms: number;
 }
 
 /** One playbook|provider|window row of the learned history, as analytics shows it. */
@@ -79,12 +92,17 @@ export interface RateRow {
 export class CostHistory {
   private data = new Map<string, Sample>();
   private times = new Map<string, StepTime>();
+  private resets = new Map<string, string>();
 
   constructor(private readonly file: string | null = null) {
     if (file && existsSync(file)) {
       try {
         const parsed = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
         for (const [key, value] of Object.entries(parsed)) {
+          if (key === RESETS_KEY) {
+            for (const [resetKey, at] of Object.entries((value ?? {}) as Record<string, unknown>)) if (typeof at === "string") this.resets.set(resetKey, at);
+            continue;
+          }
           if (key === STEP_TIMES_KEY) {
             for (const [stepKey, time] of Object.entries((value ?? {}) as Record<string, StepTime>)) if (time && Number.isFinite(time.ms) && time.n > 0) this.times.set(stepKey, { ms: time.ms, n: time.n });
             continue;
@@ -131,14 +149,17 @@ export class CostHistory {
     const rate = this.burnRate(playbookId, provider, windowId);
     const byDuration = new Set<string>();
     let points = 0;
+    let ms = 0;
     for (const step of steps) {
       const duration = rate === null ? null : this.stepDuration(playbookId, step.stepId);
       if (rate !== null && duration !== null) {
-        points += Math.max(0, duration - (step.running ? step.elapsedMs : 0)) * rate;
+        const left = Math.max(0, duration - (step.running ? step.elapsedMs : 0));
+        points += left * rate;
+        ms += left;
         byDuration.add(step.stepId);
       } else points += unit;
     }
-    return { points, byDuration };
+    return { points, byDuration, allByDuration: steps.length > 0 && byDuration.size === steps.length, ms };
   }
 
   /** The window ids the playbook has a measured cost for on the provider. */
@@ -196,12 +217,48 @@ export class CostHistory {
     this.times.set(key, { ms: (time.ms * keep) / Math.max(time.n, 1) + ms, n: keep + 1 });
   }
 
+  /**
+   * Hard reset (ADR 2026-11-24-burn-rate-naming-and-reset). Playbook (`step` null): erases every learned cost row of the playbook
+   * (all providers and windows: points, steps, agent time) and every step duration. Step: erases that step's learned duration only;
+   * the points are learned per playbook, not per step, so they stay (the step is then priced by the per-step cost until measured again).
+   * Records the time of the reset. Idempotent: a second call erases nothing.
+   */
+  reset(playbookId: string, step: string | null, at: string): Erased {
+    const erased: Erased = { entries: 0, steps: 0, ms: 0 };
+    if (step === null) {
+      for (const [key, sample] of [...this.data]) {
+        if (!key.startsWith(`${playbookId}|`)) continue;
+        erased.entries += 1;
+        erased.steps += sample.steps;
+        erased.ms += sample.ms ?? 0;
+        this.data.delete(key);
+      }
+      for (const key of [...this.times.keys()]) if (key.startsWith(`${playbookId}|`)) this.times.delete(key);
+      this.resets.set(playbookId, at);
+      return erased;
+    }
+    const time = this.times.get(`${playbookId}|${step}`);
+    if (time) {
+      erased.steps = time.n;
+      erased.ms = time.ms;
+      this.times.delete(`${playbookId}|${step}`);
+    }
+    this.resets.set(`${playbookId}|${step}`, at);
+    return erased;
+  }
+
+  /** When the playbook (or its step) was last reset by hand; null when never. */
+  resetAt(playbookId: string, step: string | null = null): string | null {
+    return this.resets.get(step === null ? playbookId : `${playbookId}|${step}`) ?? null;
+  }
+
   async save(): Promise<void> {
     if (!this.file) return;
     await mkdir(path.dirname(this.file), { recursive: true });
     const tmp = `${this.file}.${process.pid}.tmp`;
     const body: Record<string, unknown> = Object.fromEntries(this.data);
     if (this.times.size > 0) body[STEP_TIMES_KEY] = Object.fromEntries(this.times);
+    if (this.resets.size > 0) body[RESETS_KEY] = Object.fromEntries(this.resets);
     await writeFile(tmp, JSON.stringify(body), "utf8");
     await rename(tmp, this.file);
   }

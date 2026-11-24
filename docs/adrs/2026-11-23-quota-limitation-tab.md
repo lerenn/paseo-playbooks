@@ -1,6 +1,6 @@
 # A Quota limitation tab in the Playbooks screen
 
-Status: Accepted. The user-level limits rule is refined by `2026-11-23-quota-limitation-per-project.md`.
+Status: Accepted. The user-level limits rule is refined by `2026-11-23-quota-limitation-per-project.md`. The tab is now labelled "Burn rate limiting" (`2026-11-24-burn-rate-naming-and-reset.md`; id and RPC unchanged).
 
 ## Context
 

@@ -61,8 +61,15 @@ export const QuotaProviderSchema = z.object({
   overrideUntil: z.string().nullable(),
   windows: z.array(QuotaWindowSchema),
   /** Runs whose estimated cost is reserved on this provider (admitted or queued), with what they still have to use per window id. */
-  /** `exempt`: the run is not subject to quota limiting (`quotaExempt`): it reserves quota but is never held. */
-  reservations: z.array(QuotaRunRefSchema.extend({ remaining: z.record(z.string(), z.number()), exempt: z.boolean().optional() })),
+  /** `exempt`: the run is not subject to burn rate limiting (`quotaExempt`): it reserves quota but is never held. */
+  reservations: z.array(
+    QuotaRunRefSchema.extend({
+      remaining: z.record(z.string(), z.number()),
+      exempt: z.boolean().optional(),
+      /** Per window id, when the remaining need is every step's expected duration x the burn rate: the agent time left (ms) and the rate (percent points per agent hour). Absent when the need comes from step costs. */
+      basis: z.record(z.string(), z.object({ ms: z.number(), burnRate: z.number() })).optional(),
+    }),
+  ),
   /** Runs held or paused by this provider's quota (`quota`, `headroom` and `pace` holds). */
   held: z.array(QuotaRunRefSchema.extend({ kind: z.string(), reason: z.string(), window: z.string().nullable(), retryAt: z.string().nullable(), /** When the hold began, and (headroom holds) the estimated cost of what waits: both read from the run's `rateHold`, nothing new is stored. Absent from an older server. */ since: z.string().optional(), estimatedCost: z.number().nullable().optional() })),
   /** `provider/model` targets marked out of tokens by runs, until when. */
@@ -89,11 +96,26 @@ export const QuotaProjectLimitsSchema = z.object({
 });
 export type QuotaProjectLimits = z.infer<typeof QuotaProjectLimitsSchema>;
 
+/** What is learned about a playbook's burn rate, for the reset controls of the Burn rate limiting tab. */
+export const QuotaBurnRateSchema = z.object({
+  playbook: z.string(),
+  title: z.string(),
+  /** Last hand reset of the whole playbook (ISO), null when never. */
+  resetAt: z.string().nullable(),
+  /** One row per provider and window learned: the burn rate (percent points per active agent hour; null while no agent time is measured), the finished attempts behind it and whether it is low confidence. */
+  rates: z.array(z.object({ provider: z.string(), window: z.string(), burnRate: z.number().nullable(), steps: z.number(), lowConfidence: z.boolean() })),
+  /** The agent steps of the playbook with their learned mean duration (ms; null when none) and the last reset of that step's duration. */
+  steps: z.array(z.object({ id: z.string(), durationMs: z.number().nullable(), resetAt: z.string().nullable() })),
+});
+export type QuotaBurnRate = z.infer<typeof QuotaBurnRateSchema>;
+
 export const QuotaProjectSchema = z.object({
   projectId: z.string(),
   label: z.string(),
   /** The largest measured cost of one step of the project's playbooks, per provider then window id (points of the window): the throttle's fallback when no run of the project has a need yet. Absent from an older server. */
   unitCost: z.record(z.string(), z.record(z.string(), z.number())).optional(),
+  /** The burn rate learned per playbook of the project (absent from an older server). */
+  burnRates: z.array(QuotaBurnRateSchema).optional(),
   /** Usually one set; several when a profile's defaults differ from the default repository's. */
   limits: z.array(QuotaProjectLimitsSchema),
 });
