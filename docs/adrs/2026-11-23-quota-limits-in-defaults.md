@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted. Supersedes the config location and the key names of `2026-11-20-rate-limiting.md`, `2026-11-20-dynamic-rate-limits.md`, `2026-11-21-pause-admitted-runs-to-fit-pace.md` and `2026-11-21-remove-rate-limit-mode.md` (`rate_limits` in the user config only; `rate_limit.priority`). Their behaviour (headroom, pace, holds) is unchanged.
+Accepted. Supersedes the config location and the key names of `2026-11-20-rate-limiting.md`, `2026-11-20-dynamic-rate-limits.md`, `2026-11-21-pause-admitted-runs-to-fit-pace.md` and `2026-11-21-remove-rate-limit-mode.md` (`rate_limits` in the user config only; `rate_limit.priority`). Their behaviour (headroom, pace, holds) is unchanged. The estimated cost of a run (steps × average cost per step) is refined by `2026-11-24-quota-per-hour.md` (expected duration × burn rate where known; the per-step average is the fallback).
 
 ## Context
 

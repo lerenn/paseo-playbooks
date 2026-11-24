@@ -1,11 +1,11 @@
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { DEFAULT_RATE_LIMITS } from "./config";
 import { newRun } from "./engine";
 import { loadPlaybooks } from "./loader";
-import { CostHistory, ZERO_COST_POINTS, exhaustionVerdict, orderCandidates, planHeadroom, planPace, windowKey, type Candidate, type PlanContext } from "./rate-budget";
+import { CostHistory, MIN_RATE_MS, ZERO_COST_POINTS, exhaustionVerdict, orderCandidates, planHeadroom, planPace, windowKey, type Candidate, type PlanContext } from "./rate-budget";
 import { admittedRunIds, windowRooms, type Probe } from "./rate-limit";
 import type { Run } from "../shared/types";
 
@@ -237,5 +237,98 @@ describe("pace fit of admitted runs", () => {
   it("counts other reservations against the headroom", async () => {
     const runs = await mk(2);
     expect(planPace(runs.map((run) => entry(run, 2)), ctxOf(20), () => 6).size).toBe(1);
+  });
+});
+
+describe("quota per hour (ADR 2026-11-24-quota-per-hour)", () => {
+  const MIN = 60_000;
+  /** weekly: 6 points over one agent hour (a: 30 min, b: 10 min per attempt). */
+  const learned = () => {
+    const history = new CostHistory();
+    history.add("work", "claude", { weekly: 6 }, { weekly: HOUR });
+    history.addStepTime("work", "a", 30 * MIN);
+    history.addStepTime("work", "b", 10 * MIN);
+    return history;
+  };
+  const steps = (running = false, elapsedMs = 0) => [
+    { stepId: "a", running, elapsedMs },
+    { stepId: "b", running: false, elapsedMs: 0 },
+  ];
+
+  it("learns points per active agent hour from the points and the agent time behind them", () => {
+    const history = new CostHistory();
+    history.add("work", "claude", { weekly: 1 }, { weekly: 10 * MIN });
+    history.add("work", "claude", { weekly: 2 }, { weekly: 20 * MIN });
+    expect(history.rows()).toEqual([{ playbook: "work", provider: "claude", window: "weekly", steps: 2, pointsPerStep: 1.5, agentMs: 30 * MIN, pointsPerHour: 6 }]);
+    expect(history.burnRate("work", "claude", "weekly")).toBeCloseTo(6 / HOUR, 12);
+    // Too little agent time: the rate is not used for pacing, the row still shows it.
+    const small = new CostHistory();
+    small.add("work", "claude", { weekly: 1 }, { weekly: MIN_RATE_MS - 1 });
+    expect(small.burnRate("work", "claude", "weekly")).toBeNull();
+    expect(small.rows()[0]!.pointsPerHour).not.toBeNull();
+  });
+
+  it("loads a history written before agent time was kept, unchanged, and times only what is measured afterwards", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "history-"));
+    temps.push(dir);
+    const file = path.join(dir, "rate-history.json");
+    await writeFile(file, JSON.stringify({ "work|claude\u0000weekly": { points: 10, steps: 2 } }));
+    const history = new CostHistory(file);
+    expect(history.stepCost("work", "claude", "weekly")).toBe(5);
+    expect(history.burnRate("work", "claude", "weekly")).toBeNull();
+    expect(history.rows()[0]).toMatchObject({ agentMs: null, pointsPerHour: null });
+    // One new timed step: the rate rests on the new step alone (3 points over an hour), not on the 10 untimed points.
+    history.add("work", "claude", { weekly: 3 }, { weekly: HOUR });
+    expect(history.stepCost("work", "claude", "weekly")).toBeCloseTo(13 / 3, 9);
+    expect(history.rows()[0]!.pointsPerHour).toBeCloseTo(3, 9);
+    history.addStepTime("work", "a", 5 * MIN);
+    await history.save();
+    const reloaded = new CostHistory(file);
+    expect(reloaded.rows()[0]!.pointsPerHour).toBeCloseTo(3, 9);
+    expect(reloaded.stepDuration("work", "a")).toBe(5 * MIN);
+    expect(Object.keys(JSON.parse(await readFile(file, "utf8")))).toContain("@stepTimes");
+  });
+
+  it("prices a long step above a short one by duration x rate; the unit cost would price them the same", () => {
+    const history = learned();
+    const need = (id: string) => history.remainingNeed("work", "claude", "weekly", [{ stepId: id, running: false, elapsedMs: 0 }])!.points;
+    expect(need("a")).toBeCloseTo(3, 9);
+    expect(need("b")).toBeCloseTo(1, 9);
+    expect(history.stepCost("work", "claude", "weekly")).toBe(6);
+  });
+
+  it("falls back to the unit cost per step when the duration or the rate is unknown, never counting a step twice", () => {
+    const history = learned();
+    // Step c has no duration: the unit cost (6) stands for it; a and b go by duration.
+    const mixed = history.remainingNeed("work", "claude", "weekly", [...steps(), { stepId: "c", running: false, elapsedMs: 0 }])!;
+    expect(mixed.points).toBeCloseTo(3 + 1 + 6, 9);
+    expect([...mixed.byDuration].sort()).toEqual(["a", "b"]);
+    // No rate yet (old history): every step is priced by the unit cost.
+    const old = new CostHistory();
+    old.add("work", "claude", { weekly: 4 });
+    old.addStepTime("work", "a", 30 * MIN);
+    expect(old.remainingNeed("work", "claude", "weekly", steps())).toEqual({ points: 8, byDuration: new Set() });
+    expect(history.remainingNeed("work", "claude", "other", steps())).toBeNull();
+  });
+
+  it("counts a running step by what is left of its expected duration, never below zero", () => {
+    const history = learned();
+    expect(history.remainingNeed("work", "claude", "weekly", steps(true, 10 * MIN))!.points).toBeCloseTo(2 + 1, 9);
+    expect(history.remainingNeed("work", "claude", "weekly", steps(true, 90 * MIN))!.points).toBeCloseTo(0 + 1, 9);
+  });
+
+  it("an attempt too short to be real teaches no duration", () => {
+    const history = new CostHistory();
+    history.addStepTime("work", "a", 500);
+    expect(history.stepDuration("work", "a")).toBeNull();
+  });
+
+  it("the admission cost uses the run cost when given, else steps x unit cost", async () => {
+    const runs = await mk(1);
+    // 3.9 free: unit cost x 2 steps = 4 does not fit; by duration the run needs 1.5 and fits.
+    expect(planHeadroom([want(runs[0]!, 2)], ctxOf(25, { stepCost: () => 2 })).holds.size).toBe(1);
+    expect(planHeadroom([want(runs[0]!, 2)], ctxOf(25, { stepCost: () => 2, runCost: () => 1.5 })).holds.size).toBe(0);
+    // A null run cost falls back to the unit cost.
+    expect(planHeadroom([want(runs[0]!, 2)], ctxOf(25, { stepCost: () => 2, runCost: () => null })).holds.size).toBe(1);
   });
 });

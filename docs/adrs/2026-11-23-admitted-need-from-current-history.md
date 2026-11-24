@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted. Refines `2026-11-21-pause-admitted-runs-to-fit-pace.md` and `2026-11-23-quota-limits-in-defaults.md`.
+Accepted. Refines `2026-11-21-pause-admitted-runs-to-fit-pace.md` and `2026-11-23-quota-limits-in-defaults.md`. The estimated cost of a run (steps × average cost per step) is refined by `2026-11-24-quota-per-hour.md` (expected duration × burn rate where known; the per-step average is the fallback).
 
 ## Context
 

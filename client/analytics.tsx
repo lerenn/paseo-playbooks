@@ -2,7 +2,7 @@ import { useRpc, useTranslation } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/ui";
 import { useEffect, useState } from "react";
 import { Pressable, Text, View } from "react-native";
-import { rowId, sortRows, tokensOf, type AgentRow, type Analytics, type DailySeries, type UsageRow } from "../shared/analytics";
+import { rowId, sortRows, tokensOf, type AgentRow, type Analytics, type DailySeries, type QuotaRate, type UsageRow } from "../shared/analytics";
 import { analyticsStateRpc } from "../shared/contracts";
 import type { Usage } from "../shared/types";
 import { axisTicks, compactNumber, isDarkColor, labelIndexes, niceAxis, seriesColor, shortDate } from "./analytics-chart";
@@ -239,6 +239,7 @@ export function AnalyticsView(props: { theme: Theme }) {
             </Text>
           ) : null}
           <Breakdown theme={theme} title={t("analytics.section.byPlaybook")} rows={data.byPlaybook} chart={data.daily?.byPlaybook} sort={sort} />
+          <QuotaRates theme={theme} rates={data.quotaRates} />
           <Breakdown theme={theme} title={t("analytics.section.byStep")} rows={data.byStep} chart={data.daily?.byStep} showWaste sort={sort} />
           <Breakdown theme={theme} title={t("analytics.section.byRole")} rows={data.byRole} chart={data.daily?.byRole} showWaste sort={sort} />
           <Breakdown theme={theme} title={t("analytics.section.byModel")} rows={data.byModel} chart={data.daily?.byModel} showWaste sort={sort} />
@@ -404,6 +405,74 @@ function TopAgents(props: { theme: Theme; rows: AgentRow[] }) {
             <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>
               {[row.kind, row.role ? t("analytics.agent.role", { role: row.role }) : null, row.model, row.agentId.slice(0, 8)].filter(Boolean).join(" · ")}
             </Text>
+          </View>
+        ))}
+      </View>
+    </View>
+  );
+}
+
+/** The (i) button of the quota cost section: its caption shows on hover or focus, and a tap toggles it (the pattern of the throttle line in the quota tab). */
+function QuotaInfo(props: { theme: Theme }) {
+  const { theme } = props;
+  const { t } = useTranslation(messages);
+  const [hover, setHover] = useState(false);
+  const [focus, setFocus] = useState(false);
+  const [pressed, setPressed] = useState(false);
+  const shown = hover || focus || pressed;
+  return (
+    <View style={{ position: "relative", zIndex: 50 }}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={t("analytics.quota.infoLabel")}
+        hitSlop={8}
+        onHoverIn={() => setHover(true)}
+        onHoverOut={() => setHover(false)}
+        onFocus={() => setFocus(true)}
+        onBlur={() => setFocus(false)}
+        onPress={() => setPressed(!pressed)}
+      >
+        <Icon name="Info" size={13} color={shown ? theme.colors.accent : theme.colors.foregroundMuted} />
+      </Pressable>
+      {shown ? (
+        <View style={{ position: "absolute", top: 20, left: 0, width: 280, padding: 10, borderRadius: 8, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface2 }}>
+          <Text style={{ color: theme.colors.foreground, fontSize: 11 }}>{t("analytics.quota.caption")}</Text>
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+/** What each playbook costs in quota: points per active agent hour and per run, one line per provider and quota period. Neutral colours (accent for the rate, muted for the rest). */
+function QuotaRates(props: { theme: Theme; rates: QuotaRate[] }) {
+  const { theme, rates } = props;
+  const { t, locale } = useTranslation(messages);
+  if (rates.length === 0) return null;
+  const byPlaybook = new Map<string, QuotaRate[]>();
+  for (const rate of rates) byPlaybook.set(rate.playbook, [...(byPlaybook.get(rate.playbook) ?? []), rate]);
+  const points = (value: number) => (Math.round(value * 10) / 10).toLocaleString(locale);
+  return (
+    <View style={{ gap: 8 }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+        <Text accessibilityRole="header" style={{ color: theme.colors.foreground, fontSize: 15, fontWeight: "700" }}>
+          {t("analytics.quota.title")}
+        </Text>
+        <QuotaInfo theme={theme} />
+      </View>
+      <View style={{ borderRadius: 10, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface1 }}>
+        {[...byPlaybook].map(([playbook, lines], index) => (
+          <View key={playbook} style={{ gap: 3, padding: 10, borderTopWidth: index === 0 ? 0 : 1, borderTopColor: theme.colors.border }}>
+            <Text style={{ color: theme.colors.foreground, fontSize: 13 }}>{playbook}</Text>
+            {lines.map((rate) => (
+              <View key={`${rate.provider}/${rate.window}`} style={{ flexDirection: "row", flexWrap: "wrap", gap: 10, alignItems: "baseline" }}>
+                <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>{`${rate.provider} · ${rate.window}`}</Text>
+                <Text style={{ color: theme.colors.accent, fontSize: 12, fontWeight: "600" }}>{rate.pointsPerHour === null ? t("analytics.quota.noHour") : t("analytics.quota.perHour", { value: points(rate.pointsPerHour) })}</Text>
+                {rate.pointsPerRun === null ? null : <Text style={{ color: theme.colors.foreground, fontSize: 12 }}>{t("analytics.quota.perRun", { value: points(rate.pointsPerRun) })}</Text>}
+                <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>
+                  {[t("analytics.quota.samples", { count: Math.round(rate.steps) }), rate.lowConfidence ? t("analytics.quota.low") : null].filter(Boolean).join(" · ")}
+                </Text>
+              </View>
+            ))}
           </View>
         ))}
       </View>

@@ -3,6 +3,7 @@ import { mkdir, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Run } from "../shared/types";
 import type { RateLimitsConfig } from "./config";
+import { MIN_SLOW_SAMPLE_MS } from "../shared/slow";
 import { byQueue, roomFreeAt, roomHeadroom, runPriority, type HoldVerdict, type Probe, type WindowRoom } from "./rate-limit";
 
 /**
@@ -18,20 +19,81 @@ export const windowKey = (provider: string, windowId: string): string => `${prov
 interface Sample {
   points: number;
   steps: number;
+  /**
+   * Agent time that produced `timedPoints` of the points (ADR 2026-11-24-quota-per-hour): the summed overlap of the finished agent
+   * attempts with the usage readings their points were measured from. Absent in a history written before it existed.
+   */
+  ms?: number;
+  /** The part of `points` measured together with `ms`. After an upgrade it is smaller than `points` until the old average decays. */
+  timedPoints?: number;
+}
+
+/** A learned per-step mean duration of finished agent attempts, per playbook and step id. */
+interface StepTime {
+  ms: number;
+  n: number;
+}
+
+/** The key of the per-step durations in the history file: it cannot be a playbook id, and an older reader skips it (no finite `points`). */
+const STEP_TIMES_KEY = "@stepTimes";
+/** Cap of the weight of old samples, as for the points. */
+const KEEP_SAMPLES = 200;
+/** The burn rate is used for pacing only once this much agent time backs it: below it, the per-step unit cost applies. */
+export const MIN_RATE_MS = 60_000;
+/** An attempt shorter than this teaches no duration (it did not really run), as in the slow-step baseline (shared/slow.ts). */
+export const MIN_STEP_TIME_MS = MIN_SLOW_SAMPLE_MS;
+
+/** What one remaining agent step of a run is, for the remaining need. */
+export interface StepNeed {
+  stepId: string;
+  /** How long its running attempt has run so far; 0 when none runs. */
+  elapsedMs: number;
+  running: boolean;
+}
+
+/** The remaining need of a run on a window: points, and the steps counted by duration (their use must not be deducted again). */
+export interface RemainingNeed {
+  points: number;
+  byDuration: Set<string>;
+}
+
+/** One playbook|provider|window row of the learned history, as analytics shows it. */
+export interface RateRow {
+  playbook: string;
+  provider: string;
+  window: string;
+  /** Finished agent attempts the average rests on. */
+  steps: number;
+  pointsPerStep: number;
+  /** Agent time the rate rests on (ms); null for a history without it. */
+  agentMs: number | null;
+  /** Points per active agent hour; null while there is no agent time yet. */
+  pointsPerHour: number | null;
 }
 
 /**
- * What agent steps cost in quota, per playbook, provider and window: points used / steps finished, measured from the usage
- * readings (the runtime attributes each reading's increase to the steps running in the interval). Kept in a file so it survives a reload.
+ * What agent steps cost in quota, per playbook, provider and window: points used / steps finished, and the agent time that produced
+ * them, measured from the usage readings (the runtime attributes each reading's increase to the steps running in the interval).
+ * Also the mean duration of the finished agent attempts per playbook step. Kept in a file so it survives a reload.
  */
 export class CostHistory {
   private data = new Map<string, Sample>();
+  private times = new Map<string, StepTime>();
 
   constructor(private readonly file: string | null = null) {
     if (file && existsSync(file)) {
       try {
-        const parsed = JSON.parse(readFileSync(file, "utf8")) as Record<string, Sample>;
-        for (const [key, sample] of Object.entries(parsed)) if (sample && Number.isFinite(sample.points) && sample.steps > 0) this.data.set(key, { points: sample.points, steps: sample.steps });
+        const parsed = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+        for (const [key, value] of Object.entries(parsed)) {
+          if (key === STEP_TIMES_KEY) {
+            for (const [stepKey, time] of Object.entries((value ?? {}) as Record<string, StepTime>)) if (time && Number.isFinite(time.ms) && time.n > 0) this.times.set(stepKey, { ms: time.ms, n: time.n });
+            continue;
+          }
+          const sample = value as Sample | null;
+          if (!sample || !Number.isFinite(sample.points) || !(sample.steps > 0)) continue;
+          const timed = Number.isFinite(sample.ms) && Number.isFinite(sample.timedPoints) && (sample.ms ?? 0) >= 0;
+          this.data.set(key, { points: sample.points, steps: sample.steps, ...(timed ? { ms: sample.ms!, timedPoints: sample.timedPoints! } : {}) });
+        }
       } catch {
         // A damaged history only means estimates start from the default again.
       }
@@ -44,6 +106,39 @@ export class CostHistory {
   stepCost(playbookId: string, provider: string, windowId: string): number | null {
     const sample = this.data.get(this.key(playbookId, provider, windowId));
     return sample && sample.steps > 0 ? sample.points / sample.steps : null;
+  }
+
+  /** Points per millisecond of active agent time on the window, or null while less than MIN_RATE_MS of agent time backs it (or none was measured). */
+  burnRate(playbookId: string, provider: string, windowId: string): number | null {
+    const sample = this.data.get(this.key(playbookId, provider, windowId));
+    return sample && sample.ms !== undefined && sample.timedPoints !== undefined && sample.ms >= MIN_RATE_MS ? sample.timedPoints / sample.ms : null;
+  }
+
+  /** Mean duration (ms) of a finished agent attempt of the step, or null with no sample. */
+  stepDuration(playbookId: string, stepId: string): number | null {
+    const time = this.times.get(`${playbookId}|${stepId}`);
+    return time && time.n > 0 ? time.ms / time.n : null;
+  }
+
+  /**
+   * What the remaining agent steps of a run still need on a window. Each step is counted once, from one source: its expected
+   * remaining duration (mean duration minus the time its running attempt has run, never below 0) times the burn rate, when both are
+   * known; else the unit cost per step. Null with no cost history on the window.
+   */
+  remainingNeed(playbookId: string, provider: string, windowId: string, steps: StepNeed[]): RemainingNeed | null {
+    const unit = this.stepCost(playbookId, provider, windowId);
+    if (unit === null) return null;
+    const rate = this.burnRate(playbookId, provider, windowId);
+    const byDuration = new Set<string>();
+    let points = 0;
+    for (const step of steps) {
+      const duration = rate === null ? null : this.stepDuration(playbookId, step.stepId);
+      if (rate !== null && duration !== null) {
+        points += Math.max(0, duration - (step.running ? step.elapsedMs : 0)) * rate;
+        byDuration.add(step.stepId);
+      } else points += unit;
+    }
+    return { points, byDuration };
   }
 
   /** The window ids the playbook has a measured cost for on the provider. */
@@ -59,22 +154,55 @@ export class CostHistory {
     return count;
   }
 
-  /** Records one finished step: its points per window. */
-  add(playbookId: string, provider: string, points: Record<string, number>): void {
+  /** Every learned row, for analytics. */
+  rows(): RateRow[] {
+    const rows: RateRow[] = [];
+    for (const [key, sample] of this.data) {
+      const [playbook, rest] = [key.slice(0, key.indexOf("|")), key.slice(key.indexOf("|") + 1)];
+      const [provider, window] = rest.split("\u0000");
+      const timed = sample.ms !== undefined && sample.timedPoints !== undefined && sample.ms > 0;
+      rows.push({ playbook, provider: provider ?? "", window: window ?? "", steps: sample.steps, pointsPerStep: sample.points / sample.steps, agentMs: sample.ms ?? null, pointsPerHour: timed ? (sample.timedPoints! / sample.ms!) * 3_600_000 : null });
+    }
+    return rows;
+  }
+
+  /**
+   * Records one finished step: its points per window, and the agent time those points were measured over (per window; a window
+   * without time adds points only, as an old history did).
+   */
+  add(playbookId: string, provider: string, points: Record<string, number>, ms: Record<string, number> = {}): void {
     for (const [windowId, value] of Object.entries(points)) {
       const key = this.key(playbookId, provider, windowId);
       const sample = this.data.get(key) ?? { points: 0, steps: 0 };
       // Old steps weigh less: after 200 samples each new one replaces a 200th of the average.
-      const keep = sample.steps >= 200 ? sample.steps - 1 : sample.steps;
-      this.data.set(key, { points: (sample.points * keep) / Math.max(sample.steps, 1) + value, steps: keep + 1 });
+      const keep = sample.steps >= KEEP_SAMPLES ? sample.steps - 1 : sample.steps;
+      const scale = keep / Math.max(sample.steps, 1);
+      const next: Sample = { points: sample.points * scale + value, steps: keep + 1 };
+      const time = ms[windowId];
+      if (sample.ms !== undefined || time !== undefined) {
+        next.ms = (sample.ms ?? 0) * scale + (time ?? 0);
+        next.timedPoints = (sample.timedPoints ?? 0) * scale + (time !== undefined ? value : 0);
+      }
+      this.data.set(key, next);
     }
+  }
+
+  /** Records the duration of a finished agent attempt of a playbook step. */
+  addStepTime(playbookId: string, stepId: string, ms: number): void {
+    if (!(ms >= MIN_STEP_TIME_MS)) return;
+    const key = `${playbookId}|${stepId}`;
+    const time = this.times.get(key) ?? { ms: 0, n: 0 };
+    const keep = time.n >= KEEP_SAMPLES ? time.n - 1 : time.n;
+    this.times.set(key, { ms: (time.ms * keep) / Math.max(time.n, 1) + ms, n: keep + 1 });
   }
 
   async save(): Promise<void> {
     if (!this.file) return;
     await mkdir(path.dirname(this.file), { recursive: true });
     const tmp = `${this.file}.${process.pid}.tmp`;
-    await writeFile(tmp, JSON.stringify(Object.fromEntries(this.data)), "utf8");
+    const body: Record<string, unknown> = Object.fromEntries(this.data);
+    if (this.times.size > 0) body[STEP_TIMES_KEY] = Object.fromEntries(this.times);
+    await writeFile(tmp, JSON.stringify(body), "utf8");
     await rename(tmp, this.file);
   }
 }
@@ -96,6 +224,11 @@ export interface PlanContext {
   probe: (provider: string, run?: Run) => Probe;
   /** Points one step of the run's playbook is expected to use on the window: its measured history; null while there is none (not paced by estimate). */
   stepCost: (run: Run, provider: string, windowId: string) => number | null;
+  /**
+   * The remaining need of the run for a provider window: its remaining agent steps by expected duration x burn rate where known, else
+   * the unit cost (ADR 2026-11-24-quota-per-hour). Optional: without it, `stepCost` x the step count.
+   */
+  runCost?: (run: Run, provider: string, windowId: string) => number | null;
   /** Points started work still has to use on the window (reservations not yet visible in the readings). */
   reserved: (provider: string, windowId: string) => number;
 }
@@ -118,8 +251,10 @@ export const ZERO_COST_POINTS = 0.05;
 
 const pts = (value: number) => `${Math.round(value * 10) / 10}`;
 
-/** The estimated cost of a candidate on one window: steps × per-step cost, never above what the window can ever hold. */
+/** The estimated cost of a candidate on one window: its remaining need (duration x rate per step where known, else steps × per-step cost), never above what the window can ever hold. */
 export function candidateCost(candidate: Candidate, room: WindowRoom, ctx: PlanContext, count: number): { cost: number; estimated: boolean } {
+  const whole = ctx.runCost?.(candidate.run, room.provider, room.id) ?? null;
+  if (whole !== null) return { cost: Math.min(whole, room.usable), estimated: true };
   const unit = ctx.stepCost(candidate.run, room.provider, room.id);
   return unit !== null ? { cost: Math.min(count * unit, room.usable), estimated: true } : { cost: 0, estimated: false };
 }

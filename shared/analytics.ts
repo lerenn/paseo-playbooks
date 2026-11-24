@@ -97,6 +97,45 @@ export const DailySeriesSchema = z.object({
 });
 export type DailySeries = z.infer<typeof DailySeriesSchema>;
 
+/**
+ * What a playbook costs in quota on one provider window, from the learned history (ADR 2026-11-24-quota-per-hour). It is the
+ * cumulative history, not limited by the analytics range.
+ */
+export const QuotaRateSchema = z.object({
+  playbook: z.string(),
+  provider: z.string(),
+  /** The usage window id (a quota term: weekly, session...). */
+  window: z.string(),
+  /** Points (percent of the window) per hour of active agent time: the sum of the finished agent attempts' time, never gate, script or waiting time between steps. Null while no agent time was measured. */
+  pointsPerHour: z.number().nullable(),
+  /** Points one finished agent attempt used on average. */
+  pointsPerStep: z.number(),
+  /** Estimated points of one finished run: points per attempt x agent attempts per finished run in the range. Null without a finished run. */
+  pointsPerRun: z.number().nullable(),
+  /** Finished agent attempts the averages rest on (decayed to 200). */
+  steps: z.number(),
+  /** Agent time behind the rate, ms; null when none was measured. */
+  agentMs: z.number().nullable(),
+  /** Fewer than LOW_CONFIDENCE_STEPS finished attempts or less than LOW_CONFIDENCE_MS of agent time: only a rough figure. */
+  lowConfidence: z.boolean(),
+});
+export type QuotaRate = z.infer<typeof QuotaRateSchema>;
+
+/** A rate is low confidence under this many finished agent attempts or this much agent time (ms). */
+export const LOW_CONFIDENCE_STEPS = 5;
+export const LOW_CONFIDENCE_MS = 10 * 60_000;
+
+/** The learned rows of the cost history, as `analyze` receives them (server/rate-budget.ts `CostHistory.rows`). */
+export interface RateInput {
+  playbook: string;
+  provider: string;
+  window: string;
+  steps: number;
+  pointsPerStep: number;
+  agentMs: number | null;
+  pointsPerHour: number | null;
+}
+
 export const AnalyticsSchema = z.object({
   /** Only runs created at or after this ISO time; null = all runs on disk. */
   since: z.string().nullable(),
@@ -114,6 +153,8 @@ export const AnalyticsSchema = z.object({
   overhead: z.object({ manager: UsageSchema, deciders: UsageSchema }),
   /** The agents that spent the most (by tokens), whatever they are; unknown for agents before this was recorded. */
   topAgents: z.array(AgentRowSchema).default([]),
+  /** The quota cost of each playbook per provider window: points per active agent hour, per step and per run; absent from servers older than it. */
+  quotaRates: z.array(QuotaRateSchema).default([]),
   /** The same breakdowns by day (see `dailySeries`); absent from servers older than the daily graphs. */
   daily: z
     .object({ byPlaybook: DailySeriesSchema, byStep: DailySeriesSchema, byRole: DailySeriesSchema, byModel: DailySeriesSchema })
@@ -309,6 +350,8 @@ export interface AnalyticsOptions {
   agents?: AgentUsage[];
   /** IANA time zone whose midnight ends a day in the daily series (default UTC). */
   timeZone?: string | null;
+  /** The learned quota cost history (the cumulative one, not narrowed by `since`). */
+  rates?: RateInput[];
   /** The instant "today" is taken from (default now). */
   now?: Date;
   /** Groups drawn per daily chart before the rest fold into "Other" (default 5). */
@@ -329,6 +372,7 @@ export function analyze(runs: Run[], options: AnalyticsOptions = {}): Analytics 
   const byStep = new Groups();
   const byRole = new Groups();
   const byModel = new Groups();
+  const finished = new Map<string, { runs: number; attempts: number }>();
   let total = zero();
   let manager = zero();
   let deciders = zero();
@@ -400,6 +444,12 @@ export function analyze(runs: Run[], options: AnalyticsOptions = {}): Analytics 
         byModel.add(model, null, run.id, attempt.usage, pass);
       });
     }
+    if (run.status === "completed") {
+      const done = finished.get(playbook) ?? { runs: 0, attempts: 0 };
+      done.runs += 1;
+      for (const step of run.playbook.steps) done.attempts += (run.steps[step.id]?.attempts ?? []).filter((attempt) => !isAgentlessAttempt(attempt.agentId)).length;
+      finished.set(playbook, done);
+    }
     if (!any) withoutUsage += 1;
     byPlaybook.add(playbook, null, run.id, runUsage);
   }
@@ -430,6 +480,24 @@ export function analyze(runs: Run[], options: AnalyticsOptions = {}): Analytics 
     byModel: byModel.rows(limit),
     overhead: { manager, deciders },
     topAgents,
+    quotaRates: (options.rates ?? [])
+      .filter((rate) => !options.playbook || rate.playbook === options.playbook)
+      .map((rate): QuotaRate => {
+        const done = finished.get(rate.playbook);
+        return {
+          playbook: rate.playbook,
+          provider: rate.provider,
+          window: rate.window,
+          pointsPerHour: rate.pointsPerHour,
+          pointsPerStep: rate.pointsPerStep,
+          pointsPerRun: done && done.runs > 0 ? (rate.pointsPerStep * done.attempts) / done.runs : null,
+          steps: rate.steps,
+          agentMs: rate.agentMs,
+          lowConfidence: rate.steps < LOW_CONFIDENCE_STEPS || (rate.agentMs ?? 0) < LOW_CONFIDENCE_MS,
+        };
+      })
+      .sort((a, b) => a.playbook.localeCompare(b.playbook) || a.provider.localeCompare(b.provider) || a.window.localeCompare(b.window))
+      .slice(0, limit * 4),
     daily: {
       byPlaybook: daily.byPlaybook.series(dayList, top),
       byStep: daily.byStep.series(dayList, top),

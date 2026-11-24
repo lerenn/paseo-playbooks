@@ -77,7 +77,7 @@ import { holdsBlock, planAdmissions, slotHolders } from "../shared/slots";
 import { DEFAULT_MANAGER_RECOVERY, DEFAULT_RATE_LIMITS, readManagerRecoveryConfig, readQuotaLimitsLayer, resolveQuotaLimits, type ManagerRecoveryConfig, type QuotaLimitsLayer, type RateLimitsConfig } from "./config";
 import { buildQuotaLimitation } from "./quota-limitation";
 import type { QuotaLimitation } from "../shared/quota-limitation";
-import { candidateCost, CostHistory, exhaustionVerdict, planPace, type Admitted as AdmittedRun, orderCandidates, planHeadroom, windowKey, ZERO_COST_POINTS, type Candidate as RateCandidate, type PlanContext } from "./rate-budget";
+import { candidateCost, CostHistory, type StepNeed, exhaustionVerdict, planPace, type Admitted as AdmittedRun, orderCandidates, planHeadroom, windowKey, ZERO_COST_POINTS, type Candidate as RateCandidate, type PlanContext } from "./rate-budget";
 import { gateWaiting, limitVerdict, parentIds, priorityViewOf, QuotaPacer, runPriority, runProviders, usedPct, type HoldVerdict, type ReadChange } from "./rate-limit";
 import { pluginDataDir } from "./data-dir";
 
@@ -701,7 +701,7 @@ export class Runtime {
   private readonly gateReleasedRuns = new Map<string, number | null>();
   private readonly reservedQuota = new Map<string, { runId: string; est: Record<string, number>; spent: Record<string, number>; at: number; endedAt: number | null }>();
   /** The quota points each running or just ended agent attempt has been measured to use so far, folded into `costs` when it ends. */
-  private readonly attemptUse = new Map<string, { playbookId: string; provider: string; points: Record<string, number> }>();
+  private readonly attemptUse = new Map<string, { playbookId: string; provider: string; points: Record<string, number>; ms: Record<string, number> }>();
   private readonly warnedUnreported = new Set<string>();
   private rateConfig: { at: number; value: QuotaLimitsLayer } | null = null;
   private limitTimer: ReturnType<typeof setInterval> | null = null;
@@ -2404,6 +2404,7 @@ export class Runtime {
       config,
       probe: (provider, run) => this.pacer.probe(provider, run ? this.limitsOf(run).quota : config.quota),
       stepCost: (run, provider, windowId) => this.costs.stepCost(run.playbook.id, provider, windowId),
+      runCost: (run, provider, windowId) => this.costs.remainingNeed(run.playbook.id, provider, windowId, this.rateSteps(run).get(provider) ?? [])?.points ?? null,
       reserved: (provider, windowId) => {
         const key = windowKey(provider, windowId);
         let total = 0;
@@ -2466,6 +2467,22 @@ export class Runtime {
       demand.set(provider, (demand.get(provider) ?? 0) + 1);
     }
     return demand;
+  }
+
+  /** The remaining agent steps of the run per provider, with how long a running attempt has run: what `CostHistory.remainingNeed` prices. */
+  private rateSteps(run: Run): Map<string, StepNeed[]> {
+    const out = new Map<string, StepNeed[]>();
+    const now = Date.now();
+    for (const step of run.playbook.steps) {
+      const state = run.steps[step.id];
+      if (step.kind !== "agent" || state?.status === "completed" || state?.status === "skipped") continue;
+      const open = state?.status === "running" ? state.attempts.findLast((attempt) => !attempt.endedAt) : undefined;
+      const provider = this.stepProvider(run, step.id);
+      const list = out.get(provider) ?? [];
+      list.push({ stepId: step.id, running: open !== undefined, elapsedMs: open ? Math.max(0, now - Date.parse(open.startedAt)) : 0 });
+      out.set(provider, list);
+    }
+    return out;
   }
 
   /** Runs that wait for headroom, in queue order (the asking run always included). */
@@ -2549,19 +2566,23 @@ export class Runtime {
         continue;
       }
       const need: Record<string, number> = {};
-      const demand = this.rateDemand(run);
-      for (const [provider, count] of demand) {
+      // The steps priced by expected remaining duration per window key: their running use is already in that figure, so it is not deducted again.
+      const timed = new Map<string, Set<string>>();
+      for (const [provider, steps] of this.rateSteps(run)) {
         for (const windowId of this.costs.windows(run.playbook.id, provider)) {
-          const unit = this.costs.stepCost(run.playbook.id, provider, windowId);
-          if (unit !== null) need[windowKey(provider, windowId)] = count * unit;
+          const remaining = this.costs.remainingNeed(run.playbook.id, provider, windowId, steps);
+          if (!remaining) continue;
+          need[windowKey(provider, windowId)] = remaining.points;
+          timed.set(windowKey(provider, windowId), remaining.byDuration);
         }
       }
       if (Object.keys(need).length === 0) continue;
       for (const [key, entry] of this.attemptUse) {
         if (!key.startsWith(`${run.id}/`)) continue;
+        const stepId = key.split("/")[1]!;
         for (const [windowId, points] of Object.entries(entry.points)) {
           const k = windowKey(entry.provider, windowId);
-          if (k in need) need[k] = Math.max(0, need[k]! - points);
+          if (k in need && !timed.get(k)?.has(stepId)) need[k] = Math.max(0, need[k]! - points);
         }
       }
       const reserved = this.reservedQuota.get(`run:${run.id}`) ?? { runId: run.id, est: {}, spent: {}, at: Date.now(), endedAt: null };
@@ -2635,9 +2656,11 @@ export class Runtime {
         const delta = Math.max(0, now - was);
         for (const item of weights) {
           const key = `${item.runId}/${item.stepId}/${item.n}`;
-          const entry = this.attemptUse.get(key) ?? { playbookId: item.playbookId, provider, points: {} };
+          const entry = this.attemptUse.get(key) ?? { playbookId: item.playbookId, provider, points: {}, ms: {} };
           const share = (delta * item.weight) / total;
           entry.points[window.id] = (entry.points[window.id] ?? 0) + share;
+          // The agent time this attempt was measured over: its overlap with the interval, kept per window like the points.
+          entry.ms[window.id] = (entry.ms[window.id] ?? 0) + item.weight;
           this.attemptUse.set(key, entry);
           const reserved = this.reservedQuota.get(`run:${item.runId}`);
           if (reserved) reserved.spent[windowKey(provider, window.id)] = (reserved.spent[windowKey(provider, window.id)] ?? 0) + share;
@@ -2649,7 +2672,9 @@ export class Runtime {
       const [runId, stepId, n] = key.split("/");
       const attempt = this.store.get(runId!)?.steps[stepId!]?.attempts.find((candidate) => String(candidate.n) === n);
       if (attempt && !attempt.endedAt) continue;
-      this.costs.add(entry.playbookId, entry.provider, entry.points);
+      this.costs.add(entry.playbookId, entry.provider, entry.points, entry.ms);
+      // The attempt's whole duration (start to end: agent time only, never gate or script time) is the step's expected duration.
+      if (attempt?.endedAt) this.costs.addStepTime(entry.playbookId, stepId!, Date.parse(attempt.endedAt) - Date.parse(attempt.startedAt));
       this.attemptUse.delete(key);
       learned = true;
     }
@@ -6089,7 +6114,7 @@ export class Runtime {
   /** Where the tokens went (see shared/analytics.ts), over the runs on disk. */
   async analytics(options: { days?: number | undefined; playbook?: string | undefined; projectId?: string | undefined; timeZone?: string | undefined; limit?: number | undefined } = {}): Promise<Analytics> {
     const since = options.days ? new Date(Date.now() - options.days * 86_400_000).toISOString() : null;
-    return analyze(this.store.list(), { since, playbook: options.playbook ?? null, projectId: options.projectId ?? null, agents: await this.usageLedger.list(), timeZone: options.timeZone ?? null, ...(options.limit ? { limit: options.limit } : {}) });
+    return analyze(this.store.list(), { since, playbook: options.playbook ?? null, projectId: options.projectId ?? null, agents: await this.usageLedger.list(), rates: this.costs.rows(), timeZone: options.timeZone ?? null, ...(options.limit ? { limit: options.limit } : {}) });
   }
 
   /**

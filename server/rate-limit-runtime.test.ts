@@ -35,14 +35,14 @@ const HOUR = 3_600_000;
 /** A weekly window with `used` points, 50 of 168 hours gone: what is allowed so far is 28.87 points at 97 usable. */
 const weekly = (used: number) => ({ id: "weekly", label: "weekly", usedPct: used, resetsAt: new Date(Date.now() + 118 * HOUR).toISOString() });
 
-async function setup(rateLimits: string, usage: { current: unknown } = { current: { providers: [] } }, options: { history?: boolean } = {}) {
+async function setup(rateLimits: string, usage: { current: unknown } = { current: { providers: [] } }, options: { history?: boolean; seed?: unknown } = {}) {
   const dir = await mkdtemp(path.join(tmpdir(), "rl-runtime-"));
   temps.push(dir);
   process.env.PASEO_HOME = dir;
   await mkdir(path.join(dir, "plugin-data/lerenn/paseo-playbooks"), { recursive: true });
   await writeFile(path.join(dir, "plugin-data/lerenn/paseo-playbooks/config.yaml"), rateLimits);
   // A playbook's cost comes only from measured history: seed 5 points per step on the weekly window unless the test wants none.
-  if (options.history !== false) await writeFile(path.join(dir, "plugin-data/lerenn/paseo-playbooks/rate-history.json"), JSON.stringify({ "work|claude\u0000weekly": { points: 5, steps: 1 } }));
+  if (options.history !== false) await writeFile(path.join(dir, "plugin-data/lerenn/paseo-playbooks/rate-history.json"), JSON.stringify(options.seed ?? { "work|claude\u0000weekly": { points: 5, steps: 1 } }));
   const root = path.join(dir, "repo/.paseo/playbooks");
   await mkdir(path.join(root, "roles/implementer"), { recursive: true });
   await writeFile(path.join(root, "roles/implementer/role.yaml"), "title: Implementer\n");
@@ -69,7 +69,7 @@ async function setup(rateLimits: string, usage: { current: unknown } = { current
     rateCheck(run: unknown, key?: string, quota?: boolean): Promise<unknown>;
     releaseHolds(): Promise<void>;
     observeUsage(changes: unknown[]): void;
-    costs: { stepCost(playbook: string, provider: string, window: string): number | null };
+    costs: { stepCost(playbook: string, provider: string, window: string): number | null; rows(): Array<{ pointsPerHour: number | null; agentMs: number | null }>; stepDuration(playbook: string, step: string): number | null };
   };
   return { store, runtime, sent, created, usage, internals, read: () => internals.pacer.refresh() };
 }
@@ -432,6 +432,45 @@ describe("dynamic capacity from quota headroom", () => {
     const window = (used: number) => ({ id: "weekly", label: "weekly", usedPct: used, resetsAt: weekly(0).resetsAt });
     internals.observeUsage([{ provider: "claude", before: { entry: { providerId: "claude", windows: [window(10)] }, at: now - 60_000 }, after: { entry: { providerId: "claude", windows: [window(13)] }, at: now } }]);
     expect(internals.costs.stepCost("work", "claude", "weekly")).toBeCloseTo(3, 1);
+    // The agent time behind those 3 points: the attempt's 30 s inside the 60 s interval, i.e. 360 points per hour; its whole duration is the step's.
+    expect(internals.costs.rows()[0]).toMatchObject({ agentMs: 30_000 });
+    expect(internals.costs.rows()[0]!.pointsPerHour).toBeCloseTo(360, 0);
+    expect(internals.costs.stepDuration("work", "a")).toBeCloseTo(30_000, -2);
+  });
+
+  it("an admitted run needs its remaining steps by expected duration x burn rate, not by the unit cost", async () => {
+    // 6 points over an hour of agent time; step a takes 30 min, b 10 min: 3 + 1 points for the run, where the unit cost says 2 x 6 = 12.
+    const seed = { "work|claude\u0000weekly": { points: 6, steps: 1, ms: HOUR, timedPoints: 6 }, "@stepTimes": { "work|a": { ms: 30 * 60_000, n: 1 }, "work|b": { ms: 10 * 60_000, n: 1 } } };
+    const { runtime, store, internals, read } = await setup(pacing(), { current: claude(1) }, { seed });
+    await read();
+    await runtime.startStep("m", "r0", "a", "go");
+    const inner = runtime as unknown as { reservedQuota: Map<string, { est: Record<string, number>; spent: Record<string, number> }>; refreshAdmittedNeeds(): void };
+    const need = () => {
+      inner.refreshAdmittedNeeds();
+      const reserved = inner.reservedQuota.get("run:r0")!;
+      return (reserved.est["claude\u0000weekly"] ?? 0) - (reserved.spent["claude\u0000weekly"] ?? 0);
+    };
+    // Step a just started (almost nothing elapsed): about 3 + 1.
+    expect(need()).toBeGreaterThan(3.8);
+    expect(need()).toBeLessThanOrEqual(4);
+    // Step a has run 20 of its 30 minutes: 1 + 1.
+    await store.mutate("r0", (run) => void (run.steps.a!.attempts[0]!.startedAt = new Date(Date.now() - 20 * 60_000).toISOString()));
+    expect(need()).toBeCloseTo(2, 1);
+    // Measured use of the running step is not deducted a second time (its elapsed time already is).
+    (internals as unknown as { attemptUse: Map<string, unknown> }).attemptUse.set("r0/a/1", { playbookId: "work", provider: "claude", points: { weekly: 1.5 }, ms: { weekly: 1 } });
+    expect(need()).toBeCloseTo(2, 1);
+  });
+
+  it("without a duration for the steps the old unit-cost need applies", async () => {
+    const seed = { "work|claude\u0000weekly": { points: 6, steps: 1, ms: HOUR, timedPoints: 6 } };
+    const { runtime, internals, read } = await setup(pacing(), { current: claude(1) }, { seed });
+    await read();
+    await runtime.startStep("m", "r0", "a", "go");
+    const inner = runtime as unknown as { reservedQuota: Map<string, { est: Record<string, number>; spent: Record<string, number> }>; refreshAdmittedNeeds(): void };
+    inner.refreshAdmittedNeeds();
+    const reserved = inner.reservedQuota.get("run:r0")!;
+    expect((reserved.est["claude\u0000weekly"] ?? 0) - (reserved.spent["claude\u0000weekly"] ?? 0)).toBeCloseTo(12, 5);
+    void internals;
   });
 });
 
