@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { overviewSettings } from "./overview-settings";
-import { closedTabs, closeTab, effectiveTab, normalizeOpenTabs, openTab, visibleTabs, type TabsState } from "./panel-tabs";
+import { closedTabs, closeTab, effectiveTab, normalizeOpenTabs, openTab, toggleTab, canToggleTab, visibleTabs, type TabsState } from "./panel-tabs";
 
 const start: TabsState = { open: [], selected: "runs" };
 
@@ -53,5 +53,20 @@ describe("panel tabs", () => {
   it("persists: a store from before this setting loads with no added tab; a saved list round-trips", () => {
     expect(overviewSettings.schema.parse({ sort: "activity" }).openTabs).toEqual([]);
     expect(overviewSettings.schema.parse({ openTabs: ["quota"] }).openTabs).toEqual(["quota"]);
+  });
+
+  it("toggles a tab from the menu without changing the selection", () => {
+    const state: TabsState = { open: ["analytics"], selected: "runs" };
+    expect(toggleTab(state, "quota")).toEqual({ open: ["analytics", "quota"], selected: "runs" });
+    expect(toggleTab(state, "analytics")).toEqual({ open: [], selected: "runs" });
+  });
+
+  it("never hides Runs or the tab being shown", () => {
+    const state: TabsState = { open: ["quota"], selected: "quota" };
+    expect(toggleTab(state, "quota")).toBe(state);
+    expect(toggleTab(state, "runs")).toBe(state);
+    expect(canToggleTab(state, "quota")).toBe(false);
+    expect(canToggleTab(state, "runs")).toBe(false);
+    expect(canToggleTab(state, "analytics")).toBe(true);
   });
 });

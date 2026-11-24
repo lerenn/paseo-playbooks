@@ -39,5 +39,15 @@ export function closeTab(state: TabsState, tab: PanelTab): TabsState {
   return { open: state.open.filter((candidate) => candidate !== tab), selected: state.selected === tab ? FIXED_TAB : state.selected };
 }
 
+/** What the "+" menu does with an item: shows a hidden tab (without selecting it) or hides a shown one. Runs and the selected tab cannot be hidden, so they come back unchanged. */
+export function toggleTab(state: TabsState, tab: PanelTab): TabsState {
+  if (tab === FIXED_TAB || tab === state.selected) return state;
+  const open = state.open.includes(tab) ? state.open.filter((candidate) => candidate !== tab) : normalizeOpenTabs([...state.open, tab]);
+  return { ...state, open };
+}
+
+/** Whether the "+" menu lets a tab be toggled: not Runs, not the tab being shown. */
+export const canToggleTab = (state: TabsState, tab: PanelTab): boolean => tab !== FIXED_TAB && tab !== state.selected;
+
 /** The tab to render: a selected tab that is not open (a stale selection) shows Runs. */
 export const effectiveTab = (state: TabsState): PanelTab => (state.selected === FIXED_TAB || state.open.includes(state.selected) ? state.selected : FIXED_TAB);
