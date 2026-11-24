@@ -64,6 +64,15 @@ per workspace row. Until now a run could only be seen from the Playbooks screen 
   never shrinks; the label does, so the row still never wraps. The host's separator colour
   (`foregroundExtraMuted`, with hover and selected variants) is not in the plugin theme: the dot is
   `foregroundMuted` at 70 % opacity for every state and does not follow the row's hover or selected colour.
+- The dot separates our badges from the host's own meta items, so it shows only when the host draws at
+  least one before ours (a lone "·" at the start of the line looks out of place). `hasLeadingHostItem`
+  (`client/host-meta.ts`) mirrors the host's `selectMetaRowItems` (Paseo 0.17): branch, project, host badge,
+  pull request, checks, running services, labels, each under its Show-menu toggle (defaults: branch and
+  project off, the rest on). The plugin reads only the workspace's labels (`useWorkspace`); it cannot read the
+  Show menu, the pull request or checks, the services, nor whether the host badge or project name is drawn.
+  So the dot is approximated: shown when the workspace has labels (the default shows them), hidden
+  otherwise, even where the host draws a pull request, checks, a branch or project the user turned on.
+  Hiding when unsure is deliberate: a missing dot looks better than a lone one.
 - Rows do not fetch. All Components read one shared store that rides on the overview store: the
   first mounted row asks it for the runs once (the same request the screen uses, refreshed on agent
   events with a 60 s fallback), the index by workspace id is rebuilt once per new set of runs, and the

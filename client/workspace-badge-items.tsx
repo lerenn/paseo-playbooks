@@ -1,7 +1,8 @@
-import { useTranslation, type PluginClientContext, type PluginWorkspaceRowBadgeItemProps } from "@getpaseo/plugin/client";
+import { useTranslation, useWorkspace, type PluginClientContext, type PluginWorkspaceRowBadgeItemProps } from "@getpaseo/plugin/client";
 import { Icon, WorkspaceRowBadge } from "@getpaseo/plugin/client/ui";
 import { Text, View } from "react-native";
 import { messages } from "./i18n";
+import { hasLeadingHostItem } from "./host-meta";
 import { createBadgeStore, useLeadingDot, useWorkspaceBadges, type BadgeStore } from "./workspace-badges-store";
 import type { OverviewStore } from "./overview-store";
 import { semanticColor, type SemanticTone } from "./semantic-colors";
@@ -55,10 +56,21 @@ function Badge(props: { theme: Theme; tone: BadgeTone; rowTone: SemanticTone | n
   return <WorkspaceRowBadge icon={props.icon} tone={props.tone} label={props.label} accessibilityLabel={props.accessibilityLabel} />;
 }
 
+/**
+ * Whether the host draws a meta item of its own before our badges on this row. The plugin reads the
+ * workspace's labels, not the Show menu (so the defaults apply: branch and project hidden) nor the pull
+ * request, checks, services or host badge (not exposed). Where unsure the answer is no: a missing dot
+ * looks better than a lone one.
+ */
+function useHostItemBefore(workspaceId: string): boolean {
+  return useWorkspace(workspaceId, (workspace) => hasLeadingHostItem({ labels: workspace.labels })) ?? false;
+}
+
 function RunBadgeItem(props: PluginWorkspaceRowBadgeItemProps & { store: BadgeStore }) {
   const { t } = useTranslation(messages);
   const badges = useWorkspaceBadges(props.store, props.workspaceId);
-  const dot = useLeadingDot(props.store, props.workspaceId, "playbook-run", badges !== null);
+  const hostItem = useHostItemBefore(props.workspaceId);
+  const dot = useLeadingDot(props.store, props.workspaceId, "playbook-run", badges !== null) && hostItem;
   if (!badges) return null;
   const { run, rowTone } = badges;
   const label = run.live ? t("shell.badge.steps", { done: run.done, total: run.total }) : t(`shell.badge.state.${run.state as "done"}`);
@@ -71,7 +83,8 @@ function StateBadgeItem(props: PluginWorkspaceRowBadgeItemProps & { store: Badge
   const { t } = useTranslation(messages);
   const badges = useWorkspaceBadges(props.store, props.workspaceId);
   const state = badges?.state ?? null;
-  const dot = useLeadingDot(props.store, props.workspaceId, "playbook-state", state !== null);
+  const hostItem = useHostItemBefore(props.workspaceId);
+  const dot = useLeadingDot(props.store, props.workspaceId, "playbook-state", state !== null) && hostItem;
   if (!badges || !state) return null;
   const label = t(`shell.badge.stateWord.${state.kind}`);
   const accessibilityLabel = t("shell.badge.runLabel", { playbook: badges.run.playbook, state: t(`shell.badge.stateFull.${badges.run.state}`), done: badges.run.done, total: badges.run.total });
@@ -82,7 +95,8 @@ function AttentionBadgeItem(props: PluginWorkspaceRowBadgeItemProps & { store: B
   const { t } = useTranslation(messages);
   const badges = useWorkspaceBadges(props.store, props.workspaceId);
   const attention = badges?.attention ?? null;
-  const dot = useLeadingDot(props.store, props.workspaceId, "playbook-attention", attention !== null);
+  const hostItem = useHostItemBefore(props.workspaceId);
+  const dot = useLeadingDot(props.store, props.workspaceId, "playbook-attention", attention !== null) && hostItem;
   if (!attention) return null;
   return (
     <Badge
