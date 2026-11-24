@@ -602,6 +602,12 @@ describe("a run waiting at a gate releases its reservation (ADR 2026-11-24-gate-
         decidedAt: null,
       } as never);
     });
+  /** Like \`wait\`, with the gate left as it is (only the times move). */
+  const wait2 = (store: RunStore, id: string, minutes: number) =>
+    store.mutate(id, (run) => {
+      for (const attempt of run.steps.a!.attempts) Object.assign(attempt, { startedAt: ago(minutes + 5), endedAt: ago(minutes + 1) });
+      run.gates[0]!.requestedAt = ago(minutes + 1);
+    });
   /** The human decides: the gate closes and step b is ready. */
   const decide = (store: RunStore, id: string) =>
     store.mutate(id, (run) => {
@@ -653,25 +659,66 @@ describe("a run waiting at a gate releases its reservation (ADR 2026-11-24-gate-
     expect(reserved(runtime).has("run:r0")).toBe(true);
   });
 
-  it("keeps the reservation inside the grace, whatever the gate kind: an open gate and a deferred (Waiting) one", async () => {
+  it("keeps the reservation inside the grace for an ordinary open gate", async () => {
     const { runtime, store, read } = await setup(pacing(), { current: claude(10) });
     await read();
     await runtime.startStep("m", "r0", "a", "go");
     await wait(store, "r0", 3);
     refresh(runtime);
     expect(reserved(runtime).has("run:r0")).toBe(true);
-    await store.mutate("r0", (run) => void (run.gates[0]!.deferral = { reason: "later", condition: { kind: "manual", note: "" }, remindAt: null, deferredAt: ago(1), deferredBy: "human", returnedAt: null, returnedBy: null, returnNote: null }));
+    await wait2(store, "r0", 11);
     refresh(runtime);
-    expect(reserved(runtime).has("run:r0")).toBe(true);
+    expect(reserved(runtime).has("run:r0")).toBe(false);
   });
 
-  it("releases a deferred (Waiting) gate's run once the grace has passed since it was deferred", async () => {
+  it("releases a run whose gates are all deferred (Waiting) at once, with no grace; a mix with an ordinary gate keeps the grace; off keeps it", async () => {
     const { runtime, store, read } = await setup(pacing(), { current: claude(10) });
     await read();
     await runtime.startStep("m", "r0", "a", "go");
-    await wait(store, "r0", 11, true);
+    await wait(store, "r0", 0, true);
+    await store.mutate("r0", (run) => void (run.gates.push({ ...run.gates[0]!, id: "g2", deferral: null }) as never));
+    refresh(runtime);
+    expect(reserved(runtime).has("run:r0")).toBe(true);
+    await store.mutate("r0", (run) => void run.gates.pop());
     refresh(runtime);
     expect(reserved(runtime).has("run:r0")).toBe(false);
+    const off = await setup(pacing(", gate_release_after: off"), { current: claude(10) });
+    await off.read();
+    await off.runtime.startStep("m", "r0", "a", "go");
+    await wait(off.store, "r0", 0, true);
+    refresh(off.runtime);
+    expect(reserved(off.runtime).has("run:r0")).toBe(true);
+  });
+
+  it("a gate returned to review takes the reservation back, for a fresh grace", async () => {
+    const { runtime, store, read } = await setup(pacing(), { current: claude(10) });
+    await read();
+    await runtime.startStep("m", "r0", "a", "go");
+    await wait(store, "r0", 0, true);
+    refresh(runtime);
+    expect(reserved(runtime).has("run:r0")).toBe(false);
+    await store.mutate("r0", (run) => void (run.gates[0]!.deferral!.returnedAt = new Date().toISOString()));
+    await (runtime as unknown as { emitReturned(runId: string, gateId: string, by: string, note: string | null, automatic: boolean): Promise<void> }).emitReturned("r0", "g1", "human", null, false);
+    expect(reserved(runtime).has("run:r0")).toBe(true);
+  });
+
+  it("a returning run goes before runs that never started at the same priority, never before a higher one, and only for a while", async () => {
+    const { runtime, store, read } = await setup(pacing(), { current: claude(10) });
+    await read();
+    await store.mutate("r1", (run) => void (run.createdAt = ago(500)));
+    await wait(store, "r0", 11);
+    const inner = runtime as unknown as { rateCandidates(run: unknown): Array<{ run: { id: string } }>; gateReleasedRuns: Map<string, number | null> };
+    const order = () => inner.rateCandidates(store.get("r1")!).map((candidate) => candidate.run.id);
+    expect(order()).toEqual(["r1"]);
+    expect(inner.gateReleasedRuns.get("r0")).toBeNull();
+    await decide(store, "r0");
+    // r1 is older, but r0 came back from a gate release.
+    expect(order()).toEqual(["r0", "r1"]);
+    await store.mutate("r1", (run) => void (run.priority = 9));
+    expect(order()).toEqual(["r1", "r0"]);
+    await store.mutate("r1", (run) => void (run.priority = 0));
+    inner.gateReleasedRuns.set("r0", Date.now() - 16 * 60_000);
+    expect(order()).toEqual(["r1", "r0"]);
   });
 
   it("gate_release_after: 0 releases at once, off never, and a duration sets the grace", async () => {

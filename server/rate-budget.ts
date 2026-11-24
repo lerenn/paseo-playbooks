@@ -85,6 +85,8 @@ export interface Candidate {
   priority: number;
   /** provider → number of steps (all the run's remaining agent steps). */
   demand: Map<string, number>;
+  /** A run released while waiting at a gate that was decided or returned: ahead of runs that never started, at the same priority (ADR 2026-11-24-deferred-releases-now-returning-first). */
+  returning?: boolean;
 }
 
 export interface PlanContext {
@@ -289,7 +291,8 @@ export function planPace(runs: Admitted[], ctx: Pick<PlanContext, "now" | "probe
 /** The candidates in queue order. */
 export function orderCandidates(candidates: Candidate[], runs: Run[]): Candidate[] {
   const order = byQueue(runs);
-  return [...candidates].sort((a, b) => order(a.run, b.run));
+  // Higher priority first (a manual or playbook priority above a returning run's still wins); then a returning run before one that never started; then oldest.
+  return [...candidates].sort((a, b) => runPriority(b.run, runs) - runPriority(a.run, runs) || Number(b.returning ?? false) - Number(a.returning ?? false) || order(a.run, b.run));
 }
 
 export { runPriority };

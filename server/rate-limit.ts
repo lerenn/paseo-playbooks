@@ -1,5 +1,5 @@
 import type { RateHold, Run, RunPriorityView } from "../shared/types";
-import { waitsForHuman } from "../shared/gates";
+import { isDeferred, waitsForHuman } from "../shared/gates";
 import { isActive, isPaused, isPipeline, runningAfterTasks } from "../shared/types";
 import type { RateLimitsConfig } from "./config";
 import { instantOfOpenMs, isClosedAt, openMs, type ClosedHours } from "./closed-hours";
@@ -323,9 +323,10 @@ export function runningStepCount(runs: Run[]): number {
  * its children, whose step is running, is not waiting), and at least one open gate, every open gate waiting for a human (a gate a role
  * decider still holds will be decided by an agent within minutes: the run is about to go on). A step held for quota is ready, so it is not
  * waiting either. Derived from run state alone, so a restart sees the same answer: the instant is the latest of the run's own events
- * (an attempt starting or ending, a gate opening, being deferred or decided).
+ * (an attempt starting or ending, a gate opening, being deferred, returned to review or decided). `deferred`: every open gate is deferred
+ * (Waiting), which releases the reservation without the grace (ADR 2026-11-24-deferred-releases-now-returning-first).
  */
-export function gateWaitingSince(run: Run): number | null {
+export function gateWaiting(run: Run): { since: number; deferred: boolean } | null {
   if (!isActive(run) || isPaused(run) || run.status !== "waiting_gate" || runningAfterTasks(run).length > 0) return null;
   const open = run.gates.filter((gate) => gate.status === "pending");
   if (open.length === 0 || !open.every((gate) => waitsForHuman(gate))) return null;
@@ -336,8 +337,8 @@ export function gateWaitingSince(run: Run): number | null {
     if (!Number.isNaN(at) && (Number.isNaN(since) || at > since)) since = at;
   };
   for (const state of Object.values(run.steps)) for (const attempt of state.attempts) { note(attempt.startedAt); note(attempt.endedAt); }
-  for (const gate of run.gates) { note(gate.requestedAt); note(gate.decidedAt); note(gate.deferral?.deferredAt); }
-  return Number.isNaN(since) ? null : since;
+  for (const gate of run.gates) { note(gate.requestedAt); note(gate.decidedAt); note(gate.deferral?.deferredAt); note(gate.deferral?.returnedAt); }
+  return Number.isNaN(since) ? null : { since, deferred: open.every((gate) => isDeferred(gate)) };
 }
 
 /**

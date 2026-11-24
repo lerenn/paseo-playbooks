@@ -78,13 +78,15 @@ import { DEFAULT_MANAGER_RECOVERY, DEFAULT_RATE_LIMITS, readManagerRecoveryConfi
 import { buildQuotaLimitation } from "./quota-limitation";
 import type { QuotaLimitation } from "../shared/quota-limitation";
 import { candidateCost, CostHistory, exhaustionVerdict, planPace, type Admitted as AdmittedRun, orderCandidates, planHeadroom, windowKey, ZERO_COST_POINTS, type Candidate as RateCandidate, type PlanContext } from "./rate-budget";
-import { gateWaitingSince, limitVerdict, parentIds, priorityViewOf, QuotaPacer, runPriority, runProviders, usedPct, type HoldVerdict, type ReadChange } from "./rate-limit";
+import { gateWaiting, limitVerdict, parentIds, priorityViewOf, QuotaPacer, runPriority, runProviders, usedPct, type HoldVerdict, type ReadChange } from "./rate-limit";
 import { pluginDataDir } from "./data-dir";
 
 export class UserError extends Error {}
 
 /** Characters of rationale `dismiss_finding` needs: a reason, not a word. */
 const MIN_RATIONALE = 20;
+/** How long a run back from a gate release goes before runs that never started (ADR 2026-11-24-deferred-releases-now-returning-first). */
+const RETURNING_FIRST_MS = 15 * 60_000;
 
 /** A step could not start because rate limiting holds the run (ADR 2026-11-20-rate-limiting): not a failure, the plugin starts the step itself once the hold is lifted. */
 export class RateHeldError extends UserError {
@@ -695,6 +697,8 @@ export class Runtime {
   /** What steps cost in quota per playbook, measured from the usage readings (ADR 2026-11-20-dynamic-rate-limits); kept in a file. */
   private readonly costs = new CostHistory(path.join(pluginDataDir(), "rate-history.json"));
   /** Quota that started work has yet to use, per run: est − spent counts against the headroom until the readings catch up. */
+  /** Runs whose reservation was released at a gate: null while they wait, the instant they came back after. In memory (a restart forgets the precedence, not the release). */
+  private readonly gateReleasedRuns = new Map<string, number | null>();
   private readonly reservedQuota = new Map<string, { runId: string; est: Record<string, number>; spent: Record<string, number>; at: number; endedAt: number | null }>();
   /** The quota points each running or just ended agent attempt has been measured to use so far, folded into `costs` when it ends. */
   private readonly attemptUse = new Map<string, { playbookId: string; provider: string; points: Record<string, number> }>();
@@ -2426,9 +2430,30 @@ export class Runtime {
    */
   private gateReleased(run: Run): boolean {
     const after = this.limitsOf(run).quota.gateReleaseMs;
-    if (after === null || after === undefined) return false;
-    const since = gateWaitingSince(run);
-    return since !== null && Date.now() - since >= after;
+    const waiting = gateWaiting(run);
+    if (waiting === null || after === null || after === undefined) {
+      this.noteReturned(run);
+      return false;
+    }
+    // A deferred (Waiting) gate releases at once; any other open gate after the grace.
+    const released = waiting.deferred || Date.now() - waiting.since >= after;
+    if (released) this.gateReleasedRuns.set(run.id, null);
+    else this.noteReturned(run);
+    return released;
+  }
+
+  /** A run released earlier that is no longer waiting has returned: its precedence over new starts starts now (and lasts RETURNING_FIRST_MS). */
+  private noteReturned(run: Run): void {
+    if (!this.gateReleasedRuns.has(run.id)) return;
+    const at = this.gateReleasedRuns.get(run.id);
+    if (at === null) this.gateReleasedRuns.set(run.id, Date.now());
+    else if (!isActive(run) || Date.now() - (at ?? 0) > RETURNING_FIRST_MS) this.gateReleasedRuns.delete(run.id);
+  }
+
+  /** Whether the run came back from a gate release recently enough to go before runs that never started. */
+  private isReturning(run: Run): boolean {
+    const returnedAt = this.gateReleasedRuns.get(run.id);
+    return returnedAt !== null && returnedAt !== undefined && Date.now() - returnedAt <= RETURNING_FIRST_MS;
   }
 
   /** What the run wants to start: providers → steps (all its remaining agent steps: a run is admitted whole). */
@@ -2454,9 +2479,10 @@ export class Runtime {
       if (!isAsking && this.rateAdmitted(run)) continue;
       // A run whose reservation was released while it waits at a gate is not in the queue either (ADR 2026-11-24-gate-waiting-releases-reservation).
       if (!isAsking && this.gateReleased(run)) continue;
+      if (isAsking) this.gateReleased(run);
       const demand = this.rateDemand(isAsking ? asking : run);
       if (demand.size === 0 && !isAsking) continue;
-      out.push({ run: isAsking ? asking : run, priority: runPriority(run, runs), demand });
+      out.push({ run: isAsking ? asking : run, priority: runPriority(run, runs), demand, returning: this.isReturning(run) });
     }
     return orderCandidates(out, runs);
   }
@@ -4700,6 +4726,8 @@ export class Runtime {
       if (problems.length > 0) await this.enqueue(runId, problems);
     }
     await this.applyEffects(runId, result.effects);
+    // The decision gives the run its reservation back at once, before any new start asks for the headroom (ADR 2026-11-24-deferred-releases-now-returning-first).
+    this.refreshAdmittedNeeds();
     await this.admitQueued(runId);
     if (!result.alreadyDecided && decision.via === "panel") {
       const run = this.store.get(runId)!;
@@ -6873,6 +6901,8 @@ export class Runtime {
     const run = this.store.get(runId);
     const gate = run?.gates.find((candidate) => candidate.id === gateId);
     if (!run || !gate?.deferral) return;
+    // Back to review: an ordinary open gate again, so the run takes its reservation back (for the grace) before any new start asks (ADR 2026-11-24-deferred-releases-now-returning-first).
+    this.refreshAdmittedNeeds();
     await this.bus.emit(
       "gate.returned",
       { ...gatePayload(gateListing(run, gate, Date.now())), reason: gate.deferral.reason, returnedBy, returnNote: note, automatic },
