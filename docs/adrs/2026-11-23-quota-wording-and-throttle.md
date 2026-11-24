@@ -41,3 +41,5 @@ hard new work was held on a provider: only "free X%" or "over the pace".
   `unitCost` per project (measured step costs). Nothing new is stored; an older server leaves them out and the line shows the counts only.
 - A step costs less than a whole run, so the playbook fallback understates a run's need and the throttle can read low until a
   run of the project is admitted or queued.
+
+**Update 2026-11-24 (visual tweak, no new decision):** in an opened window, the reservations are drawn on the bar in the fixed blue "running" tone, stacked right after the grey usage (clamped to the track), and the "Reserved" label and figure in the text line are blue too.

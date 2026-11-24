@@ -277,17 +277,18 @@ function ThrottleView(props: { theme: Theme; provider: ProviderRow }) {
   );
 }
 
-/** A usage window: name, a bar and the numbers. Paced: grey usage up to what is allowed so far, violet above it, green for what is still free, a tick at the allowed-so-far mark. Not paced: usage only. */
+/** A usage window: name, a bar and the numbers. Paced: grey usage up to what is allowed so far, violet above it, blue for the reservations right after the usage, green for what is still free, a tick at the allowed-so-far mark. Not paced: usage only. */
 function SlotView(props: { theme: Theme; slot: SlotRow; unavailable: boolean }) {
   const { theme, slot, unavailable } = props;
   const { t, locale } = useTranslation(messages);
   const muted = theme.colors.foregroundMuted;
   const { bar } = slot;
+  const reservedFact = !unavailable && slot.reserved > 0 ? t("quota.reserved", { value: slot.reserved }) : null;
   const facts = unavailable
     ? [slot.used === null ? null : t("quota.used", { value: slot.used }), slot.paced ? t("quota.headroomUnknown") : null].filter((fact): fact is string => fact !== null)
     : [
     slot.used === null ? null : t("quota.used", { value: slot.used }),
-    slot.reserved > 0 ? t("quota.reserved", { value: slot.reserved }) : null,
+    reservedFact,
     slot.paced ? (slot.over > 0 ? t("quota.overBy", { value: slot.over }) : t("quota.free", { value: slot.free ?? 0 })) : t("quota.notPaced"),
     slot.paced && slot.ceiling !== null ? t("quota.ceiling", { value: slot.ceiling }) : null,
   ].filter((fact): fact is string => fact !== null);
@@ -300,12 +301,20 @@ function SlotView(props: { theme: Theme; slot: SlotRow; unavailable: boolean }) 
       </Text>
       <View style={{ height: 8, borderRadius: 4, backgroundColor: theme.colors.surface2, overflow: "hidden" }}>
         <View style={{ position: "absolute", left: 0, width: pct(bar.grey), height: 8, backgroundColor: theme.colors.foregroundMuted }} />
+        {!unavailable && bar.blue > 0 ? <View style={{ position: "absolute", left: pct(bar.blueFrom), width: pct(bar.blue), height: 8, backgroundColor: semanticColor(theme, "running"), borderLeftWidth: 1, borderLeftColor: theme.colors.surface2 }} /> : null}
         {!unavailable && bar.green > 0 ? <View style={{ position: "absolute", left: pct(bar.greenFrom), width: pct(bar.green), height: 8, backgroundColor: semanticColor(theme, "done") }} /> : null}
         {!unavailable && bar.red > 0 ? <View style={{ position: "absolute", left: pct(bar.redFrom), width: pct(bar.red), height: 8, backgroundColor: overAllowanceColor(theme) }} /> : null}
         {!unavailable && bar.tick !== null ? <View style={{ position: "absolute", left: pct(Math.min(bar.tick, 99)), width: 2, height: 8, backgroundColor: theme.colors.foreground }} /> : null}
       </View>
       <View style={{ gap: 2 }}>
-        <Text style={{ color: slot.over > 0 && !unavailable ? semanticColor(theme, "paused") : muted, ...TEXT.body }}>{facts.join(" · ")}</Text>
+        <Text style={{ color: slot.over > 0 && !unavailable ? semanticColor(theme, "paused") : muted, ...TEXT.body }}>
+          {facts.map((fact, index) => (
+            <Text key={index} style={fact === reservedFact ? { color: semanticColor(theme, "running") } : undefined}>
+              {index > 0 ? " · " : ""}
+              {fact}
+            </Text>
+          ))}
+        </Text>
         {slot.resetsAt ? <Text style={{ color: muted, ...TEXT.small }}>{t("quota.resets", { when: whenAt(slot.resetsAt, locale) })}</Text> : null}
         {slot.stale ? <Text style={{ color: muted, ...TEXT.small }}>{t("quota.stale")}</Text> : null}
       </View>

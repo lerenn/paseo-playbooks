@@ -9,13 +9,25 @@ const data = (providers = [provider()], projects: QuotaLimitation["projects"] = 
 
 describe("quota bar", () => {
   it("is grey to the usage, green for the free room after the reservations, a tick at the ceiling", () => {
-    expect(barOf(38, 60, 17, 5)).toEqual({ grey: 38, greenFrom: 43, green: 17, redFrom: 60, red: 0, tick: 60 });
+    expect(barOf(38, 60, 17, 5)).toEqual({ grey: 38, blueFrom: 38, blue: 5, greenFrom: 43, green: 17, redFrom: 60, red: 0, tick: 60 });
   });
   it("turns the usage above the ceiling into the over part, with no green", () => {
-    expect(barOf(65, 60, -5, 0)).toEqual({ grey: 60, greenFrom: 65, green: 0, redFrom: 60, red: 5, tick: 60 });
+    expect(barOf(65, 60, -5, 0)).toEqual({ grey: 60, blueFrom: 65, blue: 0, greenFrom: 65, green: 0, redFrom: 60, red: 5, tick: 60 });
+  });
+  it("puts the reservations in blue right after the usage, past the tick when they reach it", () => {
+    const bar = barOf(14, 15.9, -2.2, 4.1);
+    expect(bar.blueFrom).toBeCloseTo(14);
+    expect(bar.blue).toBeCloseTo(4.1);
+    expect(bar).toMatchObject({ red: 0, tick: 15.9 });
+  });
+  it("clamps the reservations to the track", () => {
+    expect(barOf(95, 99, 0, 20)).toMatchObject({ blueFrom: 95, blue: 5 });
+  });
+  it("shows the reservations after the usage that is over the allowance, the over part staying violet", () => {
+    expect(barOf(65, 60, -8, 3)).toMatchObject({ grey: 60, red: 5, blueFrom: 65, blue: 3 });
   });
   it("is a plain grey bar without a ceiling", () => {
-    expect(barOf(38, null, null, 0)).toEqual({ grey: 38, greenFrom: 0, green: 0, redFrom: 0, red: 0, tick: null });
+    expect(barOf(38, null, null, 0)).toEqual({ grey: 38, blueFrom: 0, blue: 0, greenFrom: 0, green: 0, redFrom: 0, red: 0, tick: null });
   });
 });
 
@@ -35,7 +47,7 @@ describe("quota project rows", () => {
   it("does not pace a project with pacing off, nor a model window", () => {
     const [off] = projectRows(data(undefined, [{ projectId: "p", label: "App", limits: [limits({ pacing: false })] }]));
     expect(off).toMatchObject({ tone: "off", pacing: false, summary: [] });
-    expect(off!.sets[0]!.providers[0]!.slots[0]).toMatchObject({ paced: false, ceiling: null, bar: { tick: null, green: 0, red: 0 } });
+    expect(off!.sets[0]!.providers[0]!.slots[0]).toMatchObject({ paced: false, ceiling: null, bar: { tick: null, green: 0, red: 0, blue: 0 } });
     const [model] = projectRows(data([provider([slot({ modelScoped: true })])]));
     expect(model!.sets[0]!.providers[0]!.slots[0]!.paced).toBe(false);
   });

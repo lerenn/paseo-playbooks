@@ -6,9 +6,11 @@ import type { QuotaBurnRate, QuotaLimitation, QuotaRunRef, QuotaProject, QuotaPr
  * their project; this picks the pace that belongs to the project and lays the bar out.
  */
 
-/** A bar, in percent of its track: grey from 0 to `grey`, green from `greenFrom` for `green`, red from `redFrom` for `red`, a tick at `tick` (null: unpaced). */
+/** A bar, in percent of its track: grey from 0 to `grey`, blue (the reservations) from `blueFrom` for `blue`, green from `greenFrom` for `green`, red from `redFrom` for `red`, a tick at `tick` (null: unpaced). */
 export interface Bar {
   grey: number;
+  blueFrom: number;
+  blue: number;
   greenFrom: number;
   green: number;
   redFrom: number;
@@ -159,16 +161,17 @@ export function throttleOf(input: { slots: SlotRow[]; reservations: ReservationR
 const round = (value: number) => Math.round(value * 10) / 10;
 const clamp = (value: number) => Math.min(100, Math.max(0, value));
 
-/** The bar of a window: usage grey up to the ceiling, the excess violet, the free room green after the reservations, a tick at the ceiling. */
+/** The bar of a window: usage grey up to the ceiling, the excess violet, the reservations blue right after the usage (clamped to the track), the free room green after the reservations, a tick at the ceiling. */
 export function barOf(used: number | null, ceiling: number | null, free: number | null, reserved: number): Bar {
   const u = used ?? 0;
   const full = Math.max(100, u);
   const pct = (value: number) => clamp((value / full) * 100);
-  if (ceiling === null) return { grey: pct(u), greenFrom: 0, green: 0, redFrom: 0, red: 0, tick: null };
+  if (ceiling === null) return { grey: pct(u), blueFrom: 0, blue: 0, greenFrom: 0, green: 0, redFrom: 0, red: 0, tick: null };
   const grey = Math.min(u, ceiling);
   const greenStart = u + reserved;
   const green = Math.max(0, Math.min(free ?? 0, ceiling - greenStart));
-  return { grey: pct(grey), greenFrom: pct(greenStart), green: pct(greenStart + green) - pct(greenStart), redFrom: pct(ceiling), red: u > ceiling ? pct(u) - pct(ceiling) : 0, tick: pct(ceiling) };
+  const blue = Math.max(0, Math.min(reserved, full - u));
+  return { grey: pct(grey), blueFrom: pct(u), blue: pct(u + blue) - pct(u), greenFrom: pct(greenStart), green: pct(greenStart + green) - pct(greenStart), redFrom: pct(ceiling), red: u > ceiling ? pct(u) - pct(ceiling) : 0, tick: pct(ceiling) };
 }
 
 function slotRow(slot: QuotaWindow, set: QuotaProjectLimits, label: string): SlotRow {
