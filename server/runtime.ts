@@ -78,7 +78,7 @@ import { DEFAULT_MANAGER_RECOVERY, DEFAULT_RATE_LIMITS, readManagerRecoveryConfi
 import { buildQuotaLimitation } from "./quota-limitation";
 import type { QuotaLimitation } from "../shared/quota-limitation";
 import { candidateCost, CostHistory, exhaustionVerdict, planPace, type Admitted as AdmittedRun, orderCandidates, planHeadroom, windowKey, ZERO_COST_POINTS, type Candidate as RateCandidate, type PlanContext } from "./rate-budget";
-import { limitVerdict, parentIds, priorityViewOf, QuotaPacer, runPriority, runProviders, usedPct, type HoldVerdict, type ReadChange } from "./rate-limit";
+import { gateWaitingSince, limitVerdict, parentIds, priorityViewOf, QuotaPacer, runPriority, runProviders, usedPct, type HoldVerdict, type ReadChange } from "./rate-limit";
 import { pluginDataDir } from "./data-dir";
 
 export class UserError extends Error {}
@@ -2420,6 +2420,17 @@ export class Runtime {
     return this.reservedQuota.has(`run:${run.id}`) || run.playbook.steps.some((step) => step.kind === "agent" && (run.steps[step.id]?.attempts.length ?? 0) > 0);
   }
 
+  /**
+   * Whether the run has waited at a gate for `quota.gate_release_after` or longer, so it holds no quota reservation until it returns
+   * (ADR 2026-11-24-gate-waiting-releases-reservation). Waiting, exempt or not, is derived from run state (`gateWaitingSince`); `off` never releases.
+   */
+  private gateReleased(run: Run): boolean {
+    const after = this.limitsOf(run).quota.gateReleaseMs;
+    if (after === null || after === undefined) return false;
+    const since = gateWaitingSince(run);
+    return since !== null && Date.now() - since >= after;
+  }
+
   /** What the run wants to start: providers → steps (all its remaining agent steps: a run is admitted whole). */
   private rateDemand(run: Run): Map<string, number> {
     const demand = new Map<string, number>();
@@ -2441,6 +2452,8 @@ export class Runtime {
       // An exempt run is never in the queue: it blocks nobody (its reservation already took its cost from the headroom).
       if (!isAsking && (run.archivedAt || run.quotaExempt || isPipeline(run) || !isActive(run) || isPaused(run))) continue;
       if (!isAsking && this.rateAdmitted(run)) continue;
+      // A run whose reservation was released while it waits at a gate is not in the queue either (ADR 2026-11-24-gate-waiting-releases-reservation).
+      if (!isAsking && this.gateReleased(run)) continue;
       const demand = this.rateDemand(isAsking ? asking : run);
       if (demand.size === 0 && !isAsking) continue;
       out.push({ run: isAsking ? asking : run, priority: runPriority(run, runs), demand });
@@ -2503,6 +2516,12 @@ export class Runtime {
   private refreshAdmittedNeeds(): void {
     for (const run of this.store.list()) {
       if (run.archivedAt || isPipeline(run) || !isActive(run) || !this.rateAdmitted(run)) continue;
+      // A run waiting at a gate past the grace holds nothing: its reservation is dropped (the cost history stays) and is not rebuilt on
+      // every tick; it comes back at the first check after the gate is decided (ADR 2026-11-24-gate-waiting-releases-reservation).
+      if (this.gateReleased(run)) {
+        this.reservedQuota.delete(`run:${run.id}`);
+        continue;
+      }
       const need: Record<string, number> = {};
       const demand = this.rateDemand(run);
       for (const [provider, count] of demand) {

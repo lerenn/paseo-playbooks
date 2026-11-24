@@ -1,5 +1,6 @@
 import type { RateHold, Run, RunPriorityView } from "../shared/types";
-import { isActive, isPaused, isPipeline } from "../shared/types";
+import { waitsForHuman } from "../shared/gates";
+import { isActive, isPaused, isPipeline, runningAfterTasks } from "../shared/types";
 import type { RateLimitsConfig } from "./config";
 import { instantOfOpenMs, isClosedAt, openMs, type ClosedHours } from "./closed-hours";
 import { windowModel, type ProviderUsage, type UsageSnapshot, type UsageWindow } from "./usage";
@@ -314,6 +315,29 @@ export function runningStepCount(runs: Run[]): number {
     for (const step of run.playbook.steps) if ((step.kind === "agent" || step.kind === "script") && run.steps[step.id]?.status === "running") count += 1;
   }
   return count;
+}
+
+/**
+ * When the run began waiting at a gate (ms), or null when it is not waiting (ADR 2026-11-24-gate-waiting-releases-reservation).
+ * Waiting = active, not paused by a human, no running, ready, queued or reported step and no running after-task (so a fan-out waiting on
+ * its children, whose step is running, is not waiting), and at least one open gate, every open gate waiting for a human (a gate a role
+ * decider still holds will be decided by an agent within minutes: the run is about to go on). A step held for quota is ready, so it is not
+ * waiting either. Derived from run state alone, so a restart sees the same answer: the instant is the latest of the run's own events
+ * (an attempt starting or ending, a gate opening, being deferred or decided).
+ */
+export function gateWaitingSince(run: Run): number | null {
+  if (!isActive(run) || isPaused(run) || run.status !== "waiting_gate" || runningAfterTasks(run).length > 0) return null;
+  const open = run.gates.filter((gate) => gate.status === "pending");
+  if (open.length === 0 || !open.every((gate) => waitsForHuman(gate))) return null;
+  for (const state of Object.values(run.steps)) if (["running", "ready", "queued", "reported"].includes(state.status)) return null;
+  let since = Date.parse(run.createdAt);
+  const note = (iso: string | null | undefined) => {
+    const at = iso ? Date.parse(iso) : NaN;
+    if (!Number.isNaN(at) && (Number.isNaN(since) || at > since)) since = at;
+  };
+  for (const state of Object.values(run.steps)) for (const attempt of state.attempts) { note(attempt.startedAt); note(attempt.endedAt); }
+  for (const gate of run.gates) { note(gate.requestedAt); note(gate.decidedAt); note(gate.deferral?.deferredAt); }
+  return Number.isNaN(since) ? null : since;
 }
 
 /**

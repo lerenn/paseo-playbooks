@@ -553,7 +553,7 @@ export const PlaybookSchema = z.object({
     .object({
       steps: z.number().nullable().optional(),
       playbooks: z.number().nullable().optional(),
-      quota: z.object({ pacing: z.boolean().optional(), usablePercent: z.number().optional(), closedHours: z.object({ timezone: z.string().nullable(), slots: z.array(z.object({ days: z.array(z.number()), fromMin: z.number(), toMin: z.number() })) }).nullable().optional(), refreshMs: z.number().optional(), maxAgeMs: z.number().optional() }).optional(),
+      quota: z.object({ pacing: z.boolean().optional(), usablePercent: z.number().optional(), closedHours: z.object({ timezone: z.string().nullable(), slots: z.array(z.object({ days: z.array(z.number()), fromMin: z.number(), toMin: z.number() })) }).nullable().optional(), refreshMs: z.number().optional(), maxAgeMs: z.number().optional(), gateReleaseMs: z.number().nullable().optional() }).optional(),
     })
     .default({}),
   /** `manager.mode`: `none` = no manager agent, the plugin drives the run. Unset on runs from before it (= always_on). */

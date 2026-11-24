@@ -578,3 +578,181 @@ describe("provider usage events (ADR 2026-11-23-provider-usage-unavailable)", ()
     expect(emit.mock.calls[1]![1]).toMatchObject({ provider: "claude", since: "2026-11-24T15:42:00.000Z", reason: "HTTP 429" });
   });
 });
+
+describe("a run waiting at a gate releases its reservation (ADR 2026-11-24-gate-waiting-releases-reservation)", () => {
+  const pacing = (extra = "") => `quota_limits: { quota: { usable_percent: 97, refresh_interval: 1h, max_age: 2h${extra} } }`;
+  const claude = (used: number) => ({ providers: [{ providerId: "claude", status: "available", windows: [weekly(used)] }] });
+  const ago = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
+  type Inner = { reservedQuota: Map<string, { est: Record<string, number> }>; refreshAdmittedNeeds(): void };
+  const reserved = (runtime: Runtime) => (runtime as unknown as Inner).reservedQuota;
+  const refresh = (runtime: Runtime) => (runtime as unknown as Inner).refreshAdmittedNeeds();
+
+  /** r0 finished step a, waits at a gate on b since `minutes` ago; deferred (Waiting) or not. */
+  const wait = (store: RunStore, id: string, minutes: number, deferred = false) =>
+    store.mutate(id, (run) => {
+      run.createdAt = ago(minutes + 60);
+      for (const attempt of run.steps.a!.attempts) Object.assign(attempt, { startedAt: ago(minutes + 5), endedAt: ago(minutes + 1) });
+      run.steps.a!.status = "completed";
+      run.steps.b!.status = "pending";
+      run.status = "waiting_gate";
+      run.gates.push({
+        id: "g1", kind: "gate", jobId: null, stepId: "a", gotoTarget: null, outcome: null, status: "pending", message: "ok?", summary: "ok?", details: "", requestedAt: ago(minutes + 1), comment: null, decidedBy: null, decidedVia: null,
+        decider: { by: "human" }, deciderAgentId: null, escalated: null, escalatedAt: null,
+        deferral: deferred ? { reason: "later", condition: { kind: "manual", note: "" }, remindAt: null, deferredAt: ago(minutes), deferredBy: "human", returnedAt: null, returnedBy: null, returnNote: null } : null,
+        decidedAt: null,
+      } as never);
+    });
+  /** The human decides: the gate closes and step b is ready. */
+  const decide = (store: RunStore, id: string) =>
+    store.mutate(id, (run) => {
+      Object.assign(run.gates[0]!, { status: "approved", decidedAt: new Date().toISOString(), decidedBy: "human", decidedVia: "panel" });
+      run.steps.b!.status = "ready";
+      run.status = "running";
+    });
+
+  it("frees its headroom after the grace, so another run starts; held again only when it returns and no longer fits", async () => {
+    // Ceiling 28.87, used 10: 18.87 free. Each run is 10 points: only one fits at admission.
+    const { runtime, store, internals, usage, read } = await setup(pacing(), { current: claude(10) });
+    await read();
+    await runtime.startStep("m", "r0", "a", "go");
+    await expect(runtime.startStep("m", "r1", "a", "go")).rejects.toBeInstanceOf(RateHeldError);
+    await wait(store, "r0", 11);
+    refresh(runtime);
+    expect(reserved(runtime).has("run:r0")).toBe(false);
+    // The headroom is free: r1 is admitted. Refreshing again never rebuilds the waiting run's reservation.
+    await runtime.startStep("m", "r1", "a", "go");
+    refresh(runtime);
+    refresh(runtime);
+    expect(reserved(runtime).has("run:r0")).toBe(false);
+    expect(store.get("r1")!.rateHold).toBeNull();
+    // The pace tightens (usage 18: 10.87 free) and the gate is decided; r1 outranks r0 and its running step still needs 10, so r0 (needing 5 more) is
+    // held like any paused run: no failure, the decision stays.
+    await store.mutate("r1", (run) => void (run.priority = 9));
+    usage.current = claude(18);
+    await read();
+    const inner = runtime as unknown as { reservedQuota: Map<string, { spent: Record<string, number> }>; attemptUse: Map<string, unknown> };
+    for (const entry of inner.reservedQuota.values()) entry.spent = {};
+    inner.attemptUse.clear();
+    await decide(store, "r0");
+    expect(await internals.rateCheck(store.get("r0")!, "r0/b", true)).toMatchObject({ kind: "pace" });
+    expect(store.get("r0")!.rateHold).toMatchObject({ kind: "pace" });
+    expect(store.get("r0")!.gates[0]).toMatchObject({ status: "approved" });
+    expect(store.get("r0")!.steps.b!.status).toBe("ready");
+    expect(reserved(runtime).has("run:r0")).toBe(true);
+  });
+
+  it("re-reserves when the gate is decided, and the run goes on when it still fits", async () => {
+    const { runtime, store, internals, read } = await setup(pacing(), { current: claude(10) });
+    await read();
+    await runtime.startStep("m", "r0", "a", "go");
+    await wait(store, "r0", 11);
+    refresh(runtime);
+    expect(reserved(runtime).has("run:r0")).toBe(false);
+    await decide(store, "r0");
+    expect(await internals.rateCheck(store.get("r0")!, "r0/b", true)).toBeNull();
+    expect(reserved(runtime).has("run:r0")).toBe(true);
+  });
+
+  it("keeps the reservation inside the grace, whatever the gate kind: an open gate and a deferred (Waiting) one", async () => {
+    const { runtime, store, read } = await setup(pacing(), { current: claude(10) });
+    await read();
+    await runtime.startStep("m", "r0", "a", "go");
+    await wait(store, "r0", 3);
+    refresh(runtime);
+    expect(reserved(runtime).has("run:r0")).toBe(true);
+    await store.mutate("r0", (run) => void (run.gates[0]!.deferral = { reason: "later", condition: { kind: "manual", note: "" }, remindAt: null, deferredAt: ago(1), deferredBy: "human", returnedAt: null, returnedBy: null, returnNote: null }));
+    refresh(runtime);
+    expect(reserved(runtime).has("run:r0")).toBe(true);
+  });
+
+  it("releases a deferred (Waiting) gate's run once the grace has passed since it was deferred", async () => {
+    const { runtime, store, read } = await setup(pacing(), { current: claude(10) });
+    await read();
+    await runtime.startStep("m", "r0", "a", "go");
+    await wait(store, "r0", 11, true);
+    refresh(runtime);
+    expect(reserved(runtime).has("run:r0")).toBe(false);
+  });
+
+  it("gate_release_after: 0 releases at once, off never, and a duration sets the grace", async () => {
+    for (const [extra, released] of [[", gate_release_after: 0", true], [", gate_release_after: off", false], [", gate_release_after: 30m", false]] as const) {
+      const { runtime, store, read } = await setup(pacing(extra), { current: claude(10) });
+      await read();
+      await runtime.startStep("m", "r0", "a", "go");
+      await wait(store, "r0", 11);
+      refresh(runtime);
+      expect(reserved(runtime).has("run:r0"), extra).toBe(!released);
+    }
+  });
+
+  it("does not release a run that is not waiting: a ready or running step, a fan-out's running step, a human pause, a gate a role decider holds, an after-task running", async () => {
+    const { runtime, store, read } = await setup(pacing("") + "\n", { current: claude(10) });
+    await read();
+    await runtime.startStep("m", "r0", "a", "go");
+    await wait(store, "r0", 11);
+    const gated = async (change: (run: import("../shared/types").Run) => void) => {
+      await store.mutate("r0", change);
+      refresh(runtime);
+      return reserved(runtime).has("run:r0");
+    };
+    // A step still to run (ready) keeps it.
+    expect(await gated((run) => void (run.steps.b!.status = "ready"))).toBe(true);
+    await store.mutate("r0", (run) => void (run.steps.b!.status = "pending"));
+    expect(await gated((run) => void (run.steps.b!.status = "running"))).toBe(true);
+    await store.mutate("r0", (run) => void (run.steps.b!.status = "pending"));
+    // A human pause is unchanged.
+    expect(await gated((run) => void (run.pausedAt = ago(20)))).toBe(true);
+    await store.mutate("r0", (run) => void (run.pausedAt = null));
+    // A gate a role decider still holds.
+    expect(await gated((run) => void (run.gates[0]!.decider = { by: "role", role: "reviewer" } as never))).toBe(true);
+    await store.mutate("r0", (run) => void (run.gates[0]!.decider = { by: "human" }));
+    // Finally, waiting: released.
+    expect(await gated(() => undefined)).toBe(false);
+  });
+
+  it("an exempt run releases its reservation too", async () => {
+    const { runtime, store, read } = await setup(pacing(), { current: claude(10) });
+    await store.mutate("r0", (run) => void (run.quotaExempt = true));
+    await read();
+    await runtime.startStep("m", "r0", "a", "go");
+    expect(reserved(runtime).has("run:r0")).toBe(true);
+    await wait(store, "r0", 11);
+    refresh(runtime);
+    expect(reserved(runtime).has("run:r0")).toBe(false);
+  });
+
+  it("after a restart (reservations are in memory) a waiting run is not re-reserved, a running one is", async () => {
+    const { runtime, store, read } = await setup(pacing(), { current: claude(10) });
+    await read();
+    await runtime.startStep("m", "r0", "a", "go");
+    await wait(store, "r0", 11);
+    reserved(runtime).clear();
+    refresh(runtime);
+    expect(reserved(runtime).has("run:r0")).toBe(false);
+    await decide(store, "r0");
+    refresh(runtime);
+    expect(reserved(runtime).has("run:r0")).toBe(true);
+  });
+
+  it("is not a candidate of the queue while it waits, so it blocks nobody", async () => {
+    const { runtime, store, read } = await setup(pacing(), { current: claude(10) });
+    await read();
+    await wait(store, "r0", 11);
+    const candidates = (runtime as unknown as { rateCandidates(run: unknown): Array<{ run: { id: string } }> }).rateCandidates(store.get("r1")!);
+    expect(candidates.map((candidate) => candidate.run.id)).toEqual(["r1"]);
+  });
+});
+
+describe("quota.gate_release_after resolution", () => {
+  it("defaults to 10m; a layer's value (a duration, 0, off) overrides the earlier one, project defaults last", async () => {
+    const { DEFAULT_RATE_LIMITS, parseQuotaLimits, resolveQuotaLimits } = await import("./config");
+    expect(DEFAULT_RATE_LIMITS.quota.gateReleaseMs).toBe(600_000);
+    expect(parseQuotaLimits({ quota: { gate_release_after: "off" } }).quota).toEqual({ gateReleaseMs: null });
+    expect(parseQuotaLimits({ quota: { gate_release_after: 0 } }).quota).toEqual({ gateReleaseMs: 0 });
+    expect(parseQuotaLimits({ quota: { gate_release_after: "soon" } }).quota).toBeUndefined();
+    const user = parseQuotaLimits({ quota: { gate_release_after: "off" } });
+    expect(resolveQuotaLimits(user).quota.gateReleaseMs).toBeNull();
+    expect(resolveQuotaLimits(user, { quota: { gateReleaseMs: 60_000 } }).quota.gateReleaseMs).toBe(60_000);
+    expect(resolveQuotaLimits(undefined, {}).quota.gateReleaseMs).toBe(600_000);
+  });
+});

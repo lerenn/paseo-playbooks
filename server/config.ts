@@ -114,6 +114,11 @@ export interface RateLimitsConfig {
     refreshMs: number;
     /** A reading older than this is unusable: new steps are held as "waiting for quota data" (ms). */
     maxAgeMs: number;
+    /**
+     * How long a run waiting at a gate (no step to run, only open gates) keeps its quota reservation before releasing it
+     * (ADR 2026-11-24-gate-waiting-releases-reservation): ms; 0 = at once; null = never (the reservation lasts as long as the run).
+     */
+    gateReleaseMs: number | null;
   };
 }
 
@@ -124,7 +129,10 @@ export interface QuotaLimitsLayer {
   quota?: Partial<RateLimitsConfig["quota"]>;
 }
 
-export const DEFAULT_RATE_LIMITS: RateLimitsConfig = { steps: null, playbooks: null, quota: { pacing: false, usablePercent: 97, refreshMs: 5 * 60_000, maxAgeMs: 30 * 60_000 } };
+/** A run waiting at a gate releases its quota reservation after this long (ADR 2026-11-24-gate-waiting-releases-reservation). */
+export const DEFAULT_GATE_RELEASE_MS = 10 * 60_000;
+
+export const DEFAULT_RATE_LIMITS: RateLimitsConfig = { steps: null, playbooks: null, quota: { pacing: false, usablePercent: 97, refreshMs: 5 * 60_000, maxAgeMs: 30 * 60_000, gateReleaseMs: DEFAULT_GATE_RELEASE_MS } };
 
 function positiveInt(value: unknown): number | null {
   return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null;
@@ -132,6 +140,13 @@ function positiveInt(value: unknown): number | null {
 
 function durationMs(value: unknown): number | undefined {
   return typeof value === "string" ? (parseDuration(value) ?? undefined) : undefined;
+}
+
+/** `quota.gate_release_after`: a duration (`10m`), `0` (release at once) or `off` (never); undefined when absent or malformed. */
+export function gateReleaseMsOf(value: unknown): number | null | undefined {
+  if (value === 0 || value === "0" || value === "0s") return 0;
+  if (value === "off" || value === false) return null;
+  return durationMs(value);
 }
 
 const deprecationNoted = new Set<string>();
@@ -205,6 +220,8 @@ export function parseQuotaLimits(value: unknown, legacy = false): QuotaLimitsLay
   const maxAge = durationMs(raw.max_age);
   if (refresh !== undefined) quota.refreshMs = refresh;
   if (maxAge !== undefined) quota.maxAgeMs = maxAge;
+  const gateRelease = gateReleaseMsOf(raw.gate_release_after);
+  if (gateRelease !== undefined) quota.gateReleaseMs = gateRelease;
   if (Object.keys(quota).length > 0) out.quota = quota;
   return out;
 }

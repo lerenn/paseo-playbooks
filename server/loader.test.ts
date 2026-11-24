@@ -390,6 +390,18 @@ steps:
     }
   });
 
+  it("reads quota.gate_release_after: a duration, 0 (at once) or off (never); anything else is refused", async () => {
+    const steps = "steps:\n  - id: a\n    role: { name: investigator, prompt: go }\n";
+    for (const [value, expected] of [["10m", 600_000], ["90s", 90_000], ["0", 0], ["off", null]] as const) {
+      const ws = await workspace({ "defaults/main.yaml": `quota_limits: { quota: { gate_release_after: ${value} } }\n`, "plain.yaml": steps });
+      expect((await loadPlaybooks(ws)).entries[0]!.playbook!.quotaLimits, value).toEqual({ quota: { gateReleaseMs: expected } });
+    }
+    for (const value of ["soon", "-5m", "10"]) {
+      const bad = await workspace({ "defaults/main.yaml": `quota_limits: { quota: { gate_release_after: ${value} } }\n`, "plain.yaml": steps });
+      expect((await loadPlaybooks(bad)).entries[0]!.errors.join("\n"), value).toContain("gate_release_after");
+    }
+  });
+
   it("reads quota.closed_hours and refuses a bad day, time, slot or timezone with a clear message", async () => {
     const steps = "steps:\n  - id: a\n    role: { name: investigator, prompt: go }\n";
     const good = await workspace({ "defaults/main.yaml": "quota_limits: { quota: { usable_percent: 90 } }\nclosed_hours:\n  timezone: Europe/Paris\n  slots:\n    - { days: [saturday, sunday], from: \"00:00\", to: \"24:00\" }\n    - { days: monday, from: \"00:00\", to: \"08:00\" }\n", "pr.yaml": steps });

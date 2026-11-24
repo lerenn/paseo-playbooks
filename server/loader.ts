@@ -29,7 +29,7 @@ import { AgentSettingsSchema, type AgentTarget, DEFAULT_EXHAUSTED_FOR_MS, DEFAUL
 import { BusError, checkTypes, FilterValueSchema } from "./bus";
 import { JOB_TYPES } from "./job-events";
 import { OVERSIGHT_TYPES } from "./oversight-events";
-import { noteDeprecatedKey, quotaLimitsLayerOf, readProjectDefault, readProjectProfiles, type QuotaLimitsLayer } from "./config";
+import { gateReleaseMsOf, noteDeprecatedKey, quotaLimitsLayerOf, readProjectDefault, readProjectProfiles, type QuotaLimitsLayer } from "./config";
 import { dayNumbers, parseClock, validTimezone, type ClosedHours } from "./closed-hours";
 import { bareId, DEFAULT_REPO, qualified } from "../shared/repos";
 import { MAX_SUBAGENT_ARCHIVE_AFTER_MS } from "./sidekick-archive";
@@ -659,6 +659,11 @@ const RawQuotaLimitsSchema = z
         refresh_interval: z.string().refine((value) => parseDuration(value) !== null, { message: "quota_limits.quota.refresh_interval must be a duration such as 5m" }).optional(),
         /** A reading older than this is unusable (`30m`). */
         max_age: z.string().refine((value) => parseDuration(value) !== null, { message: "quota_limits.quota.max_age must be a duration such as 30m" }).optional(),
+        /** How long a run waiting at a gate keeps its quota reservation before releasing it (`10m`, default; `0` = at once; `off` = never). */
+        gate_release_after: z
+          .union([z.literal(0), z.literal("off"), z.string()])
+          .refine((value) => gateReleaseMsOf(value) !== undefined, { message: "quota_limits.quota.gate_release_after must be a duration such as 10m, 0 (release at once) or off (never release)" })
+          .optional(),
       })
       .strict()
       .optional(),
