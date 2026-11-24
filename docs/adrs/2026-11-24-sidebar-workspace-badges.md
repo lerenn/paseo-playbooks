@@ -73,11 +73,16 @@ per workspace row. Until now a run could only be seen from the Playbooks screen 
   least one before ours (a lone "·" at the start of the line looks out of place). `hasLeadingHostItem`
   (`client/host-meta.ts`) mirrors the host's `selectMetaRowItems` (Paseo 0.17): branch, project, host badge,
   pull request, checks, running services, labels, each under its Show-menu toggle (defaults: branch and
-  project off, the rest on). The plugin reads only the workspace's labels (`useWorkspace`); it cannot read the
-  Show menu, the pull request or checks, the services, nor whether the host badge or project name is drawn.
-  So the dot is approximated: shown when the workspace has labels (the default shows them), hidden
-  otherwise, even where the host draws a pull request, checks, a branch or project the user turned on.
-  Hiding when unsure is deliberate: a missing dot looks better than a lone one.
+  project off, the rest on). The host badge is drawn when the Show menu's host item is on (default on), the
+  sidebar lists workspaces of at least two hosts (`shouldShowSidebarHostLabels`), and the row's host is not
+  hidden (`resolveHostBadgeDisplay`: the host's own badge setting, else hidden for the local host and its name
+  for the others). The plugin reads the workspace's labels (`useWorkspace`) and the configured hosts
+  (`useHosts`: server id, label, status). So the dot shows when the workspace has labels, or when at least two
+  hosts are online (`hostBadgeLikelyDrawn`: the host badge is then likely there, on every row but the local
+  host's). It is hidden when neither holds. Approximated: the Show menu (the host item assumed on, the others
+  at their defaults), whether this row's host is the local one or has a badge setting (a local row on a
+  multi-host setup gets a dot with nothing before it), and a pull request, checks, services, or a branch or
+  project the user turned on, which cannot be read (missed on a single-host setup).
 - Rows do not fetch. All Components read one shared store that rides on the overview store: the
   first mounted row asks it for the runs once (the same request the screen uses, refreshed on agent
   events with a 60 s fallback), the index by workspace id is rebuilt once per new set of runs, and the

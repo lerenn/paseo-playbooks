@@ -1,8 +1,8 @@
-import { useTranslation, useWorkspace, type PluginClientContext, type PluginWorkspaceRowBadgeItemProps } from "@getpaseo/plugin/client";
+import { useHosts, useTranslation, useWorkspace, type PluginClientContext, type PluginWorkspaceRowBadgeItemProps } from "@getpaseo/plugin/client";
 import { Icon, WorkspaceRowBadge } from "@getpaseo/plugin/client/ui";
 import { Text, View } from "react-native";
 import { messages } from "./i18n";
-import { hasLeadingHostItem } from "./host-meta";
+import { hasLeadingHostItem, hostBadgeLikelyDrawn } from "./host-meta";
 import { createBadgeStore, useLeadingDot, useWorkspaceBadges, type BadgeStore } from "./workspace-badges-store";
 import type { OverviewStore } from "./overview-store";
 import { semanticColor, type SemanticTone } from "./semantic-colors";
@@ -59,13 +59,15 @@ function Badge(props: { theme: Theme; tone: BadgeTone; rowTone: SemanticTone | n
 }
 
 /**
- * Whether the host draws a meta item of its own before our badges on this row. The plugin reads the
- * workspace's labels, not the Show menu (so the defaults apply: branch and project hidden) nor the pull
- * request, checks, services or host badge (not exposed). Where unsure the answer is no: a missing dot
- * looks better than a lone one.
+ * Whether the host draws a meta item of its own before our badges on this row. Read: the workspace's
+ * labels, and the configured hosts (the host badge is drawn when several hosts are online, see
+ * `hostBadgeLikelyDrawn`). Not readable: the Show menu, the pull request, checks and services, whether
+ * this row's host is the local one (its badge is hidden by default) or has a badge setting. Where nothing
+ * is detected the answer is no: a missing dot looks better than a lone one.
  */
 function useHostItemBefore(workspaceId: string): boolean {
-  return useWorkspace(workspaceId, (workspace) => hasLeadingHostItem({ labels: workspace.labels })) ?? false;
+  const hostBadge = hostBadgeLikelyDrawn(useHosts());
+  return useWorkspace(workspaceId, (workspace) => hasLeadingHostItem({ labels: workspace.labels, hasHostBadge: hostBadge })) ?? false;
 }
 
 function RunBadgeItem(props: PluginWorkspaceRowBadgeItemProps & { store: BadgeStore }) {

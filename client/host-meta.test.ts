@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_HOST_META_VISIBILITY, hasLeadingHostItem } from "./host-meta";
+import { DEFAULT_HOST_META_VISIBILITY, hasLeadingHostItem, hostBadgeLikelyDrawn } from "./host-meta";
 
 const SHOWN = { ...DEFAULT_HOST_META_VISIBILITY, branch: true, project: true };
 
@@ -33,5 +33,31 @@ describe("hasLeadingHostItem", () => {
     expect(hasLeadingHostItem({ hasHostBadge: true })).toBe(true);
     expect(hasLeadingHostItem({ hasService: true })).toBe(true);
     expect(hasLeadingHostItem({ hasService: true }, { ...SHOWN, services: false })).toBe(false);
+  });
+});
+
+describe("hostBadgeLikelyDrawn", () => {
+  it("is drawn when two hosts are online", () => {
+    expect(hostBadgeLikelyDrawn([{ status: "online" }, { status: "online" }])).toBe(true);
+  });
+  it("is not drawn with one online host, however many are configured", () => {
+    expect(hostBadgeLikelyDrawn([{ status: "online" }])).toBe(false);
+    expect(hostBadgeLikelyDrawn([{ status: "online" }, { status: "offline" }, { status: "error" }])).toBe(false);
+    expect(hostBadgeLikelyDrawn([])).toBe(false);
+  });
+});
+
+describe("the dot in each case", () => {
+  const several = hostBadgeLikelyDrawn([{ status: "online" }, { status: "online" }]);
+  const one = hostBadgeLikelyDrawn([{ status: "online" }]);
+  it("shows with the host badge drawn, labels or not", () => {
+    expect(hasLeadingHostItem({ labels: [], hasHostBadge: several })).toBe(true);
+    expect(hasLeadingHostItem({ labels: ["a"], hasHostBadge: several })).toBe(true);
+  });
+  it("shows with labels only", () => {
+    expect(hasLeadingHostItem({ labels: ["a"], hasHostBadge: one })).toBe(true);
+  });
+  it("hides with nothing detected", () => {
+    expect(hasLeadingHostItem({ labels: [], hasHostBadge: one })).toBe(false);
   });
 });

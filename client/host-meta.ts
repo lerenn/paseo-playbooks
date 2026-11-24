@@ -40,6 +40,23 @@ export const DEFAULT_HOST_META_VISIBILITY: HostMetaVisibility = {
   labels: true,
 };
 
+/**
+ * Whether the host draws its badge (the host name or icon) on the workspace rows. The host does it when
+ * the Show menu's host item is on (default on) AND the sidebar lists workspaces of at least two hosts
+ * (`shouldShowSidebarHostLabels`: two distinct server ids) AND the row's host is not hidden: by default
+ * the local host is hidden and the others show their name, unless the user set a badge display for that
+ * host. The plugin reads the configured hosts (`useHosts`) but neither which one is local, nor a host's
+ * badge setting, nor the Show menu: so it counts the hosts that are online and assumes the default.
+ */
+export function hostBadgeLikelyDrawn(hosts: readonly { status: string }[]): boolean {
+  return hosts.filter((host) => host.status === "online").length >= 2;
+}
+
+/**
+ * The dot shows when something is drawn before our badges. Detected: labels and the host badge (likely,
+ * see `hostBadgeLikelyDrawn`). A pull request, checks, services, and a branch or project the user turned
+ * on cannot be read: with several hosts the host badge is there anyway, with one host they are missed.
+ */
 export function hasLeadingHostItem(input: HostMetaInput, visible: HostMetaVisibility = DEFAULT_HOST_META_VISIBILITY): boolean {
   return Boolean(
     (input.branch && visible.branch) ||
