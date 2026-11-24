@@ -32,6 +32,12 @@ describe("isQuotaError", () => {
     "You're out of extra usage \u00b7 resets 4pm",
   ])("recognizes %s", (text) => expect(isQuotaError(text)).toBe(true));
 
+  it("ignores a manager's own short status that mentions a limit", () => {
+    expect(isQuotaMessage("The run is on a rate limit hold (claude weekly pace). The plugin resumes it by itself, so I'm doing nothing and waiting.")).toBe(false);
+    expect(isQuotaMessage("Waiting: the advisor role is deciding the gate on PR #1885 (no ci.yml run on the head, Codex usage limit), so I'm not asking a human.")).toBe(false);
+    expect(isQuotaMessage("The human accepted the Codex gap under the standing usage-limit waiver, and I resumed the gate.")).toBe(false);
+  });
+
   it.each(["", null, undefined, "TypeError: cannot read properties of undefined", "network timeout", "tests failed: 3 of 10", "Tool permission denied", "connection reset by peer"])(
     "ignores %s",
     (text) => expect(isQuotaError(text)).toBe(false),

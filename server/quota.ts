@@ -26,13 +26,20 @@ export function isQuotaError(text: string | null | undefined): boolean {
   return QUOTA_PATTERNS.some((pattern) => pattern.test(text));
 }
 
+/** How a provider's own out-of-tokens notice begins (it is the whole message: "You've hit your weekly limit · resets 3pm", "Claude AI usage limit reached|…"). */
+const NOTICE_LEAD = /^\W*(you(['\u2019]?(ve|re|ll))?\b|your\b|claude\b|codex\b|upgrade to\b|usage limit|limit reached|(\d+|five)[-\s]?hour|weekly|session|daily|monthly|credit|insufficient|out of\b|(api )?error\b|429\b|http\b|rate[\s_-]?limit (reached|exceeded)|quota\b|this request would exceed)/i;
+
+/** Words of an agent describing the run it manages (a hold, a gate, a step), never of a provider's notice. */
+const OWN_WORDS = /\b(hold|gates?|steps?|playbooks?|plugin|run_[0-9a-f]+|pr|pull request|ci|review(er)?s?|waiv(e|er|ed))\b/i;
+
 /**
  * Whether a turn that ended normally (not `failed`) ended on the provider's out-of-tokens notice: some
  * providers (Claude Code's "You've hit your weekly limit") end the turn with it as the assistant's
- * text. Only a short last message counts, so an agent writing about rate limits is not mistaken for one.
+ * text. Only a short last message that reads as the notice itself counts (it starts like one and does not talk about
+ * the run), so an agent's own words about a rate limit hold or a bot's usage limit are not mistaken for one.
  */
 export function isQuotaMessage(text: string | null | undefined): boolean {
   if (!text) return false;
   const trimmed = text.trim();
-  return trimmed.length <= QUOTA_MESSAGE_MAX && isQuotaError(trimmed);
+  return trimmed.length <= QUOTA_MESSAGE_MAX && NOTICE_LEAD.test(trimmed) && !OWN_WORDS.test(trimmed) && isQuotaError(trimmed);
 }
