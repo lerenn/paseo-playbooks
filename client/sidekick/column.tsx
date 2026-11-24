@@ -13,7 +13,9 @@ import { describePermission, humanizeTool, toolIcon, toolSummary, type DescribeT
 import { pluginMessage } from "./instructions";
 import type { Item, PermissionRequest } from "./reduce";
 import { useSidekickChat, type PermissionResponse } from "./use-chat";
-import { isPrepend, isStuck, offsetAfterPrepend, shouldLoadOlder } from "./window";
+import { isPrepend, isStuck, offsetAfterPrepend, shouldLoadOlder, STICK_PX } from "./window";
+import { badgeLabel, leftAt, scrollButtonVisible, unreadSince, type LeftAt } from "../scroll-follow";
+import { useReduceMotion } from "../graph";
 
 interface Props {
   theme: Theme;
@@ -52,12 +54,35 @@ export function SidekickChat(props: Props) {
   // The last scroll position and content height seen, to keep the reader's place when older entries are added above.
   const metrics = useRef({ offsetY: 0, height: 0 });
   const anchor = useRef<{ height: number; offsetY: number } | null>(null);
+  // The "scroll to bottom" shortcut: shown while the reader is far from the end; `left` remembers the last entry seen, to count what arrived since.
+  const reduceMotion = useReduceMotion();
+  const [away, setAway] = useState(false);
+  const [left, setLeft] = useState<LeftAt | null>(null);
+  const awayRef = useRef(false);
+  const itemsRef = useRef<Item[]>(state.items);
+  itemsRef.current = state.items;
+  // A smooth scroll to the end passes through positions that are not the end: until this time they must not stop the follow.
+  const pinnedUntil = useRef(0);
+  const unread = unreadSince(left, state.items);
   const loadOlder = chat.loadOlder;
   const older = state.older;
   const onScroll = (event: { nativeEvent: { contentOffset: { y: number }; contentSize: { height: number }; layoutMeasurement: { height: number } } }) => {
     const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
     metrics.current = { offsetY: contentOffset.y, height: contentSize.height };
-    stuck.current = isStuck(contentSize.height, contentOffset.y, layoutMeasurement.height);
+    const atEnd = isStuck(contentSize.height, contentOffset.y, layoutMeasurement.height);
+    if (atEnd) pinnedUntil.current = 0;
+    if (atEnd || Date.now() >= pinnedUntil.current) {
+      const was = stuck.current;
+      stuck.current = atEnd;
+      // The reader left the bottom: remember where, to count what arrives. Back at the bottom: reset.
+      if (was && !atEnd) setLeft(leftAt(itemsRef.current));
+      if (!was && atEnd) setLeft(null);
+      const next = scrollButtonVisible({ shown: awayRef.current, contentHeight: contentSize.height, offsetY: contentOffset.y, viewportHeight: layoutMeasurement.height, stickPx: STICK_PX });
+      if (next !== awayRef.current) {
+        awayRef.current = next;
+        setAway(next);
+      }
+    }
     if (shouldLoadOlder({ offsetY: contentOffset.y, hasMore: older.hasMore, loading: older.loading })) void loadOlder();
   };
   const onContentSizeChange = (_width: number, height: number) => {
@@ -65,6 +90,16 @@ export function SidekickChat(props: Props) {
     anchor.current = null;
     if (before) scroller.current?.scrollTo?.({ y: offsetAfterPrepend(before, height), animated: false });
     metrics.current = { ...metrics.current, height };
+    // Content grew (text streamed in, a block rendered): follow it once laid out, while the reader is at the bottom.
+    if (!before && stuck.current) scroller.current?.scrollToEnd?.({ animated: false });
+  };
+  const scrollToBottom = () => {
+    stuck.current = true;
+    pinnedUntil.current = Date.now() + 800;
+    awayRef.current = false;
+    setAway(false);
+    setLeft(null);
+    scroller.current?.scrollToEnd?.({ animated: !reduceMotion });
   };
   const shown = useRef<Item[]>([]);
   useEffect(() => {
@@ -152,6 +187,7 @@ export function SidekickChat(props: Props) {
         </View>
       ) : null}
 
+      <View style={{ flex: 1 }}>
       <ScrollView ref={scroller as never} onScroll={onScroll as never} onContentSizeChange={onContentSizeChange} scrollEventThrottle={50} style={{ flex: 1 }} contentContainerStyle={{ padding: 14, gap: 18 }}>
         {status.loading ? <Text style={{ color: muted }}>{t("sidekick.chat.starting")}</Text> : null}
         {status.error ? <Text style={{ color: semanticColor(theme, "failed") }}>{status.error}</Text> : null}
@@ -168,6 +204,23 @@ export function SidekickChat(props: Props) {
           <PermissionView key={request.id} theme={theme} request={request} onRespond={(response) => respond(request.id, response)} />
         ))}
       </ScrollView>
+      {away ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={unread > 0 ? t("sidekick.chat.scrollToBottomUnread", { count: unread }) : t("sidekick.chat.scrollToBottom")}
+          {...({ title: t("sidekick.chat.scrollToBottom"), tabIndex: 0 } as object)}
+          onPress={scrollToBottom}
+          style={{ position: "absolute", right: 14, bottom: 10, width: 40, height: 40, borderRadius: 20, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface1, alignItems: "center", justifyContent: "center" }}
+        >
+          <Icon name="ArrowDown" size={18} color={theme.colors.foreground} />
+          {unread > 0 ? (
+            <View style={{ position: "absolute", top: -6, right: -4, minWidth: 18, height: 18, borderRadius: 9, paddingHorizontal: 4, backgroundColor: theme.colors.accent, alignItems: "center", justifyContent: "center" }}>
+              <Text style={{ color: theme.colors.accentForeground, fontSize: 10, fontWeight: "700" }}>{badgeLabel(unread)}</Text>
+            </View>
+          ) : null}
+        </Pressable>
+      ) : null}
+      </View>
 
       <View ref={composer as never} style={{ padding: 10, gap: 8, borderTopWidth: 1, borderColor: attachments.dragging ? theme.colors.accent : theme.colors.border, backgroundColor: attachments.dragging ? theme.colors.surface1 : undefined }}>
         {attachments.items.length > 0 ? (
