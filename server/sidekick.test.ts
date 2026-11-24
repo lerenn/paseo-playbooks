@@ -148,6 +148,17 @@ describe("the Sidekick prompt", () => {
     expect(sidekickPrompt({ projectId: "p1", label: "Shop", root: "/work/shop", watch: [] }, null)).not.toContain("Instructions of this repository");
   });
 
+  it("makes deferring a waiting gate mandatory and tells how to load the deferred tools", () => {
+    const text = sidekickPrompt({ projectId: "p1", label: "Shop", root: "/work/shop", watch: [] }, null);
+    expect(text).toContain("you MUST set it aside with defer_gate");
+    expect(text).toContain("promising to \"check later\" is not allowed");
+    expect(text).toContain("ToolSearch");
+    expect(text).toContain("select:mcp__paseo__defer_gate,mcp__paseo__return_gate");
+    expect(text).toContain("If loading fails");
+    expect(text).toContain("never silently leave the gate open");
+    expect(text).toContain("never defer on your own judgment a gate only a human may decide");
+  });
+
   it("lets the Sidekick start runs, and has the merging playbook merge", () => {
     const text = sidekickPrompt({ projectId: "p1", label: "Shop", root: "/work/shop", watch: [] }, null);
     expect(text).toContain("start_playbook");

@@ -368,8 +368,9 @@ there (**Decide**), by the same rules; deferring is not an answer. What it waits
 of another run of the project, or the decision of another gate of the project: the gate then returns to Needs you by itself
 (count, header dot, and a `gate.returned` event the Sidekick is told about). Anything else (a PR merge, a reply, a deploy)
 is *manual*: the plugin cannot see it, the row says so, and it returns when you press **Bring back** (or the Sidekick
-calls `return_gate`) or on an optional reminder date. The Sidekick can record a deferral with `defer_gate` at your request, or on its own judgment for a routine gate that
-plainly cannot be decided yet (recorded as its own, never as yours, and it tells you afterwards; secrets, credentials, IAM,
+calls `return_gate`) or on an optional reminder date. The Sidekick can record a deferral with `defer_gate` at your request, or, as a rule it must follow, on its own judgment for a routine gate that
+plainly cannot be decided yet and waits for something external (it may not leave it open with a promise to check later; it loads the
+deferred tool with `ToolSearch` first, and says so if that fails) (recorded as its own, never as yours, and it tells you afterwards; secrets, credentials, IAM,
 auth, data loss, billing and production gates stay with you), under the same scope as `resume_gate`; `list_gates` keeps listing deferred gates (`needsReview: false`, `deferral`). Tracking
 reads run state only, never chat; there is no push or Slack notification. See `docs/adrs/2026-11-20-deferred-gates.md`.
 

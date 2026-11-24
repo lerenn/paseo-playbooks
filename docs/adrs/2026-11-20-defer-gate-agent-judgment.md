@@ -30,3 +30,10 @@ provided a deferral never decides anything and never passes for the human's cons
 - The Sidekick can keep Needs you to what needs a decision now, and the human is told afterwards.
 - Because enforcement of "sensitive" is by instruction, the `deferredBy` record and the `gate.deferred` event are the
   audit trail; the human can bring any gate back with the panel or `return_gate`.
+
+## Amendment (2026-11-24)
+
+The Sidekick prompt now makes the self-initiated deferral mandatory, not optional: a routine gate that waits for something
+external MUST be deferred (never left open with a promise to check later), in its own prompt section. The prompt also tells
+the Sidekick that `defer_gate` and `return_gate` are deferred tools to load with `ToolSearch` before first use, and to
+report a loading failure to the human. The sensitive-gate exclusions are unchanged.
