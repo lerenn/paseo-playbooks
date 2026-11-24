@@ -102,6 +102,8 @@ export const startRun = defineRpc({
     sameWorkspace: z.boolean().default(false),
     /** Title of the new workspace (only when one is created, not with agentId or sameWorkspace); empty: the default title. */
     workspaceName: z.string().max(200).optional(),
+    /** This run's queue priority, overriding the playbook's `quota_limit.priority` (same range and meaning as start_playbook's `priority`); unset: the playbook's. */
+    priority: z.number().int().min(-1000).max(1000).optional(),
   }),
   output: z.discriminatedUnion("status", [
     z.object({

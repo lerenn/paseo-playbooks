@@ -55,7 +55,10 @@ export interface PriorityDraft {
 }
 
 /** The draft a menu starts from each time it opens (and when the server's figure changes): the run's effective priority. */
-export const draftFor = (view: RunPriorityView): PriorityDraft => ({ value: view.priority, text: String(view.priority) });
+export const draftFor = (view: RunPriorityView): PriorityDraft => draftOf(view.priority);
+
+/** A draft holding this number (the Run Playbook form starts from the playbook's own priority). */
+export const draftOf = (value: number): PriorityDraft => ({ value, text: String(value) });
 
 /** A stepper press: from the number, clamped, and the field shows it. */
 export function stepDraft(draft: PriorityDraft, delta: number): PriorityDraft {

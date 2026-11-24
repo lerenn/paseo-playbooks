@@ -1,11 +1,12 @@
 import { useRpc, useTranslation } from "@getpaseo/plugin/client";
-import { Icon, TextInput } from "@getpaseo/plugin/client/ui";
+import { Icon } from "@getpaseo/plugin/client/ui";
 import { useEffect, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { setRunPriorityRpc, setRunQuotaExemptRpc } from "../shared/contracts";
 import type { RunPriorityView } from "../shared/types";
 import { messages } from "./i18n";
-import { applyDraft, childrenChecked, commitDraft, draftFor, exemptRequest, inheritRequest, pressExempt, type ExemptStage, isManual, resetRequest, stepDraft, typeDraft, type PriorityRequest } from "./run-priority";
+import { PriorityStepper } from "./priority-stepper";
+import { applyDraft, childrenChecked, draftFor, exemptRequest, inheritRequest, pressExempt, type ExemptStage, isManual, resetRequest, type PriorityRequest } from "./run-priority";
 import type { Theme } from "./theme";
 import { semanticColor } from "./semantic-colors";
 import { useRaise } from "./raise";
@@ -115,26 +116,11 @@ export function RunPriorityMenu(props: { theme: Theme; runId: string; view: RunP
             <Text style={{ color: theme.colors.accent, fontSize: 11 }}>{t("runs.exemptState")}</Text>
           ) : (
             <>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-            <Pressable accessibilityRole="button" accessibilityLabel={t("runs.priorityLower")} disabled={busy} onPress={() => setDraft((d) => stepDraft(d, -1))} style={small}>
-              <Icon name="Minus" size={14} color={theme.colors.foreground} />
-            </Pressable>
-            <TextInput
-              accessibilityLabel={t("runs.priorityInput")}
-              value={draft.text}
-              onChangeText={(text) => setDraft((d) => typeDraft(d, text))}
-              onBlur={() => setDraft((d) => commitDraft(d))}
-              onSubmitEditing={() => apply(pending)}
-              keyboardType="numbers-and-punctuation"
-              style={{ width: 64, minHeight: 32, textAlign: "center", color: theme.colors.foreground, fontSize: 13, borderWidth: 1, borderColor: theme.colors.border, borderRadius: 6, backgroundColor: theme.colors.surface1 }}
-            />
-            <Pressable accessibilityRole="button" accessibilityLabel={t("runs.priorityRaise")} disabled={busy} onPress={() => setDraft((d) => stepDraft(d, 1))} style={small}>
-              <Icon name="Plus" size={14} color={theme.colors.foreground} />
-            </Pressable>
+          <PriorityStepper theme={theme} draft={draft} onChange={setDraft} busy={busy} onSubmit={() => apply(pending)}>
             <Pressable accessibilityRole="button" accessibilityState={{ disabled: busy || !pending }} disabled={busy || !pending} onPress={() => apply(pending)} style={{ ...small, paddingHorizontal: 10, opacity: busy || !pending ? 0.4 : 1, borderColor: theme.colors.accent }}>
               <Text style={{ color: theme.colors.accent, fontSize: 12, fontWeight: "600" }}>{t("runs.priorityApply")}</Text>
             </Pressable>
-          </View>
+          </PriorityStepper>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
             <Text style={{ flex: 1, color: manual ? theme.colors.accent : muted, fontSize: 11 }}>{manual ? t("runs.sourceManualNote", { value: view.defaultPriority }) : t("runs.sourceDefaultNote")}</Text>
             <Pressable accessibilityRole="button" accessibilityLabel={t("runs.priorityResetHint", { value: view.defaultPriority })} disabled={busy || !manual} onPress={() => apply(resetRequest(runId, view))} style={{ ...small, paddingHorizontal: 8, opacity: busy || !manual ? 0.4 : 1 }}>

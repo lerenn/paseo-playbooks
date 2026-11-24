@@ -3,10 +3,12 @@ import { Icon, Modal, TextInput, useToast } from "@getpaseo/plugin/client/ui";
 import { useQuery } from "@tanstack/react-query";
 import { useState, type ReactNode } from "react";
 import { Pressable, Switch, Text, View } from "react-native";
-import { listWorkspaceAgents, startRun } from "../shared/contracts";
+import { listWorkspaceAgents, quotaLimitationRpc, startRun } from "../shared/contracts";
 import type { Playbook, VarValue } from "../shared/types";
 import { sanitizeWorkspaceName, WORKSPACE_NAME_MAX } from "../shared/workspace-name";
-import { inputErrors, type RunProject } from "./run-form";
+import { PriorityStepper } from "./priority-stepper";
+import { chosenPriority, inputErrors, playbookPriority, showsPriority, type RunProject } from "./run-form";
+import { draftOf } from "./run-priority";
 import { useTranslation } from "@getpaseo/plugin/client";
 import { messages } from "./i18n";
 import { Button } from "./sheet";
@@ -59,6 +61,8 @@ export function StartForm(props: {
   /** The Run Playbook form: its title and the playbook dropdown shown above the inputs. */
   title?: string;
   picker?: ReactNode;
+  /** The Run Playbook form: the project the run starts in; with it, the form shows a "Priority" setting while burn rate limiting is on for the project. */
+  projectId?: string;
 }) {
   const { theme, playbook } = props;
   const { t } = useTranslation(messages);
@@ -73,6 +77,17 @@ export function StartForm(props: {
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const listAgents = useRpc(listWorkspaceAgents);
   const agents = useQuery({ queryKey: ["playbooks", "agents", props.workspaceId], queryFn: () => listAgents({ workspaceId: props.workspaceId }) });
+  const fetchQuota = useRpc(quotaLimitationRpc);
+  const quota = useQuery({
+    queryKey: ["playbooks", "quota-pacing", props.projectId, props.workspaceId],
+    queryFn: () => fetchQuota({ workspaces: [{ projectId: props.projectId!, workspaceId: props.workspaceId }] }),
+    enabled: props.projectId !== undefined,
+  });
+  const showPriority = showsPriority(quota.data?.projects.find((project) => project.projectId === props.projectId));
+  /** The run's priority as chosen in the form (starts at the playbook's own); sent only when it differs from it. */
+  const defaultPriority = playbookPriority(playbook);
+  const [priority, setPriority] = useState(() => draftOf(defaultPriority));
+  const [priorityHint, setPriorityHint] = useState(false);
   const current = props.target === "current";
   /** The current agent: the most recent agent of the workspace that manages no active run. */
   const manager = current ? agents.data?.agents.find((agent) => !agent.managing) ?? null : null;
@@ -114,6 +129,7 @@ export function StartForm(props: {
         sameWorkspace: props.target === "agent",
         ...(props.target === "workspace" && sanitizeWorkspaceName(workspaceName) ? { workspaceName: sanitizeWorkspaceName(workspaceName)! } : {}),
         ...(agentId ? { agentId } : {}),
+        ...(showPriority && chosenPriority(priority.value, playbook) !== undefined ? { priority: chosenPriority(priority.value, playbook)! } : {}),
       });
       if (result.status === "duplicate") {
         setDuplicate(result.message);
@@ -243,6 +259,26 @@ export function StartForm(props: {
             ))}
           </View>
         ) : null}
+        {showPriority ? (
+          <View style={{ gap: 6 }}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+              <Text style={{ color: theme.colors.foreground, fontSize: 13, fontWeight: "600" }}>{t("form.priority")}</Text>
+              <Pressable accessibilityRole="button" accessibilityLabel={priorityHint ? t("form.priorityHintHide") : t("form.priorityHintShow")} hitSlop={8} onPress={() => setPriorityHint((value) => !value)}>
+                <Icon name="Info" size={13} color={priorityHint ? theme.colors.accent : theme.colors.foregroundMuted} />
+              </Pressable>
+            </View>
+            {priorityHint ? <Text accessibilityLiveRegion="polite" style={{ color: theme.colors.foreground, fontSize: 12 }}>{t("form.priorityHint")}</Text> : null}
+            <PriorityStepper theme={theme} draft={priority} onChange={setPriority} busy={busy} />
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+              <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>{t("form.priorityDefault", { value: defaultPriority })}</Text>
+              {priority.value !== defaultPriority ? (
+                <Pressable accessibilityRole="button" accessibilityLabel={t("runs.priorityResetHint", { value: defaultPriority })} hitSlop={8} onPress={() => setPriority(draftOf(defaultPriority))}>
+                  <Text style={{ color: theme.colors.accent, fontSize: 11 }}>{t("runs.priorityReset")}</Text>
+                </Pressable>
+              ) : null}
+            </View>
+          </View>
+        ) : null}
         {error ? (
           <Text accessibilityRole="alert" selectable style={{ color: semanticColor(theme, "failed"), fontSize: 13 }}>
             {error}
@@ -276,6 +312,8 @@ export function RunPlaybookForm(props: {
   compact: boolean;
   /** Shown above the playbook dropdown (the overview's project selector). */
   lead?: ReactNode;
+  /** The project the form starts in (its burn rate limiting decides whether "Priority" shows). */
+  projectId?: string;
 }) {
   const { theme, playbooks } = props;
   const { t } = useTranslation(messages);
@@ -329,6 +367,7 @@ export function RunPlaybookForm(props: {
       target="workspace"
       title={t("form.runPlaybook")}
       picker={picker}
+      {...(props.projectId ? { projectId: props.projectId } : {})}
       compact={props.compact}
       onClose={props.onClose}
       onStarted={props.onStarted}
@@ -415,7 +454,7 @@ export function OverviewRunForm(props: {
   const playbooks = (project && props.playbooksOf.get(project.projectId)) || [];
   const picker = <ProjectPicker theme={props.theme} projects={props.projects} selected={selected} onSelect={setSelected} />;
   if (project && playbooks.length > 0) {
-    return <RunPlaybookForm key={project.projectId} theme={props.theme} playbooks={playbooks} workspaceId={project.workspaceId} compact={props.compact} lead={picker} onClose={props.onClose} onStarted={props.onStarted} />;
+    return <RunPlaybookForm key={project.projectId} theme={props.theme} playbooks={playbooks} workspaceId={project.workspaceId} compact={props.compact} lead={picker} projectId={project.projectId} onClose={props.onClose} onStarted={props.onStarted} />;
   }
   // No project chosen yet: only the selector, no Start.
   return (

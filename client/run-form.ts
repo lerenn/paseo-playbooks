@@ -1,3 +1,4 @@
+import type { QuotaProject } from "../shared/quota-limitation";
 import type { Playbook, PlaybookEntry } from "../shared/types";
 
 /** The playbooks the Run Playbook form offers: valid ones that start in a workspace (a singleton runs as its own pipeline), without the hidden ones (those are sub-playbooks or after-tasks; the panel's "Hidden playbooks" section still starts them). */
@@ -46,3 +47,15 @@ export function runButtonState(runnableProjects: number, loading: boolean): "emp
   if (runnableProjects > 0) return "ready";
   return loading ? "loading" : "empty";
 }
+
+/** The priority a playbook's runs have unless told otherwise: its `quota_limit.priority` (0 when it sets none). */
+export const playbookPriority = (playbook: Playbook): number => playbook.rateLimit?.priority ?? 0;
+
+/**
+ * Whether the Run Playbook form shows its "Priority" setting: only when burn rate limiting (pacing) is on for the project, i.e. one of
+ * the limit sets its playbooks resolve to paces. Unknown project, or limits not read yet: hidden.
+ */
+export const showsPriority = (project: QuotaProject | undefined): boolean => project?.limits.some((set) => set.pacing) === true;
+
+/** What the form sends as the run's priority: the chosen number only when it differs from the playbook's own (then no override is recorded). */
+export const chosenPriority = (chosen: number, playbook: Playbook): number | undefined => (chosen === playbookPriority(playbook) ? undefined : chosen);
