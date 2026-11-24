@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { RunSummary } from "../shared/types";
-import { attentionOf, indexBadges, runBadge, RECENT_MS } from "./workspace-badges";
+import { attentionOf, indexBadges, runBadge, stateBadge, RECENT_MS } from "./workspace-badges";
 import { createBadgeStore } from "./workspace-badges-store";
 import type { OverviewSnapshot, OverviewStore } from "./overview-store";
 
@@ -29,14 +29,14 @@ describe("run badge", () => {
     expect(runBadge(summary())).toMatchObject({ state: "running", tone: "info", done: 1, total: 3, playbook: "Build" });
     expect(runBadge(summary({ gates: [gate] as never })).tone).toBe("warning");
     expect(runBadge(summary({ gates: [gate] as never })).state).toBe("waiting");
-    expect(runBadge(summary({ pausedAt: "x" }))).toMatchObject({ state: "paused", tone: "violet" });
+    expect(runBadge(summary({ pausedAt: "x" }))).toMatchObject({ state: "paused", tone: "muted", live: true });
     expect(runBadge(summary({ status: "completed" }))).toMatchObject({ state: "done", tone: "success" });
     expect(runBadge(summary({ status: "failed" }))).toMatchObject({ state: "failed", tone: "danger" });
     expect(runBadge(summary({ status: "canceled" }))).toMatchObject({ state: "canceled", tone: "muted" });
   });
   it("a hold is held with nothing running, running while a step still works", () => {
     const hold = { kind: "quota", reason: "r" } as never;
-    expect(runBadge(summary({ rateHold: hold, stepStatuses: ["completed", "pending"] })).tone).toBe("violet");
+    expect(runBadge(summary({ rateHold: hold, stepStatuses: ["completed", "pending"] })).state).toBe("held");
     expect(runBadge(summary({ rateHold: hold })).state).toBe("running");
   });
 });
@@ -66,11 +66,31 @@ describe("index", () => {
   });
 });
 
+describe("state badge", () => {
+  const hold = { kind: "quota", reason: "r" } as never;
+  it("is an icon and a word per live state", () => {
+    expect(stateBadge(summary())).toEqual({ kind: "running", tone: "info", icon: "Play" });
+    expect(stateBadge(summary({ pausedAt: "x" }))).toEqual({ kind: "paused", tone: "violet", icon: "Pause" });
+    expect(stateBadge(summary({ stepStatuses: ["completed", "queued"] }))).toEqual({ kind: "waiting", tone: "warning", icon: "Hourglass" });
+  });
+  it("a hold with nothing running reads paused, like a pause", () => {
+    expect(stateBadge(summary({ rateHold: hold, stepStatuses: ["completed", "pending"] }))?.kind).toBe("paused");
+    expect(stateBadge(summary({ rateHold: hold }))?.kind).toBe("running");
+  });
+  it("is absent once the run ended, and while it waits at a gate (attention says it)", () => {
+    expect(stateBadge(summary({ status: "completed" }))).toBeNull();
+    expect(stateBadge(summary({ status: "failed" }))).toBeNull();
+    expect(stateBadge(summary({ gates: [gate] as never }))).toBeNull();
+    expect(runBadge(summary({ status: "completed" })).live).toBe(false);
+  });
+});
+
 describe("held run in the index", () => {
-  it("shows violet on the run badge and no attention badge", () => {
+  it("reads x/y then paused in violet, with no attention badge", () => {
     const held = summary({ rateHold: { kind: "quota", reason: "r" } as never, stepStatuses: ["completed", "pending"] });
     const badges = indexBadges([held], NOW).get("w1")!;
-    expect(badges.run).toMatchObject({ state: "held", tone: "violet" });
+    expect(badges.run).toMatchObject({ state: "held", live: true, done: 1, total: 2 });
+    expect(badges.state).toMatchObject({ kind: "paused", tone: "violet" });
     expect(badges.attention).toBeNull();
   });
 });

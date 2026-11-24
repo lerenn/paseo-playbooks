@@ -11,19 +11,23 @@ import { isActive, isPaused, type RunSummary } from "../shared/types";
  *   waiting (orange) -> warning    failed (red)            -> danger
  *   canceled         -> muted
  *
- * Violet (paused, or held by rate limiting, both worded "paused") has no counterpart among the five:
- * it is the plugin's own "violet" tone, drawn by client/workspace-badge-items.tsx.
+ * Three badges: the run's (workflow icon and "3/7" while the run is live, a word once it ended), the
+ * state's (an icon and a word: running, paused, waiting) and the attention one (gate, slow). Violet
+ * (paused, or held by rate limiting, both worded "paused") has no counterpart among the five: it is
+ * the plugin's own "violet" tone, drawn by client/workspace-badge-items.tsx. One meaning never shows
+ * twice: a run that waits at a gate shows the attention badge, not a "waiting" state badge.
  */
 export type HostBadgeTone = "muted" | "success" | "warning" | "danger" | "info";
 export type BadgeTone = HostBadgeTone | "violet";
 
 export type RunBadgeState = "running" | "waiting" | "held" | "paused" | "done" | "failed" | "canceled";
 
-export const STATE_TONES: Readonly<Record<RunBadgeState, BadgeTone>> = {
+export const STATE_TONES: Readonly<Record<RunBadgeState, HostBadgeTone>> = {
   running: "info",
   waiting: "warning",
-  held: "violet",
-  paused: "violet",
+  // A live run's badge only carries the step count, its state is the state badge's: paused stays neutral.
+  held: "muted",
+  paused: "muted",
   done: "success",
   failed: "danger",
   canceled: "muted",
@@ -35,13 +39,31 @@ export const RECENT_MS = 24 * 3_600_000;
 export interface RunBadge {
   runId: string;
   state: RunBadgeState;
-  tone: BadgeTone;
+  tone: HostBadgeTone;
+  /** True while the run is live: the label is then the step count, else the word of the state. */
+  live: boolean;
   /** Main steps completed, and how many there are. */
   done: number;
   total: number;
   /** The playbook's title, for the accessibility label. */
   playbook: string;
 }
+
+/** The second badge: the state of a live run as an icon and a word. */
+export type StateKind = "running" | "paused" | "waiting";
+
+export interface StateBadge {
+  kind: StateKind;
+  tone: BadgeTone;
+  /** A Lucide icon name. */
+  icon: string;
+}
+
+const STATE_BADGES: Readonly<Record<StateKind, StateBadge>> = {
+  running: { kind: "running", tone: "info", icon: "Play" },
+  paused: { kind: "paused", tone: "violet", icon: "Pause" },
+  waiting: { kind: "waiting", tone: "warning", icon: "Hourglass" },
+};
 
 export type AttentionKind = "gate" | "slow";
 
@@ -53,6 +75,8 @@ export interface AttentionBadge {
 /** What a workspace row shows: its run's badge, and the attention badge when something needs the user. */
 export interface WorkspaceBadges {
   run: RunBadge;
+  /** Null for an ended run, and for one waiting at a gate (the attention badge says it). */
+  state: StateBadge | null;
   attention: AttentionBadge | null;
 }
 
@@ -74,6 +98,14 @@ function stateOf(run: RunSummary): RunBadgeState {
   return "running";
 }
 
+/** The state badge of a run: null once it ended, and while it waits at a gate (the `gate` attention badge says that). */
+export function stateBadge(run: RunSummary): StateBadge | null {
+  const state = stateOf(run);
+  if (state === "done" || state === "failed" || state === "canceled") return null;
+  if (state === "waiting" && run.gates.some(waitsForHuman)) return null;
+  return STATE_BADGES[state === "held" ? "paused" : state];
+}
+
 export function runBadge(run: RunSummary): RunBadge {
   const state = stateOf(run);
   const steps = mainSteps(run);
@@ -81,6 +113,7 @@ export function runBadge(run: RunSummary): RunBadge {
     runId: run.id,
     state,
     tone: STATE_TONES[state],
+    live: state !== "done" && state !== "failed" && state !== "canceled",
     done: steps.filter((step) => run.steps[step.id]?.status === "completed").length,
     total: steps.length,
     playbook: run.playbook.title ?? run.playbook.id,
@@ -132,6 +165,6 @@ export function indexBadges(runs: readonly RunSummary[], now: number): Map<strin
     if (need && (!known || URGENCY[need.kind] < URGENCY[known.kind])) attention.set(run.workspaceId, need);
   }
   const index = new Map<string, WorkspaceBadges>();
-  for (const [workspaceId, run] of chosen) index.set(workspaceId, { run: runBadge(run), attention: attention.get(workspaceId) ?? null });
+  for (const [workspaceId, run] of chosen) index.set(workspaceId, { run: runBadge(run), state: stateBadge(run), attention: attention.get(workspaceId) ?? null });
   return index;
 }
