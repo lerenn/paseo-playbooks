@@ -7,7 +7,7 @@ import { archiveRunRpc, listPlaybooks, markRunSeenRpc } from "../shared/contract
 import { gateText, isWaiting, needsReview, waitsForHuman } from "../shared/gates";
 import { BringBack, DeferForm, WaitingInfo } from "./defer";
 import { PanelHeader } from "./panel-header-view";
-import { HEADER, TABS, TAB_ICONS, tabParts } from "./panel-header";
+import { headerPad, HEADER, TABS, TAB_ICONS, tabParts } from "./panel-header";
 import { overviewSettings } from "../shared/overview-settings";
 import { closedTabs, closeTab, effectiveTab, normalizeOpenTabs, openTab, visibleTabs, type PanelTab } from "../shared/panel-tabs";
 import { DEFAULT_PLAYBOOK_SORT, PLAYBOOK_SORTS, sortPlaybooks, type PlaybookSort } from "../shared/sort";
@@ -449,7 +449,7 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
   };
 
   const playbookSortOptions = PLAYBOOK_SORTS.map((sort) => ({ key: sort.key, label: t(`cards.playbookSort.${sort.key}.label`), hint: t(`cards.playbookSort.${sort.key}.hint`) }));
-  const pad = layout.compact ? 12 : 22;
+  const pad = headerPad(layout.compact);
   const onOpenWorkspace = navigation ? (workspaceId: string) => navigation.openWorkspace({ workspaceId }) : undefined;
   const onOpenAgent = navigation ? (agentId: string) => navigation.openAgent({ agentId }) : undefined;
   return (
@@ -723,9 +723,7 @@ function TabBar(props: { theme: Theme; compact: boolean; open: PanelTab[]; selec
   const [menu, setMenu] = useState(false);
   const closed = closedTabs(props.open);
   return (
-    <View style={{ marginTop: HEADER.tabsTop, height: TABS.height, paddingLeft: HEADER.padLeft, zIndex: 40 }}>
-      {/* The divider runs under all tabs; the selected tab's underline is drawn over it. */}
-      <View pointerEvents="none" style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 1, backgroundColor: theme.colors.border }} />
+    <View style={{ marginTop: HEADER.rowGap, paddingLeft: headerPad(compact), borderBottomWidth: TABS.divider, borderBottomColor: theme.colors.border, zIndex: 40 }}>
       <View style={{ flexDirection: "row", alignItems: "stretch" }}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flexGrow: 0, flexShrink: 1 }} contentContainerStyle={{ columnGap: TABS.gap }}>
           <View accessibilityRole="tablist" style={{ flexDirection: "row", columnGap: TABS.gap }}>
@@ -747,7 +745,7 @@ function TabBar(props: { theme: Theme; compact: boolean; open: PanelTab[]; selec
               <Icon name="Plus" size={TABS.icon} color={theme.colors.foregroundMuted} />
             </Pressable>
             {menu ? (
-              <View accessibilityRole="menu" style={{ position: "absolute", top: TABS.height - 6, left: 0, zIndex: 100, minWidth: 180, padding: 4, borderRadius: 10, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface2, elevation: 6 }}>
+              <View accessibilityRole="menu" style={{ position: "absolute", top: "100%", left: 0, zIndex: 100, minWidth: 180, padding: 4, borderRadius: 10, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface2, elevation: 6 }}>
                 {closed.map((id) => (
                   <Pressable
                     key={id}
@@ -782,7 +780,7 @@ function Tab(props: { theme: Theme; icon: string; label: string; selected: boole
       // Pointer events: fired by a mouse only, hence always closeable on compact layouts. At rest the x is collapsed to zero width (still focusable: focusing it expands it).
       onPointerEnter={() => setHover(true)}
       onPointerLeave={() => setHover(false)}
-      style={{ flexDirection: "row", alignItems: "center", height: TABS.height, paddingHorizontal: TABS.padX, borderBottomWidth: TABS.underline, borderBottomColor: selected ? theme.colors.accent : "transparent" }}
+      style={{ flexDirection: "row", alignItems: "center", paddingVertical: TABS.padY, paddingHorizontal: TABS.padX, borderBottomWidth: TABS.underline, borderBottomColor: selected ? theme.colors.accent : "transparent" }}
     >
       <Pressable
         accessibilityRole="tab"
@@ -791,10 +789,10 @@ function Tab(props: { theme: Theme; icon: string; label: string; selected: boole
         onPress={props.onPress}
         onFocus={() => setFocus(true)}
         onBlur={() => setFocus(false)}
-        style={{ flexDirection: "row", alignItems: "center", gap: TABS.iconGap, height: "100%" }}
+        style={{ flexDirection: "row", alignItems: "center", gap: TABS.iconGap }}
       >
         <Icon name={props.icon} size={TABS.icon} color={selected ? theme.colors.accent : theme.colors.foregroundMuted} />
-        {showLabel ? <Text numberOfLines={1} style={{ color: selected ? theme.colors.foreground : theme.colors.foregroundMuted, fontSize: TABS.labelSize, fontWeight: selected ? "700" : "400" }}>{props.label}</Text> : null}
+        {showLabel ? <Text numberOfLines={1} style={{ color: selected ? theme.colors.foreground : theme.colors.foregroundMuted, fontSize: TABS.labelSize, fontWeight: "600" }}>{props.label}</Text> : null}
       </Pressable>
       {props.onClose ? (
         <Pressable accessibilityRole="button" accessibilityLabel={props.closeLabel} hitSlop={8} onPress={props.onClose} onFocus={() => setFocus(true)} onBlur={() => setFocus(false)} style={showClose ? { marginLeft: 6, padding: 2 } : { width: 0, padding: 0, overflow: "hidden", opacity: 0 }}>

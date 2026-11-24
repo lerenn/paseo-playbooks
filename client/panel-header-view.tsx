@@ -3,7 +3,7 @@ import { Icon } from "@getpaseo/plugin/client/ui";
 import type { ReactNode } from "react";
 import { Text, View } from "react-native";
 import { messages } from "./i18n";
-import { HEADER } from "./panel-header";
+import { HEADER, headerPad } from "./panel-header";
 import type { Theme } from "./theme";
 
 /**
@@ -14,22 +14,23 @@ import type { Theme } from "./theme";
 export function PanelHeader(props: { theme: Theme; compact: boolean; actions?: ReactNode }) {
   const { theme } = props;
   const { t } = useTranslation(messages);
+  const pad = headerPad(props.compact);
   return (
-    <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", columnGap: HEADER.tileGap, rowGap: 8, paddingLeft: HEADER.padLeft, paddingRight: HEADER.padRight, paddingTop: HEADER.padTop }}>
+    <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", columnGap: HEADER.tileGap, rowGap: 8, paddingLeft: pad, paddingRight: pad, paddingTop: pad }}>
       <View
         accessibilityElementsHidden
         importantForAccessibility="no-hide-descendants"
         style={{ width: HEADER.tile, height: HEADER.tile, borderRadius: HEADER.tileRadius, alignItems: "center", justifyContent: "center", backgroundColor: theme.colors.accent }}
       >
-        <Icon name="Workflow" size={HEADER.tile / 2} color={theme.colors.accentForeground} />
+        <Icon name="Workflow" size={26} color={theme.colors.accentForeground} />
       </View>
-      <View style={{ flex: 1, minWidth: 120 }}>
-        <Text accessibilityRole="header" numberOfLines={1} style={{ color: theme.colors.foreground, fontSize: HEADER.titleSize, lineHeight: HEADER.titleLine, fontWeight: "700" }}>{t("title")}</Text>
+      <View style={{ flex: 1, minWidth: 120, gap: HEADER.textGap }}>
+        <Text accessibilityRole="header" numberOfLines={1} style={{ color: theme.colors.foreground, fontSize: props.compact ? HEADER.titleSizeCompact : HEADER.titleSizeWide, fontWeight: "700" }}>{t("title")}</Text>
         {props.compact ? null : (
-          <Text numberOfLines={2} style={{ color: theme.colors.foregroundMuted, fontSize: HEADER.taglineSize, lineHeight: HEADER.taglineLine }}>{t("panel.tagline")}</Text>
+          <Text numberOfLines={2} style={{ color: theme.colors.foregroundMuted, fontSize: HEADER.taglineSize }}>{t("panel.tagline")}</Text>
         )}
       </View>
-      {props.actions ? <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>{props.actions}</View> : null}
+      {props.actions ? <View style={{ flexDirection: "row", alignItems: "center", alignSelf: "center", gap: 10 }}>{props.actions}</View> : null}
     </View>
   );
 }
