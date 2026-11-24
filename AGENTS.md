@@ -1,5 +1,8 @@
 # Agent instructions
 
+Repo skills live in `.agents/skills/`; `.claude/skills` is a symlink to it so Claude Code loads them
+(Windows checkouts need `core.symlinks`).
+
 ## Playbook format
 
 Before adding or changing anything in the playbook YAML format (playbook, step, after-task,
