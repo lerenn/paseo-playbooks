@@ -8,6 +8,7 @@ import { messages } from "./i18n";
 import { applyDraft, childrenChecked, commitDraft, draftFor, exemptRequest, inheritRequest, pressExempt, type ExemptStage, isManual, resetRequest, stepDraft, typeDraft, type PriorityRequest } from "./run-priority";
 import type { Theme } from "./theme";
 import { semanticColor } from "./semantic-colors";
+import { useRaise } from "./raise";
 
 /** The small tag a run exempt from burn rate limiting wears in a Runs view row, where its priority control would be (ADR 2026-11-23-quota-exempt-runs). */
 export function RunExemptTag(props: { theme: Theme }) {
@@ -35,6 +36,12 @@ export function RunPriorityMenu(props: { theme: Theme; runId: string; view: RunP
   // The "Apply to children" box as the user set it in this menu (undefined until touched): the exempt action carries it, as does the priority's.
   const [children, setChildren] = useState<boolean | undefined>(undefined);
   const [open, setOpen] = useState(false);
+  const raise = useRaise();
+  // Lift the rows around this menu while it is open, so the rows after them do not paint over it.
+  useEffect(() => {
+    raise(open);
+    return () => raise(false);
+  }, [open]);
   const [draft, setDraft] = useState(() => draftFor(view));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -100,7 +107,9 @@ export function RunPriorityMenu(props: { theme: Theme; runId: string; view: RunP
         )}
       </Pressable>
       {open ? (
-        <View accessibilityRole="menu" onStartShouldSetResponder={() => true} style={{ position: "absolute", top: 26, right: 0, zIndex: 100, minWidth: 240, gap: 8, padding: 10, borderRadius: 10, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface2, elevation: 6 }}>
+        <View accessibilityRole="menu" onStartShouldSetResponder={() => true} style={{ position: "absolute", top: 26, right: 0, zIndex: 100, minWidth: 240, borderRadius: 10, backgroundColor: theme.colors.surface0, elevation: 6 }}>
+        {/* The theme's raised surface can be translucent: a solid layer under it keeps the rows beneath from showing through. */}
+        <View style={{ gap: 8, padding: 10, borderRadius: 10, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface2 }}>
           <Text style={{ color: theme.colors.foreground, fontSize: 12, fontWeight: "600" }}>{t("runs.priorityTitle")}</Text>
           {view.exempt ? (
             <Text style={{ color: theme.colors.accent, fontSize: 11 }}>{t("runs.exemptState")}</Text>
@@ -151,6 +160,7 @@ export function RunPriorityMenu(props: { theme: Theme; runId: string; view: RunP
           </Pressable>
           {!view.exempt ? <Text style={{ color: muted, fontSize: 11 }}>{t("runs.exemptCaution")}</Text> : null}
           {error ? <Text style={{ color: semanticColor(theme, "failed"), fontSize: 11 }}>{error}</Text> : null}
+        </View>
         </View>
       ) : null}
     </View>

@@ -19,6 +19,7 @@ import { TONE_RANK } from "./tone-color";
 import { AnalyticsView } from "./analytics";
 import { OffHoursView } from "./off-hours";
 import { QuotaView } from "./quota";
+import { Raised } from "./raise";
 import { RunExemptTag, RunPriorityMenu } from "./run-priority-menu";
 import { useReduceMotion } from "./graph";
 import { LABEL_WIDTH, labelLayout, ROW_HEIGHT } from "./layout";
@@ -593,25 +594,25 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
         {overview.runs === null && !overview.error ? <Text style={{ color: theme.colors.foregroundMuted }}>{t("common.loading")}</Text> : null}
 
         {needs.length > 0 ? (
-          <View style={{ gap: 8 }}>
+          <Raised style={{ gap: 8 }}>
             <SectionTitle theme={theme} icon="CircleDot" iconColor={semanticColor(theme, "waiting")} title={t("cards.section.needsYou")} count={needs.length} />
-            <View style={{ borderRadius: 10, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface1, overflow: "hidden" }}>
+            <View style={{ borderRadius: 10, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface1 }}>
               {needs.map(({ run, gate }, index) => (
                 <NeedsYouRow key={needsYouRowKey(run.id, gate.id)} allRuns={runs} theme={theme} run={run} gate={gate} first={index === 0} workspace={names.get(run.workspaceId) ?? run.workspaceId} hostLabel={props.host.label} compact={layout.compact} onOpenWorkspace={onOpenWorkspace} onOpenAgent={onOpenAgent} />
               ))}
             </View>
-          </View>
+          </Raised>
         ) : null}
 
         {waiting.length > 0 ? (
-          <View style={{ gap: 8 }}>
+          <Raised style={{ gap: 8 }}>
             <SectionTitle theme={theme} icon="Clock" iconColor={theme.colors.foregroundMuted} title={t("cards.section.waiting")} count={waiting.length} description={t("cards.section.waitingHint")} />
-            <View style={{ borderRadius: 10, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface1, overflow: "hidden" }}>
+            <View style={{ borderRadius: 10, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface1 }}>
               {waiting.map(({ run, gate }, index) => (
                 <WaitingRow key={needsYouRowKey(run.id, gate.id)} theme={theme} run={run} gate={gate} first={index === 0} workspace={names.get(run.workspaceId) ?? run.workspaceId} hostLabel={props.host.label} compact={layout.compact} onOpenWorkspace={onOpenWorkspace} onOpenAgent={onOpenAgent} />
               ))}
             </View>
-          </View>
+          </Raised>
         ) : null}
 
         {/* Earlier groups stack above later ones, so a group's sort menu is not covered by the groups below it. */}
@@ -871,7 +872,7 @@ function NeedsYouRow(props: {
   const warning = semanticColor(theme, "waiting");
   const summary = gateText(gate).summary.split("\n")[0] || t("cards.gate.isWaiting", { step: stepTitleOf(run.playbook, gate.stepId) });
   return (
-    <View style={{ borderTopWidth: props.first ? 0 : 1, borderTopColor: theme.colors.border }}>
+    <Raised style={{ borderTopWidth: props.first ? 0 : 1, borderTopColor: theme.colors.border }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 12, paddingVertical: 10 }}>
         {props.compact ? null : (
           <View style={{ width: 92, flexDirection: "row", alignItems: "center", gap: 6 }}>
@@ -912,7 +913,7 @@ function NeedsYouRow(props: {
           )}
         </View>
       ) : null}
-    </View>
+    </Raised>
   );
 }
 
@@ -934,7 +935,7 @@ function WaitingRow(props: {
   const refresh = useStoreRefresh();
   const summary = gateText(gate).summary.split("\n")[0] || t("cards.gate.isWaiting", { step: stepTitleOf(run.playbook, gate.stepId) });
   return (
-    <View style={{ borderTopWidth: props.first ? 0 : 1, borderTopColor: theme.colors.border }}>
+    <Raised style={{ borderTopWidth: props.first ? 0 : 1, borderTopColor: theme.colors.border }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 12, paddingVertical: 10 }}>
         <View style={{ flex: 1, gap: 2 }}>
           <Text numberOfLines={open ? undefined : 1} style={{ color: theme.colors.foreground, fontSize: 13, fontWeight: "500" }}>
@@ -956,7 +957,7 @@ function WaitingRow(props: {
           <GateActions theme={theme} run={run} gate={gate} hostLabel={props.hostLabel} onDecided={refresh} />
         </View>
       ) : null}
-    </View>
+    </Raised>
   );
 }
 
@@ -1106,7 +1107,7 @@ function PlaybookGroup(props: {
   const runsById = useMemo(() => new Map(props.allRuns.map((run) => [run.id, run])), [props.allRuns]);
   const working = runs.filter((run) => isActive(run) && !isPaused(run) && pendingGates(run).length === 0).length;
   return (
-    <View style={{ gap: 8, zIndex: props.zIndex }}>
+    <Raised style={{ gap: 8, zIndex: props.zIndex }}>
       <SectionTitle
         theme={theme}
         title={playbook.title}
@@ -1151,7 +1152,7 @@ function PlaybookGroup(props: {
         ))}
       </View>
       ) : null}
-    </View>
+    </Raised>
   );
 }
 
@@ -1295,7 +1296,7 @@ function RunRow(props: {
     />
   );
   return (
-    <View style={{ borderTopWidth: props.first ? 0 : 1, borderTopColor: theme.colors.border, paddingHorizontal: 12, paddingVertical: 10, gap: 8 }}>
+    <Raised style={{ borderTopWidth: props.first ? 0 : 1, borderTopColor: theme.colors.border, paddingHorizontal: 12, paddingVertical: 10, gap: 8 }}>
       {compact ? (
         <>
           <View style={{ flexDirection: "row", alignItems: "flex-start" }}>
@@ -1320,7 +1321,7 @@ function RunRow(props: {
       {Object.entries(run.fanouts).map(([stepId, fanout]) => (
         <FanoutLanes key={stepId} theme={theme} run={run} stepId={stepId} fanout={fanout} compact={compact} runs={props.runs} onOpenWorkspace={props.onOpenWorkspace} />
       ))}
-    </View>
+    </Raised>
   );
 }
 
@@ -1479,7 +1480,7 @@ function Lane(props: { theme: Theme; child: FanoutChildInfo; compact: boolean; r
   const restarts = child.previous.length;
   const priority = run?.quotaPriority && isActive(run) ? <RunPriorityMenu theme={theme} runId={run.id} view={run.quotaPriority} onChanged={refresh} /> : run?.quotaExempt && isActive(run) ? <RunExemptTag theme={theme} /> : null;
   return (
-    <View style={{ gap: 2 }}>
+    <Raised style={{ gap: 2 }}>
     <Pressable
       accessibilityRole={open ? "button" : undefined}
       accessibilityLabel={`${child.key}: ${status}${restarts > 0 ? `, ${t("cards.lane.restarted", { count: restarts })}` : ""}${gates > 0 ? `, ${t("cards.lane.needsYouLabel")}` : ""}`}
@@ -1514,7 +1515,7 @@ function Lane(props: { theme: Theme; child: FanoutChildInfo; compact: boolean; r
           : null}
       </View>
     ) : null}
-    </View>
+    </Raised>
   );
 }
 
