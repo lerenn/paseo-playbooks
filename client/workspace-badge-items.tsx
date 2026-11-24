@@ -16,8 +16,8 @@ const ICON = "Workflow";
  * a row, the icon and the label 3 apart, shrinking and ellipsized rather than wrapping, icon 12, text
  * 12/16. Used where the host's badge cannot: for violet, which the host has no tone for, and for the
  * leading "·", which the host draws between its own meta items but not before a plugin's. A row with a
- * semantic state (`rowTone`) draws every badge and the dot in that state's fixed colour; without one the
- * badge's tone uses the theme's colours.
+ * semantic state (`rowTone`) draws every badge (icon and text) in that state's fixed colour; without one the
+ * badge's tone uses the theme's colours. The dot is always the muted grey, like the host's own separators.
  */
 function PluginBadge(props: { theme: Theme; tone: BadgeTone; rowTone: SemanticTone | null; icon: string; label: string; accessibilityLabel: string; dot: boolean }) {
   const { theme, tone } = props;
@@ -41,7 +41,7 @@ function PluginBadge(props: { theme: Theme; tone: BadgeTone; rowTone: SemanticTo
   // The host's separator is its extra-muted foreground, which the plugin theme lacks: the muted one, dimmed. It never shrinks, the label does.
   return (
     <View style={{ flexDirection: "row", alignItems: "center", gap: 6, minWidth: 0, flexShrink: 1 }}>
-      <Text accessibilityElementsHidden importantForAccessibility="no" style={{ color: props.rowTone ? color : theme.colors.foregroundMuted, opacity: props.rowTone ? 1 : 0.7, fontSize: 12, lineHeight: 16, flexShrink: 0 }}>
+      <Text accessibilityElementsHidden importantForAccessibility="no" style={{ color: theme.colors.foregroundMuted, opacity: 0.7, fontSize: 12, lineHeight: 16, flexShrink: 0 }}>
         {"\u00b7"}
       </Text>
       {badge}

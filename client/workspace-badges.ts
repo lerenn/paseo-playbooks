@@ -24,7 +24,7 @@ export type BadgeTone = HostBadgeTone | "violet";
 export type RunBadgeState = "running" | "waiting" | "held" | "paused" | "done" | "failed" | "canceled";
 
 /**
- * The row's colour: one semantic state per row, applied to ALL our badges on it, the leading dot included
+ * The row's colour: one semantic state per row, applied to ALL our badges on it (the leading dot stays muted grey)
  * (running blue, waiting or needing the user orange, paused or held violet, done green, failed red; canceled
  * has none and stays muted). The host's tones cannot express violet or a fixed orange, so a row with a colour
  * is always drawn by the plugin's own badge.
@@ -91,7 +91,7 @@ export interface AttentionBadge {
 
 /** What a workspace row shows: its run's badge, and the attention badge when something needs the user. */
 export interface WorkspaceBadges {
-  /** The semantic state colouring every badge of the row and its dot; null: muted. An open gate on the workspace makes it "waiting". */
+  /** The semantic state colouring every badge of the row (not its dot); null: muted. An open gate on the workspace makes it "waiting". */
   rowTone: SemanticTone | null;
   run: RunBadge;
   /** Null for an ended run, and for one waiting at a gate (the attention badge says it). */

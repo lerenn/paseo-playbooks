@@ -33,11 +33,11 @@ per workspace row. Until now a run could only be seen from the Playbooks screen 
   slot, gate) or 3 (running or paused plus `slow`). On a narrow sidebar the line truncates: the state
   word ellipsizes first (`shrink`), the step count stays.
 - One rule colours a row: the run's single semantic state (`client/semantic-colors.ts`) is applied to
-  ALL our badges on the row and to the leading dot. An open gate on the workspace makes it waiting
+  ALL our badges on the row (icon and text), not to the leading dot, which stays muted grey. An open gate on the workspace makes it waiting
   (orange) whichever run the run badge shows; a slow step changes nothing. Computed in the pure
   mapping (`rowTone`, `STATE_ROW_TONES`).
 
-  | State | Row colour (all badges and the dot) | Run badge | State badge | Attention badge |
+  | State | Row colour (all badges, not the dot) | Run badge | State badge | Attention badge |
   | --- | --- | --- | --- | --- |
   | running | blue | `3/7` | `Play` running | `slow`, if any |
   | waiting for a slot | orange | `3/7` | `Hourglass` waiting | `slow`, if any |
@@ -55,15 +55,15 @@ per workspace row. Until now a run could only be seen from the Playbooks screen 
   ellipsized, icon 12, text 12/16, `numberOfLines` 1, the same accessibility label. Colours come from
   the theme (`foregroundMuted`, `statusSuccess/Warning/Danger`), the fixed blue for info (the host's
   running-dot colour is not in the plugin theme) and the fixed violet from `semanticColor`. Badges
-  needing none of these (a canceled run, alone) keep using `WorkspaceRowBadge`. The dot takes the row's
-  colour at full opacity (muted at 70 % when the row has none).
+  needing none of these (a canceled run, alone) keep using `WorkspaceRowBadge`. The dot is always
+  `foregroundMuted` at 70 % opacity, whatever the row's colour.
 - A row shows at most one leading dot, on the first of our badges that renders, in the order run, state,
   attention (not always the run badge: it may be hidden in the Show menu). Each badge registers in the
   shared store while it renders something (`client/badge-lead.ts`) and asks whether it is first. The
   dot is the host's separator character at its size (12/16), 6 from the badge (the host's row gap) and
   never shrinks; the label does, so the row still never wraps. The host's separator colour
   (`foregroundExtraMuted`, with hover and selected variants) is not in the plugin theme: the dot is
-  the row's colour (`foregroundMuted` at 70 % opacity without one) and does not follow the row's hover or selected colour.
+  `foregroundMuted` at 70 % opacity for every state and does not follow the row's hover or selected colour.
 - Rows do not fetch. All Components read one shared store that rides on the overview store: the
   first mounted row asks it for the runs once (the same request the screen uses, refreshed on agent
   events with a 60 s fallback), the index by workspace id is rebuilt once per new set of runs, and the

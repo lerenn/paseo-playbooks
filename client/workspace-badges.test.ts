@@ -170,7 +170,7 @@ describe("leading separator", () => {
   });
 });
 
-describe("row colour (one semantic state for every badge and the dot)", () => {
+describe("row colour (one semantic state for every badge, not the dot)", () => {
   const rowTone = (run: RunSummary) => indexBadges([run], NOW).get("w1")!.rowTone;
   it("maps each run state to its semantic tone", () => {
     expect(rowTone(summary())).toBe("running");
