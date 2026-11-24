@@ -183,7 +183,7 @@ describe("row colour (one semantic state for every badge, not the dot)", () => {
     expect(rowTone(summary({ status: "canceled" }))).toBeNull();
   });
   it("covers every run state", () => {
-    expect(Object.keys(STATE_ROW_TONES).sort()).toEqual(["canceled", "done", "failed", "held", "paused", "running", "waiting"]);
+    expect(Object.keys(STATE_ROW_TONES).sort()).toEqual(["canceled", "done", "failed", "held", "paused", "ready", "running", "waiting"]);
   });
   it("is orange for an open gate on the workspace even when another run is the chosen one", () => {
     const gated = summary({ id: "gated", gates: [gate] as never, updatedAt: new Date(NOW - 3_600_000).toISOString() });
@@ -193,5 +193,27 @@ describe("row colour (one semantic state for every badge, not the dot)", () => {
   it("a slow step does not change the colour", () => {
     expect(attentionOf(summary(), true)?.kind).toBe("slow");
     expect(rowTone(summary())).toBe("running");
+  });
+});
+
+describe("idle pipeline", () => {
+  const job = (waiting: string[]) => ({ id: "j", label: "j", status: "open", waiting: waiting.map((stage) => ({ stage })) });
+  const pipeline = (jobs: unknown[]) => summary({ playbook: { ...summary().playbook, singleton: { stages: [] } } as never, batch: null, jobs: jobs as never, stepStatuses: ["pending"] });
+  it("is ready with no open job: bare icon state, green row, no attention", () => {
+    const badges = indexBadges([pipeline([{ ...job([]), status: "settled" }])], NOW).get("w1")!;
+    expect(badges.run.state).toBe("ready");
+    expect(badges.state).toEqual({ kind: "ready", tone: "success", icon: "CircleCheck" });
+    expect(badges.rowTone).toBe("done");
+    expect(badges.attention).toBeNull();
+    expect(runBadge(pipeline([])).state).toBe("ready");
+  });
+  it("is running while a job is in a batch, waiting while every open job waits", () => {
+    expect(runBadge(pipeline([job([])])).state).toBe("running");
+    expect(stateBadge(pipeline([job([])]))?.kind).toBe("running");
+    expect(runBadge(pipeline([job(["dev"])])).state).toBe("waiting");
+    expect(stateBadge(pipeline([job(["dev"])]))?.kind).toBe("waiting");
+  });
+  it("a paused idle pipeline stays paused", () => {
+    expect(runBadge({ ...pipeline([]), pausedAt: "x" }).state).toBe("paused");
   });
 });

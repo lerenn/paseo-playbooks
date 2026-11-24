@@ -33,9 +33,11 @@ function PluginBadge(props: { theme: Theme; tone: BadgeTone; rowTone: SemanticTo
   const badge = (
     <View accessible accessibilityLabel={props.accessibilityLabel} style={{ flexDirection: "row", alignItems: "center", gap: 3, minWidth: 0, flexShrink: 1 }}>
       <Icon name={props.icon} size={12} color={color} />
-      <Text numberOfLines={1} style={{ color, fontSize: 12, lineHeight: 16, minWidth: 0, flexShrink: 1 }}>
-        {props.label}
-      </Text>
+      {props.label !== "" && (
+        <Text numberOfLines={1} style={{ color, fontSize: 12, lineHeight: 16, minWidth: 0, flexShrink: 1 }}>
+          {props.label}
+        </Text>
+      )}
     </View>
   );
   if (!props.dot) return badge;
@@ -73,8 +75,10 @@ function RunBadgeItem(props: PluginWorkspaceRowBadgeItemProps & { store: BadgeSt
   const dot = useLeadingDot(props.store, props.workspaceId, "playbook-run", badges !== null) && hostItem;
   if (!badges) return null;
   const { run, rowTone } = badges;
-  const label = run.live ? t("shell.badge.steps", { done: run.done, total: run.total }) : t(`shell.badge.state.${run.state as "done"}`);
-  const accessibilityLabel = t("shell.badge.runLabel", { playbook: run.playbook, state: t(`shell.badge.stateFull.${run.state}`), done: run.done, total: run.total });
+  // An idle pipeline has no step count to show: the bare icon, its state is the state badge's.
+  const idle = run.state === "ready";
+  const label = idle ? "" : run.live ? t("shell.badge.steps", { done: run.done, total: run.total }) : t(`shell.badge.state.${run.state as "done"}`);
+  const accessibilityLabel = idle ? t("shell.badge.runLabelIdle", { playbook: run.playbook, state: t("shell.badge.stateFull.ready") }) : t("shell.badge.runLabel", { playbook: run.playbook, state: t(`shell.badge.stateFull.${run.state}`), done: run.done, total: run.total });
   return <Badge theme={props.theme} tone={run.tone} rowTone={rowTone} icon={ICON} label={label} accessibilityLabel={accessibilityLabel} dot={dot} />;
 }
 

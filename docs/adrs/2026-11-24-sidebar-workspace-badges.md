@@ -39,6 +39,7 @@ per workspace row. Until now a run could only be seen from the Playbooks screen 
 
   | State | Row colour (all badges, not the dot) | Run badge | State badge | Attention badge |
   | --- | --- | --- | --- | --- |
+  | pipeline idle (no open job) | green | workflow icon only, no count | `CircleCheck` ready | none |
   | running | blue | `3/7` | `Play` running | `slow`, if any |
   | waiting for a slot | orange | `3/7` | `Hourglass` waiting | `slow`, if any |
   | waiting at a gate | orange | `3/7` | none | `gate` |
@@ -46,6 +47,10 @@ per workspace row. Until now a run could only be seen from the Playbooks screen 
   | done | green | `done` | none | none |
   | failed | red | `failed` | none | none |
   | canceled | none (muted) | `canceled` | none | none |
+
+  A pipeline (a singleton's long-lived run) is idle between jobs, so its `x/y` means nothing: with no open
+  job it is `ready` (computed from the run summary's `jobs`, `isPipeline`); with a job in a batch it is
+  running, with only waiting jobs it is waiting.
 
   The host's badge tones (muted, success, warning, danger, info) stay in the data as the fallback.
 - The host has no violet tone nor our fixed blue or orange, and it draws a muted "·" between its own meta

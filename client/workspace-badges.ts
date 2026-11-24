@@ -1,6 +1,6 @@
 import { slowSteps, slowView } from "../shared/slow";
 import { waitsForHuman } from "../shared/gates";
-import { isActive, isPaused, type RunSummary } from "../shared/types";
+import { isActive, isPaused, isPipeline, type RunSummary } from "../shared/types";
 import type { SemanticTone } from "./semantic-colors";
 
 /**
@@ -12,7 +12,8 @@ import type { SemanticTone } from "./semantic-colors";
  *   waiting (orange) -> warning    failed (red)            -> danger
  *   canceled         -> muted
  *
- * Three badges: the run's (workflow icon and "3/7" while the run is live, a word once it ended), the
+ * A pipeline (a singleton's long-lived run) with no open job, none in a batch and none waiting, is "ready"
+ * (green, `CircleCheck`): its run badge is the bare workflow icon, with no step count. Three badges: the run's (workflow icon and "3/7" while the run is live, a word once it ended), the
  * state's (an icon and a word: running, paused, waiting) and the attention one (gate, slow). Violet
  * (paused, or held by rate limiting, both worded "paused") has no counterpart among the five: it is
  * the plugin's own "violet" tone, drawn by client/workspace-badge-items.tsx. One meaning never shows
@@ -21,7 +22,7 @@ import type { SemanticTone } from "./semantic-colors";
 export type HostBadgeTone = "muted" | "success" | "warning" | "danger" | "info";
 export type BadgeTone = HostBadgeTone | "violet";
 
-export type RunBadgeState = "running" | "waiting" | "held" | "paused" | "done" | "failed" | "canceled";
+export type RunBadgeState = "ready" | "running" | "waiting" | "held" | "paused" | "done" | "failed" | "canceled";
 
 /**
  * The row's colour: one semantic state per row, applied to ALL our badges on it (the leading dot stays muted grey)
@@ -30,6 +31,7 @@ export type RunBadgeState = "running" | "waiting" | "held" | "paused" | "done" |
  * is always drawn by the plugin's own badge.
  */
 export const STATE_ROW_TONES: Readonly<Record<RunBadgeState, SemanticTone | null>> = {
+  ready: "done",
   running: "running",
   waiting: "waiting",
   held: "paused",
@@ -40,6 +42,7 @@ export const STATE_ROW_TONES: Readonly<Record<RunBadgeState, SemanticTone | null
 };
 
 export const STATE_TONES: Readonly<Record<RunBadgeState, HostBadgeTone>> = {
+  ready: "success",
   running: "info",
   waiting: "warning",
   // A live run's badge only carries the step count, its state is the state badge's: paused stays neutral.
@@ -67,7 +70,7 @@ export interface RunBadge {
 }
 
 /** The second badge: the state of a live run as an icon and a word. */
-export type StateKind = "running" | "paused" | "waiting";
+export type StateKind = "ready" | "running" | "paused" | "waiting";
 
 export interface StateBadge {
   kind: StateKind;
@@ -77,6 +80,7 @@ export interface StateBadge {
 }
 
 const STATE_BADGES: Readonly<Record<StateKind, StateBadge>> = {
+  ready: { kind: "ready", tone: "success", icon: "CircleCheck" },
   running: { kind: "running", tone: "info", icon: "Play" },
   paused: { kind: "paused", tone: "violet", icon: "Pause" },
   waiting: { kind: "waiting", tone: "warning", icon: "Hourglass" },
@@ -110,6 +114,12 @@ function stateOf(run: RunSummary): RunBadgeState {
   if (run.status === "canceled") return "canceled";
   if (isPaused(run)) return "paused";
   if (run.gates.some(waitsForHuman)) return "waiting";
+  if (isPipeline(run)) {
+    // A long-lived pipeline between jobs is ready, not running. With jobs it is running while one is in a batch, else waiting.
+    const open = run.jobs.filter((job) => job.status === "open");
+    if (open.length === 0) return "ready";
+    return open.some((job) => job.waiting.length === 0) ? "running" : "waiting";
+  }
   const stepStatuses = Object.values(run.steps).map((step) => step.status);
   if (run.rateHold) return stepStatuses.includes("running") ? "running" : "held";
   if (stepStatuses.includes("running")) return "running";
