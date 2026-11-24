@@ -1451,6 +1451,7 @@ export class Runtime {
   readableRun(callerId: string, runId: string | undefined): Run {
     if (!runId) return this.ownedRun(callerId, runId);
     const run = this.store.get(runId);
+    if (!run && this.isReservedRun(runId)) throw new UserError(`run "${runId}" is still starting: its Playbook Manager creates the run record within a minute; ask again then (do not start it again)`);
     if (!run) throw new UserError(`unknown run "${runId}"`);
     return run;
   }
@@ -3230,6 +3231,11 @@ export class Runtime {
         }
       }
     }
+  }
+
+  /** The reservation of a started run whose record does not exist yet, for exactly this playbook and inputs. */
+  private reservedSame(playbookId: string, inputs: Record<string, VarValue>): Reservation | undefined {
+    return [...this.reservations.values()].flat().find((r) => r.playbook.id === playbookId && JSON.stringify(r.inputs) === JSON.stringify(inputs) && !this.store.get(r.runId));
   }
 
   private isReservedRun(runId: string): boolean {
@@ -6649,6 +6655,11 @@ export class Runtime {
       );
     if (same && !input.force) {
       return { status: "duplicate" as const, runId: same.id, message: `Run ${same.id} of "${playbook.id}" is already active with the same inputs.` };
+    }
+    // A start that returned "started" has no run record until its manager agent creates the run (several seconds later): its reservation counts as that run.
+    const starting = input.force ? undefined : this.reservedSame(playbook.id, resolved.inputs);
+    if (starting) {
+      return { status: "duplicate" as const, runId: starting.runId, message: `Run ${starting.runId} of "${playbook.id}" was started with the same inputs and is still starting (its manager creates the run record within a minute).` };
     }
     if (input.agentId && playbook.managerMode === "none") throw new UserError(`"${playbook.id}" has no Playbook Manager (manager.mode: none): no agent manages it; start it without choosing one`);
     if (input.agentId) return this.startWithAgent(workspace.id, input.agentId, playbook, resolved.inputs);

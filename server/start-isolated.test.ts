@@ -119,13 +119,30 @@ describe("start_playbook and isolation: worktree", () => {
     expect(fresh.structuredContent?.workspaceId).toBe("new-1");
     const refused = await call("sidekick", "ws-hidden", { playbook: "iso", newWorkspace: false });
     expect(refused.isError).toBe(true);
-    const inPlace = await call("sidekick", "ws-hidden", { playbook: "iso", workspaceId: "ws-user" });
+    const inPlace = await call("sidekick", "ws-hidden", { playbook: "iso", inputs: { n: "a" }, workspaceId: "ws-user" });
     expect(inPlace.isError).toBeFalsy();
     expect(inPlace.structuredContent?.workspaceId).toBe("ws-user");
-    const forced = await call("sidekick", "ws-hidden", { playbook: "iso", workspaceId: "ws-user", newWorkspace: true });
+    const forced = await call("sidekick", "ws-hidden", { playbook: "iso", inputs: { n: "b" }, workspaceId: "ws-user", newWorkspace: true });
     expect(forced.structuredContent?.workspaceId).toBe("new-2");
     const hidden = await call("sidekick", "ws-hidden", { playbook: "iso", workspaceId: "ws-hidden" });
     expect(hidden.isError).toBe(true);
     expect(newWorkspaces).toEqual(["new-1", "new-2"]);
+  });
+});
+
+describe("start_playbook right after another start with the same inputs", () => {
+  it("refuses the second start while the first one's run record does not exist yet, and says so for its run id", async () => {
+    const { call, newWorkspaces, managers } = await setup();
+    const first = await call("sidekick", "ws-hidden", { playbook: "iso", inputs: { n: "7" } });
+    expect(first.isError).toBeFalsy();
+    const runId = (first.structuredContent as unknown as { runId: string }).runId;
+    const again = await call("sidekick", "ws-hidden", { playbook: "iso", inputs: { n: "7" } });
+    expect(again.isError).toBe(true);
+    expect(again.text).toContain(runId);
+    expect(again.text).toMatch(/still starting/);
+    expect(newWorkspaces).toEqual(["new-1"]);
+    expect(managers).toHaveLength(1);
+    const other = await call("sidekick", "ws-hidden", { playbook: "iso", inputs: { n: "8" } });
+    expect(other.isError).toBeFalsy();
   });
 });
