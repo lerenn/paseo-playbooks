@@ -29,14 +29,14 @@ describe("run badge", () => {
     expect(runBadge(summary())).toMatchObject({ state: "running", tone: "info", done: 1, total: 3, playbook: "Build" });
     expect(runBadge(summary({ gates: [gate] as never })).tone).toBe("warning");
     expect(runBadge(summary({ gates: [gate] as never })).state).toBe("waiting");
-    expect(runBadge(summary({ pausedAt: "x" })).state).toBe("paused");
+    expect(runBadge(summary({ pausedAt: "x" }))).toMatchObject({ state: "paused", tone: "violet" });
     expect(runBadge(summary({ status: "completed" }))).toMatchObject({ state: "done", tone: "success" });
     expect(runBadge(summary({ status: "failed" }))).toMatchObject({ state: "failed", tone: "danger" });
     expect(runBadge(summary({ status: "canceled" }))).toMatchObject({ state: "canceled", tone: "muted" });
   });
   it("a hold is held with nothing running, running while a step still works", () => {
     const hold = { kind: "quota", reason: "r" } as never;
-    expect(runBadge(summary({ rateHold: hold, stepStatuses: ["completed", "pending"] })).state).toBe("held");
+    expect(runBadge(summary({ rateHold: hold, stepStatuses: ["completed", "pending"] })).tone).toBe("violet");
     expect(runBadge(summary({ rateHold: hold })).state).toBe("running");
   });
 });
@@ -47,7 +47,8 @@ describe("attention badge", () => {
     expect(attentionOf(summary({ status: "failed" }), true)).toBeNull();
     expect(attentionOf(summary({ gates: [gate] as never }), false)).toEqual({ kind: "gate", tone: "danger" });
     expect(attentionOf(summary(), true)).toEqual({ kind: "slow", tone: "warning" });
-    expect(attentionOf(summary({ rateHold: { kind: "quota", reason: "r" } as never, stepStatuses: ["pending"] }), false)).toEqual({ kind: "held", tone: "warning" });
+    // Held by rate limiting with nothing running: the run badge says it, the attention badge stays away.
+    expect(attentionOf(summary({ rateHold: { kind: "quota", reason: "r" } as never, stepStatuses: ["pending"] }), false)).toBeNull();
   });
 });
 
@@ -62,6 +63,15 @@ describe("index", () => {
     expect(index.get("w1")!.run.runId).toBe("live");
     expect(index.get("w1")!.attention?.kind).toBe("gate");
     expect(index.get("w3")!.attention).toBeNull();
+  });
+});
+
+describe("held run in the index", () => {
+  it("shows violet on the run badge and no attention badge", () => {
+    const held = summary({ rateHold: { kind: "quota", reason: "r" } as never, stepStatuses: ["completed", "pending"] });
+    const badges = indexBadges([held], NOW).get("w1")!;
+    expect(badges.run).toMatchObject({ state: "held", tone: "violet" });
+    expect(badges.attention).toBeNull();
   });
 });
 

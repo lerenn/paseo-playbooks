@@ -19,22 +19,27 @@ per workspace row. Until now a run could only be seen from the Playbooks screen 
 - Two items, both with the Playbooks icon (the attention one a warning triangle):
   - `playbook-run`: on the workspace of an active run, or of one that ended less than 24 h ago (the
     active, then the latest run when there are several). Label: the step count (`3/7`) while running or
-    waiting, else a word (`held`, `paused`, `done`, `failed`, `canceled`).
+    waiting, else a word (`paused`, `done`, `failed`, `canceled`; a run held by rate limiting with nothing running is
+    worded `paused` too).
   - `playbook-attention`: only when the user is needed, else it renders nothing: `gate` (an open
-    gate), `slow` (a step slower than its baseline), `held` (rate limiting holds the run and no step
-    works). A blocked manager is not shown: run summaries do not carry the warden's finding.
+    gate), `slow` (a step slower than its baseline). A run held by rate limiting with nothing running
+    is not repeated here: only the run badge shows it. A blocked manager is not shown: run summaries do not carry the warden's finding.
 - Tones follow `client/semantic-colors.ts` as far as the host's five allow:
 
-  | State | Semantic tone | Badge tone |
+  | State | Semantic tone | Badge |
   | --- | --- | --- |
-  | running | blue | info |
-  | waiting (gate, free slot) | orange | warning |
-  | held, paused | orange, violet | warning (told apart by the word) |
-  | done | green | success |
-  | failed | red | danger |
-  | canceled | none | muted |
+  | running | blue | `WorkspaceRowBadge`, info |
+  | waiting (gate, free slot) | orange | `WorkspaceRowBadge`, warning |
+  | paused, held by rate limiting | violet | the plugin's own badge, the fixed paused violet |
+  | done | green | `WorkspaceRowBadge`, success |
+  | failed | red | `WorkspaceRowBadge`, danger |
+  | canceled | none | `WorkspaceRowBadge`, muted |
 
-  Attention: `gate` danger, `slow` and `held` warning.
+  Attention: `gate` danger, `slow` warning.
+- Violet has no host tone, so the paused state is drawn by the plugin with the host badge's layout
+  (a row, centred, gap 3, shrinking and ellipsized, text 12/16, `numberOfLines` 1) from `Icon`, the
+  theme's React Native `View`/`Text` and `semanticColor`, with the same accessibility label. The host's
+  icon size is not in its typings; the plugin uses 12. Every other state still uses `WorkspaceRowBadge`.
 - Rows do not fetch. Both Components read one shared store that rides on the overview store: the
   first mounted row asks it for the runs once (the same request the screen uses, refreshed on agent
   events with a 60 s fallback), the index by workspace id is rebuilt once per new set of runs, and the

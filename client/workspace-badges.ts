@@ -4,25 +4,26 @@ import { isActive, isPaused, type RunSummary } from "../shared/types";
 
 /**
  * What the two sidebar badges of a workspace row show, as pure functions of the run summaries
- * (ADR 2026-11-24-sidebar-workspace-badges). The row's tones are the host's five (muted, success,
- * warning, danger, info), so the plugin's five semantic tones (client/semantic-colors.ts) map onto them:
+ * (ADR 2026-11-24-sidebar-workspace-badges). The host's badge has five tones (muted, success,
+ * warning, danger, info); the plugin's semantic tones (client/semantic-colors.ts) map onto them:
  *
  *   running (blue)   -> info       finished, done (green)  -> success
  *   waiting (orange) -> warning    failed (red)            -> danger
- *   paused (violet)  -> warning    canceled                -> muted
+ *   canceled         -> muted
  *
- * Violet has no counterpart among the five, so a paused run and one held by rate limiting share the
- * waiting tone and tell themselves apart by their word ("paused", "held").
+ * Violet (paused, or held by rate limiting, both worded "paused") has no counterpart among the five:
+ * it is the plugin's own "violet" tone, drawn by client/workspace-badge-items.tsx.
  */
-export type BadgeTone = "muted" | "success" | "warning" | "danger" | "info";
+export type HostBadgeTone = "muted" | "success" | "warning" | "danger" | "info";
+export type BadgeTone = HostBadgeTone | "violet";
 
 export type RunBadgeState = "running" | "waiting" | "held" | "paused" | "done" | "failed" | "canceled";
 
 export const STATE_TONES: Readonly<Record<RunBadgeState, BadgeTone>> = {
   running: "info",
   waiting: "warning",
-  held: "warning",
-  paused: "warning",
+  held: "violet",
+  paused: "violet",
   done: "success",
   failed: "danger",
   canceled: "muted",
@@ -42,11 +43,11 @@ export interface RunBadge {
   playbook: string;
 }
 
-export type AttentionKind = "gate" | "slow" | "held";
+export type AttentionKind = "gate" | "slow";
 
 export interface AttentionBadge {
   kind: AttentionKind;
-  tone: BadgeTone;
+  tone: HostBadgeTone;
 }
 
 /** What a workspace row shows: its run's badge, and the attention badge when something needs the user. */
@@ -86,16 +87,18 @@ export function runBadge(run: RunSummary): RunBadge {
   };
 }
 
-/** Why an active run needs the user, most urgent first; null when it does not. `slow`: some step is slower than usual. */
+/**
+ * Why an active run needs the user, most urgent first; null when it does not. `slow`: some step is slower than usual.
+ * A run held by rate limiting with nothing running needs nothing from the user: only the run badge shows it.
+ */
 export function attentionOf(run: RunSummary, slow: boolean): AttentionBadge | null {
   if (!isActive(run) || run.status === "failed" || run.status === "canceled") return null;
   if (run.gates.some(waitsForHuman)) return { kind: "gate", tone: "danger" };
   if (slow) return { kind: "slow", tone: "warning" };
-  if (stateOf(run) === "held") return { kind: "held", tone: "warning" };
   return null;
 }
 
-const URGENCY: Record<AttentionKind, number> = { gate: 0, slow: 1, held: 2 };
+const URGENCY: Record<AttentionKind, number> = { gate: 0, slow: 1 };
 
 function ended(run: RunSummary): number {
   const time = Date.parse(run.updatedAt);
