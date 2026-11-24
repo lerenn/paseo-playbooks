@@ -7,7 +7,7 @@ import { archiveRunRpc, listPlaybooks, markRunSeenRpc } from "../shared/contract
 import { gateText, isWaiting, needsReview, waitsForHuman } from "../shared/gates";
 import { BringBack, DeferForm, WaitingInfo } from "./defer";
 import { PanelHeader } from "./panel-header-view";
-import { headerPad, HEADER, TABS, TAB_ICONS, tabParts } from "./panel-header";
+import { headerPad, HEADER, SUMMARY_LINE, summaryTop, TABS, TAB_ICONS, tabParts } from "./panel-header";
 import { overviewSettings } from "../shared/overview-settings";
 import { closedTabs, closeTab, effectiveTab, normalizeOpenTabs, openTab, visibleTabs, type PanelTab } from "../shared/panel-tabs";
 import { DEFAULT_PLAYBOOK_SORT, PLAYBOOK_SORTS, sortPlaybooks, type PlaybookSort } from "../shared/sort";
@@ -451,6 +451,29 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
 
   const playbookSortOptions = PLAYBOOK_SORTS.map((sort) => ({ key: sort.key, label: t(`cards.playbookSort.${sort.key}.label`), hint: t(`cards.playbookSort.${sort.key}.hint`) }));
   const pad = headerPad(layout.compact);
+  const summaryGroup = (
+    <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "flex-end", gap: 8 }}>
+      <PreReleaseFlag theme={theme} alignRight />
+      <Text numberOfLines={layout.compact ? undefined : 1} style={{ color: theme.colors.foregroundMuted, fontSize: 13 }}>
+            <Text style={{ color: semanticColor(theme, "waiting") }}>{counts.needsYou}</Text> {t("cards.summary.needsYou", { count: counts.needsYou })} ·{" "}
+            <Text style={{ color: semanticColor(theme, "running") }}>{counts.working}</Text> {t("cards.summary.working")}
+            {counts.waiting > 0 ? ` · ${t("cards.summary.waiting", { count: counts.waiting })}` : ""}
+            {counts.paused > 0 ? ` · ${t("cards.summary.paused", { count: counts.paused })}` : ""}
+            {counts.failed > 0 ? (
+              <>
+                {" · "}
+                <Text style={{ color: semanticColor(theme, "failed") }}>{counts.failed}</Text> {t("cards.summary.failed")}
+              </>
+            ) : null}
+            {counts.done > 0 ? (
+              <>
+                {" · "}
+                <Text style={{ color: semanticColor(theme, "done") }}>{counts.done}</Text> {t("cards.summary.done")}
+              </>
+            ) : null}
+          </Text>
+    </View>
+  );
   const onOpenWorkspace = navigation ? (workspaceId: string) => navigation.openWorkspace({ workspaceId }) : undefined;
   const onOpenAgent = navigation ? (agentId: string) => navigation.openAgent({ agentId }) : undefined;
   return (
@@ -493,30 +516,11 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
               </>
             }
           />
+          {!layout.compact ? <View style={{ position: "absolute", right: pad, top: summaryTop(false), height: SUMMARY_LINE, zIndex: 70 }}>{summaryGroup}</View> : null}
           <TabBar theme={theme} compact={layout.compact} open={openTabs} selected={tab} onSelect={selectTab} onClose={dismissTab} />
         </View>
       <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: pad, gap: 18 }}>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 10, flexWrap: "wrap", zIndex: 50 }}>
-          <PreReleaseFlag theme={theme} />
-          <Text style={{ flex: 1, minWidth: 140, textAlign: "right", color: theme.colors.foregroundMuted, fontSize: 13 }}>
-            <Text style={{ color: semanticColor(theme, "waiting") }}>{counts.needsYou}</Text> {t("cards.summary.needsYou", { count: counts.needsYou })} ·{" "}
-            <Text style={{ color: semanticColor(theme, "running") }}>{counts.working}</Text> {t("cards.summary.working")}
-            {counts.waiting > 0 ? ` · ${t("cards.summary.waiting", { count: counts.waiting })}` : ""}
-            {counts.paused > 0 ? ` · ${t("cards.summary.paused", { count: counts.paused })}` : ""}
-            {counts.failed > 0 ? (
-              <>
-                {" · "}
-                <Text style={{ color: semanticColor(theme, "failed") }}>{counts.failed}</Text> {t("cards.summary.failed")}
-              </>
-            ) : null}
-            {counts.done > 0 ? (
-              <>
-                {" · "}
-                <Text style={{ color: semanticColor(theme, "done") }}>{counts.done}</Text> {t("cards.summary.done")}
-              </>
-            ) : null}
-          </Text>
-        </View>
+        {layout.compact ? <View style={{ zIndex: 50 }}>{summaryGroup}</View> : null}
 
 
         {tab === "analytics" ? (

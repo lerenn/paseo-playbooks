@@ -30,7 +30,7 @@ export function PanelHeader(props: { theme: Theme; compact: boolean; actions?: R
           <Text numberOfLines={2} style={{ color: theme.colors.foregroundMuted, fontSize: HEADER.taglineSize }}>{t("panel.tagline")}</Text>
         )}
       </View>
-      {props.actions ? <View style={{ flexDirection: "row", alignItems: "center", alignSelf: "center", gap: 10 }}>{props.actions}</View> : null}
+      {props.actions ? <View style={{ flexDirection: "row", alignItems: "center", alignSelf: "center", gap: 10, ...(props.compact ? {} : { transform: [{ translateY: -3 }] }) }}>{props.actions}</View> : null}
     </View>
   );
 }

@@ -61,6 +61,14 @@ export function headerGeometry(input: { compact: boolean; rowHeight: number; tab
   };
 }
 
+/** Height of the summary line that sits in the gap between the header buttons and the tab row (wide layout). */
+export const SUMMARY_LINE = 17;
+
+/** Top of the summary group: it ends where the tab row starts, so it adds no height and moves nothing. */
+export function summaryTop(compact: boolean): number {
+  return headerPad(compact) + HEADER.tile + HEADER.rowGap - SUMMARY_LINE;
+}
+
 /** The icon of each tab (Lucide names of the host's icon set). */
 export const TAB_ICONS: Record<PanelTab, string> = {
   runs: "ListChecks",

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { PANEL_TABS } from "../shared/panel-tabs";
-import { HEADER, TABS, TAB_ICONS, headerGeometry, headerPad, tabParts } from "./panel-header";
+import { HEADER, SUMMARY_LINE, TABS, TAB_ICONS, headerGeometry, headerPad, summaryTop, tabParts } from "./panel-header";
 
 describe("panel header and tabs", () => {
   it("has an icon for every tab, all different", () => {
@@ -37,5 +37,12 @@ describe("panel header and tabs", () => {
   it("uses the reference tab constants", () => {
     expect([TABS.padY, TABS.padX, TABS.underline, TABS.divider, TABS.gap, TABS.icon, TABS.iconGap, TABS.labelSize]).toEqual([10, 14, 2, 1, 4, 15, 7, 14]);
     expect([HEADER.tile, HEADER.tileRadius, HEADER.titleSizeWide, HEADER.titleSizeCompact, HEADER.taglineSize, HEADER.textGap]).toEqual([44, 12, 24, 20, 13, 2]);
+  });
+  it("fits the summary group in the gap above the tab row without moving the tabs", () => {
+    for (const compact of [false, true]) {
+      const g = headerGeometry({ compact, rowHeight: 44, tabHeight: 39 });
+      expect(summaryTop(compact) + SUMMARY_LINE).toBe(g.tabsTop);
+      expect(summaryTop(compact)).toBeGreaterThan(headerPad(compact) + 44 - 6);
+    }
   });
 });

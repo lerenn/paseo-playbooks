@@ -9,7 +9,7 @@ export const PRE_RELEASE_NOTICE =
   "Pre-1.0: any minor release may change the playbook format in breaking ways. Pin a release tag and read the release notes before upgrading.";
 
 /** A small yellow warning that Playbooks is not v1 yet; the full text opens beside it. */
-export function PreReleaseFlag(props: { theme: Theme }) {
+export function PreReleaseFlag(props: { theme: Theme; /** Open the notice leftwards, for a flag at the right edge. */ alignRight?: boolean }) {
   const { theme } = props;
   const [hover, setHover] = useState(false);
   const [focus, setFocus] = useState(false);
@@ -34,7 +34,7 @@ export function PreReleaseFlag(props: { theme: Theme }) {
           style={{
             position: "absolute",
             top: 24,
-            left: 0,
+            ...(props.alignRight ? { right: 0 } : { left: 0 }),
             width: 260,
             padding: 10,
             borderRadius: 8,
