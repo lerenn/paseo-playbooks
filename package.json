@@ -1,7 +1,7 @@
 {
   "name": "paseo-playbooks",
   "private": true,
-  "version": "0.180.0",
+  "version": "0.181.0",
   "files": [
     "paseo-plugin.json",
     "OVERVIEW*.md",
@@ -19,7 +19,7 @@
     "test": "vitest run"
   },
   "devDependencies": {
-    "@getpaseo/plugin": "0.14.0",
+    "@getpaseo/plugin": "^0.17.4",
     "@tanstack/react-query": "^5.90.11",
     "@types/node": "^22.20.5",
     "@types/react": "~19.2.0",

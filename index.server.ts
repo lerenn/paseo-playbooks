@@ -6,6 +6,8 @@ import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 /** The daemon API handed to plugin handlers (typed via the SDK, so the build needs no @getpaseo/client). */
 type PaseoApi = PluginHandlerContext["paseo"];
 import type { PluginServerContext } from "@getpaseo/plugin/server";
+import type { PluginRpcContract } from "@getpaseo/plugin";
+import type { ZodType, input as ZodInput, output as ZodOutput } from "zod";
 import {
   archiveRunRpc,
   cancelRunRpc,
@@ -87,7 +89,12 @@ export default function contribute(server: PluginServerContext) {
   };
   const quietly = (label: string, fn: () => Promise<void>) =>
     fn().catch((error) => console.error(`[playbooks] ${label} failed:`, error));
-  const handle: PluginServerContext["handle"] = (contract, handler) =>
+  type PluginWireInput<Value> = Value extends Uint8Array ? Uint8Array : Value;
+  // Request/response RPCs only: `server.handle` is overloaded since SDK 0.17 (subscriptions), and this wrapper serves the RPC overload.
+  const handle = <I extends ZodType, O extends ZodType>(
+    contract: PluginRpcContract<I, O>,
+    handler: (input: ZodOutput<I>, context: PluginHandlerContext) => PluginWireInput<ZodInput<O>> | Promise<PluginWireInput<ZodInput<O>>>,
+  ) =>
     server.handle(contract, async (input, context) => {
       await enter(context.paseo);
       try {

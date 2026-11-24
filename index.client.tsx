@@ -4,6 +4,7 @@ import { contributeHeaderButtons } from "./client/header";
 import { PlaybooksScreen, PlaybooksSidebarItem, SCREEN_ID } from "./client/overview";
 import { createOverviewStore } from "./client/overview-store";
 import { PlaybooksPanel } from "./client/panel";
+import { contributeWorkspaceBadges } from "./client/workspace-badge-items";
 
 export default function contribute(client: PluginClientContext) {
   client.addWorkspacePanel({
@@ -33,8 +34,10 @@ export default function contribute(client: PluginClientContext) {
     Component: (props) => <PlaybooksSidebarItem {...props} store={store} />,
   });
   const headers = contributeHeaderButtons(client);
+  const badges = contributeWorkspaceBadges(client, store);
   return () => {
     headers();
+    badges();
     sidebar();
     screen();
     store.dispose();

@@ -11,7 +11,7 @@
       "description": "用 YAML playbook 自动化多智能体工作流：由一个 manager 智能体编排由子智能体执行的步骤流水线，支持并行和循环，并在人工审批关卡处暂停。"
     }
   },
-  "requirements": { "paseo": ">=0.14.0" },
+  "requirements": { "paseo": ">=0.16.0" },
   "build": [["npm", "ci", "--omit=dev"]],
   "media": ["assets/card.png", "assets/playbooks-screen.png", "assets/panel.png", "assets/app.png"]
 }

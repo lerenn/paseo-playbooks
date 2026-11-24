@@ -107,7 +107,7 @@ steps:
 - Tous les agents, sauf ceux des étapes et des gates, peuvent lister, annuler, relancer ou reprendre
   des exécutions, et lancer des after-tasks manuelles, depuis n'importe quelle
   conversation. Voir [les outils](https://playbooks.paseo.lerenn.dev/how-it-works.html).
-- Nécessite Paseo 0.14 ou plus récent. L'état des exécutions est conservé dans
+- Nécessite Paseo 0.16 ou plus récent. L'état des exécutions est conservé dans
   `$PASEO_HOME/plugin-data/lerenn/paseo-playbooks/runs/`. Archiver une exécution la masque sans
   supprimer son état, et `restart_run` peut la rouvrir ; par défaut elle archive aussi le workspace de l'exécution quand c'est sûr (`workspace: { archive_with_run: false }` désactive cela). Le worktree de l'exécution est supprimé à
   sa fin (celui d'une exécution en échec est conservé 24 heures, sauf si le volume est élevé),

@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/lerenn/paseo-playbooks/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/lerenn/paseo-playbooks/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/lerenn/paseo-playbooks?style=flat-square)](https://github.com/lerenn/paseo-playbooks/releases)
-[![Paseo >=0.14.0](https://img.shields.io/badge/Paseo-%3E%3D0.14.0-blue?style=flat-square)](https://github.com/getpaseo/paseo)
+[![Paseo >=0.16.0](https://img.shields.io/badge/Paseo-%3E%3D0.16.0-blue?style=flat-square)](https://github.com/getpaseo/paseo)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](package.json)
 [![GitHub stars](https://img.shields.io/github/stars/lerenn/paseo-playbooks?style=flat-square)](https://github.com/lerenn/paseo-playbooks/stargazers)
 
@@ -153,7 +153,7 @@ See the [Sidekick reference](https://playbooks.paseo.lerenn.dev/reference.html#s
 
 ### Requirements
 
-- [Paseo](https://github.com/getpaseo/paseo) `0.14` or later.
+- [Paseo](https://github.com/getpaseo/paseo) `0.16` or later.
 - A repository whose playbooks and roles you trust. Agent steps may run with powerful
   permission modes, including `bypassPermissions`.
 
