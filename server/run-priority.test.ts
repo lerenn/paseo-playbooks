@@ -201,7 +201,8 @@ describe("quota.reset_burn_rate input", () => {
   it("needs a playbook, takes an optional step, refuses empty names", () => {
     expect(parse({ playbook: "work" })).toBe(true);
     expect(parse({ playbook: "work", step: "build" })).toBe(true);
-    expect(parse({})).toBe(false);
+    expect(parse({ all: true })).toBe(true);
+    expect(parse({ all: "yes" })).toBe(false);
     expect(parse({ playbook: "  " })).toBe(false);
     expect(parse({ playbook: "work", step: "" })).toBe(false);
     expect(parse({ playbook: 3 })).toBe(false);

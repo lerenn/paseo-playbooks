@@ -115,6 +115,7 @@ export const MANAGER_TOOL_NAMES = [
   "restart_run",
   "set_run_priority",
   "set_run_quota_exempt",
+  "reset_burn_rate",
   "archive_run",
   "requeue_job",
   "validate_playbooks",
@@ -5208,7 +5209,7 @@ export class Runtime {
   /**
    * Hard reset of the learned burn rate of a playbook, or of one step's duration (ADR 2026-11-24-burn-rate-naming-and-reset): the
    * erased data is gone and the playbook (or that step's estimate) is unpaced until measured again. Updates the live history and the
-   * reservations at once, tells the event stream, and looks at the held runs again. Idempotent. Panel only (no agent tool).
+   * reservations at once, tells the event stream, and looks at the held runs again. Idempotent. Used by the panel and the reset_burn_rate tool.
    */
   async resetBurnRate(playbook: string, step: string | null, by: string): Promise<{ erased: Erased; at: string }> {
     if (!playbook.trim()) throw new UserError("playbook is required");
@@ -5232,6 +5233,32 @@ export class Runtime {
     void this.tick().catch((error) => console.error("[playbooks] tick after a burn rate reset failed:", errorText(error)));
     this.kickLimits();
     return { erased, at };
+  }
+
+  /**
+   * Burn rate reset by argument (the `reset_burn_rate` tool and the `quota.reset_burn_rate` RPC; ADR 2026-11-24-burn-rate-naming-and-reset):
+   * exactly one of a playbook (with an optional step) or `all`. `all` resets every playbook of the history, one event each; returns the
+   * per-playbook counts and their total.
+   */
+  async resetBurnRates(input: { playbook?: string | undefined; step?: string | undefined; all?: boolean | undefined }, by: string): Promise<{ erased: Erased; at: string; playbooks: Array<{ playbook: string; step: string | null; erased: Erased }> }> {
+    const playbook = input.playbook?.trim() || undefined;
+    const step = input.step?.trim() || undefined;
+    if (input.all) {
+      if (playbook || step) throw new UserError("pass either all: true or a playbook (with an optional step), not both");
+      const playbooks: Array<{ playbook: string; step: string | null; erased: Erased }> = [];
+      let at = nowIso();
+      for (const id of this.costs.playbookIds()) {
+        const result = await this.resetBurnRate(id, null, by);
+        at = result.at;
+        playbooks.push({ playbook: id, step: null, erased: result.erased });
+      }
+      const erased = playbooks.reduce<Erased>((sum, item) => ({ entries: sum.entries + item.erased.entries, steps: sum.steps + item.erased.steps, ms: sum.ms + item.erased.ms }), { entries: 0, steps: 0, ms: 0 });
+      return { erased, at, playbooks };
+    }
+    if (!playbook) throw new UserError("pass a playbook (with an optional step), or all: true");
+    if (step && !playbook) throw new UserError("a step needs its playbook");
+    const result = await this.resetBurnRate(playbook, step ?? null, by);
+    return { ...result, playbooks: [{ playbook, step: step ?? null, erased: result.erased }] };
   }
 
   /**

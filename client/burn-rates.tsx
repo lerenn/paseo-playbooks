@@ -32,8 +32,8 @@ function BurnInfo(props: { theme: Theme }) {
 }
 
 /** A "Reset" link that asks again inline before erasing: the question, then Erase and Cancel. Neutral and accent colours, never red. */
-function ResetControl(props: { theme: Theme; question: string; hint?: string; onConfirm: () => Promise<void> }) {
-  const { theme, question, hint, onConfirm } = props;
+function ResetControl(props: { theme: Theme; question: string; hint?: string; label?: string; onConfirm: () => Promise<void> }) {
+  const { theme, question, hint, label, onConfirm } = props;
   const { t } = useTranslation(messages);
   const [asking, setAsking] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -42,7 +42,7 @@ function ResetControl(props: { theme: Theme; question: string; hint?: string; on
   if (!asking) {
     return (
       <Pressable accessibilityRole="button" hitSlop={6} onPress={() => setAsking(true)}>
-        <Text style={{ color: theme.colors.accent, fontSize: 12 }}>{t("quota.burn.reset")}</Text>
+        <Text style={{ color: theme.colors.accent, fontSize: 12 }}>{label ?? t("quota.burn.reset")}</Text>
       </Pressable>
     );
   }
@@ -119,13 +119,16 @@ function PlaybookBurn(props: { theme: Theme; item: QuotaBurnRate; onChanged: () 
 export function BurnRatesView(props: { theme: Theme; items: QuotaBurnRate[]; onChanged: () => void }) {
   const { theme, items, onChanged } = props;
   const { t } = useTranslation(messages);
+  const reset = useRpc(resetBurnRateRpc);
   if (items.length === 0) return null;
   return (
     <View style={{ gap: SPACE.provider }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
         <Text style={{ color: theme.colors.foreground, fontSize: 14, lineHeight: 20, fontWeight: "600" }}>{t("quota.burn.title")}</Text>
         <BurnInfo theme={theme} />
+        <ResetControl theme={theme} label={t("quota.burn.resetAll")} question={t("quota.burn.confirmAll")} onConfirm={async () => void (await reset({ all: true }), onChanged())} />
       </View>
+      <Text style={{ color: theme.colors.foregroundMuted, ...TEXT.small }}>{t("quota.burn.allCaption")}</Text>
       {items.map((item) => (
         <PlaybookBurn key={item.playbook} theme={theme} item={item} onChanged={onChanged} />
       ))}

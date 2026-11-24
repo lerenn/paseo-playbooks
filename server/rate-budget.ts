@@ -247,6 +247,13 @@ export class CostHistory {
     return erased;
   }
 
+  /** Every playbook that has a learned cost row or a step duration (what a reset of all burn rates erases), sorted. */
+  playbookIds(): string[] {
+    const ids = new Set<string>();
+    for (const key of [...this.data.keys(), ...this.times.keys()]) ids.add(key.slice(0, key.indexOf("|")));
+    return [...ids].filter(Boolean).sort();
+  }
+
   /** When the playbook (or its step) was last reset by hand; null when never. */
   resetAt(playbookId: string, step: string | null = null): string | null {
     return this.resets.get(step === null ? playbookId : `${playbookId}|${step}`) ?? null;

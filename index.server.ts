@@ -254,7 +254,10 @@ export default function contribute(server: PluginServerContext) {
     const result = await runtime.setRunPriority(runId, priority, applyToChildren, "the Burn rate limiting tab");
     return { priorityOverride: result.run.priorityOverride, inheritChildPriority: result.run.inheritChildPriority, from: result.from, changed: result.changed, cascaded: result.cascaded };
   });
-  handle(resetBurnRateRpc, ({ playbook, step }) => runtime.resetBurnRate(playbook, step ?? null, "the Burn rate limiting tab"));
+  handle(resetBurnRateRpc, async (input) => {
+    const { erased, at } = await runtime.resetBurnRates(input, "the Burn rate limiting tab");
+    return { erased, at };
+  });
   handle(setRunQuotaExemptRpc, async ({ runId, exempt, applyToChildren }) => {
     const result = await runtime.setRunQuotaExempt(runId, exempt, applyToChildren, "the Runs view");
     return { quotaExempt: result.run.quotaExempt, inheritChildExempt: result.run.inheritChildExempt, from: result.from, changed: result.changed, cascaded: result.cascaded };

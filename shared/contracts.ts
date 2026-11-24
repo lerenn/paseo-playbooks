@@ -242,10 +242,10 @@ export const setRunPriorityRpc = defineRpc({
   output: z.object({ priorityOverride: z.number().nullable(), inheritChildPriority: z.boolean(), from: z.number().nullable(), changed: z.boolean(), cascaded: z.number().int() }),
 });
 
-/** Erases the learned burn rate of a playbook, or one step's learned duration, from the Burn rate limiting tab (panel only: no agent tool). Idempotent. */
+/** Erases the learned burn rate of a playbook, or one step's learned duration, or of every playbook (`all`), from the Burn rate limiting tab (also the reset_burn_rate agent tool). Exactly one of a playbook or `all` (checked by the runtime). Idempotent. */
 export const resetBurnRateRpc = defineRpc({
   name: "quota.reset_burn_rate",
-  input: z.object({ playbook: z.string().trim().min(1), step: z.string().trim().min(1).optional() }),
+  input: z.object({ playbook: z.string().trim().min(1).optional(), step: z.string().trim().min(1).optional(), all: z.boolean().optional() }),
   output: z.object({ erased: z.object({ entries: z.number().int(), steps: z.number(), ms: z.number() }), at: z.string() }),
 });
 

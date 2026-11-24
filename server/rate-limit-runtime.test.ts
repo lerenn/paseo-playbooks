@@ -5,7 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as engine from "./engine";
 import { newRun } from "./engine";
 import { loadPlaybooks } from "./loader";
-import { RateHeldError, Runtime } from "./runtime";
+import { MANAGER_TOOL_NAMES, RateHeldError, Runtime, STEP_TOOL_NAMES } from "./runtime";
+import { runTools } from "./tools";
 import { RunStore } from "./store";
 
 const temps: string[] = [];
@@ -280,6 +281,42 @@ describe("dynamic capacity from quota headroom", () => {
     // Idempotent.
     expect((await runtime.resetBurnRate("work", null, "test")).erased).toEqual({ entries: 0, steps: 0, ms: 0 });
     await expect(runtime.resetBurnRate("  ", null, "test")).rejects.toThrow("playbook is required");
+  });
+
+  it("reset_burn_rate: exactly one of playbook or all, per-playbook counts and one event each, live effects, manager-only", async () => {
+    const seed = { "work|claude\u0000weekly": { points: 5, steps: 1, ms: HOUR, timedPoints: 5 }, "other|claude\u0000weekly": { points: 3, steps: 1, ms: HOUR / 2, timedPoints: 3 }, "@stepTimes": { "other|a": { ms: 30 * 60_000, n: 1 } } };
+    const { runtime, store, internals, read } = await setup(pacing(), { current: claude(10) }, { seed });
+    await read();
+    const emit = vi.spyOn((runtime as unknown as { bus: { emit: (...args: unknown[]) => Promise<unknown> } }).bus, "emit");
+    const tool = runTools(runtime).find((candidate) => candidate.name === "reset_burn_rate")!;
+    const run = (input: unknown) => (tool as unknown as { execute(input: unknown, ctx: unknown): Promise<{ isError?: boolean; content?: Array<{ text?: string }>; structuredContent?: unknown }> }).execute(input, { agent: { id: "mgr" } });
+    const schema = (tool as unknown as { input: { safeParse(value: unknown): { success: boolean } } }).input;
+    expect(schema.safeParse({ playbook: "work", step: "a" }).success).toBe(true);
+    expect(schema.safeParse({ all: "yes" }).success).toBe(false);
+    // Validation: neither, or both.
+    await expect(runtime.resetBurnRates({}, "agent mgr")).rejects.toThrow("pass a playbook");
+    await expect(runtime.resetBurnRates({ playbook: "work", all: true }, "agent mgr")).rejects.toThrow("not both");
+    expect((await run({})).isError).toBe(true);
+    expect((await run({ all: true, step: "a" })).isError).toBe(true);
+    expect(internals.costs.stepCost("work", "claude", "weekly")).not.toBeNull();
+    // Live effects: held run released, reservations emptied.
+    await runtime.startStep("m", "r0", "a", "go");
+    await expect(runtime.startStep("m", "r1", "a", "go")).rejects.toBeInstanceOf(RateHeldError);
+    const result = await run({ all: true });
+    expect(result.isError).toBeFalsy();
+    expect(JSON.stringify(result)).toContain("other");
+    expect(result.structuredContent).toMatchObject({ all: true, erased: { entries: 2, steps: 2, ms: HOUR * 1.5 }, playbooks: [{ playbook: "other", erased: { entries: 1, steps: 1, ms: HOUR / 2 } }, { playbook: "work", erased: { entries: 1, steps: 1, ms: HOUR } }] });
+    expect(internals.costs.stepCost("work", "claude", "weekly")).toBeNull();
+    expect(internals.costs.stepDuration("other", "a")).toBeNull();
+    expect(store.get("r1")!.rateHold).toBeNull();
+    const resets = emit.mock.calls.filter((call) => call[0] === "quota.burn_rate_reset");
+    expect(resets.map((call) => (call[1] as { playbook: string }).playbook)).toEqual(["other", "work"]);
+    expect(resets.every((call) => (call[1] as { by: string }).by === "agent mgr")).toBe(true);
+    // Idempotent: nothing left, nothing erased.
+    expect((await runtime.resetBurnRates({ all: true }, "agent mgr")).playbooks).toEqual([]);
+    expect((await run({ playbook: "work" })).structuredContent).toMatchObject({ all: false, erased: { entries: 0, steps: 0, ms: 0 } });
+    expect(MANAGER_TOOL_NAMES).toContain("reset_burn_rate");
+    expect(STEP_TOOL_NAMES).not.toContain("reset_burn_rate");
   });
 
   it("a step reset clears that step's duration only and the run is priced by the unit cost for it", async () => {

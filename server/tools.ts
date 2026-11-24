@@ -1215,6 +1215,24 @@ export function runTools(runtime: Runtime): AgentToolDefinition[] {
           return ok(text, { runId, from: result.from, to: exempt, changed: result.changed, cascaded: result.cascaded, inheritChildExempt: result.run.inheritChildExempt });
         }),
     }),
+    defineAgentTool({
+      name: "reset_burn_rate",
+      description:
+        "HARD RESET of the learned burn rate (quota points per hour of agent time) in the plugin's history, for when a playbook or step changed so much that what was learned misleads the pacing. DELETES learned data, it cannot be undone: the affected runs are NOT paced by cost, they run without limits, until the history is measured again from new finished steps (it is flagged low confidence while it re-learns). Give EXACTLY ONE of: playbook (+ optional step) or all: true (otherwise a validation error). playbook alone: erases every learned cost row of that playbook (points, steps, agent time, every provider and window) and all its step durations. playbook + step: clears only that step's learned duration (the burn rate is learned per playbook, so the step then falls back to the average cost of a step until measured again). all: true: does it for EVERY playbook of the history at once; use it rarely. Idempotent (a second call erases nothing). Applied at once: runs of the playbook lose their estimated need, held runs of it are released immediately, the pace plan is read again. Records `@resets` in rate-history.json and emits quota.burn_rate_reset (one per playbook; who did it is in the event and the log). The result counts what was erased per playbook: entries (cost rows), steps (finished attempts), ms (agent time). Same as the panel's Reset buttons in the Burn rate limiting tab.",
+      input: z.object({
+        playbook: z.string().optional().describe("The playbook id whose learned burn rate is erased"),
+        step: z.string().optional().describe("With playbook: only this step's learned duration is cleared"),
+        all: z.boolean().optional().describe("true: reset every playbook of the history (instead of playbook/step)"),
+      }),
+      execute: ({ playbook, step, all }, { agent }) =>
+        guard(async () => {
+          const result = await runtime.resetBurnRates({ playbook, step, all }, `agent ${agent.id}`);
+          const count = (erased: { entries: number; steps: number; ms: number }) => `${erased.entries} cost row${erased.entries === 1 ? "" : "s"}, ${erased.steps} attempt${erased.steps === 1 ? "" : "s"}, ${Math.round(erased.ms / 60000)} min of agent time`;
+          const lines = result.playbooks.map((item) => `- ${item.playbook}${item.step ? ` (step ${item.step}: its duration only)` : ""}: ${count(item.erased)}`);
+          const head = all ? `Reset the burn rate of ${result.playbooks.length} playbook${result.playbooks.length === 1 ? "" : "s"}${result.playbooks.length > 0 ? `: ${count(result.erased)} erased in total` : " (the history is empty)"}.` : `Burn rate of ${playbook}${step ? ` step ${step}` : ""} reset: ${count(result.erased)} erased.`;
+          return ok(`${head}${all && lines.length > 0 ? `\n${lines.join("\n")}` : ""}\nThe runs of ${all ? "these playbooks" : "the playbook"} are not paced by cost until measured again; held runs were released and the pace plan was looked at again.`, { all: all === true, at: result.at, erased: result.erased, playbooks: result.playbooks });
+        }),
+    }),
   ];
 }
 
