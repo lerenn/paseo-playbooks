@@ -1,6 +1,7 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { PANEL_TABS } from "../shared/panel-tabs";
-import { HEADER, SUMMARY_LINE, TABS, TAB_ICONS, headerGeometry, headerPad, summaryTop, tabParts } from "./panel-header";
+import { HEADER, BUTTONS_HEIGHT, BUTTONS_LIFT, SUMMARY_GAP, SUMMARY_LINE, TABS, TAB_ICONS, headerGeometry, headerPad, summaryLayout, tabParts } from "./panel-header";
 
 describe("panel header and tabs", () => {
   it("has an icon for every tab, all different", () => {
@@ -38,11 +39,28 @@ describe("panel header and tabs", () => {
     expect([TABS.padY, TABS.padX, TABS.underline, TABS.divider, TABS.gap, TABS.icon, TABS.iconGap, TABS.labelSize]).toEqual([10, 14, 2, 1, 4, 15, 7, 14]);
     expect([HEADER.tile, HEADER.tileRadius, HEADER.titleSizeWide, HEADER.titleSizeCompact, HEADER.taglineSize, HEADER.textGap]).toEqual([44, 12, 24, 20, 13, 2]);
   });
-  it("fits the summary group in the gap above the tab row without moving the tabs", () => {
-    for (const compact of [false, true]) {
-      const g = headerGeometry({ compact, rowHeight: 44, tabHeight: 39 });
-      expect(summaryTop(compact) + SUMMARY_LINE).toBe(g.tabsTop);
-      expect(summaryTop(compact)).toBeGreaterThan(headerPad(compact) + 44 - 6);
-    }
+  it("puts the summary group below the buttons with a gap, above the tabs, without moving the tabs", () => {
+    const l = summaryLayout();
+    const g = headerGeometry({ compact: false, rowHeight: 44, tabHeight: 39 });
+    expect(l.columnHeight).toBe(HEADER.tile);
+    // buttons: top lifted by BUTTONS_LIFT, bottom at buttonsBottom (column offsets)
+    expect(l.buttonsBottom).toBe(BUTTONS_HEIGHT - BUTTONS_LIFT);
+    expect(l.groupTop).toBeGreaterThanOrEqual(l.buttonsBottom + 8);
+    expect(l.groupTop - l.buttonsBottom).toBe(SUMMARY_GAP);
+    expect(l.groupBottom - l.groupTop).toBe(SUMMARY_LINE);
+    // the group ends above the tab row (column top is the header's top padding when the row is the tile's height)
+    expect(headerPad(false) + l.groupBottom).toBeLessThanOrEqual(g.tabsTop);
+    // the tabs are where the geometry test above pins them
+    expect(g.tabsTop).toBe(28 + 44 + 14);
+  });
+  it("renders all three counts on one line, right-aligned with the buttons, in a column that does not shrink", () => {
+    const view = readFileSync(new URL("./panel-header-view.tsx", import.meta.url), "utf8");
+    const overview = readFileSync(new URL("./overview.tsx", import.meta.url), "utf8");
+    expect(view).toMatch(/alignItems: "flex-end", flexShrink: 0/);
+    expect(overview).toContain('t("cards.summary.needsYou"');
+    expect(overview).toContain('t("cards.summary.working")');
+    expect(overview).toContain('t("cards.summary.done")');
+    expect(overview).not.toMatch(/numberOfLines=\{layout\.compact \? undefined : 1\}/);
+    expect(overview).not.toContain('position: "absolute", right: pad');
   });
 });

@@ -61,12 +61,22 @@ export function headerGeometry(input: { compact: boolean; rowHeight: number; tab
   };
 }
 
-/** Height of the summary line that sits in the gap between the header buttons and the tab row (wide layout). */
+/** Height of the one-line summary group ("0 need you · 0 working · N done") on a wide layout. */
 export const SUMMARY_LINE = 17;
+/** The header buttons' height (an upper bound), how far the buttons row is lifted, and the gap kept between it and the summary. */
+export const BUTTONS_HEIGHT = 32;
+export const BUTTONS_LIFT = 4;
+export const SUMMARY_GAP = 8;
 
-/** Top of the summary group: it ends where the tab row starts, so it adds no height and moves nothing. */
-export function summaryTop(compact: boolean): number {
-  return headerPad(compact) + HEADER.tile + HEADER.rowGap - SUMMARY_LINE;
+/**
+ * The right column of the header (wide layout): the buttons row, then the summary group clearly below it.
+ * The column is exactly as tall as the tile and lets the summary overflow its bottom edge, so it never
+ * makes the header row taller and the tabs stay where they were. Offsets are from the column's top.
+ */
+export function summaryLayout() {
+  const buttonsBottom = BUTTONS_HEIGHT - BUTTONS_LIFT;
+  const groupTop = buttonsBottom + SUMMARY_GAP;
+  return { columnHeight: HEADER.tile, buttonsBottom, groupTop, groupMarginTop: groupTop - BUTTONS_HEIGHT, groupBottom: groupTop + SUMMARY_LINE };
 }
 
 /** The icon of each tab (Lucide names of the host's icon set). */

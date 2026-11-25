@@ -7,7 +7,7 @@ import { archiveRunRpc, listPlaybooks, markRunSeenRpc } from "../shared/contract
 import { gateText, isWaiting, needsReview, waitsForHuman } from "../shared/gates";
 import { BringBack, DeferForm, WaitingInfo } from "./defer";
 import { PanelHeader } from "./panel-header-view";
-import { headerPad, HEADER, SUMMARY_LINE, summaryTop, TABS, TAB_ICONS, tabParts } from "./panel-header";
+import { headerPad, HEADER, SUMMARY_LINE, TABS, TAB_ICONS, tabParts } from "./panel-header";
 import { overviewSettings } from "../shared/overview-settings";
 import { canToggleTab, effectiveTab, normalizeOpenTabs, openTab, toggleTab, visibleTabs, PANEL_TABS, type PanelTab } from "../shared/panel-tabs";
 import { DEFAULT_PLAYBOOK_SORT, PLAYBOOK_SORTS, sortPlaybooks, type PlaybookSort } from "../shared/sort";
@@ -453,9 +453,9 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
   const playbookSortOptions = PLAYBOOK_SORTS.map((sort) => ({ key: sort.key, label: t(`cards.playbookSort.${sort.key}.label`), hint: t(`cards.playbookSort.${sort.key}.hint`) }));
   const pad = headerPad(layout.compact);
   const summaryGroup = (
-    <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "flex-end", gap: 8 }}>
+    <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "flex-end", gap: 8, flexShrink: 0, ...(layout.compact ? {} : { height: SUMMARY_LINE }) }}>
       <PreReleaseFlag theme={theme} alignRight />
-      <Text numberOfLines={layout.compact ? undefined : 1} style={{ color: theme.colors.foregroundMuted, fontSize: 13 }}>
+      <Text style={{ color: theme.colors.foregroundMuted, fontSize: 13, flexShrink: 0 }}>
             <Text style={{ color: semanticColor(theme, "waiting") }}>{counts.needsYou}</Text> {t("cards.summary.needsYou", { count: counts.needsYou })} ·{" "}
             <Text style={{ color: semanticColor(theme, "running") }}>{counts.working}</Text> {t("cards.summary.working")}
             {counts.waiting > 0 ? ` · ${t("cards.summary.waiting", { count: counts.waiting })}` : ""}
@@ -485,6 +485,7 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
           <PanelHeader
             theme={theme}
             compact={layout.compact}
+            summary={summaryGroup}
             actions={
               <>
             <RunPlaybookButton theme={theme} compact={layout.compact} loading={runState === "loading"} emptyReason={runState === "empty" ? (runProjects.length === 0 ? t("form.noWorkspaces") : t("form.noRunnable")) : undefined} onPress={() => setRunForm(true)} />
@@ -517,7 +518,6 @@ export function PlaybooksScreen(props: PluginScreenProps & { store: OverviewStor
               </>
             }
           />
-          {!layout.compact ? <View style={{ position: "absolute", right: pad, top: summaryTop(false), height: SUMMARY_LINE, zIndex: 70 }}>{summaryGroup}</View> : null}
           <TabBar theme={theme} compact={layout.compact} open={openTabs} selected={tab} onSelect={selectTab} onToggle={flipTab} />
         </View>
       <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: pad, gap: 18 }}>
