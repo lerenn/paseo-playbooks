@@ -32,11 +32,16 @@ steps:
     manage: { auto_start: false }
 `;
 
+const WITH_RETRO = `${PLAYBOOK}after:
+  - id: retro
+    role: { name: implementer, agent: { provider: claude, model: m } }
+`;
+
 const HOUR = 3_600_000;
 /** A weekly window with `used` points, 50 of 168 hours gone: what is allowed so far is 28.87 points at 97 usable. */
 const weekly = (used: number) => ({ id: "weekly", label: "weekly", usedPct: used, resetsAt: new Date(Date.now() + 118 * HOUR).toISOString() });
 
-async function setup(rateLimits: string, usage: { current: unknown } = { current: { providers: [] } }, options: { history?: boolean; seed?: unknown } = {}) {
+async function setup(rateLimits: string, usage: { current: unknown } = { current: { providers: [] } }, options: { history?: boolean; seed?: unknown; yaml?: string } = {}) {
   const dir = await mkdtemp(path.join(tmpdir(), "rl-runtime-"));
   temps.push(dir);
   process.env.PASEO_HOME = dir;
@@ -48,7 +53,7 @@ async function setup(rateLimits: string, usage: { current: unknown } = { current
   await mkdir(path.join(root, "roles/implementer"), { recursive: true });
   await writeFile(path.join(root, "roles/implementer/role.yaml"), "title: Implementer\n");
   await writeFile(path.join(root, "roles/implementer/instructions.md"), "Do it.\n");
-  await writeFile(path.join(root, "work.yaml"), PLAYBOOK);
+  await writeFile(path.join(root, "work.yaml"), options.yaml ?? PLAYBOOK);
   const entry = (await loadPlaybooks(path.join(dir, "repo"))).entries.find((candidate) => candidate.id === "work")!;
   expect(entry.errors).toEqual([]);
   const store = new RunStore(path.join(dir, "runs"));
@@ -60,7 +65,7 @@ async function setup(rateLimits: string, usage: { current: unknown } = { current
   const paseo = {
     providers: { listUsage: async () => usage.current },
     agents: { ref: () => ({ refresh: async () => ({ agent: { id: "m", status: "running", provider: "claude", model: null, archivedAt: null } }), send: async (text: string) => void sent.push(text) }) },
-    workspaces: { ref: () => ({ agents: { create: async () => ({ id: `step-${created.push("x")}`, send: async () => undefined }) } }) },
+    workspaces: { ref: (id: string) => ({ refresh: async () => ({ id, projectId: "p", workspaceDirectory: dir }), agents: { create: async () => ({ id: `step-${created.push("x")}`, send: async () => undefined }) } }) },
   };
   const runtime = new Runtime(store);
   runtimes.push(runtime);
@@ -364,6 +369,54 @@ describe("dynamic capacity from quota headroom", () => {
     await read();
     await internals.releaseHolds();
     expect(store.get("r0")!.rateHold).toBeNull();
+  });
+
+  describe("restart_run under a burn rate limit", () => {
+    const fail = (store: RunStore) =>
+      store.mutate("r0", (run) => {
+        run.status = "failed";
+        run.failure = "boom";
+        run.steps.a!.status = "failed";
+        run.after.retro = { status: "running", startedAt: new Date().toISOString(), endedAt: null, detail: null };
+        run.steps.retro!.status = "ready";
+        run.rateHold = { kind: "pace", provider: "claude", window: "weekly", reason: "held for the retro", retryAt: null, since: new Date().toISOString(), estimatedCost: null, headroom: null, position: null, priority: null };
+      });
+
+    it("moves a failed run with a held retro to held at once: the step is reset, the retro canceled, the reservation released", async () => {
+      const { runtime, store, usage, read } = await setup(pacing(), { current: claude(10) }, { yaml: WITH_RETRO });
+      await read();
+      usage.current = claude(25);
+      await read();
+      await fail(store);
+      await store.mutate("r1", (run) => void (run.status = "canceled"));
+      (runtime as unknown as { reservedQuota: Map<string, unknown> }).reservedQuota.set("run:r0", { runId: "r0", est: {}, spent: {}, at: Date.now(), endedAt: null });
+      await runtime.restartRun("r0", "a", null, "laptop");
+      const run = store.get("r0")!;
+      expect(run.status).toBe("running");
+      expect(run.status).not.toBe("failed");
+      expect(run.rateHold).toMatchObject({ kind: expect.stringMatching(/pace|headroom|quota/) });
+      expect(run.rateHold!.reason).not.toBe("held for the retro");
+      expect(run.steps.a!.status).toBe("ready");
+      expect(run.after.retro!.status).toBe("pending");
+      expect(run.history.some((event) => event.type === "after_canceled" && event.detail.includes("restart"))).toBe(true);
+      expect((runtime as unknown as { reservedQuota: Map<string, unknown> }).reservedQuota.has("run:r0")).toBe(false);
+    });
+
+    it("restarts an exempt run at once, with no hold", async () => {
+      const { runtime, store, usage, read } = await setup(pacing(), { current: claude(10) }, { yaml: WITH_RETRO });
+      await read();
+      usage.current = claude(25);
+      await read();
+      await fail(store);
+      await store.mutate("r1", (run) => void (run.status = "canceled"));
+      await store.mutate("r0", (run) => void (run.quotaExempt = true));
+      await runtime.restartRun("r0", "a", null, "laptop");
+      const run = store.get("r0")!;
+      expect(run.status).toBe("running");
+      expect(run.rateHold).toBeNull();
+      expect(run.steps.a!.status).toBe("ready");
+      expect(run.after.retro!.status).toBe("pending");
+    });
   });
 
   it("a higher priority goes first (a run's own priority overrides the playbook's); a lower one is held", async () => {

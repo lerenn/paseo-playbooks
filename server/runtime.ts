@@ -5536,6 +5536,8 @@ export class Runtime {
       if (takeOver) current.managerAgentId = takeOver.id;
       return fx;
     });
+    // A restarted run under a burn rate limit is held at once (visible as held, in the queue by priority), not when its first step tries to start.
+    await this.rateCheck(this.store.get(runId)!).catch((error: unknown) => console.error(`[playbooks] could not check the rate limits of restarted run ${runId}:`, errorText(error)));
     await this.admitQueued(runId);
     const ready = engine.readySteps(this.store.get(runId)!);
     const who = via === "panel" ? `A human${by ? ` (${by})` : ""} restarted the run from "${stepId}" via the panel` : `Agent ${by ?? "(unknown)"} restarted the run from "${stepId}"`;
