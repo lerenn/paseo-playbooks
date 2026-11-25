@@ -5090,19 +5090,23 @@ export class Runtime {
   /** `by` (e.g. "from the panel") tells the manager who canceled; null when the manager did it or is gone. */
   async cancelRun(runId: string, reason: string, by: string | null): Promise<Run> {
     const effects = await this.store.mutate(runId, (current) => engine.cancelRun(current, reason, nowIso()));
+    // The record as the cancel left it: applying the effects can archive the workspace, whose hook deletes the run record.
+    const canceled = this.store.get(runId)!;
     await this.applyEffects(runId, effects);
     await this.admitQueued(runId);
-    if (by && !isPipeline(this.store.get(runId)!)) {
-      const status = this.store.get(runId)!.status;
-      if (this.store.get(runId)!.managerAgentId) await this.dismissQuestions(this.store.get(runId)!.managerAgentId, `The run was canceled ${by}. End your turn.`);
+    const run = this.store.get(runId);
+    if (!run) return canceled;
+    if (by && !isPipeline(run)) {
+      if (run.managerAgentId) await this.dismissQuestions(run.managerAgentId, `The run was canceled ${by}. End your turn.`);
+      if (!this.store.get(runId)) return run;
       await this.enqueue(runId, [
-        status === "canceled"
-          ? `The run was canceled ${by}: ${reason}. Tell the human${runningAfterTasks(this.store.get(runId)!).length > 0 ? ", then run its after-tasks (they do not change the run's status)" : " and stop"}.`
-          : `The after-tasks were canceled ${by}: ${reason}. The run stays ${status}. Tell the human and stop.`,
+        run.status === "canceled"
+          ? `The run was canceled ${by}: ${reason}. Tell the human${runningAfterTasks(run).length > 0 ? ", then run its after-tasks (they do not change the run's status)" : " and stop"}.`
+          : `The after-tasks were canceled ${by}: ${reason}. The run stays ${run.status}. Tell the human and stop.`,
       ]);
       await this.deliver(runId);
     }
-    return this.store.get(runId)!;
+    return this.store.get(runId) ?? run;
   }
 
   /** Whether the parent run of a child is exempt from burn rate limiting: the child is too. */

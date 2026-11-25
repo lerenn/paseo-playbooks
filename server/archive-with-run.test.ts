@@ -128,3 +128,19 @@ describe("workspace.archive_with_run", () => {
     await expect(runtime.restartRun("run_x", "a", null, null)).rejects.toThrow(/no longer exists[\s\S]*Pass workspaceId/);
   });
 });
+
+describe("cancelRun when the record disappears during the cancel", () => {
+  it("returns the canceled run instead of throwing on a missing record", async () => {
+    const { runtime, store } = await setup({ status: "completed" });
+    await store.mutate("run_x", (run) => void (run.status = "running"));
+    const apply = (runtime as unknown as { applyEffects: (id: string, effects: unknown) => Promise<void> }).applyEffects.bind(runtime);
+    (runtime as unknown as { applyEffects: unknown }).applyEffects = async (id: string, effects: unknown) => {
+      await apply(id, effects);
+      await store.delete(id);
+    };
+    const run = await runtime.cancelRun("run_x", "gone", "by agent a");
+    expect(run.id).toBe("run_x");
+    expect(run.status).toBe("canceled");
+    expect(store.get("run_x")).toBeUndefined();
+  });
+});
