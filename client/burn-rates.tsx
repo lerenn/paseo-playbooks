@@ -188,7 +188,7 @@ export function BurnRatesView(props: { theme: Theme; items: QuotaBurnRate[]; onC
                 theme={theme}
                 cells={[
                   { label: t("quota.burn.colPlaybook"), width: WIDTH.name },
-                  ...table.columns.map((column) => ({ label: `${column.provider} ${column.window}`, width: WIDTH.rate })),
+                  ...table.columns.map((column) => ({ label: `${column.provider} ${column.period}`, width: WIDTH.rate })),
                   { label: t("quota.burn.colAttempts"), width: WIDTH.attempts },
                   { label: t("quota.burn.colConfidence"), width: WIDTH.confidence },
                   { label: t("quota.burn.reset"), width: WIDTH.reset, right: true },

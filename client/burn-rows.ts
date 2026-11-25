@@ -9,7 +9,7 @@ export type Confidence = "low" | "medium" | "high";
 export interface BurnColumn {
   key: string;
   provider: string;
-  window: string;
+  period: string;
 }
 
 export interface BurnCell {
@@ -43,7 +43,7 @@ export interface BurnTable {
   rows: BurnTableRow[];
 }
 
-const columnKey = (provider: string, window: string) => `${provider}/${window}`;
+const columnKey = (provider: string, period: string) => `${provider}/${period}`;
 
 function confidenceOf(rates: QuotaBurnRate["rates"]): Confidence | null {
   if (rates.length === 0) return null;
@@ -60,10 +60,10 @@ export function burnTable(items: ReadonlyArray<QuotaBurnRate>): BurnTable {
   for (const item of items) {
     for (const rate of item.rates) {
       const key = columnKey(rate.provider, rate.window);
-      if (!found.has(key)) found.set(key, { key, provider: rate.provider, window: rate.window });
+      if (!found.has(key)) found.set(key, { key, provider: rate.provider, period: rate.window });
     }
   }
-  const columns = [...found.values()].sort((a, b) => a.provider.localeCompare(b.provider) || a.window.localeCompare(b.window));
+  const columns = [...found.values()].sort((a, b) => a.provider.localeCompare(b.provider) || a.period.localeCompare(b.period));
   const rows = [...items]
     .sort((a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: "base" }) || a.playbook.localeCompare(b.playbook))
     .map((item): BurnTableRow => {
