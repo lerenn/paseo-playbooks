@@ -2139,6 +2139,8 @@ export class Runtime {
             if (existsSync(from)) await cp(from, path.join(tmp, rel), { recursive: true });
           }
         }
+        // A script finds its checkout root with `git rev-parse --show-toplevel` (scratch dir `<root>/.tmp`): the copy must be one.
+        await gitOutput(tmp, ["init", "-q"]).catch(() => undefined);
         // Written aside and renamed, so a running check never sees a half-written copy.
         const old = `${tmp}.old`;
         await rename(final, old).catch(() => undefined);
@@ -6459,7 +6461,9 @@ export class Runtime {
     }
     if (isScriptAttempt(agentId)) {
       const checks = attempt.checks;
-      await this.finishScript(runId, stepId, agentId, { outcome: "failure", summary: `timed out after ${Math.round(timeoutMs / 60000)} min (${checks} check(s))`, outputs: {} }, "timeout");
+      // The last line the script printed is usually the reason it never finished ("not yet" forever): show it.
+      const lastLine = (attempt.lastMessage ?? "").split("\n").map((line) => line.trim()).filter(Boolean).at(-1);
+      await this.finishScript(runId, stepId, agentId, { outcome: "failure", summary: `timed out after ${Math.round(timeoutMs / 60000)} min (${checks} check(s))${lastLine ? `; last output: ${lastLine.slice(0, 300)}` : ""}`, outputs: {} }, "timeout");
       return;
     }
     await this.store.mutate(runId, (current) => {

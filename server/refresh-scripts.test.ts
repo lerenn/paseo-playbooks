@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { chmod, cp, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, cp, realpath, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -116,6 +116,19 @@ describe("refresh_scripts: tools", () => {
 });
 
 describe("refresh_scripts", () => {
+  it("makes the scripts copy a git checkout, so a script can find its toplevel and a .tmp scratch dir", async () => {
+    const ctx = await setup();
+    const run = await ctx.start();
+    await ctx.nextCheck();
+    await ctx.publish("v2");
+    await ctx.runtime.refreshScripts(run.id, "toplevel", "agent-x");
+    const copy = ctx.store.get(run.id)!.scripts!.dir;
+    const scripts = path.join(copy, REL, "scripts");
+    const top = await git(scripts, "rev-parse", "--show-toplevel");
+    expect(await realpath(top)).toBe(await realpath(copy));
+    await mkdir(path.join(top, ".tmp"), { recursive: true });
+  });
+
   it("runs a script fixed on main after the run started only once refreshed, with the step definition pinned", async () => {
     const ctx = await setup();
     const run = await ctx.start();
