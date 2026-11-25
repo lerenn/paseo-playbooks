@@ -12,7 +12,7 @@ import type { AdmissionStatus, RunPriorityView, ScriptOutput, UsageReading } fro
 import type { DismissedFinding, GateWaitCondition } from "../shared/types";
 import { dismissRefusal, findingSignature, normalizeFindingFile, normalizeFindingText, normalizePr } from "./findings";
 import type { AgentSettings, AgentTarget, Attempt, FanoutChild as FanoutChildState, PoolPass as PoolPassState, Gate, Job, Playbook, Run, RunDefinition, RunWorktree, Step, VarValue, WardenFinding } from "../shared/types";
-import { addUsage, isUnavailableHold, DEFAULT_EXHAUSTED_FOR_MS, DEFAULT_PERMISSION_POLICY, workspaceKeptUntil, runningAfterTasks } from "../shared/types";
+import { addUsage, isUnavailableHold, DEFAULT_EXHAUSTED_FOR_MS, DEFAULT_PERMISSION_POLICY, workspaceKeptUntil } from "../shared/types";
 import { UsageLedger } from "./usage-ledger";
 import { type UsageRow, UsageLogWriter, USAGE_DIR } from "./usage-log";
 import { analyze, LOW_CONFIDENCE_MS, LOW_CONFIDENCE_STEPS, type Analytics } from "../shared/analytics";
