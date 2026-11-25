@@ -321,8 +321,14 @@ export function classifyAttempts(step: Step, attempts: Attempt[], limitReached: 
     const transition = step.on?.[outcome];
     if (transition?.kind === "goto") return transition.delayMs ? "poll" : "feedback";
     if (transition?.kind === "ask") return "feedback";
-    // No loop edge, yet the step ran again: a failure retried, or a restart.
-    return "retry";
+    // No edge of its own, yet the step ran again. The next attempt says why it exists (`retry`): a goto from ANOTHER step (a check
+    // looping back to a fix step) is a recheck or feedback, only `interrupted` is a retry. An attempt from before that field existed
+    // (null): a finished attempt that did not fail was sent back by another step, so it is feedback; a `failure` was retried.
+    const why = attempts[index + 1]?.retry ?? null;
+    if (why === "recheck") return "poll";
+    if (why === "feedback") return "feedback";
+    if (why === "interrupted") return "retry";
+    return outcome === "failure" ? "retry" : "feedback";
   });
   const stalled = attempts.map(() => false);
   let start = 0;

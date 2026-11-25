@@ -217,6 +217,18 @@ describe("repeat passes and lost work", () => {
     expect(classifyAttempts(step, attempts, false).map((p) => p.kind)).toEqual(["feedback", null]);
   });
 
+  it("counts a finished attempt re-run by another step's goto as feedback or poll, not a retry (ANY-3431)", () => {
+    const step: any = { on: {} };
+    const withWhy = (why: string | null) => [attempt({ outcome: "fixed" }, 0), { ...attempt({}, 1), retry: why }] as any;
+    const kinds = (attempts: any) => classifyAttempts(step, attempts, false).map((p) => p.kind);
+    expect(kinds(withWhy("feedback"))).toEqual(["feedback", null]);
+    expect(kinds(withWhy("recheck"))).toEqual(["poll", null]);
+    expect(kinds(withWhy("interrupted"))).toEqual(["retry", null]);
+    // an attempt from before the `retry` field: a finished non-failure outcome was sent back, a failure was retried
+    expect(kinds(withWhy(null))).toEqual(["feedback", null]);
+    expect(kinds([attempt({ outcome: "failure" }, 0), attempt({}, 1)] as any)).toEqual(["retry", null]);
+  });
+
   it("sorts rows by lost share, then tokens, without touching the order of tokens", () => {
     const low = { usage: usage(500, 0), lostShare: 0.1 };
     const high = { usage: usage(100, 0), lostShare: 0.9 };
