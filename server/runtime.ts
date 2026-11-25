@@ -32,6 +32,7 @@ import {
   isStepLive,
   isTerminal,
   restartBlocker,
+  runningAfterTasks,
   scriptAttemptId,
 } from "../shared/types";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "./defaults";
@@ -5523,6 +5524,8 @@ export class Runtime {
     const replacement = managerGone ? await this.createReplacementManager(homeId, run.playbook) : null;
     // An isolated run gets its worktree back (the ended run's was deleted), with a fresh baseline for the guard.
     const worktree = await this.ensureWorktree(run, move?.dir ?? run.workspaceDir);
+    // A pending after-task (held, not started) is canceled by the restart: its quota reservation goes with it, the run's own check makes a new one.
+    if (runningAfterTasks(run).length > 0) this.reservedQuota.delete(`run:${runId}`);
     const effects = await this.store.mutate(runId, (current) => {
       const fx = engine.restartRun(current, stepId, { comment, by, now: nowIso(), model: model ?? null });
       if (worktree) current.worktree = worktree;

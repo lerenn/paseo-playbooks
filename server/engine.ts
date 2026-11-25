@@ -1710,6 +1710,10 @@ export function restartRun(run: Run, stepId: string, input: { comment: string | 
   if (blocker) throw new EngineError(blocker);
   const fx = effects();
   const { now } = input;
+  // An after-task launched but not started (held by a quota or pace hold, or not picked up yet) is canceled: the restart supersedes it.
+  const unstarted = runningAfterTasks(run);
+  for (const taskId of unstarted) finishTask(run, taskId, "canceled", "restart", now, fx);
+  if (unstarted.length > 0) setRateHold(run, null, now);
   const reset = new Set([stepId, ...descendantsOf(run.playbook.steps.filter((step) => !step.afterTask), stepId)]);
   for (const step of run.playbook.steps) {
     if (step.afterTask) continue;

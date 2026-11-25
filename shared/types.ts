@@ -1530,6 +1530,21 @@ export function runningAfterTasks(run: { after: Record<string, { status: string 
 }
 
 /**
+ * After-tasks that have really started: running, and one of their steps has begun (an agent or script is
+ * going, reported, waiting at a gate, or already ended). A launched task whose steps are all still waiting
+ * (queued, ready, held by a pace or quota hold) has no live work and is not in this list.
+ */
+export function startedAfterTasks(run: Run): string[] {
+  return runningAfterTasks(run).filter((id) => {
+    const task = run.playbook.after.find((candidate) => candidate.id === id);
+    return (task?.steps ?? []).some((stepId) => {
+      const status = run.steps[stepId]?.status ?? "pending";
+      return status !== "pending" && status !== "ready" && status !== "queued";
+    });
+  });
+}
+
+/**
  * Whether the run still has work going on: its main graph, or an after-task once it ended.
  * Use `isTerminal(run.status)` for the run's result, this for "can it still change".
  */
@@ -1544,7 +1559,8 @@ export function isPaused(run: { status: RunStatus; after: Record<string, { statu
 
 /**
  * Why a finished run cannot be restarted from this step, or null when it can: the run has
- * ended (canceled or failed, or completed) with no after-task running, and the step is a main
+ * ended (canceled or failed, or completed) with no after-task started (one that is queued or held
+ * by a quota or pace hold has no live work: a restart cancels it), and the step is a main
  * step whose needs are all done (so its inputs exist). An archived run can be restarted: the
  * restart unarchives it.
  */
@@ -1552,7 +1568,7 @@ export function restartBlocker(run: Run, stepId: string): string | null {
   const step = run.playbook.steps.find((candidate) => candidate.id === stepId);
   if (!step) return `unknown step "${stepId}"`;
   if (!isTerminal(run.status)) return `run ${run.id} is ${run.status}; only a finished run can be restarted`;
-  if (runningAfterTasks(run).length > 0) return `run ${run.id} is wrapping up (after-tasks running); wait or cancel them first`;
+  if (startedAfterTasks(run).length > 0) return `run ${run.id} is wrapping up (after-tasks running); wait or cancel them first`;
   if (step.afterTask) return `"${stepId}" belongs to the after-task "${step.afterTask}"; restart from a step of the main graph`;
   const missing = step.needs.filter((need) => !isStepDone(run.steps[need]?.status ?? "pending"));
   if (missing.length > 0) return `"${stepId}" needs ${missing.join(", ")}, which did not complete; restart from an earlier step`;

@@ -148,6 +148,37 @@ describe("restart a finished run from a step", () => {
     expect(readySteps(run).sort()).toEqual(["docs", "implement"]);
   });
 
+  it("restarts a failed run whose retro was launched but not started (held): the retro is canceled, the hold lifted, a second failure queues a new retro", async () => {
+    const run = start(await playbook());
+    step(run, "investigate", "success", { plan: "p" });
+    step(run, "implement", "give_up");
+    expect(run.after.retro!.status).toBe("running");
+    expect(run.steps.retro!.status).toBe("ready");
+    run.rateHold = { kind: "pace", provider: "p", window: "w", reason: "paced", retryAt: now(), since: now(), estimatedCost: null, headroom: null, position: null, priority: null } as Run["rateHold"];
+    expect(restartBlocker(run, "implement")).toBeNull();
+
+    restartRun(run, "implement", { comment: null, by: null, now: now() });
+    expect(run.history.some((event) => event.type === "after_canceled" && event.detail.includes("restart"))).toBe(true);
+    expect(run.rateHold).toBeNull();
+    expect(run.status).toBe("running");
+    expect(run.after.retro).toEqual({ status: "pending", startedAt: null, endedAt: null, detail: null });
+    expect(run.steps.retro!.status).toBe("pending");
+
+    step(run, "implement", "give_up");
+    expect(run.status).toBe("failed");
+    expect(run.after.retro!.status).toBe("running");
+    expect(run.steps.retro!.status).toBe("ready");
+  });
+
+  it("refuses a restart while an after-task has started", async () => {
+    const run = start(await playbook());
+    step(run, "investigate", "success", { plan: "p" });
+    step(run, "implement", "give_up");
+    begin(run, "retro");
+    expect(restartBlocker(run, "implement")).toMatch(/wrapping up/);
+    expect(() => restartRun(run, "implement", { comment: null, by: null, now: now() })).toThrow(/wrapping up/);
+  });
+
   it("refuses active runs, steps whose needs did not complete and after-task steps; unarchives an archived run", async () => {
     const run = start(await playbook());
     expect(restartBlocker(run, "investigate")).toMatch(/only a finished run/);
