@@ -7,7 +7,7 @@ import { newRun, noteEvent, startAttempt } from "./engine";
 import { loadPlaybooks } from "./loader";
 import { Runtime } from "./runtime";
 import { RunStore } from "./store";
-import { diffFindings, heldMs, stalledCandidates, stalledInfo, WARDEN_MAX_RUNS_PER_PASS } from "./warden";
+import { diffFindings, heldMs, managerUnblock, stalledCandidates, stalledInfo, WARDEN_MAX_RUNS_PER_PASS } from "./warden";
 
 const EXAMPLES = path.resolve(__dirname, "..", "examples");
 const temps: string[] = [];
@@ -408,9 +408,31 @@ describe("stalled", () => {
   it("names a quota-blocked manager", () => {
     const info = { idleSince: T0, last: "step_reported on review (changes_requested) at x", steps: "reported: review" };
     const [c] = stalledCandidates({} as Run, info, 30 * MIN, T0 + 9 * 60 * MIN, "idle", true, "report");
-    expect(c!.detail).toMatch(/for 540 min; the manager is quota-blocked; last: step_reported on review/);
+    expect(c!.detail).toMatch(/for 540 min; the manager is quota-blocked \(unblock time unknown\); last: step_reported on review/);
     expect(stalledCandidates({} as Run, info, 30 * MIN, T0 + 29 * MIN, "idle", true, "report")).toEqual([]);
     expect(stalledCandidates({} as Run, null, 30 * MIN, T0 + 99 * MIN, "idle", true, "report")).toEqual([]);
+  });
+
+  it("says why and until when a manager is quota-blocked, and reports once per episode", () => {
+    const info = { idleSince: T0, last: "x", steps: "reported: review" };
+    const run = { exhausted: [{ target: "claude/opus", at: new Date(T0).toISOString() }], playbook: { exhaustedForMs: 5 * 60 * MIN } } as unknown as Run;
+    const reset = new Date(T0 + 8 * 60 * MIN).toISOString();
+    const targets = [{ provider: "claude", model: "opus" }, { provider: "codex", model: "gpt" }];
+    const now = T0 + 60 * MIN;
+    // The mark ends first (T0 + 5 h): the reset of codex's window (8 h) comes later.
+    const unblock = managerUnblock(run, targets, new Map([["codex/gpt", { resetsAt: reset }]]), now);
+    expect(unblock).toEqual({ providers: ["claude", "codex"], until: T0 + 5 * 60 * MIN });
+    expect(managerUnblock({ exhausted: [], playbook: { exhaustedForMs: 1 } } as unknown as Run, targets, new Map(), now)).toEqual({ providers: [], until: null });
+    const [c] = stalledCandidates(run, info, 30 * MIN, now, "idle", true, "report", null, unblock);
+    expect(c!.detail).toContain(`the manager is quota-blocked (unblocks at ${new Date(T0 + 5 * 60 * MIN).toISOString()}; exhausted: claude, codex)`);
+    expect(stalledCandidates(run, info, 30 * MIN, now, "idle", true, "report", null, { providers: [], until: null })[0]!.detail).toContain("unblocks at unknown; exhausted: unknown");
+    // Once per episode: the same unblock time is not reported again; a change of an hour or more is.
+    const at = (until: number | null) => stalledCandidates(run, info, 30 * MIN, now, "idle", true, "report", null, { providers: ["claude"], until });
+    const first = diffFindings({}, at(T0 + 5 * 60 * MIN), new Date(now).toISOString(), 3_600_000);
+    expect(first.report).toHaveLength(1);
+    const later = new Date(now + 10 * 60 * MIN).toISOString();
+    expect(diffFindings(first.next, at(T0 + 5 * 60 * MIN + 60_000), later, 3_600_000).report).toHaveLength(0);
+    expect(diffFindings(first.next, at(T0 + 8 * 60 * MIN), later, 3_600_000).report).toMatchObject([{ fresh: true }]);
   });
 
   it("is not reported for a paused or finished run", async () => {

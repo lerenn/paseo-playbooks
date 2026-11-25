@@ -60,7 +60,7 @@ import { BusError, EventBus, globToRegExp, type BusEvent, type Notifier, type Su
 import { blockedOnGate, MANAGER_WATCH_CHECK_MS, nudgeDue, STUCK_AFTER_NUDGES } from "./manager-watch";
 import type { WardenPrConfig } from "../shared/types";
 import { listOpenPrs, prCandidates, reposOfRun, rulesetChecks, rulesetKey, WardenPrStore, type OpenPr } from "./warden-prs";
-import { diffFindings, gateOpenCandidates, heldCandidates, loopCandidates, managerBlockedCandidates, slowCandidates, stalledCandidates, stalledInfo, staleDefinitionCandidate, WARDEN_CHECK_MS, WARDEN_MAX_RUNS_PER_PASS, wardenPrSummary, wardenSummary, type Act, type Candidate, type WardenIo } from "./warden";
+import { diffFindings, gateOpenCandidates, heldCandidates, loopCandidates, managerBlockedCandidates, managerUnblock, type ManagerUnblock, slowCandidates, stalledCandidates, stalledInfo, staleDefinitionCandidate, WARDEN_CHECK_MS, WARDEN_MAX_RUNS_PER_PASS, wardenPrSummary, wardenSummary, type Act, type Candidate, type WardenIo } from "./warden";
 import { SlowIndex } from "./slow";
 import { gatePayload, OversightProducer, registerOversightTypes, runFieldsOf } from "./oversight-events";
 import { JOB_TYPES, publicJobEvents } from "./job-events";
@@ -1136,6 +1136,7 @@ export class Runtime {
         return managers.get(id)!;
       },
       managerQuota: async (run) => (run.managerAgentId ? this.wardenManagerQuota(run.managerAgentId) : false),
+      managerUnblock: (run) => this.wardenManagerUnblock(run),
     };
     let slowIndex: SlowIndex | null = null;
     const notices = new Map<string, Array<{ runId: string; playbook: string; runName: string | null; findings: WardenFinding[] }>>();
@@ -1164,7 +1165,8 @@ export class Runtime {
             const info = stalledInfo(listed);
             if (!info || now - info.idleSince < stalled.afterMs) return [];
             const manager = await io.manager(listed);
-            return stalledCandidates(listed, info, stalled.afterMs, now, manager, manager === null || manager === "running" ? false : await io.managerQuota(listed), stalled.action as Act, closed);
+            const quotaBlocked = manager === null || manager === "running" ? false : (await io.managerQuota(listed)) || listed.managerQuotaBlockedId === listed.managerAgentId;
+            return stalledCandidates(listed, info, stalled.afterMs, now, manager, quotaBlocked, stalled.action as Act, closed, quotaBlocked ? await io.managerUnblock(listed) : null);
           });
         }
         if (held.action !== "none") await guarded("held", () => heldCandidates(listed, this.store.list(), held.afterMs, now, held.action as Act, closed));
@@ -1300,6 +1302,14 @@ export class Runtime {
     if (!page) return false;
     const entries = page.entries as never;
     return isQuotaError(failureText(entries)) || isQuotaMessage(lastAssistantText(entries));
+  }
+
+  /** Why and until when a run's manager cannot work: the exhausted providers of its chain and the earliest end of a mark or reset of a usage window. */
+  private async wardenManagerUnblock(run: Run): Promise<ManagerUnblock> {
+    const recovery = await this.managerRecovery(run.playbook);
+    const targets = this.managerTargets(run.playbook, recovery.fallback);
+    const blocks = await this.usageBlocks(run.playbook, targets).catch(() => new Map<string, UsageBlock>());
+    return managerUnblock(run, targets, blocks, Date.now());
   }
 
   /** One summary to the project's Sidekick, when there is one: sent now when it is idle, else held until its turn ends. */
@@ -2771,7 +2781,7 @@ export class Runtime {
   private readonly managerRetry = new Map<string, { next: number; failures: number }>();
 
   /**
-   * A manager blocked by its provider's quota with work pending (a queued wake-up, a recovery prompt, a ready step) is
+   * A manager blocked by its provider's quota in an unfinished run (queued work or not) is
    * recovered by itself (`manager_recovery.retry`, default on): recoverManager runs as if called by hand, but only
    * succeeds once a target of the chain (or `manager_recovery.fallback`) has headroom in the provider's usage reading.
    * Runs from the 15 s limit timer, with a per-run backoff, and reads usage through the shared cache: it never hammers the endpoint.
@@ -2782,7 +2792,8 @@ export class Runtime {
       const managerId = listed.managerAgentId;
       if (!managerId || listed.managerQuotaBlockedId !== managerId || !isActive(listed) || listed.archivedAt || isPaused(listed) || isManagerless(listed) || isPipeline(listed)) continue;
       blocked.add(listed.id);
-      if (listed.inbox.length === 0 && !listed.managerRecoveryPrompt && engine.readyForManager(listed).length === 0) continue;
+      // No pending-work check (ADR 2026-11-25-blocked-manager-retry-without-pending-work): a manager that must route a step outcome or
+      // start a board or hand-off step has nothing queued either, and would stay blocked for good.
       const state = this.managerRetry.get(listed.id) ?? { next: 0, failures: 0 };
       if (Date.now() < state.next || this.recoveringManagers.has(managerId)) continue;
       if (!(await this.managerRecovery(listed.playbook)).retry) continue;

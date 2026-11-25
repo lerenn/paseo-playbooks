@@ -351,12 +351,30 @@ describe("automatic retry of a quota-blocked manager", () => {
     expect(f.store.get("run_x")!.history.find((entry) => entry.type === "manager_recovered")!.detail).toContain("manager_recovery.fallback");
   });
 
-  it("leaves a run with no pending work alone", async () => {
+  it("retries a blocked run whose inbox is empty, and unblocks it when usage shows headroom", async () => {
     const f = await setup({ noFallback: true });
     await f.recover();
     await f.store.mutate("run_x", (run) => { run.inbox = []; run.managerRecoveryPrompt = null; });
     f.controls.usage = usage(20);
     await f.retry();
+    expect(f.created).toHaveLength(1);
+    const run = f.store.get("run_x")!;
+    expect(run.managerAgentId).toBe("replacement-1");
+    expect(run.managerQuotaBlockedId).toBeNull();
+  });
+
+  it("keeps an empty-inbox blocked run blocked while the provider is exhausted, and spaces the tries", async () => {
+    const f = await setup({ noFallback: true });
+    await f.recover();
+    await f.store.mutate("run_x", (run) => { run.inbox = []; run.managerRecoveryPrompt = null; });
+    f.controls.usage = usage(100);
+    await f.retry();
+    expect(f.created).toEqual([]);
+    expect(f.store.get("run_x")!.managerQuotaBlockedId).toBe("m");
+    // Headroom returns, but the backoff of the first failed try has not ended.
+    f.controls.usage = usage(20);
+    (f.runtime as unknown as { usage: { memo: unknown } }).usage.memo = null;
+    await (f.runtime as unknown as { retryBlockedManagers: () => Promise<void> }).retryBlockedManagers();
     expect(f.created).toEqual([]);
   });
 

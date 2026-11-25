@@ -42,7 +42,42 @@ export interface WardenIo {
   manager(run: Run): Promise<"running" | "idle" | "gone" | null>;
   /** Whether the run's manager is stopped on its provider's out-of-tokens notice (read only for a stalled run). */
   managerQuota(run: Run): Promise<boolean>;
+  /** Why and until when the manager cannot work (read only for a stalled run whose manager is quota-blocked). */
+  managerUnblock(run: Run): Promise<ManagerUnblock>;
 }
+
+/** The providers a quota-blocked manager waits on, and the earliest time one of its targets may be tried again (epoch ms; null when unknown). */
+export interface ManagerUnblock {
+  providers: string[];
+  until: number | null;
+}
+
+/**
+ * The exhausted providers among the manager's `targets` (an active `exhausted` mark, or a usage window at the threshold) and the
+ * earliest unblock time: the end of the earliest mark (`exhausted_for`) or the earliest reset of a blocking window, whichever
+ * applies. A target with a mark and a window counts its earlier end only when both are known (the mark is the plugin's proof, the
+ * window the provider's own reading): the earliest of the two is the first moment a retry can succeed.
+ */
+export function managerUnblock(run: Run, targets: Array<{ provider: string; model?: string | undefined }>, blocks: Map<string, { resetsAt: string | null }>, nowMs: number): ManagerUnblock {
+  const providers = new Set<string>();
+  const ends: number[] = [];
+  for (const { provider, model } of targets) {
+    const key = `${provider}/${model}`;
+    const mark = run.exhausted.find((entry) => entry.target === key);
+    const markEnd = mark ? Date.parse(mark.at) + run.playbook.exhaustedForMs : NaN;
+    const block = blocks.get(key);
+    const reset = block?.resetsAt ? Date.parse(block.resetsAt) : NaN;
+    const markActive = Number.isFinite(markEnd) && markEnd > nowMs;
+    if (!markActive && !block) continue;
+    providers.add(provider);
+    for (const end of [markActive ? markEnd : NaN, reset]) if (Number.isFinite(end)) ends.push(end);
+  }
+  return { providers: [...providers].sort(), until: ends.length > 0 ? Math.min(...ends) : null };
+}
+
+/** The unblock time as a finding states it, and its hour bucket (a change of one hour or more is material and re-reports). */
+const unblockText = (unblock: ManagerUnblock): string => `unblocks at ${unblock.until === null ? "unknown" : new Date(unblock.until).toISOString()}; exhausted: ${unblock.providers.length > 0 ? unblock.providers.join(", ") : "unknown"}`;
+const unblockBucket = (unblock: ManagerUnblock): string => (unblock.until === null ? "unknown" : String(Math.floor(unblock.until / 3_600_000)));
 
 export const findingKey = (check: WardenCheck, subject: string | null): string => `${check}:${subject ?? ""}`;
 
@@ -149,13 +184,13 @@ export function stalledInfo(run: Run): StalledInfo | null {
 }
 
 /** The run has been stalled for `afterMs` or more. `manager`: its state, and whether it is stopped on a quota notice. */
-export function stalledCandidates(run: Run, info: StalledInfo | null, afterMs: number, now: number, manager: "running" | "idle" | "gone" | null, quotaBlocked: boolean, action: Act, closed?: ClosedHours | null): Candidate[] {
+export function stalledCandidates(run: Run, info: StalledInfo | null, afterMs: number, now: number, manager: "running" | "idle" | "gone" | null, quotaBlocked: boolean, action: Act, closed?: ClosedHours | null, unblock: ManagerUnblock | null = null): Candidate[] {
   const idle = info ? openAge(closed, info.idleSince, now) : 0;
   if (!info || idle < afterMs) return [];
   const minutes = Math.round(idle / 60_000);
-  const managerText = manager === null ? "no manager" : quotaBlocked ? "the manager is quota-blocked" : `the manager is ${manager}`;
+  const managerText = manager === null ? "no manager" : quotaBlocked ? `the manager is quota-blocked (${unblock ? unblockText(unblock) : "unblock time unknown"})` : `the manager is ${manager}`;
   const since = new Date(info.idleSince).toISOString();
-  return [{ check: "stalled", subject: null, signature: since, detail: `no running, ready or queued step and no open gate for ${minutes} min; ${managerText}; last: ${info.last}; steps ${info.steps}`, action, value: minutes, state: `${manager ?? "none"}${quotaBlocked ? "+quota" : ""}` }];
+  return [{ check: "stalled", subject: null, signature: quotaBlocked && unblock ? `${since}|${unblockBucket(unblock)}` : since, detail: `no running, ready or queued step and no open gate for ${minutes} min; ${managerText}; last: ${info.last}; steps ${info.steps}`, action, value: minutes, state: `${manager ?? "none"}${quotaBlocked ? "+quota" : ""}` }];
 }
 
 /**
