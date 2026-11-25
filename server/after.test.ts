@@ -112,8 +112,8 @@ describe("after-tasks: loader", () => {
   it("parses agent and sub-playbook after-tasks, outside the main graph", async () => {
     const playbook = await mainPlaybook();
     expect(playbook.after).toEqual([
-      { id: "retro", title: "Retro", trigger: "auto", steps: ["retro.reflect", "retro.propose"] },
-      { id: "notify", title: "Notify", trigger: "manual", steps: ["notify"] },
+      { id: "retro", title: "Retro", trigger: "auto", onCanceled: false, steps: ["retro.reflect", "retro.propose"] },
+      { id: "notify", title: "Notify", trigger: "manual", onCanceled: false, steps: ["notify"] },
     ]);
     const byId = new Map(playbook.steps.map((s) => [s.id, s]));
     expect(byId.get("investigate")!.afterTask).toBeUndefined();
@@ -216,6 +216,28 @@ describe("after-tasks: engine", () => {
     expect(readySteps(run)).toEqual(["notify"]);
     expect(() => startAfterTask(run, "notify", now())).toThrow(/runs once/);
     expect(() => startAfterTask(run, "retro", now())).toThrow(/trigger: auto/);
+  });
+
+  it("starts an auto task with auto.on_canceled on a canceled run; the run stays canceled, other auto tasks are canceled", async () => {
+    const withOption = MAIN.replace("  - id: retro\n    playbook: { name: retro }\n", "  - id: retro\n    playbook: { name: retro }\n    auto: { on_canceled: true }\n")
+      .replace("  - id: notify\n", "  - id: plain\n    role: { name: reviewer, prompt: x }\n  - id: notify\n");
+    const entries = await load({ "main.yaml": withOption, "retro.yaml": RETRO });
+    const entry = entries.get("main") as { errors: string[]; playbook: Playbook };
+    expect(entry.errors).toEqual([]);
+    const run = start(entry.playbook);
+    const fx = cancelRun(run, "no longer needed", now());
+    expect(run.status).toBe("canceled");
+    expect(run.after.retro!.status).toBe("running");
+    expect(run.after.plain).toMatchObject({ status: "canceled", detail: "the run was canceled" });
+    expect(readySteps(run)).toEqual(["retro.reflect"]);
+    expect(fx.notes.join(" ")).toMatch(/After-task started: retro/);
+    expect(run.status).toBe("canceled");
+  });
+
+  it("refuses auto.on_canceled on a manual after-task", async () => {
+    const bad = MAIN.replace("    trigger: manual\n", "    trigger: manual\n    auto: { on_canceled: true }\n");
+    const entry = (await load({ "main.yaml": bad, "retro.yaml": RETRO })).get("main") as { errors: string[] };
+    expect(entry.errors.join("\n")).toMatch(/auto.*only applies to an `auto` after-task/);
   });
 
   it("refuses to start a manual task before the run ends", async () => {

@@ -417,6 +417,8 @@ export const AfterTaskSchema = z.object({
   title: z.string(),
   /** auto: starts when the run completes or fails. manual: a human starts it from the panel, or asks an agent (start_after_task). */
   trigger: AfterTriggerSchema,
+  /** auto only: also starts when the run is canceled. Default false (older run files). */
+  onCanceled: z.boolean().default(false),
   /** Its steps in `Playbook.steps` (one for an agent or gate task, the expanded steps of a sub-playbook). */
   steps: z.array(z.string()),
 });

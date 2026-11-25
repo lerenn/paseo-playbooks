@@ -994,7 +994,8 @@ after:
 
 - They belong to the same run and manager and show below End in the panel. They never
   change the run's status (fixed when the main graph ends).
-- `auto` tasks start when the run completes or fails, not when it is canceled. `manual`
+- `auto` tasks start when the run completes or fails, not when it is canceled, unless the task
+  sets `auto: { on_canceled: true }` (the run keeps its `canceled` status). `manual`
   tasks start on a finished run, in any end state, once: from the panel, or with
   `start_after_task` (`runId`, `taskId`) when the human asks an agent in chat.
 - No `needs`. Inside an after-task, `end` completes the task (it ends the playbook it is written in), and `fail`, exhausted retries

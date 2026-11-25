@@ -12,7 +12,7 @@ import type { AdmissionStatus, RunPriorityView, ScriptOutput, UsageReading } fro
 import type { DismissedFinding, GateWaitCondition } from "../shared/types";
 import { dismissRefusal, findingSignature, normalizeFindingFile, normalizeFindingText, normalizePr } from "./findings";
 import type { AgentSettings, AgentTarget, Attempt, FanoutChild as FanoutChildState, PoolPass as PoolPassState, Gate, Job, Playbook, Run, RunDefinition, RunWorktree, Step, VarValue, WardenFinding } from "../shared/types";
-import { addUsage, isUnavailableHold, DEFAULT_EXHAUSTED_FOR_MS, DEFAULT_PERMISSION_POLICY, workspaceKeptUntil } from "../shared/types";
+import { addUsage, isUnavailableHold, DEFAULT_EXHAUSTED_FOR_MS, DEFAULT_PERMISSION_POLICY, workspaceKeptUntil, runningAfterTasks } from "../shared/types";
 import { UsageLedger } from "./usage-ledger";
 import { type UsageRow, UsageLogWriter, USAGE_DIR } from "./usage-log";
 import { analyze, LOW_CONFIDENCE_MS, LOW_CONFIDENCE_STEPS, type Analytics } from "../shared/analytics";
@@ -5097,7 +5097,7 @@ export class Runtime {
       if (this.store.get(runId)!.managerAgentId) await this.dismissQuestions(this.store.get(runId)!.managerAgentId, `The run was canceled ${by}. End your turn.`);
       await this.enqueue(runId, [
         status === "canceled"
-          ? `The run was canceled ${by}: ${reason}. Tell the human and stop.`
+          ? `The run was canceled ${by}: ${reason}. Tell the human${runningAfterTasks(this.store.get(runId)!).length > 0 ? ", then run its after-tasks (they do not change the run's status)" : " and stop"}.`
           : `The after-tasks were canceled ${by}: ${reason}. The run stays ${status}. Tell the human and stop.`,
       ]);
       await this.deliver(runId);

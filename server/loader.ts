@@ -434,11 +434,18 @@ const RawStepSchema = z.object({
     admit: z.unknown().optional(),
     /** Only on after-tasks; read here to refuse it on a step. */
     trigger: z.unknown().optional(),
+    /** Only on an auto after-task; read here to refuse it on a step. */
+    auto: z.unknown().optional(),
   });
 
 /** An after-task: a step (role, gate or playbook) with a trigger and no needs. */
 const RawAfterSchema = RawStepSchema.extend({
     trigger: z.enum(["auto", "manual"]).default("auto"),
+    /** Options of an `auto` task (ADR 2026-11-25-after-task-on-canceled). */
+    auto: z.object({
+      /** Also start when the run is canceled (the run keeps its `canceled` status). Default false. */
+      on_canceled: z.boolean().optional(),
+    }).strict().optional(),
     /** Refused: each after-task starts on its own. */
     needs: z.unknown().optional(),
   });
@@ -1878,6 +1885,8 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
     ...pb.steps.map((raw) => ({ raw, task: undefined })),
     ...(pb.after ?? []).map((raw) => ({ raw: { ...raw, needs: [] } as RawStep, task: raw.id })),
   ];
+  for (const raw of pb.after ?? []) if (raw.auto !== undefined && raw.trigger !== "auto") err(`after "${raw.id}": \`auto\` only applies to an \`auto\` after-task (trigger: auto)`);
+  for (const raw of pb.steps) if (raw.auto !== undefined) err(`step "${raw.id}": \`auto\` only applies to an after-task`);
   for (const raw of pb.steps) if (raw.trigger !== undefined) err(`step "${raw.id}": \`trigger\` only applies to an after-task`);
   for (const raw of pb.after ?? []) if (raw.needs !== undefined) err(`after "${raw.id}": \`needs\` does not apply to an after-task (each one starts when the run ends)`);
 
@@ -2691,6 +2700,7 @@ async function loadPlaybook(folder: Folder, name: string, file: string, id: stri
       id: raw.id,
       title: raw.title ?? blocks.get(raw.id)?.title ?? stepLabel(raw.id),
       trigger: raw.trigger,
+      onCanceled: raw.auto?.on_canceled ?? false,
       steps: finalSteps.filter((step) => step.afterTask === raw.id).map((step) => step.id),
     })),
   };

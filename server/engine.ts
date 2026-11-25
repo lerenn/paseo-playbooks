@@ -997,11 +997,12 @@ function startAutoTasks(run: Run, now: string, fx: Effects): void {
   fx.notes.push(afterNote(run, auto.map((task) => task.id), ready));
 }
 
-/** A run that ends without its after-tasks (canceled, manager lost): auto ones will never start. */
-function skipAutoTasks(run: Run, reason: string, now: string): void {
+/** A run that ends without its after-tasks (canceled, manager lost): auto ones will never start, except those with `auto.on_canceled` when `canceled`. */
+function skipAutoTasks(run: Run, reason: string, now: string, canceled = false): void {
   for (const task of run.playbook.after) {
     const state = run.after[task.id];
     if (task.trigger !== "auto" || !state || state.status !== "pending") continue;
+    if (canceled && task.onCanceled) continue;
     run.after[task.id] = { ...state, status: "canceled", endedAt: now, detail: reason };
   }
 }
@@ -1688,7 +1689,8 @@ export function cancelRun(run: Run, reason: string, now: string): Effects {
   run.pausedAt = null;
   if (!isTerminal(run.status)) {
     finish(run, "canceled", reason, now, fx);
-    skipAutoTasks(run, "the run was canceled", now);
+    skipAutoTasks(run, "the run was canceled", now, true);
+    startAutoTasks(run, now, fx);
     return fx;
   }
   const running = runningAfterTasks(run);
