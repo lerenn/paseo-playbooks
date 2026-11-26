@@ -251,7 +251,7 @@ footer.site .inner { max-width: var(--max); margin: 0 auto; padding: 1.25rem; }
 .doc main { flex: 1; min-width: 0; margin: 0; max-width: 50rem; }
 .sidebar {
   position: sticky; top: 3.6rem; flex: 0 0 15.5rem; align-self: flex-start;
-  max-height: calc(100vh - 3.6rem); overflow-y: auto;
+  max-height: calc(100vh - 3.6rem); overflow-y: auto; scrollbar-width: none;
   padding: 2rem 1rem 2rem 1.25rem; border-right: 1px solid var(--border); font-size: 0.86rem;
 }
 .sidebar a { display: block; padding: 0.22rem 0.6rem; border-radius: var(--radius-md); color: var(--muted-foreground); line-height: 1.4; }
@@ -260,6 +260,7 @@ footer.site .inner { max-width: var(--max); margin: 0 auto; padding: 1.25rem; }
 .sidebar li { margin: 0; }
 .sidebar a:hover { background: var(--muted); color: var(--foreground); }
 .sidebar a.active { background: var(--secondary); color: var(--accent); }
+.sidebar::-webkit-scrollbar { display: none; }
 .doc h2, .doc h3 { scroll-margin-top: 4.5rem; }
 .doc h2:first-of-type { margin-top: 1rem; }
 @media (max-width: 52rem) {
