@@ -5,7 +5,7 @@
 import { descendantsOf } from "../shared/graph";
 import { record } from "./event-core";
 import { blockEntrySteps, blockStepIds, holdsBlock, innermostBlock } from "../shared/slots";
-import { ADMISSION_CHOICES, PERMISSION_CHOICES, askChoices, askHumanText, askTransitionOf, choicesOfGate, GATE_SUMMARY_MAX, outcomeTransition, isDeferred, waitsForHuman } from "../shared/gates";
+import { ADMISSION_CHOICES, PERMISSION_CHOICES, askChoices, askReportSummary, askHumanText, askTransitionOf, choicesOfGate, GATE_SUMMARY_MAX, outcomeTransition, isDeferred, waitsForHuman } from "../shared/gates";
 import { parse as parseYaml, stringify as toYaml } from "yaml";
 import type { DismissedFinding, GateWaitCondition, PoolPass, AfterTask, AskChoice, Attempt, AttemptAgent, FanoutChild, FanoutState, Gate, GateDecider, Job, Playbook, RateHold, Run, RunDefinition, RunStep, RunWorktree, Step, Transition, VarValue, When } from "../shared/types";
 import { isActive, isUnavailableHold, isAgentlessAttempt, isFanoutAttempt, isManagerless, MAX_FANOUT_PAST, MAX_POOL_PASSES, isPaused, isPipeline, isStepDone, isStepLive, isTerminal, restartBlocker, runningAfterTasks } from "../shared/types";
@@ -1284,7 +1284,8 @@ function openDecider(decider: GateDecider | undefined): Pick<Gate, "decider" | "
 function openAskGate(run: Run, step: Step, outcome: string, transition: Extract<Transition, { kind: "ask" }>, summary: string, now: string, fx: Effects): void {
   run.steps[step.id]!.status = "waiting";
   const asked = run.gates.filter((gate) => gate.kind === "ask" && gate.stepId === step.id).length;
-  const question = renderTemplate(transition.ask, templateContext(run));
+  // `{{ report.summary }}` shows the step's own question (its report's first line, capped) in the gate.
+  const question = renderTemplate(transition.ask, { ...templateContext(run), report: { summary: askReportSummary(summary) } });
   const gate: Gate = {
     id: `ask-${step.id}-${asked + 1}`,
     kind: "ask",

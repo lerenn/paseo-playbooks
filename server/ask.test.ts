@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Playbook } from "../shared/types";
-import { choicesOfGate } from "../shared/gates";
+import { ASK_REPORT_SUMMARY_MAX, askReportSummary, choicesOfGate } from "../shared/gates";
 import { completeStep, decideGate, endTurn, newRun, readySteps, recordReport, startAttempt } from "./engine";
 import { loadPlaybooks } from "./loader";
 
@@ -329,5 +329,70 @@ steps:
     expect(errors).toEqual([]);
     const on = playbook!.steps.find((step) => step.id === "pr.investigate")!.on.needs_input!;
     expect(on.kind === "ask" && on.choices!.map((choice) => choice.target)).toEqual(["pr.investigate", "pr.investigate"]);
+  });
+});
+
+describe("{{ report.summary }} in an ask text", () => {
+  const SUMMARY_ASK = '{ ask: "Needs input: {{ report.summary }}", max_loops: 2 }';
+  const askWith = async (summary: string | undefined) => {
+    const { playbook, errors } = await load({ "p.yaml": PB(SUMMARY_ASK) }, "p");
+    expect(errors).toEqual([]);
+    const run = newRun({ id: "r", playbook: playbook!, workspaceId: "w", workspaceDir: "/tmp", projectId: "p", branch: null, managerAgentId: "m", inputs: { request: "x" }, now: now() });
+    startAttempt(run, "investigate", { agentId: "a1", brief: "", now: now(), readonlySnapshot: null });
+    if (summary !== undefined) recordReport(run, "a1", { outcome: "needs_input", summary, outputs: {} }, now());
+    endTurn(run, "a1", { turnEnd: "completed", lastMessage: null, now: now() });
+    completeStep(run, "investigate", { outcome: "needs_input", now: now() });
+    return run.gates.at(-1)!;
+  };
+
+  const long = "Which database should the service use? ".repeat(20).trim();
+  const cases: Array<[string, string | undefined, string]> = [
+    ["a one-line question", "Which database: postgres or sqlite? Recommended: postgres.", "Needs input: Which database: postgres or sqlite? Recommended: postgres."],
+    ["the first line of a multi-line report", "Which database?\n\nChoices: postgres, sqlite.\nEvidence: …", "Needs input: Which database?"],
+    ["the first non-blank line, CRLF and indentation", "\r\n   \r\n  Merge PR #3 or wait for CI?  \r\nmore", "Needs input: Merge PR #3 or wait for CI?"],
+    ["a Unicode line separator", "Ship it?\u2028details", "Needs input: Ship it?"],
+    ["unicode kept whole", "Déployer 🚀 maintenant ? 中文", "Needs input: Déployer 🚀 maintenant ? 中文"],
+    ["template text in the report, not expanded", "Use {{ playbook.inputs.request }}?", "Needs input: Use {{ playbook.inputs.request }}?"],
+    ["a blank report", "   \n\t\n", "Needs input: (none)"],
+    ["no report at all", undefined, "Needs input: (none)"],
+    ["a long line, cut with an ellipsis", long, `Needs input: ${long.slice(0, 299).trimEnd()}…`],
+  ];
+  it.each(cases)("renders %s", async (_name, summary, expected) => {
+    const gate = await askWith(summary);
+    expect(gate.summary).toBe(expected);
+    expect(gate.message.startsWith(expected)).toBe(true);
+    // The full report stays in the gate's details.
+    if (summary?.trim()) expect(gate.details).toBe(summary);
+  });
+
+  it("caps at ASK_REPORT_SUMMARY_MAX characters without splitting a character", () => {
+    expect(askReportSummary("a".repeat(ASK_REPORT_SUMMARY_MAX))).toBe("a".repeat(ASK_REPORT_SUMMARY_MAX));
+    const cut = askReportSummary("🚀".repeat(ASK_REPORT_SUMMARY_MAX + 1));
+    expect(Array.from(cut)).toHaveLength(ASK_REPORT_SUMMARY_MAX);
+    expect(cut).toBe(`${"🚀".repeat(ASK_REPORT_SUMMARY_MAX - 1)}…`);
+    for (const value of [null, undefined, 42, {}, ["q"], ""]) expect(askReportSummary(value)).toBe("");
+  });
+
+  it("is accepted in an ask text only", async () => {
+    const errorsOf = async (yaml: string) => (await load({ "p.yaml": yaml }, "p")).errors.join("\n");
+    expect(await errorsOf(PB(SUMMARY_ASK))).toBe("");
+    expect(await errorsOf(PB('{ ask: "{{ report.summary }}", choices: { answered: {} } }'))).toBe("");
+    const gateQuestion = `
+steps:
+  - id: g
+    gate: { question: "Ship {{ report.summary }}?" }
+`;
+    expect(await errorsOf(gateQuestion)).toMatch(/gate\.question: "\{\{ report\.summary \}\}" must be playbook\.inputs\.<name> or steps\.<id>\.outputs\.<name>$/m);
+    expect(await errorsOf(PB('{ ask: "{{ report.outputs.plan }}" }'))).toMatch(/on\.needs_input\.ask: "\{\{ report\.outputs\.plan \}\}" must be .* \(or report\.summary\)/);
+    expect(await errorsOf(PB('{ ask: "{{ report.summaryx }}" }'))).toMatch(/"\{\{ report\.summaryx \}\}" must be/);
+  });
+
+  it("keeps working inside a sub-playbook", async () => {
+    const { playbook, errors } = await load(
+      { "pr.yaml": PB(SUMMARY_ASK), "cap.yaml": "inputs: { request: { required: true } }\nsteps:\n  - id: pr\n    playbook: { name: pr }\n" },
+      "cap",
+    );
+    expect(errors).toEqual([]);
+    expect(playbook!.steps.find((step) => step.id === "pr.investigate")!.on.needs_input).toMatchObject({ kind: "ask", ask: "Needs input: {{ report.summary }}" });
   });
 });

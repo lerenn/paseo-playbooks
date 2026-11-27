@@ -3223,20 +3223,22 @@ function checkStepRefs(step: Step, steps: Step[], ancestors: Set<string>, blockI
 
 /**
  * The templates of a gate's question and of an `ask` text may read `{{ playbook.inputs.<name> }}` and
- * `{{ steps.<id>.outputs.<name> }}` of a step this one needs; an unset value renders as "(none)".
+ * `{{ steps.<id>.outputs.<name> }}` of a step this one needs; an unset value renders as "(none)". An `ask`
+ * text may also read `{{ report.summary }}`: the first line of the asking step's report (after-tasks included).
  */
 function checkTextRefs(step: Step, ancestors: Set<string>, steps: Step[], inputs: Record<string, VarDef>, err: (message: string) => void): void {
-  const texts: Array<{ at: string; text: string }> = [
-    ...(step.gate ? [{ at: "gate.question", text: step.gate }] : []),
-    ...Object.entries(step.on).flatMap(([outcome, transition]) => (transition.kind === "ask" ? [{ at: `on.${outcome}.ask`, text: transition.ask }] : [])),
+  const texts: Array<{ at: string; text: string; ask: boolean }> = [
+    ...(step.gate ? [{ at: "gate.question", text: step.gate, ask: false }] : []),
+    ...Object.entries(step.on).flatMap(([outcome, transition]) => (transition.kind === "ask" ? [{ at: `on.${outcome}.ask`, text: transition.ask, ask: true }] : [])),
   ];
   const byId = new Map(steps.map((candidate) => [candidate.id, candidate]));
-  for (const { at, text } of texts) {
+  for (const { at, text, ask } of texts) {
     for (const ref of templateRefs(text)) {
+      if (ask && ref === "report.summary") continue;
       const where = `step "${step.id}": ${at}: "{{ ${ref} }}"`;
       const source = parseSourceRef(ref);
-      if (step.afterTask) err(`${where}: templates in a gate question or ask text do not apply to an after-task`);
-      else if (!source || (source.kind !== "playbook" && source.kind !== "step")) err(`${where} must be playbook.inputs.<name> or steps.<id>.outputs.<name>`);
+      if (step.afterTask) err(`${where}: templates in a gate question or ask text do not apply to an after-task${ask ? " (except {{ report.summary }})" : ""}`);
+      else if (!source || (source.kind !== "playbook" && source.kind !== "step")) err(`${where} must be playbook.inputs.<name> or steps.<id>.outputs.<name>${ask ? " (or report.summary)" : ""}`);
       else if (source.kind === "playbook" && !inputs[source.name]) err(`${where}: playbook input "${source.name}" is not declared`);
       else if (source.kind === "step") {
         if (!ancestors.has(source.step)) err(`${where}: step "${source.step}" is not one this step needs (directly or not)`);
