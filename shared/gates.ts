@@ -182,6 +182,20 @@ export function destinationOf(playbook: Pick<Playbook, "blocks"> & { steps: Arra
 /** Longest summary request_gate accepts: one short sentence. */
 export const GATE_SUMMARY_MAX = 160;
 
+/** Longest `{{ report.summary }}` an ask text shows, in characters (the ellipsis included). */
+export const ASK_REPORT_SUMMARY_MAX = 300;
+
+/**
+ * What `{{ report.summary }}` renders in an ask text: the first non-blank line of the step's report,
+ * trimmed and cut to ASK_REPORT_SUMMARY_MAX characters with "…". Never throws; no report gives "".
+ */
+export function askReportSummary(summary: unknown): string {
+  const text = typeof summary === "string" ? summary : "";
+  const line = text.split(/\r\n|\r|\n|\u2028|\u2029/).map((candidate) => candidate.trim()).find((candidate) => candidate !== "") ?? "";
+  const chars = Array.from(line);
+  return chars.length > ASK_REPORT_SUMMARY_MAX ? `${chars.slice(0, ASK_REPORT_SUMMARY_MAX - 1).join("").trimEnd()}…` : line;
+}
+
 /** Splits text after its first sentence ("." "!" "?" followed by a space and a capital, a digit or a quote). */
 function firstSentence(text: string): [string, string] {
   const match = /^([\s\S]*?[.!?])\s+(?=[A-Z0-9"'(`])/.exec(text);

@@ -522,7 +522,8 @@ steps:
 
 A case may end the run: `{ name: nothing, if: {...}, end: nothing_to_do }` (`end: true` for a plain end, else an
 `outcomes` entry of the playbook). A gate `question` and an `ask` text may read `{{ playbook.inputs.<name> }}` and
-`{{ steps.<id>.outputs.<name> }}` of earlier steps, e.g. `question: "Merge {{ steps.scan.outputs.prs }}?"`.
+`{{ steps.<id>.outputs.<name> }}` of earlier steps, e.g. `question: "Merge {{ steps.scan.outputs.prs }}?"`; an `ask`
+text may also read `{{ report.summary }}` (see Loops).
 
 `validate_playbooks` refuses a missing or misplaced `else`, an unreachable case (an earlier case holds whenever it
 does), duplicate names, and unknown steps, outputs, outcomes or values. A branch does not apply to after-tasks or
@@ -1069,6 +1070,14 @@ To let an agent step ask a human a question, give it an outcome that routes to `
 the answer in the panel (required). The step then runs again, with the answer as feedback.
 `goto` (default: the step itself) may name an earlier step instead. The report needs no
 outputs (those it gives are kept). `ask` is not available on gate steps.
+
+The ask text may read `{{ report.summary }}`: the first non-blank line of the step's summary (the
+`complete_step` summary, else the agent's report summary or final message), cut to 300
+characters with "…". Write
+`ask: "{{ report.summary }}"` (or `"Needs input: {{ report.summary }}"`) so the gate's title in
+`list_gates` and the panel is the agent's actual question rather than a fixed sentence; the
+full report stays in the gate's details. An empty summary renders as "(none)". It is not
+available in a gate step's `question`.
 
 `choices` gives the ask gate several buttons, each going to its own step. Keys are the
 choice ids; each takes `goto` (default: the ask's `goto`, else the step itself),

@@ -180,6 +180,8 @@ cp -R examples/.paseo/plugins/playbooks .paseo/plugins/
 
 The [playbook-writing skill](skills/paseo-playbooks/SKILL.md)
 teaches agents the format and validation rules.
+Use `ask: "{{ report.summary }}"` on an outcome to show the first non-blank
+line of the step's summary in the gate. Put the question on that first line.
 
 For a full walkthrough, see [Getting started](https://playbooks.paseo.lerenn.dev/getting-started.html).
 

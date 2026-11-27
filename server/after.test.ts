@@ -161,6 +161,26 @@ describe("after-tasks: loader", () => {
 });
 
 describe("after-tasks: engine", () => {
+  it("uses an after-task's report summary in its ask gate", async () => {
+    const content = MAIN.replace(
+      "outcomes: [success, failure, stop]",
+      "outcomes: [success, failure, stop, needs_input]",
+    ).replace("stop: end", 'stop: end\n      needs_input: { ask: "{{ report.summary }}" }');
+    const entries = await load({ "main.yaml": content, "retro.yaml": RETRO });
+    const entry = entries.get("main") as { errors: string[]; playbook: Playbook };
+    expect(entry.errors).toEqual([]);
+    const run = start(entry.playbook);
+    cancelRun(run, "no longer needed", now());
+    startAfterTask(run, "notify", now());
+    step(run, "notify", "needs_input");
+    expect(run.gates.at(-1)).toMatchObject({
+      kind: "ask",
+      stepId: "notify",
+      summary: "notify needs_input",
+      details: "notify needs_input",
+    });
+  });
+
   it("starts auto tasks when the run completes; they read the run; their end does not touch the run", async () => {
     const run = start(await mainPlaybook());
     expect(run.after).toMatchObject({ retro: { status: "pending" }, notify: { status: "pending" } });
