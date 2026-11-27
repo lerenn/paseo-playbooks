@@ -7,7 +7,8 @@ import type { Theme } from "./theme";
  * the theme's accent turns green in some themes, which made a running run look like a done one.
  * Only the light or dark variant follows the theme. Text, backgrounds, borders, buttons and links stay on theme colours.
  */
-export type SemanticTone = "running" | "waiting" | "done" | "failed" | "paused";
+export type { SemanticTone } from "../shared/workspace-badges";
+import type { SemanticTone } from "../shared/workspace-badges";
 
 export interface ToneColors {
   /** Text, icon, border or fill of the tone. */

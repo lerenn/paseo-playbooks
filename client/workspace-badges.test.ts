@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import type { RunSummary } from "../shared/types";
-import { attentionOf, indexBadges, runBadge, stateBadge, RECENT_MS, STATE_ROW_TONES } from "./workspace-badges";
+import { attentionOf, indexBadges, runBadge, stateBadge, RECENT_MS, STATE_ROW_TONES } from "../shared/workspace-badges";
 import { createBadgeStore } from "./workspace-badges-store";
 import { createLeadRegistry, leadingBadge, type BadgeItemId } from "./badge-lead";
-import type { OverviewSnapshot, OverviewStore } from "./overview-store";
+import type { BadgeIndex, OverviewSnapshot, OverviewStore } from "./overview-store";
 
 const NOW = Date.parse("2026-11-24T12:00:00Z");
 
@@ -97,35 +97,36 @@ describe("held run in the index", () => {
 });
 
 describe("badge store", () => {
-  function overview(runs: RunSummary[] | null) {
-    let snapshot: OverviewSnapshot = { count: 0, runs, error: null };
+  function overview(badges: BadgeIndex | null) {
+    let snapshot: OverviewSnapshot = { count: 0, runs: null, badges, error: null };
     const subscribe = vi.fn((_listener: () => void) => () => undefined);
     const release = vi.fn();
-    const watchRuns = vi.fn(() => release);
-    const store = { subscribe, get: () => snapshot, watchRuns, refresh: vi.fn() } as unknown as OverviewStore;
-    return { store, subscribe, watchRuns, release, set: (next: RunSummary[] | null) => (snapshot = { ...snapshot, runs: next }) };
+    const watchBadges = vi.fn(() => release);
+    const store = { subscribe, get: () => snapshot, watchBadges, refresh: vi.fn() } as unknown as OverviewStore;
+    return { store, subscribe, watchBadges, release, set: (next: BadgeIndex | null) => (snapshot = { ...snapshot, badges: next }) };
   }
 
-  it("asks for the runs once for any number of rows, and releases them with the last row", () => {
-    const o = overview([summary()]);
-    const badges = createBadgeStore(o.store, () => NOW);
+  it("asks for workspace badges once for any number of rows, and releases them with the last row", () => {
+    const o = overview(indexBadges([summary()], NOW));
+    const badges = createBadgeStore(o.store);
     const stops = Array.from({ length: 30 }, () => badges.subscribe(() => undefined));
     expect(o.subscribe).toHaveBeenCalledTimes(1);
-    expect(o.watchRuns).toHaveBeenCalledTimes(1);
+    expect(o.watchBadges).toHaveBeenCalledTimes(1);
     stops.slice(1).forEach((stop) => stop());
     expect(o.release).not.toHaveBeenCalled();
     stops[0]!();
     expect(o.release).toHaveBeenCalledTimes(1);
   });
 
-  it("builds the index once per set of runs, however many rows read it", () => {
-    const o = overview([summary()]);
-    const badges = createBadgeStore(o.store, () => NOW);
-    const first = badges.get();
+  it("shares a single badge index however many rows read it", () => {
+    const first = indexBadges([summary()], NOW);
+    const o = overview(first);
+    const badges = createBadgeStore(o.store);
     for (let row = 0; row < 50; row++) expect(badges.get()).toBe(first);
     expect(first.get("w1")?.run.state).toBe("running");
-    o.set([summary({ status: "failed" })]);
-    expect(badges.get()).not.toBe(first);
+    const failed = indexBadges([summary({ status: "failed" })], NOW);
+    o.set(failed);
+    expect(badges.get()).toBe(failed);
     expect(badges.get().get("w1")?.run.state).toBe("failed");
     o.set(null);
     expect(badges.get().size).toBe(0);

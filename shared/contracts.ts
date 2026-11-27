@@ -1,6 +1,7 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 import { AnalyticsSchema } from "./analytics";
+import { WorkspaceBadgesSchema } from "./workspace-badges";
 import { QuotaLimitationSchema } from "./quota-limitation";
 import { AdmissionStatusSchema, PlaybookEntrySchema, ProfileInfoSchema, RoleSchema, RunSchema, GateWaitConditionSchema, StepSchema, RunSummarySchema, ScriptOutputSchema, VarValueSchema } from "./types";
 
@@ -290,6 +291,16 @@ export const needsYouRpc = defineRpc({
   name: "overview.needs-you",
   input: z.object({}),
   output: z.object({ count: z.number().int() }),
+});
+
+/** The sidebar count and one compact badge entry per marked workspace. */
+export const overviewBadgesRpc = defineRpc({
+  name: "overview.badges",
+  input: z.object({}),
+  output: z.object({
+    count: z.number().int(),
+    badges: z.array(z.tuple([z.string(), WorkspaceBadgesSchema])),
+  }),
 });
 
 /** Where the tokens went, summed over the runs on disk (archived ones too): by playbook, step, role and model. */

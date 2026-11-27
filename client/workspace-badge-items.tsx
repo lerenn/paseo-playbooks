@@ -7,7 +7,7 @@ import { createBadgeStore, useLeadingDot, useWorkspaceBadges, type BadgeStore } 
 import type { OverviewStore } from "./overview-store";
 import { semanticColor, type SemanticTone } from "./semantic-colors";
 import type { Theme } from "./theme";
-import type { BadgeTone } from "./workspace-badges";
+import type { BadgeTone } from "../shared/workspace-badges";
 
 /** The Playbooks icon (the sidebar item's and the panel's). */
 const ICON = "Workflow";
