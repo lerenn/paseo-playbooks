@@ -1,7 +1,11 @@
-import { slowSteps, slowView } from "../shared/slow";
-import { waitsForHuman } from "../shared/gates";
-import { isActive, isPaused, isPipeline, type RunSummary } from "../shared/types";
-import type { SemanticTone } from "./semantic-colors";
+import { z } from "zod";
+import { slowSteps, slowView } from "./slow";
+import { waitsForHuman } from "./gates";
+import { isActive, isPaused, isPipeline, type Run, type RunSummary } from "./types";
+
+const SemanticToneSchema = z.enum(["running", "waiting", "done", "failed", "paused"]);
+export type SemanticTone = z.infer<typeof SemanticToneSchema>;
+type BadgeRun = Run | RunSummary;
 
 /**
  * What the two sidebar badges of a workspace row show, as pure functions of the run summaries
@@ -19,10 +23,12 @@ import type { SemanticTone } from "./semantic-colors";
  * the plugin's own "violet" tone, drawn by client/workspace-badge-items.tsx. One meaning never shows
  * twice: a run that waits at a gate shows the attention badge, not a "waiting" state badge.
  */
-export type HostBadgeTone = "muted" | "success" | "warning" | "danger" | "info";
-export type BadgeTone = HostBadgeTone | "violet";
-
-export type RunBadgeState = "ready" | "running" | "waiting" | "held" | "paused" | "done" | "failed" | "canceled";
+const HostBadgeToneSchema = z.enum(["muted", "success", "warning", "danger", "info"]);
+const BadgeToneSchema = HostBadgeToneSchema.or(z.literal("violet"));
+const RunBadgeStateSchema = z.enum(["ready", "running", "waiting", "held", "paused", "done", "failed", "canceled"]);
+type HostBadgeTone = z.infer<typeof HostBadgeToneSchema>;
+export type BadgeTone = z.infer<typeof BadgeToneSchema>;
+type RunBadgeState = z.infer<typeof RunBadgeStateSchema>;
 
 /**
  * The row's colour: one semantic state per row, applied to ALL our badges on it (the leading dot stays muted grey)
@@ -56,28 +62,28 @@ export const STATE_TONES: Readonly<Record<RunBadgeState, HostBadgeTone>> = {
 /** A run that ended longer ago than this no longer marks its workspace. */
 export const RECENT_MS = 24 * 3_600_000;
 
-export interface RunBadge {
-  runId: string;
-  state: RunBadgeState;
-  tone: HostBadgeTone;
-  /** True while the run is live: the label is then the step count, else the word of the state. */
-  live: boolean;
-  /** Main steps completed, and how many there are. */
-  done: number;
-  total: number;
+const RunBadgeSchema = z.object({
+  runId: z.string(),
+  state: RunBadgeStateSchema,
+  tone: HostBadgeToneSchema,
+  /** True while the label is a step count. */
+  live: z.boolean(),
+  done: z.number().int(),
+  total: z.number().int(),
   /** The playbook's title, for the accessibility label. */
-  playbook: string;
-}
+  playbook: z.string(),
+});
 
-/** The second badge: the state of a live run as an icon and a word. */
-export type StateKind = "ready" | "running" | "paused" | "waiting";
-
-export interface StateBadge {
-  kind: StateKind;
-  tone: BadgeTone;
+const StateBadgeSchema = z.object({
+  kind: z.enum(["ready", "running", "paused", "waiting"]),
+  tone: BadgeToneSchema,
   /** A Lucide icon name. */
-  icon: string;
-}
+  icon: z.string(),
+});
+
+type RunBadge = z.infer<typeof RunBadgeSchema>;
+type StateBadge = z.infer<typeof StateBadgeSchema>;
+type StateKind = StateBadge["kind"];
 
 const STATE_BADGES: Readonly<Record<StateKind, StateBadge>> = {
   ready: { kind: "ready", tone: "success", icon: "CircleCheck" },
@@ -86,29 +92,32 @@ const STATE_BADGES: Readonly<Record<StateKind, StateBadge>> = {
   waiting: { kind: "waiting", tone: "warning", icon: "Hourglass" },
 };
 
-export type AttentionKind = "gate" | "slow";
+const AttentionBadgeSchema = z.object({
+  kind: z.enum(["gate", "slow"]),
+  tone: HostBadgeToneSchema,
+});
 
-export interface AttentionBadge {
-  kind: AttentionKind;
-  tone: HostBadgeTone;
-}
+type AttentionBadge = z.infer<typeof AttentionBadgeSchema>;
+type AttentionKind = AttentionBadge["kind"];
 
-/** What a workspace row shows: its run's badge, and the attention badge when something needs the user. */
-export interface WorkspaceBadges {
-  /** The semantic state colouring every badge of the row (not its dot); null: muted. An open gate on the workspace makes it "waiting". */
-  rowTone: SemanticTone | null;
-  run: RunBadge;
-  /** Null for an ended run, and for one waiting at a gate (the attention badge says it). */
-  state: StateBadge | null;
-  attention: AttentionBadge | null;
-}
+/** What a workspace sidebar row shows. */
+export const WorkspaceBadgesSchema = z.object({
+  /** An open gate on the workspace makes the row "waiting". */
+  rowTone: SemanticToneSchema.nullable(),
+  run: RunBadgeSchema,
+  /** Null for ended runs and those waiting at a gate. */
+  state: StateBadgeSchema.nullable(),
+  attention: AttentionBadgeSchema.nullable(),
+});
+
+export type WorkspaceBadges = z.infer<typeof WorkspaceBadgesSchema>;
 
 /** The steps that count in "3/7": the main ones, without after-tasks and the branches that were not taken. */
-function mainSteps(run: RunSummary) {
+function mainSteps(run: BadgeRun) {
   return run.playbook.steps.filter((step) => !step.afterTask && !(step.when && run.steps[step.id]?.status === "skipped"));
 }
 
-function stateOf(run: RunSummary): RunBadgeState {
+function stateOf(run: BadgeRun): RunBadgeState {
   if (run.status === "completed") return isActive(run) ? "running" : "done";
   if (run.status === "failed") return "failed";
   if (run.status === "canceled") return "canceled";
@@ -128,14 +137,14 @@ function stateOf(run: RunSummary): RunBadgeState {
 }
 
 /** The state badge of a run: null once it ended, and while it waits at a gate (the `gate` attention badge says that). */
-export function stateBadge(run: RunSummary): StateBadge | null {
+export function stateBadge(run: BadgeRun): StateBadge | null {
   const state = stateOf(run);
   if (state === "done" || state === "failed" || state === "canceled") return null;
   if (state === "waiting" && run.gates.some(waitsForHuman)) return null;
   return STATE_BADGES[state === "held" ? "paused" : state];
 }
 
-export function runBadge(run: RunSummary): RunBadge {
+export function runBadge(run: BadgeRun): RunBadge {
   const state = stateOf(run);
   const steps = mainSteps(run);
   return {
@@ -153,7 +162,7 @@ export function runBadge(run: RunSummary): RunBadge {
  * Why an active run needs the user, most urgent first; null when it does not. `slow`: some step is slower than usual.
  * A run held by rate limiting with nothing running needs nothing from the user: only the run badge shows it.
  */
-export function attentionOf(run: RunSummary, slow: boolean): AttentionBadge | null {
+export function attentionOf(run: BadgeRun, slow: boolean): AttentionBadge | null {
   if (!isActive(run) || run.status === "failed" || run.status === "canceled") return null;
   if (run.gates.some(waitsForHuman)) return { kind: "gate", tone: "danger" };
   if (slow) return { kind: "slow", tone: "warning" };
@@ -162,13 +171,13 @@ export function attentionOf(run: RunSummary, slow: boolean): AttentionBadge | nu
 
 const URGENCY: Record<AttentionKind, number> = { gate: 0, slow: 1 };
 
-function ended(run: RunSummary): number {
+function ended(run: BadgeRun): number {
   const time = Date.parse(run.updatedAt);
   return Number.isNaN(time) ? 0 : time;
 }
 
 /** Which of two runs of one workspace marks it: an active one before a finished one, then the most recently updated. */
-function better(a: RunSummary, b: RunSummary): boolean {
+function better(a: BadgeRun, b: BadgeRun): boolean {
   const activeA = isActive(a);
   if (activeA !== isActive(b)) return activeA;
   return ended(a) > ended(b);
@@ -179,16 +188,16 @@ function better(a: RunSummary, b: RunSummary): boolean {
  * RECENT_MS after its last update. With several runs in one workspace the active, then the latest
  * one gives the run badge; the attention badge takes the most urgent need among the active ones.
  */
-export function indexBadges(runs: readonly RunSummary[], now: number): Map<string, WorkspaceBadges> {
+export function indexBadges(runs: readonly BadgeRun[], now: number): Map<string, WorkspaceBadges> {
   const history = runs.map(slowView);
-  const chosen = new Map<string, RunSummary>();
+  const chosen = new Map<string, BadgeRun>();
   const attention = new Map<string, AttentionBadge>();
-  for (const run of runs) {
+  for (const [i, run] of runs.entries()) {
     if (!isActive(run) && now - ended(run) > RECENT_MS) continue;
     const current = chosen.get(run.workspaceId);
     if (!current || better(run, current)) chosen.set(run.workspaceId, run);
     if (!isActive(run)) continue;
-    const slow = Object.keys(slowSteps(slowView(run), history, now)).length > 0;
+    const slow = Object.keys(slowSteps(history[i]!, history, now)).length > 0;
     const need = attentionOf(run, slow);
     const known = attention.get(run.workspaceId);
     if (need && (!known || URGENCY[need.kind] < URGENCY[known.kind])) attention.set(run.workspaceId, need);

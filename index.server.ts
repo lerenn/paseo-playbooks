@@ -1,4 +1,5 @@
 import { overviewSettings } from "./shared/overview-settings";
+import { indexBadges } from "./shared/workspace-badges";
 import path from "node:path";
 import { needsReview } from "./shared/gates";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
@@ -21,6 +22,7 @@ import {
   headerStateRpc,
   needsYouRpc,
   overviewStateRpc,
+  overviewBadgesRpc,
   analyticsStateRpc,
   quotaLimitationRpc,
   listPlaybooks,
@@ -220,6 +222,13 @@ export default function contribute(server: PluginServerContext) {
     const all = store.list();
     const priorities = await runtime.priorityViews(all);
     return { runs: all.filter((run) => !run.archivedAt).map((run) => summarizeRun(run, priorities.get(run.id) ?? null)) };
+  });
+  handle(overviewBadgesRpc, async () => {
+    const runs = store.list().filter((run) => !run.archivedAt);
+    return {
+      count: runs.reduce((count, run) => count + run.gates.filter(needsReview).length, 0),
+      badges: [...indexBadges(runs, Date.now())],
+    };
   });
   handle(admissionStatusRpc, async ({ runId }) => {
     const stages = runtime.admissionStatus(runId);
