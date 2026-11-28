@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { GLOBAL_REPO, isGlobalPlaybook } from "../shared/repos";
 import type { Playbook, PlaybookEntry, RunDefinition } from "../shared/types";
 import { defaultBranch, exportPaths, freshRefInfo, resolveCommit } from "./git";
 import { loadPlaybooks, PLAYBOOKS_DIRS, type LoadOptions, type LoadResult } from "./loader";
@@ -27,6 +28,9 @@ export async function chooseDefinition(input: {
   fetchError: string | null;
 }): Promise<{ playbook: Playbook; definition: RunDefinition }> {
   const fallback = (note: string, why: string) => ({ playbook: input.playbook, definition: { source: "workspace" as const, ref: null, sha: null, note, warning: workspaceWarning(why) } });
+  if (isGlobalPlaybook(input.playbook.id)) {
+    return { playbook: input.playbook, definition: { source: "global", ref: null, sha: null, note: null, warning: null } };
+  }
   if (input.fetchError) return fallback(`could not fetch ${input.baseRef} (${input.fetchError}); using the workspace checkout's playbook`, `${input.baseRef} could not be fetched: ${shortReason(input.fetchError)}`);
   let entry: PlaybookEntry | undefined;
   try {
@@ -73,7 +77,7 @@ export function definitionMismatch(pinned: Playbook, next: Playbook): string | n
 export interface ResolvedEntry {
   entry: PlaybookEntry;
   /** What a new run would load: `origin` (fresh base, isolated playbooks) or the `workspace` checkout. */
-  source: "origin" | "workspace";
+  source: "origin" | "workspace" | "global";
   ref?: string;
   note?: string;
 }
@@ -84,7 +88,7 @@ export async function readAtRef(dir: string, ref: string, options: LoadOptions):
   try {
     await exportPaths(dir, ref, PLAYBOOKS_DIRS, tmp);
     const sha = await resolveCommit(dir, ref);
-    return { sha, loaded: await loadPlaybooks(tmp, options) };
+    return { sha, loaded: await loadPlaybooks(tmp, { ...options, includeGlobal: false }) };
   } catch (error) {
     return { error: `could not read the playbooks of ${ref} (${error instanceof Error ? error.message : String(error)})` };
   } finally {
@@ -108,7 +112,7 @@ async function loadAtRef(dir: string, base: string, activeProfiles: string[], de
 export async function resolveForNewRun(workspaceDir: string, workspace: LoadResult): Promise<ResolvedEntry[]> {
   const bases = new Map<string, string | null>();
   for (const entry of workspace.entries) {
-    if (!isAdoptable(entry)) continue;
+    if (entry.repo === GLOBAL_REPO || !isAdoptable(entry)) continue;
     bases.set(entry.id, entry.playbook.isolation.base ?? (await defaultBranch(workspaceDir)));
   }
   const activeProfiles = workspace.profiles.filter((profile) => profile.active).map((profile) => profile.id);
@@ -117,7 +121,7 @@ export async function resolveForNewRun(workspaceDir: string, workspace: LoadResu
   for (const entry of workspace.entries) {
     const base = bases.get(entry.id);
     if (!base) {
-      out.push({ entry, source: "workspace" });
+      out.push({ entry, source: entry.repo === GLOBAL_REPO ? "global" : "workspace" });
       continue;
     }
     if (!cache.has(base)) cache.set(base, await loadAtRef(workspaceDir, base, activeProfiles, workspace.defaultActive));
