@@ -7,7 +7,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cancelRun, newRun, startAttempt } from "./engine";
-import { loadPlaybooks } from "./loader";
+import { hasPlaybooks, loadPlaybooks } from "./loader";
+import { pluginDataDir } from "./data-dir";
+import { findEntry } from "../shared/repos";
+import { chooseDefinition, resolveForNewRun } from "./fresh";
 import { Runtime } from "./runtime";
 import { RunStore } from "./store";
 import { BACKGROUND_UNSUPPORTED } from "./workspace-lookup";
@@ -22,8 +25,8 @@ afterEach(async () => {
   await Promise.all(temps.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
-type Ws = { id: string; projectId: string; background?: boolean };
-const full = (w: Ws) => ({ id: w.id, projectId: w.projectId, projectDisplayName: w.projectId, projectRootPath: tmpdir(), workspaceDirectory: tmpdir() });
+type Ws = { id: string; projectId: string; dir?: string; background?: boolean };
+const full = (w: Ws) => ({ id: w.id, projectId: w.projectId, projectDisplayName: w.projectId, projectRootPath: w.dir ?? tmpdir(), workspaceDirectory: w.dir ?? tmpdir() });
 
 /** A daemon whose only workspace source is a paginated `list` (page size 1, to cross pages), with failure injection. */
 function fakeDaemon(initial: Ws[], options: { supportsBackground?: boolean } = {}) {
@@ -140,6 +143,62 @@ describe("project scoping through the real lookup", () => {
     const { runtime } = await boot(daemon);
     expect((await runtime.lookupWorkspace("visible-b"))?.projectId).toBe("b");
     expect(daemon.calls.map((c) => c.filtered)).toEqual([true, false]);
+  });
+});
+
+describe("daemon-wide playbooks through the real lookup", () => {
+  it("runs one installed playbook in two projects without project profiles", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "global-playbooks-"));
+    temps.push(dir);
+    const a = path.join(dir, "a");
+    const b = path.join(dir, "b");
+    await Promise.all([mkdir(a), mkdir(b)]);
+    const daemon = fakeDaemon([{ id: "alpha", projectId: "a", dir: a }, { id: "beta", projectId: "b", dir: b }]);
+    vi.stubEnv("PASEO_HOME", path.join(dir, "home"));
+    try {
+      const { runtime, store } = await boot(daemon);
+      expect(await hasPlaybooks(a)).toBe(false);
+
+      const library = path.join(pluginDataDir(), "playbooks");
+      await mkdir(path.join(library, "scripts"), { recursive: true });
+      await writeFile(path.join(library, "check.yaml"), [
+        "manager: { mode: none }",
+        "steps:",
+        "  - id: check",
+        "    script: { run: root.sh }",
+        "    outputs: { root: { type: string } }",
+        "",
+      ].join("\n"));
+      await writeFile(path.join(library, "scripts/root.sh"), [
+        "#!/bin/sh",
+        "printf '{\"outputs\":{\"root\":\"%s\"}}\n' \"$PWD\"",
+        "",
+      ].join("\n"), { mode: 0o755 });
+      await cp(library, path.join(a, ".paseo/plugins/playbooks"), { recursive: true });
+
+      expect(await hasPlaybooks(b)).toBe(true);
+      const loaded = await loadPlaybooks(a, { projectId: "a" });
+      expect(findEntry(loaded.entries, "check")).toMatchObject({ entry: { id: "check" } });
+      expect(findEntry(loaded.entries, "@global:check")).toMatchObject({ entry: { id: "@global:check", errors: [] } });
+      expect(await resolveForNewRun(a, loaded)).toContainEqual(expect.objectContaining({ source: "global", entry: expect.objectContaining({ id: "@global:check" }) }));
+      const playbook = loaded.entries.find((entry) => entry.id === "@global:check")!.playbook!;
+      expect(await chooseDefinition({ projectId: "b", playbook, worktreeDir: b, baseRef: "origin/main", baseSha: "123", fetchError: "offline" }))
+        .toMatchObject({ playbook, definition: { source: "global", warning: null } });
+      expect((await loadPlaybooks(b, { includeGlobal: false })).entries).toEqual([]);
+
+      const runs = await Promise.all(["alpha", "beta"].map((workspaceId) => runtime.startFromPanel({
+        workspaceId, playbook: "@global:check", inputs: {}, force: false, sameWorkspace: true,
+      })));
+      for (const [index, started] of runs.entries()) {
+        const root = index === 0 ? a : b;
+        await vi.waitFor(() => expect(store.get(started.runId)).toMatchObject({
+          projectId: index === 0 ? "a" : "b", workspaceDir: root, status: "completed",
+          steps: { check: { outputs: { root } } },
+        }));
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 

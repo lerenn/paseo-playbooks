@@ -139,7 +139,7 @@ export function loopCandidates(run: Run, above: number, action: Act): Candidate[
  */
 export function staleDefinitionCandidate(run: Run, originSha: string | null, afterMs: number, now: number, action: Act, closed?: ClosedHours | null): Candidate[] {
   const definition = run.definition;
-  if (!definition || !originSha) return [];
+  if (!definition || definition.source === "global" || !originSha) return [];
   if (onlyWaitingOnGate(run)) return [];
   const aged = openAge(closed, Date.parse(run.createdAt), now) - heldMs(run, now) >= afterMs;
   const stale = definition.source === "workspace" || (aged && definition.sha !== null && definition.sha !== originSha);

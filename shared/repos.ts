@@ -3,6 +3,13 @@ import type { PlaybookEntry } from "./types";
 /** The repository of the playbooks folders themselves: always active, never listed in the config. */
 export const DEFAULT_REPO = "default";
 
+/** A daemon library outside the project profile namespace. */
+export const GLOBAL_REPO = "@global";
+
+export function isGlobalPlaybook(id: string): boolean {
+  return id.startsWith(`${GLOBAL_REPO}:`);
+}
+
 /** The id without its repository: `louis:deploy` → `deploy`. */
 export function bareId(id: string): string {
   return id.slice(id.indexOf(":") + 1);
@@ -14,7 +21,7 @@ export function bareId(id: string): string {
  */
 export function findEntry(entries: readonly PlaybookEntry[], ref: string): { entry: PlaybookEntry } | { error: string } | { entry: undefined } {
   if (ref.includes(":")) return { entry: entries.find((entry) => qualified(entry) === ref) };
-  const matches = entries.filter((entry) => bareId(entry.id) === ref);
+  const matches = entries.filter((entry) => entry.repo !== GLOBAL_REPO && bareId(entry.id) === ref);
   if (matches.length <= 1) return { entry: matches[0] };
   return { error: `playbook "${ref}" is ambiguous: it exists in several repositories; write ${matches.map((entry) => `\`${qualified(entry)}\``).join(" or ")}` };
 }

@@ -423,6 +423,7 @@ const IdArg = z.string().describe("Run id returned by start_playbook");
 export function definitionNote(run: Pick<Run, "definition">): string {
   const def = run.definition;
   if (!def) return "";
+  if (def.source === "global") return "\nPlaybook definition and roles: read from the global playbook library.";
   if (def.source === "origin") return `\nPlaybook definition and roles: read from ${def.ref} at ${def.sha?.slice(0, 10) ?? "?"} (fetched at start), not from the workspace checkout.`;
   return `\nWARNING: playbook definition and roles come from the workspace checkout, which may be behind origin: ${def.note ?? "no fresh copy was used"}.`;
 }

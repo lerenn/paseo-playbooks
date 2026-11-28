@@ -502,8 +502,8 @@ export type RunScripts = z.infer<typeof RunScriptsSchema>;
 
 /** Where an isolated run's playbook definition (and roles) came from: see ADR 2026-11-10-playbooks-from-fresh-main. */
 export const RunDefinitionSchema = z.object({
-  /** `origin`: read from the run's worktree, off a freshly fetched origin/<base>; `workspace`: the shared checkout. */
-  source: z.enum(["origin", "workspace"]),
+  /** The project's origin, its shared checkout, or the daemon's global library. */
+  source: z.enum(["origin", "workspace", "global"]),
   /** The ref and commit the definition was read at (origin only). */
   ref: z.string().nullable().default(null),
   sha: z.string().nullable().default(null),

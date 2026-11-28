@@ -31,7 +31,8 @@ import { JOB_TYPES } from "./job-events";
 import { OVERSIGHT_TYPES } from "./oversight-events";
 import { gateReleaseMsOf, noteDeprecatedKey, quotaLimitsLayerOf, readProjectDefault, readProjectProfiles, type QuotaLimitsLayer } from "./config";
 import { dayNumbers, parseClock, validTimezone, type ClosedHours } from "./closed-hours";
-import { bareId, DEFAULT_REPO, qualified } from "../shared/repos";
+import { bareId, DEFAULT_REPO, GLOBAL_REPO, qualified } from "../shared/repos";
+import { pluginDataDir } from "./data-dir";
 import { MAX_SUBAGENT_ARCHIVE_AFTER_MS } from "./sidekick-archive";
 import { branchNameProblem } from "./branch-name";
 import { workspaceTitleRefs } from "../shared/workspace-name";
@@ -1568,7 +1569,13 @@ export async function gatesOnBehalfSetting(workspaceDir: string): Promise<"allow
   return "allow";
 }
 
+function globalPlaybooksDir(): string {
+  return path.resolve(pluginDataDir(), "playbooks");
+}
+
 export async function hasPlaybooks(workspaceDir: string): Promise<boolean> {
+  const globalFiles = await listFolder(globalPlaybooksDir());
+  if (globalFiles?.some((file) => /\.ya?ml$/.test(file))) return true;
   for (const relDir of PLAYBOOKS_DIRS) {
     try {
       const names = await readdir(path.join(workspaceDir, relDir));
@@ -1621,14 +1628,22 @@ async function loadRepo(repo: string, root: string, relDir: string, names: strin
     ids: new Set(files.map((name) => name.replace(/\.ya?ml$/, ""))),
     load: (id, stack) => {
       if (!loads.has(id)) {
-        const name = files.find((candidate) => candidate.replace(/\.ya?ml$/, "") === id)!;
-        loads.set(id, loadPlaybook(folder, name, `${relDir}/${name}`, id, stack));
+        const names = files.filter((candidate) => candidate.replace(/\.ya?ml$/, "") === id);
+        const name = names[0]!;
+        const file = `${relDir}/${name}`;
+        if (names.length > 1) {
+          loads.set(id, Promise.resolve({ entry: {
+            id: qualifyId(repo, id), repo, file, title: id, hidden: false, playbook: null,
+            errors: [`${relDir}: playbook id "${id}" is defined in ${names.join(", ")}; rename one`],
+          } }));
+        } else {
+          loads.set(id, loadPlaybook(folder, name, file, id, stack));
+        }
       }
       return loads.get(id)!;
     },
   };
-  for (const name of files) {
-    const id = name.replace(/\.ya?ml$/, "");
+  for (const id of folder.ids) {
     const { entry } = await folder.load(id, []);
     if (defaultsErrors.length > 0) {
       entry.errors.unshift(...defaultsErrors);
@@ -1674,6 +1689,8 @@ export async function projectProfiles(root: string, projectId: string): Promise<
 }
 
 export interface LoadOptions {
+  /** A git ref export contains only definitions from the project checkout. */
+  includeGlobal?: boolean;
   /** Profiles to activate; overrides the project's setting. */
   activeProfiles?: string[];
   /** The project whose profile setting (`profiles.projects.<project>.active` of the user config) applies. Without it, and without `activeProfiles`, no profile is active. */
@@ -1731,9 +1748,20 @@ export async function loadPlaybooks(workspaceDir: string, options: LoadOptions =
       diagnostics.push(`${profilesRel}/${name}: could not load: ${info.errors[0]}`);
     }
   }
+  if (options.includeGlobal !== false) {
+    const root = globalPlaybooksDir();
+    const files = await listFolder(root);
+    if (files?.some((file) => /\.ya?ml$/.test(file))) {
+      roots.push(root);
+      entries.push(...await loadRepo(GLOBAL_REPO, root, root, files));
+    }
+  }
   // Same bare id in several repositories: both stay (qualified), but a bare reference to it is ambiguous.
   const byBare = new Map<string, PlaybookEntry[]>();
-  for (const entry of entries) byBare.set(bareId(entry.id), [...(byBare.get(bareId(entry.id)) ?? []), entry]);
+  for (const entry of entries) {
+    if (entry.repo === GLOBAL_REPO) continue;
+    byBare.set(bareId(entry.id), [...(byBare.get(bareId(entry.id)) ?? []), entry]);
+  }
   for (const [id, group] of byBare) {
     const repos = new Set(group.map((entry) => entry.repo));
     if (repos.size > 1) diagnostics.push(`playbook id "${id}" exists in ${[...repos].map((repo) => `\`${repo}\``).join(" and ")}: refer to it as ${group.map((entry) => `\`${qualified(entry)}\``).join(" or ")} (a bare "${id}" is ambiguous)`);

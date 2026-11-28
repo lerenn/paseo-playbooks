@@ -1,0 +1,6 @@
+title: Global playbook smoke test
+description: Show which project the global library is running against.
+manager: { mode: none }
+steps:
+  - id: inspect
+    role: { name: inspector }

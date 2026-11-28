@@ -552,6 +552,12 @@ still gets its one notice (`docs/adrs/2026-11-23-hold-notice-per-episode.md`). A
 data keeps one hold: no new `run.held`, no `run.released`, the hold keeps its start. The warden has no provider-level finding (its checks are
 per run); the two events cover it.
 
+### Global playbooks
+
+Put common workflows in `$PASEO_HOME/plugin-data/lerenn/paseo-playbooks/playbooks/` (the default `PASEO_HOME` is `~/.paseo`). The folder uses the same layout as a project playbook folder, including its own `roles/`, `defaults/` and `scripts/`. Its entries are available in every project on that daemon and use the selected project's workspace. Use `@global:<id>` to name them in tools.
+
+Copy the contents of [the global example](examples/global-playbooks/) into that folder, open a project with no Playbooks files, and start `@global:smoke` from the Playbooks panel. The inspector should report the selected workspace. Isolated runs also take their definitions from the library. Their scripts run from the library, so the project-git `refresh_scripts` tool does not apply.
+
 ### Profiles
 
 A profile is an extra, opt-in repository of playbooks, with the same layout as the playbooks folder

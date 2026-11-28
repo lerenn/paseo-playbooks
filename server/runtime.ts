@@ -47,7 +47,7 @@ import { createWorktree, diskUsedFraction, dirtyPaths, purgeScratch, linkedSubmo
 import { chooseDefinition, definitionMismatch, isAdoptable, readAtRef, resolveForNewRun, shortReason, workspaceWarning } from "./fresh";
 import { runWorktreeTeardown } from "./teardown";
 import { gatesOnBehalfSetting, wardenPrSetting, loadPlaybooks, loadSidekick, type SidekickConfig, type SidekickProviders } from "./loader";
-import { findEntry } from "../shared/repos";
+import { findEntry, isGlobalPlaybook } from "../shared/repos";
 
 /** The entry a stored or typed playbook id means: bare ids resolve to the one namespaced entry (and the reverse); ambiguity or absence gives undefined. */
 function lookup(entries: Parameters<typeof findEntry>[0], ref: string) {
@@ -233,6 +233,7 @@ const FANOUT_START_TIMEOUT_MS = 10 * 60 * 1000;
 
 interface Reservation {
   runId: string;
+  projectId: string | null;
   /** null: the workspace's current branch, read when the run is created. */
   branch: string | null;
   playbook: Playbook;
@@ -2077,6 +2078,7 @@ export class Runtime {
   async refreshScripts(runId: string, reason: string, by: string): Promise<RefreshResult> {
     const run = this.store.get(runId);
     if (!run) throw new UserError(`unknown run "${runId}"`);
+    if (isGlobalPlaybook(run.playbook.id)) throw new UserError("global scripts are loaded from the daemon's playbook library and have no project git ref to refresh from");
     const ended = !isActive(run);
     if (ended) {
       const blocker = this.refreshBlocker(run);
@@ -3248,8 +3250,8 @@ export class Runtime {
   }
 
   /** The reservation of a started run whose record does not exist yet, for exactly this playbook and inputs. */
-  private reservedSame(playbookId: string, inputs: Record<string, VarValue>): Reservation | undefined {
-    return [...this.reservations.values()].flat().find((r) => r.playbook.id === playbookId && JSON.stringify(r.inputs) === JSON.stringify(inputs) && !this.store.get(r.runId));
+  private reservedSame(projectId: string, playbookId: string, inputs: Record<string, VarValue>): Reservation | undefined {
+    return [...this.reservations.values()].flat().find((r) => r.projectId === projectId && r.playbook.id === playbookId && JSON.stringify(r.inputs) === JSON.stringify(inputs) && !this.store.get(r.runId));
   }
 
   private isReservedRun(runId: string): boolean {
@@ -4111,7 +4113,8 @@ export class Runtime {
       // After refresh_scripts, the run's own copy of origin/<branch>'s scripts comes first.
       const refreshed = run.scripts ? path.join(run.scripts.dir, step.script!) : null;
       const inWorktree = run.worktree ? path.join(run.worktree.path, step.script!) : null;
-      const scriptFile = refreshed && existsSync(refreshed) ? refreshed : inWorktree && existsSync(inWorktree) ? inWorktree : path.join(run.workspaceDir, step.script!);
+      const scriptFile = path.isAbsolute(step.script!) ? step.script!
+        : refreshed && existsSync(refreshed) ? refreshed : inWorktree && existsSync(inWorktree) ? inWorktree : path.join(run.workspaceDir, step.script!);
       if (!existsSync(scriptFile)) {
         // Fail fast with where it looked, instead of a bare ENOENT: a checkout behind origin is the usual cause.
         const dir = engine.workDir(run);
@@ -4372,12 +4375,12 @@ export class Runtime {
     };
     try {
       // The pipeline's workspace is where its scripts live; one a newer commit added is read once the pipeline is between batches.
-      let file = path.join(pipeline.workspaceDir, stage.admit.script);
+      let file = path.resolve(pipeline.workspaceDir, stage.admit.script);
       if (!existsSync(file) && existsSync(pipeline.workspaceDir) && !this.batchesOf(pipeline.id).some((batch) => !isTerminal(batch.status))) {
         const id = pipeline.id;
         await this.refreshPipeline(id).catch((error: unknown) => console.error(`[playbooks] could not refresh ${id}:`, errorText(error)));
         pipeline = this.store.get(id)!;
-        file = path.join(pipeline.workspaceDir, stage.admit.script);
+        file = path.resolve(pipeline.workspaceDir, stage.admit.script);
       }
       if (!existsSync(pipeline.workspaceDir)) return finish({ kind: "failed", message: `the pipeline's workspace ${pipeline.workspaceDir} does not exist` });
       if (!existsSync(file)) return finish({ kind: "failed", message: `${stage.admit.script} not found in the pipeline's workspace ${pipeline.workspaceDir}` });
@@ -6681,7 +6684,7 @@ export class Runtime {
       return { status: "duplicate" as const, runId: same.id, message: `Run ${same.id} of "${playbook.id}" is already active with the same inputs.` };
     }
     // A start that returned "started" has no run record until its manager agent creates the run (several seconds later): its reservation counts as that run.
-    const starting = input.force ? undefined : this.reservedSame(playbook.id, resolved.inputs);
+    const starting = input.force ? undefined : this.reservedSame(workspace.projectId, playbook.id, resolved.inputs);
     if (starting) {
       return { status: "duplicate" as const, runId: starting.runId, message: `Run ${starting.runId} of "${playbook.id}" was started with the same inputs and is still starting (its manager creates the run record within a minute).` };
     }
@@ -6698,7 +6701,7 @@ export class Runtime {
       if (busy) throw new UserError(`this workspace already has an active run (${busy.id}); use "Start in a new workspace"${playbook.isolation.mode === "worktree" ? "" : ", or give the playbook `isolation: worktree` so runs can share a workspace"}`);
       // The new agent creates the run itself with start_playbook, which takes this reserved id.
       const runId = `run_${shortId()}`;
-      this.addReservation(workspace.id, { runId, branch: null, playbook, inputs: resolved.inputs, ...(input.priority !== undefined ? { priority: input.priority } : {}), ...(input.quotaExempt ? { quotaExempt: true } : {}) });
+      this.addReservation(workspace.id, { runId, projectId: workspace.projectId, branch: null, playbook, inputs: resolved.inputs, ...(input.priority !== undefined ? { priority: input.priority } : {}), ...(input.quotaExempt ? { quotaExempt: true } : {}) });
       const manager = await this.api().workspaces.ref(workspace.id).agents.create({
         config: this.managerConfig(playbook, await this.managerSkips(playbook)),
         title: `Playbook Manager · ${playbook.title}`,
@@ -6707,7 +6710,7 @@ export class Runtime {
       });
       return { status: "started" as const, workspaceId: workspace.id, managerAgentId: manager.id, runId, queued: false };
     }
-    return this.startInNewWorkspace(workspaceDir, playbook, resolved.inputs, input.workspaceName, input.child, input.priority, input.quotaExempt);
+    return this.startInNewWorkspace(workspace.projectId, workspaceDir, playbook, resolved.inputs, input.workspaceName, input.child, input.priority, input.quotaExempt);
   }
 
 
@@ -7347,7 +7350,7 @@ export class Runtime {
     }
   }
 
-  private async startInNewWorkspace(workspaceDir: string, playbook: Playbook, inputs: Record<string, VarValue>, workspaceName?: string, child?: { runId: string; parent: NonNullable<Run["parent"]> }, priority?: number, quotaExempt?: boolean) {
+  private async startInNewWorkspace(projectId: string | null, workspaceDir: string, playbook: Playbook, inputs: Record<string, VarValue>, workspaceName?: string, child?: { runId: string; parent: NonNullable<Run["parent"]> }, priority?: number, quotaExempt?: boolean) {
     const runId = child?.runId ?? `run_${shortId()}`;
     const id = runId.replace(/^run_/, "");
     const branch = worktreeBranch(playbook.id, id);
@@ -7356,7 +7359,7 @@ export class Runtime {
       title: workspaceTitle(playbook.title, inputs, workspaceName, playbook.workspace.title),
       source: { kind: "worktree", cwd: workspaceDir, action: "branch-off", branchName: branch, ...(base ? { refName: base } : {}) },
     });
-    this.addReservation(created.id, { runId, branch, playbook, inputs, created: true, ...(child ? { parent: child.parent } : {}), ...(priority !== undefined ? { priority } : {}), ...(quotaExempt ? { quotaExempt: true } : {}) });
+    this.addReservation(created.id, { runId, projectId, branch, playbook, inputs, created: true, ...(child ? { parent: child.parent } : {}), ...(priority !== undefined ? { priority } : {}), ...(quotaExempt ? { quotaExempt: true } : {}) });
     await this.freshenNewWorkspace(created.id, workspaceDir, base ?? (await defaultBranch(workspaceDir)));
     if (playbook.managerMode === "none") {
       // No manager agent: the plugin creates the run itself, from the reservation, and drives it.
@@ -7402,7 +7405,7 @@ export class Runtime {
     const resolved = engine.resolveRunInputs(playbook, inputs);
     if (!resolved.ok) throw new UserError(resolved.errors.join("; "));
     if (projectId) this.checkConcurrency(playbook, projectId);
-    return this.startInNewWorkspace(workspaceDir, playbook, resolved.inputs, workspaceName, undefined, priority, quotaExempt);
+    return this.startInNewWorkspace(projectId, workspaceDir, playbook, resolved.inputs, workspaceName, undefined, priority, quotaExempt);
   }
 
   /** Whether the playbook, as the workspace has it, declares `isolation: { mode: worktree }` (false when the workspace or playbook is missing or invalid). */
